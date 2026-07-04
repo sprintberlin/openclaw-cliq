@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { cliqPlugin } from "./channel.js";
 import { chunkMessage, resolveCliqConfig } from "./client.js";
+import { setCliqClientRegistry } from "./runtime-api.js";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 
 function cfgWith(section: Record<string, unknown>): OpenClawConfig {
@@ -99,6 +100,9 @@ describe("cliq plugin", () => {
   });
 
   it("applies markdown→cliq formatting on outbound sendText", async () => {
+    // Reset the client registry so this test starts with no cached OAuth
+    // token and the mocked fetch OAuth branch is exercised deterministically.
+    setCliqClientRegistry(null);
     const cfg = cfgWith({
       clientId: "id",
       clientSecret: "secret",

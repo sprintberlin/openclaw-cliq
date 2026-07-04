@@ -6,9 +6,10 @@ import type {
 } from "openclaw/plugin-sdk/channel-mention-gating";
 import type { IncomingMessage } from "node:http";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
-import { CliqClient, type ResolvedCliqAccount } from "./client.js";
+import type { ResolvedCliqAccount } from "./client.js";
 import { markdownToCliq } from "./markdown.js";
 import { stripCliqMentions } from "./mentions.js";
+import { resolveCliqClient } from "./runtime-api.js";
 
 /**
  * Minimal slice of `api.runtime` that the inbound dispatch path needs. Kept
@@ -488,11 +489,7 @@ export async function dispatchCliqInbound(params: {
     OriginatingTo: `cliq:${responseTarget}`,
   });
 
-  const client = new CliqClient(
-    account.clientId,
-    account.clientSecret,
-    account.botId,
-  );
+  const client = resolveCliqClient(account);
   const deliverTo = parsed.isGroup
     ? (parsed.channelUniqueName ?? parsed.chatId)
     : parsed.senderId;

@@ -25,6 +25,7 @@
 
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { CliqClient, resolveCliqConfig, type ResolvedCliqAccount } from "./client.js";
+import { resolveCliqClient } from "./runtime-api.js";
 import type { CliqRuntime, ParsedCliqInbound } from "./inbound.js";
 
 /** Label shown in the pairing store UI / diagnostics for a Cliq sender id. */
@@ -108,7 +109,7 @@ export async function issueCliqPairingChallenge(
 
   const sendClient =
     client ??
-    new CliqClient(account.clientId, account.clientSecret, account.botId);
+    resolveCliqClient(account);
 
   try {
     await sendClient.sendMessage({
@@ -144,7 +145,7 @@ export async function notifyCliqPairingApproval(params: {
   const account = resolveCliqConfig(cfg, null);
   const sendClient =
     client ??
-    new CliqClient(account.clientId, account.clientSecret, account.botId);
+    resolveCliqClient(account);
   await sendClient.sendMessage({
     to: id,
     text: message ?? CLIQ_PAIRING_APPROVED_MESSAGE,

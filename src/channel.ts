@@ -6,7 +6,6 @@ import type {
   OpenClawConfig,
 } from "openclaw/plugin-sdk/channel-core";
 import {
-  CliqClient,
   chunkMessage,
   resolveCliqConfig,
   type CliqChannelConfig,
@@ -17,6 +16,7 @@ import {
   stripCliqMentions,
 } from "./mentions.js";
 import { markdownToCliq } from "./markdown.js";
+import { resolveCliqClient } from "./runtime-api.js";
 import {
   CLIQ_PAIRING_APPROVED_MESSAGE,
   CLIQ_PAIRING_ID_LABEL,
@@ -189,11 +189,7 @@ export const cliqPlugin: ChannelPlugin<ResolvedCliqAccount> = createChatChannelP
       channel: CHANNEL_ID,
       sendText: async (ctx) => {
         const account = resolveAccountFromCtx(ctx.cfg, ctx.accountId);
-        const client = new CliqClient(
-          account.clientId,
-          account.clientSecret,
-          account.botId,
-        );
+        const client = resolveCliqClient(account);
         const result = await client.sendMessage({
           to: ctx.to,
           text: markdownToCliq(ctx.text),

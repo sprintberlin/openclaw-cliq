@@ -2,7 +2,7 @@
 
 ## Project: openclaw-cliq
 
-**Status:** Markdown→Cliq outbound formatting implemented (iteration 6 complete)
+**Status:** Cross-request token caching implemented (iteration 7 complete)
 
 ### What exists in this repo
 - `AGENTS.md` — project context and conventions
@@ -28,6 +28,8 @@
 - `src/inbound.test.ts` — 19 vitest tests covering secret verification (5), payload parsing (8), mention facts (2), and mention decision/skip logic (4). All passing.
 - `src/mentions.ts` — bot-mention stripping: `buildCliqMentionRegexes(account)` (case-insensitive `@botName`/`@botId` regexes with word-boundary, deduped) + `stripCliqMentions(text, account)` (pure strip + whitespace normalize). Used both by the plugin `mentions` adapter and the inbound dispatch path.
 - `src/mentions.test.ts` — 16 vitest tests covering regex construction (4), pure strip behavior (7), and the plugin `mentions` adapter wiring (5). All passing.
+- `src/runtime-api.ts` — cross-request `CliqClient` registry so the OAuth access token is shared across webhook dispatches / outbound sends / pairing notifications instead of being re-fetched per request. `CliqClientRegistry` class (Map-keyed by `acct:<accountId>` or `cc:<clientId>:<botId>`): `getOrCreate`, `get`, `evict`, `clear`, `size`, static `buildKey`. Singleton helpers `getCliqClientRegistry`/`setCliqClientRegistry(null)`/`resolveCliqClient(account)`. All three send sites (outbound `sendText` in `channel.ts`, inbound dispatch `deliver` in `inbound.ts`, pairing challenge + `notifyCliqPairingApproval` in `pairing.ts`) now resolve the client via `resolveCliqClient(account)` instead of `new CliqClient(...)`.
+- `src/runtime-api.test.ts` — 19 vitest tests covering `buildKey` (4), instance methods (9, incl. a real-fetch-mocked token-cache-sharing test asserting only one OAuth round-trip across two `getOrCreate`+`getAccessToken` calls), and the singleton helpers (6). All passing.
 - `.github/` — coding agent infrastructure (pre-existing)
 
 ### What is done in this run (iteration 1)
@@ -86,6 +88,21 @@
   - Extended `CliqRuntime` with a `pairing` slice (`{ buildPairingReply, upsertPairingRequest, readAllowFromStore? }`).
   - Added `src/pairing.test.ts` (17 tests) + 1 wiring assertion in `channel.test.ts`. Total suite is 86/86 passing. Typecheck clean.
 
+### What is done in this run (iteration 7)
+- Implemented **cross-request OAuth token caching** so the webhook handler, the outbound `sendText` adapter, and the pairing notification path all share a single `CliqClient` per account (and therefore a single cached OAuth access token) instead of minting a fresh `CliqClient` per request and re-fetching a token every time.
+  - Added `src/runtime-api.ts` with:
+    - `CliqClientRegistry` — a `Map<string, CliqClient>` keyed by `acct:<accountId>` (when set) or `cc:<clientId>:<botId>` (single-account default). Methods: `getOrCreate(account)`, `get(account)`, `evict(account)`, `clear()`, `size`, plus static `buildKey(account)`.
+    - `getCliqClientRegistry()` / `setCliqClientRegistry(registry|null)` — module-level singleton accessor + reset (the `null` form is used by tests for isolation).
+    - `resolveCliqClient(account)` — convenience wrapper over the singleton's `getOrCreate`; the single call site all send paths now use.
+  - Replaced the three `new CliqClient(...)` sites:
+    - `src/channel.ts` outbound `attachedResults.sendText` → `resolveCliqClient(account)`.
+    - `src/inbound.ts` `dispatchCliqInbound` `deliver` closure → `resolveCliqClient(account)`.
+    - `src/pairing.ts` `issueCliqPairingChallenge` (default when no `client` override) and `notifyCliqPairingApproval` (default when no `client` override) → `resolveCliqClient(account)`. The `client?` test-override parameters are preserved so the existing pairing tests still inject mock clients.
+  - Removed the now-unused `CliqClient` value-import from `channel.ts` (kept on the re-export line, which re-exports directly from `./client.js`) and from `inbound.ts` (kept the `ResolvedCliqAccount` type-import).
+  - Added `src/runtime-api.test.ts` (19 tests): `buildKey` (4), instance methods (9, incl. one that mocks `globalThis.fetch` and asserts only a single OAuth round-trip happens across two `getOrCreate`+`getAccessToken` calls for the same account — the real proof of cross-request token caching), and singleton helpers (6).
+  - Added a `setCliqClientRegistry(null)` reset at the start of the `channel.test.ts` outbound `sendText` test so the mocked-fetch OAuth branch is exercised deterministically (no token bleed-in from earlier tests).
+  - Total suite is 130/130 passing. Typecheck clean.
+
 ### What is done in this run (iteration 6)
 - Implemented **Markdown→Cliq outbound formatting** so agent replies (standard Markdown) render natively in Cliq instead of being sent as raw text.
   - Added `src/markdown.ts` with a pure, side-effect-free `markdownToCliq(text)` transform. Conversion table (confirmed via the bernesto reference repo's testing notes):
@@ -110,14 +127,14 @@
 - **No Markdown→Cliq formatting** — outbound sends raw text. *(Resolved in iteration 6 — see above.)*
 - **No typing/heartbeat indicators.**
 - **No real Zoho Cliq API integration tests** (would need credentials / mocked fetch).
-- **No `runtime-api.ts` / runtime store** for token caching across requests (currently each send mints a client; token cache is per-client-instance). The webhook handler creates a fresh `CliqClient` per inbound dispatch.
+- **No `runtime-api.ts` / runtime store** for token caching across requests (currently each send mints a client; token cache is per-client-instance). The webhook handler creates a fresh `CliqClient` per inbound dispatch. *(Resolved in iteration 7 — see above.)*
 - **setup wizard not implemented** — only `applyAccountConfig`; no interactive `setupWizard`.
 - **CLI subcommands not implemented** — only a stub `cliq` command descriptor.
 - **No `src/channel.test.ts` coverage for outbound sendText** (requires mocking global fetch).
 - **Self-message detection is naive** — matches `senderId === account.botId` or `senderName === account.botName`. Zoho bot self-events may need a more robust check.
 
 ### Next logical step
-Verify the inbound dispatch wiring (`dispatchCliqInbound` → `runtime.channel.inbound.run`) and the pairing-store runtime calls against a live OpenClaw gateway (runtime integration test), since these are the only remaining unverified glue paths. Alternatively add a `runtime-api.ts` for cross-request token caching (the webhook handler mints a fresh `CliqClient` per inbound dispatch and per pairing reply, so OAuth tokens are re-fetched per request — caching a single client per account would avoid repeated token round-trips).
+Verify the inbound dispatch wiring (`dispatchCliqInbound` → `runtime.channel.inbound.run`) and the pairing-store runtime calls against a live OpenClaw gateway (runtime integration test), since these are the only remaining unverified glue paths. The token-caching follow-up from iteration 6 is now done (iteration 7). Other candidate increments: implement `sendMedia` (file/attachment sending) and flip `capabilities.media` to true; add typing/heartbeat indicators; implement an interactive `setupWizard`; or harden self-message detection.
 
 ### Insights / blockers
 - **Cliq Markdown delimiter semantics** (confirmed from the bernesto reference repo's `src/format.ts`, which lists them as "confirmed via testing"): `*bold*` (single asterisk = bold, NOT italic), `_italic_` (single underscore), `~strike~` (single tilde), `__underline__` (double underscore), ``` `inline` ``` (renders bold-red, not monospace), ` ```block``` ``` (proper code block), `!blockquote` (line prefix), `#`/`###` headings, `[text](url)` links, `---` horizontal rule. Our converter targets the subset that overlaps standard Markdown (`**bold**`, `*italic*`, `~~strike~~`, `> quote`, tables, code).
@@ -144,3 +161,4 @@ Verify the inbound dispatch wiring (`dispatchCliqInbound` → `runtime.channel.i
 - 2026-07-04 (iteration 4): Implemented DM allowlist enforcement at the webhook layer — added `src/admission.ts` (`resolveCliqDmPolicy`, `isCliqSenderAllowed`, `resolveCliqDmAdmission`) reusing the SDK's `isNormalizedSenderAllowed` from `openclaw/plugin-sdk/allow-from`, wired the admission decision into the `/cliq/webhook` handler (deny/pairing log + 200; allow proceeds), added `src/admission.test.ts` (22 tests). Total 68/68 tests passing, typecheck clean. The pairing *flow* itself is still a placeholder.
 - 2026-07-04 (iteration 5): Implemented the DM pairing flow — added `src/pairing.ts` (`buildCliqSenderIdLine`, `issueCliqPairingChallenge`, `notifyCliqPairingApproval`, `CLIQ_PAIRING_ID_LABEL`, `CLIQ_PAIRING_APPROVED_MESSAGE`), wired a `pairing` adapter onto `cliqPlugin` via `createChatChannelPlugin`'s `pairing: { text: { idLabel, message, notify } }` option (SDK converts it to a `ChannelPairingAdapter`), replaced the placeholder `pairing` branch in the webhook handler with a real `issueCliqPairingChallenge` call (upsert pairing request + reply with approval code, idempotent), extended `CliqRuntime` with a `pairing` slice. Added `src/pairing.test.ts` (17 tests) + 1 wiring assertion. Total 86/86 tests passing, typecheck clean.
 - 2026-07-04 (iteration 6): Implemented Markdown→Cliq outbound formatting — added `src/markdown.ts` (`markdownToCliq`, pure string transform converting `**bold**`/`__bold__`→`*bold*`, `*italic*`→`_italic_`, `~~strike~~`→`~strike~`, `> quote`→`!quote`, tables→plain text; preserves code spans/blocks and links via NUL-delimited placeholders), wired it into the outbound `sendText` (`src/channel.ts`) and the inbound dispatch `deliver` closure (`src/inbound.ts`), added `src/markdown.test.ts` (24 tests) + 1 outbound wiring assertion in `channel.test.ts` (mocks `globalThis.fetch`). Total 111/111 tests passing, typecheck clean. Confirmed Cliq delimiter semantics from the bernesto reference repo but wrote the converter from scratch.
+- 2026-07-04 (iteration 7): Implemented cross-request OAuth token caching — added `src/runtime-api.ts` (`CliqClientRegistry` keyed by `acct:<accountId>`/`cc:<clientId>:<botId>`, `getOrCreate`/`get`/`evict`/`clear`/`size`, static `buildKey`, singleton `getCliqClientRegistry`/`setCliqClientRegistry`/`resolveCliqClient`), replaced the three `new CliqClient(...)` sites (outbound `sendText`, inbound `deliver`, pairing challenge + approval notify) with `resolveCliqClient(account)` so the OAuth token is shared across requests, added `src/runtime-api.test.ts` (19 tests, incl. a real-fetch-mocked token-cache-sharing assertion proving one OAuth round-trip across two lookups). Total 130/130 tests passing, typecheck clean.
