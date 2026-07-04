@@ -7,7 +7,18 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "properties": {}
+    "properties": {
+      "clientId": { "type": "string" },
+      "clientSecret": { "type": "string" },
+      "botId": { "type": "string" },
+      "botName": { "type": "string" },
+      "webhookSecret": { "type": "string" },
+      "allowFrom": {
+        "type": "array",
+        "items": { "type": "string" }
+      }
+    },
+    "required": ["clientId", "clientSecret", "botId"]
   },
   "channelConfigs": {
     "cliq": {
