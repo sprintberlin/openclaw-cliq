@@ -63,6 +63,25 @@ export interface CliqRuntime {
         };
       }) => Promise<unknown>;
     };
+    pairing: {
+      buildPairingReply: (params: {
+        channel: string;
+        idLine: string;
+        code: string;
+      }) => string;
+      upsertPairingRequest: (params: {
+        channel: string;
+        id: string | number;
+        accountId: string;
+        meta?: Record<string, string | undefined | null>;
+        env?: NodeJS.ProcessEnv;
+      }) => Promise<{ code: string; created: boolean }>;
+      readAllowFromStore?: (params: {
+        channel: string;
+        accountId: string;
+        env?: NodeJS.ProcessEnv;
+      }) => Promise<string[]>;
+    };
   };
 }
 

@@ -16,9 +16,21 @@ import {
   buildCliqMentionRegexes,
   stripCliqMentions,
 } from "./mentions.js";
+import {
+  CLIQ_PAIRING_APPROVED_MESSAGE,
+  CLIQ_PAIRING_ID_LABEL,
+  notifyCliqPairingApproval,
+} from "./pairing.js";
 
 export { resolveCliqConfig, CliqClient, chunkMessage, type CliqChannelConfig, type ResolvedCliqAccount } from "./client.js";
 export { buildCliqMentionRegexes, stripCliqMentions } from "./mentions.js";
+export {
+  CLIQ_PAIRING_APPROVED_MESSAGE,
+  CLIQ_PAIRING_ID_LABEL,
+  issueCliqPairingChallenge,
+  buildCliqSenderIdLine,
+  notifyCliqPairingApproval,
+} from "./pairing.js";
 
 const CHANNEL_ID = "cliq" as const;
 
@@ -155,6 +167,15 @@ export const cliqPlugin: ChannelPlugin<ResolvedCliqAccount> = createChatChannelP
   },
 
   threading: { topLevelReplyToMode: "reply" },
+
+  pairing: {
+    text: {
+      idLabel: CLIQ_PAIRING_ID_LABEL,
+      message: CLIQ_PAIRING_APPROVED_MESSAGE,
+      notify: ({ cfg, id, message }) =>
+        notifyCliqPairingApproval({ cfg, id, message }),
+    },
+  },
 
   outbound: {
     base: {

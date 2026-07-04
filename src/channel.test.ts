@@ -91,6 +91,12 @@ describe("cliq plugin", () => {
     expect(cliqPlugin.capabilities.chatTypes).toEqual(["direct", "group"]);
     expect(cliqPlugin.capabilities.reply).toBe(true);
   });
+
+  it("wires a pairing adapter with the cliq id label", () => {
+    expect(cliqPlugin.pairing).toBeDefined();
+    const pairing = cliqPlugin.pairing as { idLabel?: string };
+    expect(pairing.idLabel).toBe("cliqSenderId");
+  });
 });
 
 describe("chunkMessage", () => {

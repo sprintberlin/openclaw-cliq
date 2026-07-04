@@ -3,6 +3,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { cliqPlugin } from "./src/channel.js";
 import { resolveCliqConfig } from "./src/client.js";
 import { resolveCliqDmAdmission } from "./src/admission.js";
+import { issueCliqPairingChallenge } from "./src/pairing.js";
 import {
   dispatchCliqInbound,
   parseCliqWebhookPayload,
@@ -96,6 +97,7 @@ export default defineChannelPluginEntry({
         }
 
         const admission = resolveCliqDmAdmission(parsed, account);
+        const runtime = (api as unknown as { runtime: CliqRuntime }).runtime;
         if (admission.decision === "deny") {
           api.logger.warn?.(
             `[cliq] inbound from ${parsed.senderId} denied: ${admission.reason}`,
@@ -105,17 +107,28 @@ export default defineChannelPluginEntry({
           return true;
         }
         if (admission.decision === "pairing") {
-          // Pairing flow is not yet implemented. Log and drop the message so
-          // the sender does not get a free dispatch while the flow is wired up.
-          api.logger.warn?.(
-            `[cliq] inbound from ${parsed.senderId} requires pairing: ${admission.reason}`,
-          );
+          // Issue a pairing challenge for unknown senders under the `pairing`
+          // DM policy: upsert a pending pairing request and, when a new
+          // request is created, reply with the approval code + instructions.
+          issueCliqPairingChallenge({
+            runtime,
+            account,
+            parsed,
+            onReplyError: (err) => {
+              api.logger.error?.(
+                `[cliq] pairing reply to ${parsed.senderId} failed: ${String(err)}`,
+              );
+            },
+          }).catch((err) => {
+            api.logger.error?.(
+              `[cliq] pairing challenge for ${parsed.senderId} failed: ${String(err)}`,
+            );
+          });
           res.statusCode = 200;
           res.end("ok");
           return true;
         }
 
-        const runtime = (api as unknown as { runtime: CliqRuntime }).runtime;
         dispatchCliqInbound({
           runtime,
           cfg,
