@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "allowImportingTsExtensions": false,
+    "outDir": "dist",
+    "declaration": false,
+    "sourceMap": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
+  },
+  "include": ["index.ts", "setup-entry.ts", "src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts", "scripts", "**/*.test.ts"]
+}

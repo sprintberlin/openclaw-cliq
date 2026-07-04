@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { EventEmitter } from "node:events";
+import { readFileSync } from "node:fs";
 import cliqEntry from "../index.js";
 import { cliqPlugin } from "./channel.js";
 
@@ -224,5 +225,30 @@ describe("plugin entry load + /cliq/webhook smoke", () => {
     expect(result).toBe(true);
     expect(res.statusCode).toBe(401);
     expect(res.body).toBe("unauthorized");
+  });
+});
+
+describe("build configuration (issue #7: npm run build)", () => {
+  it("package.json exposes a build script invoking tsc -p tsconfig.build.json", () => {
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+    expect(typeof pkg.scripts.build).toBe("string");
+    expect(pkg.scripts.build).toMatch(/tsc/);
+    expect(pkg.scripts.build).toMatch(/tsconfig\.build\.json/);
+  });
+
+  it("tsconfig.build.json emits JS to dist/ and disables noEmit", () => {
+    const cfg = JSON.parse(
+      readFileSync(new URL("../tsconfig.build.json", import.meta.url), "utf8"),
+    );
+    expect(cfg.compilerOptions.noEmit).toBe(false);
+    expect(cfg.compilerOptions.outDir).toBe("dist");
+    expect(cfg.compilerOptions.allowImportingTsExtensions).toBe(false);
+  });
+
+  it("package.json main + exports point at the compiled dist output", () => {
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+    expect(pkg.main).toBe("./dist/index.js");
+    expect(pkg.exports?.["."]?.default).toBe("./dist/index.js");
+    expect(pkg.exports?.["./setup-entry"]?.default).toBe("./dist/setup-entry.js");
   });
 });

@@ -4,8 +4,24 @@
   "description": "Zoho Cliq channel plugin for OpenClaw",
   "type": "module",
   "license": "MIT",
-  "main": "./index.ts",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "default": "./dist/index.js"
+    },
+    "./setup-entry": {
+      "default": "./dist/setup-entry.js"
+    }
+  },
+  "files": [
+    "dist",
+    "index.ts",
+    "setup-entry.ts",
+    "src",
+    "openclaw.plugin.json"
+  ],
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
