@@ -60,17 +60,22 @@ prompt = f"""Issue #{issue_num}: {title}
 {body}{comments_section}
 
 ---
-You MUST follow the contextual guidelines in AGENTS.md!
+You MUST follow the contextual guidelines in AGENTS.md (project goal, conventions, Learnings).
 
-CRITICAL INSTRUCTIONS:
-1. Read PROGRESS.md first to understand the current state of the project.
-2. Read the existing code in the repo to see what's already implemented.
-3. Decide on ONE logical increment to implement next.
-4. Implement it properly with tests where applicable.
-5. Update PROGRESS.md with: what you did, what's still missing, what the next step should be, and any insights learned.
-6. Commit everything (code + PROGRESS.md update).
+HOW TO WORK:
+1. Read PROGRESS.md (State + Plan) and skim the existing code.
+2. Decide the scope from THIS issue:
+   - If the issue names a concrete task or bug  -> do exactly that.
+   - If the issue is empty or just says "iterate"/"next step" -> take the TOP open item from the Plan in PROGRESS.md.
+3. Implement ONE coherent increment, with tests where applicable.
+4. REWRITE PROGRESS.md IN PLACE (do NOT append):
+   - Update the State (2-3 sentences on where we are now).
+   - Maintain the Plan: check off / remove done items, add newly discovered work, reorder so the top item is the next concrete step. Keep ~5-7 open items.
+   - Do NOT keep a per-run changelog or history here -- git and the issue comments already hold that.
+5. Record any lasting insight (SDK quirks, gotchas) in the Learnings section of AGENTS.md, NOT in PROGRESS.md.
+6. Commit everything (code + PROGRESS.md, plus AGENTS.md if you learned something).
 
-This is a HEADLESS run. You must modify all code files yourself. Do not ask for human input."""
+This is a HEADLESS run. You must modify all files yourself. Do not ask for human input."""
 
 with open("/tmp/prompt.txt", "w") as f:
     f.write(prompt)

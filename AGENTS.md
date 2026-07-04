@@ -161,43 +161,70 @@ openclaw-cliq/
 
 ## How this repo works (Iterative Development)
 
-This project is developed **iteratively** by an autonomous coding agent (OpenCode via GitHub Actions).
+This project is developed **iteratively** by an autonomous coding agent (OpenCode via GitHub Actions). The human defines the **goal** (the Vision above); the agent evolves the **plan** and the code, one increment per run.
 
-### PROGRESS.md
+### The two working files
 
-There is a `PROGRESS.md` file in the repo root. This is the agent's memory between runs.
+- **AGENTS.md** (this file) — the constitution: goal, conventions, SDK reference, and the **Learnings** section below (durable, hard-won knowledge — SDK quirks and gotchas). Stable; grows slowly.
+- **PROGRESS.md** — the living plan: a short **State** (where we are now) plus a **Plan** (a self-maintained backlog of open items, top item = next step). The agent **rewrites it in place** every run.
 
-**Before starting work on any issue:**
-1. Read `PROGRESS.md` to understand the current state
-2. Read the existing code in the repo to see what's already implemented
-3. Decide what the next logical step is
+**History and changelog do NOT live in a tracked file.** git log holds the commits; the issue comments (posted by the verify bot) hold the per-run summaries. Never append a per-run log to PROGRESS.md — that is what made it explode before.
 
-**After completing work on an issue:**
-1. Update `PROGRESS.md` with:
-   - What was done in this run
-   - What is still missing / incomplete
-   - What the next logical step should be
-   - Any insights, blockers, or things learned
-2. Commit the `PROGRESS.md` update along with your code changes
+### How to work an issue
 
-### Issue workflow
-
-When an issue is created or assigned, the coding agent:
-1. Reads `AGENTS.md` (this file) for project context and conventions
-2. Reads `PROGRESS.md` for current development state
-3. Reads the issue for the specific task
-4. Examines existing code in the repo
-5. Decides on the next increment (may differ from what the issue literally says if a more logical prerequisite exists)
-6. Implements the increment
-7. Updates `PROGRESS.md`
-8. Commits and pushes
+1. Read `PROGRESS.md` (State + Plan) and skim the existing code.
+2. Decide the scope **from the issue**:
+   - If it names a concrete task or bug → do exactly that.
+   - If it is empty or just says "iterate" / "next step" → take the top open item from the Plan.
+3. Implement one coherent increment, with tests where applicable.
+4. **Rewrite `PROGRESS.md` in place** (do not append):
+   - Update the **State** (2–3 sentences).
+   - Maintain the **Plan**: check off / remove done items, add newly discovered work, reorder so the top item is the next concrete step. Keep ~5–7 open items.
+5. Record any lasting insight in the **Learnings** section of this file (AGENTS.md), not in PROGRESS.md.
+6. Commit everything (code + PROGRESS.md, plus AGENTS.md if you learned something).
 
 ### Important
 
-- **Do not try to build everything in one run.** Pick one logical increment, implement it well, update PROGRESS.md, and stop.
-- **Be honest in PROGRESS.md.** If something is half-done or broken, say so. The next run needs accurate information.
+- **One coherent increment per run.** Do not try to build everything at once.
+- **Be honest in PROGRESS.md.** If something is half-done or broken, say so in State/Plan.
+- **Keep PROGRESS.md small.** It holds current state and open work only — never a history.
 - **Read the OpenClaw Plugin SDK docs** at https://docs.openclaw.ai/plugins/sdk-channel-plugins and https://docs.openclaw.ai/plugins/building-plugins. Also study the Telegram channel docs at https://docs.openclaw.ai/channels/telegram — it is the closest reference implementation.
 - **Check the reference repos** for patterns, but write original code.
+
+## Learnings (durable)
+
+Hard-won knowledge from previous iterations. Add to this section (deduped) whenever you learn something with lasting value — SDK quirks, non-obvious API shapes, pitfalls. This is the memory that keeps the agent from re-deriving the same things.
+
+### OpenClaw Plugin SDK
+
+- **`createChatChannelPlugin` only accepts `{ base, security, pairing, threading, outbound }`** (`node_modules/openclaw/dist/core-CBhRRoge.d.ts:225`). Any other `ChannelPlugin` field — `mentions`, `commands`, `lifecycle`, `groups`, `heartbeat`, etc. — must go on `base` (it is `Omit<ChannelPlugin, "security"|"pairing"|"threading"|"outbound"> & Partial<Pick<…>>`). Putting `mentions` at the top level is silently dropped.
+- **`createChatChannelPlugin` converts inline option forms into adapters.** `outbound: { base, attachedResults: { sendText } }` → a `ChannelOutboundAdapter` whose `sendText(ctx)` calls your `attachedResults.sendText` and spreads `{ channel, ...result }` (`core-D-xoNfL6.js:188`). So the test/call surface is `plugin.outbound.sendText(ctx)`, not the nested `attachedResults` shape. Same pattern for `security`, `threading`, and `pairing`.
+- **`pairing` option** accepts a raw `ChannelPairingAdapter` or `{ text: { idLabel, message, normalizeAllowEntry?, notify } }`; the latter is converted via `createInlineTextPairingAdapter` (`core-D-xoNfL6.js:227`), so the resolved `plugin.pairing` exposes `idLabel`/`message`/`notify` directly (NOT under `text`).
+- **`ChannelOutboundContext` has only `cfg`, `to`, `text`, `accountId`** — no `account`, no `chatType`. Outbound must resolve the account from `cfg` + `accountId`, and cannot tell DM from channel (defaults to `chatid`). The inbound dispatch path DOES know chat type and passes `isDm` correctly.
+- **`runtime.channel` surface** (`types-D7eu8baG.d.ts:~7093`): `text`, `reply` (incl. `dispatchReplyWithBufferedBlockDispatcher`, `finalizeInboundContext`, `formatAgentEnvelope`, `resolveEnvelopeFormatOptions`), `routing.resolveAgentRoute`, `session.*`, `mentions.*`, `inbound.{run,buildContext,dispatchReply,runPreparedReply}`. `inbound.run` orchestrates the legacy dispatch path under the hood.
+- **Pairing runtime** lives on `runtime.channel.pairing` (`types-D7eu8baG.d.ts:7070`): `upsertPairingRequest({channel,id,accountId,meta?,…})` → `{ code, created }` (`created=false` = a pending request already existed → idempotent, do not re-reply); `buildPairingReply({channel,idLine,code})` → the standard access-not-configured reply text.
+- **Mention stripping:** the core `stripMentions` helper (`mentions-B1EJNjZS.js:166`) calls the plugin's `mentions.stripRegexes(...)` then `mentions.stripMentions(...)`. Implementing `stripRegexes` is sufficient for the shared path; `stripMentions` is an optional override.
+- **`resolveInboundMentionDecision`** accepts a flat params object or a nested `{ facts, policy }`; the nested form is preferred. For DMs force `wasMentioned: true`; for groups require an explicit mention.
+- **DM admission:** reuse the SDK's `isNormalizedSenderAllowed` from `openclaw/plugin-sdk/allow-from` so wildcard (`*`), case-insensitive and empty-list semantics match every other channel.
+
+### Build / TypeScript
+
+- **TS2742 on declaration emit:** `defineChannelPluginEntry` returns `DefinedChannelPluginEntry<TPlugin>`, whose member types come from internal SDK modules that cannot be named portably; emitting a `.d.ts` for `index.ts`'s default export triggers `TS2742`. The type is not re-exported from any public SDK entry, so there is nothing portable to annotate with. Fix: `declaration:false` in `tsconfig.build.json`. Safe, because the gateway loads plugins via the `openclaw.extensions` manifest field (`./index.ts`, resolved with tsx) — never via `main`/`types`, so no `.d.ts` is consumed. Source maps are still emitted.
+- **`.gitignore` ignores `*.js`** (TS-sources-only policy). A `scripts/*.js` build smoke would be gitignored — use `.mjs` (gitignore `*.js` matches only names ending exactly in `.js`).
+- **The installed SDK differs from the docs:** `resolveAccount`/`inspectAccount` live on `config: ChannelConfigAdapter`, NOT on `setup` (which holds `applyAccountConfig`). The docs example is outdated relative to the installed version.
+
+### Zoho Cliq specifics
+
+- **Cliq Markdown delimiters** (confirmed via the bernesto reference repo's `format.ts`): `*bold*` (single asterisk = bold, NOT italic), `_italic_` (single underscore), `~strike~` (single tilde), `__underline__` (double underscore), `` `inline` `` (renders bold-red, not monospace), ` ```block``` `, `!blockquote` (line prefix), `#`/`###` headings, `[text](url)`, `---` rule.
+- **Bold-before-italic pitfall:** converting `**bold**`→`*bold*` and then `*italic*`→`_italic_` makes the italic pass eat the just-emitted `*bold*`. Fix: emit bold through NUL-delimited placeholders restored to `*…*` only *after* the italic pass (same technique the bernesto converter uses). Protect fenced/inline code with placeholders too.
+- **Deluge payload is inconsistent:** `message` can be a string or `{text,id,time}`; channel info lives under `payload.channel`, `payload.chat.channel_unique_name`, or is inferable from `chat.type==="channel"`/`chat.title`; some configs wrap everything in `params`. `parseCliqWebhookPayload` tolerates all of these. A `-B` suffix on a chat id indicates a bot DM, but group detection via `chat.type==="channel"` is more robust than the suffix.
+- **Deluge webhook must POST raw JSON with `body: payload.toString()` + `Content-Type: application/json`.** Using `parameters: payload.toString()` sends form-urlencoded and returns HTTP 400 (`readJsonBody` has a form-urlencoded tolerance fallback, but `body:` is the canonical shape).
+- **EU endpoints are hard-coded:** `accounts.zoho.eu` (OAuth), `cliq.zoho.eu` (API). `.com` would require a code change.
+
+### General pitfalls
+
+- **Node `Buffer` pool + `Blob`:** `Buffer.from("short")` is a *view* into Node's shared 8 KB pool. `new Blob([view])` is fine, but `new Uint8Array(buffer.buffer)` captures the whole 8192-byte pool (adjacent unrelated bytes) → spurious deep-equality failures in tests. Copy the view's bytes into a fresh `Uint8Array(byteLength)` before building a `Blob` or asserting on bytes.
+- **`g`-flagged `RegExp` is stateful:** `lastIndex` advances between `.test()` calls, causing false negatives. Reset `re.lastIndex = 0` before reuse; `.replace` does not advance it, but be defensive.
 
 ## Target audience
 
