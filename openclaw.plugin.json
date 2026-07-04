@@ -17,8 +17,7 @@
         "type": "array",
         "items": { "type": "string" }
       }
-    },
-    "required": ["clientId", "clientSecret", "botId"]
+    }
   },
   "channelConfigs": {
     "cliq": {
