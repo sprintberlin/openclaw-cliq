@@ -39,6 +39,12 @@ jobs:
           git config --global user.email "aider@sprintcx.de"
           git config --global url."https://aidercx:${{ secrets.AIDERCX_TOKEN }}@github.com/".insteadOf "https://github.com/"
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
       - name: Install System Dependencies & Tools
         run: |
           sudo apt-get update -qq || true
@@ -48,6 +54,26 @@ jobs:
           curl -fsSL https://opencode.ai/install | bash
           npm install -g mcporter
           npm install oh-my-tokens --prefix ~/.opencode
+
+      - name: Install Project Dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          elif [ -f package.json ]; then
+            npm install
+          else
+            echo "No package.json yet, skipping dependency install."
+          fi
+
+      - name: Type Check & Tests (if applicable)
+        continue-on-error: true
+        run: |
+          if [ -f tsconfig.json ]; then
+            npx tsc --noEmit || true
+          fi
+          if [ -f package.json ] && npx vitest --version >/dev/null 2>&1; then
+            npx vitest run || true
+          fi
 
       - name: Create Prompt
         env:
@@ -168,6 +194,9 @@ jobs:
         run: |
           rm -f opencode.json oh-my-tokens.json
           git restore AGENTS.md || true
+          # Never commit node_modules or build artifacts
+          git reset node_modules dist .turbo 2>/dev/null || true
+          echo "node_modules/" >> .gitignore 2>/dev/null || true
 
           git add .
           if git diff --cached --quiet; then
