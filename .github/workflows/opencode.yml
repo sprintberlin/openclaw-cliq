@@ -17,7 +17,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: opencode-${{ github.event.issue.number || github.event.inputs.issue_number }}
+  group: opencode-agent
   cancel-in-progress: false
 
 jobs:
