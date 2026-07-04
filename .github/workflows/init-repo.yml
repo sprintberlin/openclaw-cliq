@@ -1,0 +1,105 @@
+name: 🔧 Repository Initialization
+
+on:
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  setup-labels:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.AIDERCX_TOKEN }}
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod a+x /usr/local/bin/yq
+
+      - name: Create standard AI labels
+        env:
+          GH_TOKEN: ${{ secrets.AIDERCX_TOKEN }}
+        run: |
+          echo "Synchronizing required labels for the SprintCX KI-Agent environment from opencode-models.yml..."
+
+          # Define predefined stat-labels
+          REQUIRED_LABELS=("follow-up" "needs-human" "on-hold")
+
+          # Read tiers from opencode-models.yml using yq
+          TIER_LABELS=$(yq -r '.tiers | keys | .[]' .github/opencode-models.yml)
+          
+          for tl in $TIER_LABELS; do
+             REQUIRED_LABELS+=("$tl")
+          done
+
+          # Current labels from GitHub
+          EXISTING_LABELS=$(gh label list --json name --jq '.[].name')
+
+          # Delete old labels safely preserving spaces using a while loop
+          echo "$EXISTING_LABELS" | while IFS= read -r existing_label; do
+            if [ -z "$existing_label" ]; then continue; fi
+            
+            KEEP=false
+            for req_label in "${REQUIRED_LABELS[@]}"; do
+              if [ "$existing_label" = "$req_label" ]; then
+                KEEP=true
+                break
+              fi
+            done
+            if [ "$KEEP" = false ]; then
+              echo "Deleting unwanted label: $existing_label"
+              gh label delete "$existing_label" --yes || echo "Failed to delete $existing_label"
+            fi
+          done
+
+          # Helper function
+          ensure_label() {
+            local name=$1
+            local color=$2
+            local desc=$3
+            echo "Processing label: $name"
+            if gh label list --search "$name" --json name | grep -q "\"$name\""; then
+              gh label edit "$name" --color "$color" --description "$desc" || echo "Failed to edit $name"
+            else
+              gh label create "$name" --color "$color" --description "$desc" || echo "Failed to create $name"
+            fi
+          }
+
+          # Tier color mapping (dark blue = expensive, light blue = cheap)
+          declare -A TIER_COLORS
+          TIER_COLORS["tier-1"]="1A3A6B"
+          TIER_COLORS["tier-2"]="2563EB"
+          TIER_COLORS["tier-3"]="4285F4"
+          TIER_COLORS["tier-4"]="93C5FD"
+          TIER_COLORS["tier-5"]="DBEAFE"
+
+          # Read dynamic setup from config
+          for tl in $TIER_LABELS; do
+             ALIAS=$(yq -r ".tiers[\"$tl\"].model" .github/opencode-models.yml)
+             NAME=$(yq -r ".models[\"$ALIAS\"].name" .github/opencode-models.yml)
+             COST=$(yq -r ".models[\"$ALIAS\"].cost_input_1M_usd" .github/opencode-models.yml)
+             CTX=$(yq -r ".models[\"$ALIAS\"].context_length" .github/opencode-models.yml)
+             
+             # Convert huge numbers to 'k' format, e.g. 1000000 -> 1000k
+             if [ "$CTX" != "null" ]; then
+                CTX_K=$((CTX / 1000))
+                DESC="Agent Pricing: $NAME (~ \$$COST pro 1M in) | Context: ${CTX_K}k"
+             else
+                DESC="Agent Pricing: $NAME (~ \$$COST pro 1M in)"
+             fi
+             
+             COLOR=${TIER_COLORS[$tl]}
+
+             ensure_label "$tl" "$COLOR" "$DESC"
+          done
+          
+          # Status & Workflow Tags
+          ensure_label "follow-up" "FBCA04" "Benötigt weitere Iteration oder Überprüfung"
+          ensure_label "needs-human" "D93F0B" "Menschliches Eingreifen erforderlich (Agent blockiert)"
+          ensure_label "on-hold" "EDEDED" "Issue ist pausiert – OpenCode soll nicht automatisch ausführen"
+
+          echo "✅ Alle Standard-Labels wurden erfolgreich synchronisiert!"

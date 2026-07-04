@@ -40,6 +40,29 @@ import { defineChannelPluginEntry } from "openclaw/plugin-sdk/channel-core";
 import { createChatChannelPlugin, createChannelPluginBase } from "openclaw/plugin-sdk/channel-core";
 ```
 
+### Official documentation
+
+- **Building plugins (Getting Started):** https://docs.openclaw.ai/plugins/building-plugins
+- **Building channel plugins (main guide):** https://docs.openclaw.ai/plugins/sdk-channel-plugins
+- **Channel outbound API (send path):** https://docs.openclaw.ai/plugins/sdk-channel-outbound
+- **Channel inbound API (receive path):** https://docs.openclaw.ai/plugins/sdk-channel-inbound
+- **Plugin manifest reference:** https://docs.openclaw.ai/plugins/manifest
+- **Plugin SDK overview (import map):** https://docs.openclaw.ai/plugins/sdk-overview
+- **Plugin testing:** https://docs.openclaw.ai/plugins/sdk-testing
+
+### Bundled channel plugins to study
+
+The best reference for how a real channel plugin works is the **Telegram channel** (bundled in OpenClaw core). It handles DMs, groups, mentions, pairing, webhook + long polling, markdown, and reply threading.
+
+- **Telegram channel docs:** https://docs.openclaw.ai/channels/telegram
+- **Discord channel docs:** https://docs.openclaw.ai/channels/discord
+- **Slack channel docs:** https://docs.openclaw.ai/channels/slack
+
+If you have access to the OpenClaw source (e.g. installed via npm), study the bundled channel implementations at:
+`/usr/lib/node_modules/openclaw/dist/` — look for `channel-*.js` files and the `channel-catalog.json` for the full list of bundled channels.
+
+The Telegram channel is the closest analog to what we are building: it uses a bot token, receives messages via webhook/polling, responds as a bot, supports DMs and groups, and has mention gating. Study it carefully.
+
 ### Required file structure
 
 ```
@@ -173,7 +196,7 @@ When an issue is created or assigned, the coding agent:
 
 - **Do not try to build everything in one run.** Pick one logical increment, implement it well, update PROGRESS.md, and stop.
 - **Be honest in PROGRESS.md.** If something is half-done or broken, say so. The next run needs accurate information.
-- **Read the OpenClaw Plugin SDK docs** in `/usr/lib/node_modules/openclaw/docs/plugins/` if available, especially `sdk-channel-plugins.md` and `building-plugins.md`.
+- **Read the OpenClaw Plugin SDK docs** at https://docs.openclaw.ai/plugins/sdk-channel-plugins and https://docs.openclaw.ai/plugins/building-plugins. Also study the Telegram channel docs at https://docs.openclaw.ai/channels/telegram — it is the closest reference implementation.
 - **Check the reference repos** for patterns, but write original code.
 
 ## Target audience
