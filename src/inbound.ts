@@ -362,9 +362,20 @@ export function resolveCliqMentionDecision(
 
 /**
  * Read the request body as JSON. Rejects payloads larger than `maxBytes`.
+ *
+ * As a forgiving fallback, a body whose `Content-Type` is
+ * `application/x-www-form-urlencoded` (or that fails to parse as JSON but
+ * looks like a Deluge `parameters:`-style form-urlencoded body such as
+ * `handler=mention&message=...`) is normalized into the equivalent JSON
+ * object. This lets the webhook accept both the documented raw-JSON body
+ * (`body: payload.toString()` in Deluge) and the form-encoded body that
+ * Deluge's `parameters:` key produces. The raw-JSON shape is canonical;
+ * the form-encoded path is a tolerance fallback only.
  */
 export async function readJsonBody(
-  req: Pick<IncomingMessage, "on" | "removeAllListeners" | "destroy">,
+  req: Pick<IncomingMessage, "on" | "removeAllListeners" | "destroy"> & {
+    headers?: IncomingMessage["headers"];
+  },
   maxBytes = 1024 * 1024,
 ): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> {
   return await new Promise((resolve) => {
@@ -396,10 +407,16 @@ export async function readJsonBody(
       }
       try {
         done({ ok: true, value: JSON.parse(raw) });
-      } catch (err) {
+      } catch {
+        const normalized = normalizeFormUrlencodedBody(raw, req.headers);
+        if (normalized !== undefined) {
+          done({ ok: true, value: normalized });
+          return;
+        }
         done({
           ok: false,
-          error: err instanceof Error ? err.message : String(err),
+          error:
+            "body is not valid JSON and could not be normalized as a Deluge form-urlencoded payload; use `body: payload.toString()` with a `Content-Type: application/json` header in the Deluge handler",
         });
       }
     });
@@ -407,6 +424,60 @@ export async function readJsonBody(
       done({ ok: false, error: err.message });
     });
   });
+}
+
+/**
+ * Detect a Deluge `parameters:`-style form-urlencoded body and convert it
+ * to the equivalent JSON object the webhook parser expects. Returns
+ * `undefined` when the body does not look form-urlencoded or cannot be
+ * decoded. This is a tolerance fallback — the canonical body shape is raw
+ * JSON (Deluge `body: payload.toString()`).
+ */
+export function normalizeFormUrlencodedBody(
+  raw: string,
+  headers?: IncomingMessage["headers"],
+): unknown | undefined {
+  const contentType = headers?.["content-type"];
+  const ct = Array.isArray(contentType) ? contentType[0] : contentType;
+  const isFormCt =
+    typeof ct === "string" &&
+    ct.toLowerCase().includes("application/x-www-form-urlencoded");
+  // Only attempt form-decoding when the content-type signals it, OR when
+  // the raw body clearly looks form-encoded (key=value&...) but is not
+  // JSON. This avoids misinterpreting arbitrary non-JSON text.
+  const looksFormEncoded =
+    raw.includes("=") &&
+    !raw.trimStart().startsWith("{") &&
+    !raw.trimStart().startsWith("[");
+  if (!isFormCt && !looksFormEncoded) return undefined;
+  try {
+    const params = new URLSearchParams(raw);
+    const obj: Record<string, unknown> = {};
+    for (const [key, value] of params.entries()) {
+      // The Deluge `parameters:` key posts a single form field whose name
+      // is the JSON string itself (e.g. `handler=mention&message=...`).
+      // Where a value is itself JSON, unwrap it; otherwise keep the string.
+      obj[key] = tryParseJson(value) ?? value;
+    }
+    return obj;
+  } catch {
+    return undefined;
+  }
+}
+
+function tryParseJson(value: string): unknown | undefined {
+  const trimmed = value.trim();
+  if (
+    !trimmed ||
+    (trimmed[0] !== "{" && trimmed[0] !== "[" && trimmed[0] !== '"')
+  ) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return undefined;
+  }
 }
 
 /**

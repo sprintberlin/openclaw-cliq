@@ -190,21 +190,29 @@ if (mentions.size() > 0) {
     payload.put("mentions", mentionList);
 }
 
-// POST to OpenClaw
-headers = Map();
-headers.put("Content-Type", "application/json");
-headers.put("x-cliq-webhook-secret", webhookSecret);
-
+// POST to OpenClaw as raw JSON.
+// IMPORTANT: use `body: payload.toString()` (NOT `parameters:`). The
+// `parameters` form posts an `application/x-www-form-urlencoded` body
+// (e.g. `handler=mention&...`) which the plugin rejects with HTTP 400
+// because it is not valid JSON. `body:` + the `application/json`
+// header above sends the raw JSON object the parser expects.
 response = invokeUrl
 [
     url: webhookUrl
     type: POST
-    parameters: payload.toString()
+    body: payload.toString()
     headers: headers
 ];
 
 info "openclaw webhook forwarded: " + response.get("status");
 ```
+
+> **Do not use `parameters: payload.toString()`.** In Deluge, `invokeUrl`'s
+> `parameters:` key serializes the value as form-urlencoded data
+> (`handler=mention&message=...`), which is **not** the JSON body this
+> plugin expects — the gateway returns `400 Unexpected token 'h',
+> "handler=me"... is not valid JSON`. Always use `body:` together with
+> the `Content-Type: application/json` header shown above.
 
 #### Payload format reference
 
@@ -243,6 +251,36 @@ Both should trigger a `POST /cliq/webhook` on your gateway (visible in the gatew
 - The Deluge handler is saved and the webhook URL / secret are correct.
 - The gateway host is reachable from the public internet (curl `https://<gateway-host>/cliq/webhook` from an external host — a `405 Method Not Allowed` on GET means the route is live).
 - The OAuth client has the three scopes from step 3 and the EU endpoint is in use.
+
+#### Smoke testing with curl
+
+You can verify the webhook route and the expected JSON body shape independently of Zoho Cliq. Replace `<gateway-host>` and `<secret>` with your values:
+
+```bash
+curl -i -X POST 'https://<gateway-host>/cliq/webhook' \
+  -H 'Content-Type: application/json' \
+  -H 'x-cliq-webhook-secret: <secret>' \
+  --data '{
+    "handler": "message",
+    "message": { "text": "hello from curl", "id": "smoke_1" },
+    "user":    { "id": "smoke-user", "name": "Smoke Tester" },
+    "chat":    { "id": "smoke-chat", "type": "channel", "title": "Smoke" }
+  }'
+```
+
+Expected response (the webhook acknowledges receipt synchronously and dispatches asynchronously):
+
+```
+HTTP/2 200
+content-type: application/json
+
+{"status":"received"}
+```
+
+- `200 {"status":"received"}` — the route is live, the secret matched, and the body parsed as JSON. The agent reply (if any) is delivered asynchronously to the chat id you supplied.
+- `401 unauthorized` — the `x-cliq-webhook-secret` header did not match `webhookSecret`.
+- `400 ... is not valid JSON` — the body was not JSON (e.g. you used `parameters:` in Deluge, or `Content-Type` was `application/x-www-form-urlencoded`). Re-check the Deluge handler in §5.
+- `503 cliq not configured` — the channel account is not configured in `openclaw.json` (see §4).
 
 ---
 

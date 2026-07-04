@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
+import { EventEmitter } from "node:events";
 import type { IncomingMessage } from "node:http";
 import {
   parseCliqWebhookPayload,
+  readJsonBody,
   resolveCliqMentionDecision,
   resolveCliqMentionFacts,
   verifyWebhookSecret,
@@ -263,5 +265,145 @@ describe("resolveCliqMentionDecision", () => {
       requireMention: false,
     });
     expect(decision.shouldSkip).toBe(false);
+  });
+});
+
+/** Minimal request shape that readJsonBody needs (EventEmitter + headers). */
+function makeBodyReq(
+  raw: string,
+  headers: Record<string, string | string[] | undefined> = {},
+): Pick<IncomingMessage, "on" | "removeAllListeners" | "destroy"> & {
+  headers: IncomingMessage["headers"];
+} {
+  const ee = new EventEmitter() as unknown as IncomingMessage & {
+    headers: IncomingMessage["headers"];
+  };
+  ee.destroy = (() => {
+    /* no-op */
+  }) as IncomingMessage["destroy"];
+  ee.headers = headers as IncomingMessage["headers"];
+  queueMicrotask(() => {
+    ee.emit("data", Buffer.from(raw, "utf8"));
+    ee.emit("end");
+  });
+  return ee as Pick<IncomingMessage, "on" | "removeAllListeners" | "destroy"> & {
+    headers: IncomingMessage["headers"];
+  };
+}
+
+describe("readJsonBody (issue #10)", () => {
+  it("parses a raw JSON body", async () => {
+    const req = makeBodyReq(
+      JSON.stringify({ handler: "message", message: "hi" }),
+      { "content-type": "application/json" },
+    );
+    const result = await readJsonBody(req);
+    expect(result.ok).toBe(true);
+    expect((result as { value: unknown }).value).toEqual({
+      handler: "message",
+      message: "hi",
+    });
+  });
+
+  it("rejects an empty body", async () => {
+    const req = makeBodyReq("");
+    const result = await readJsonBody(req);
+    expect(result.ok).toBe(false);
+    expect((result as { error: string }).error).toBe("empty payload");
+  });
+
+  it("rejects a payload larger than maxBytes", async () => {
+    const req = makeBodyReq("x".repeat(100));
+    const result = await readJsonBody(req, 50);
+    expect(result.ok).toBe(false);
+    expect((result as { error: string }).error).toBe("payload too large");
+  });
+
+  it("rejects non-JSON, non-form bodies with a helpful error", async () => {
+    const req = makeBodyReq("plain text not json at all", {
+      "content-type": "text/plain",
+    });
+    const result = await readJsonBody(req);
+    expect(result.ok).toBe(false);
+    expect((result as { error: string }).error).toMatch(/not valid JSON/);
+  });
+
+  it("normalizes a Deluge form-urlencoded body (parameters:) with form content-type", async () => {
+    // Simulates `parameters: payload.toString()` in Deluge — each Map entry
+    // becomes a form field. Nested values are URL-encoded JSON.
+    const raw = new URLSearchParams({
+      handler: "message",
+      message: JSON.stringify({ text: "hi from deluge", id: "m1" }),
+      user: JSON.stringify({ id: "u1", name: "Alice" }),
+    }).toString();
+    const req = makeBodyReq(raw, {
+      "content-type": "application/x-www-form-urlencoded",
+    });
+    const result = await readJsonBody(req);
+    expect(result.ok).toBe(true);
+    const value = (result as { value: unknown }).value as Record<string, unknown>;
+    expect(value.handler).toBe("message");
+    expect(value.message).toEqual({ text: "hi from deluge", id: "m1" });
+    expect(value.user).toEqual({ id: "u1", name: "Alice" });
+    // The normalized value must round-trip through parseCliqWebhookPayload.
+    expect(parseCliqWebhookPayload(value as CliqWebhookPayload)).not.toBeNull();
+  });
+
+  it("normalizes a Deluge form-urlencoded body without explicit content-type (looks like form)", async () => {
+    // Some gateways strip/lose the content-type header; the body still
+    // looks form-encoded (key=value&key=value), so the fallback kicks in.
+    const raw = new URLSearchParams({
+      handler: "mention",
+      message: "plain string message",
+    }).toString();
+    const req = makeBodyReq(raw);
+    const result = await readJsonBody(req);
+    expect(result.ok).toBe(true);
+    const value = (result as { value: unknown }).value as Record<string, unknown>;
+    expect(value.handler).toBe("mention");
+    expect(value.message).toBe("plain string message");
+  });
+
+  it("does not misinterpret a raw JSON object as form-urlencoded", async () => {
+    const raw = JSON.stringify({ handler: "message" });
+    const req = makeBodyReq(raw);
+    const result = await readJsonBody(req);
+    expect(result.ok).toBe(true);
+    expect((result as { value: unknown }).value).toEqual({ handler: "message" });
+  });
+});
+
+describe("normalizeFormUrlencodedBody (issue #10)", () => {
+  it("is exported and normalizes a form-urlencoded string", async () => {
+    const { normalizeFormUrlencodedBody } = await import("./inbound.js");
+    const raw = new URLSearchParams({
+      handler: "message",
+      message: JSON.stringify({ text: "hi" }),
+    }).toString();
+    const out = normalizeFormUrlencodedBody(raw, {
+      "content-type": "application/x-www-form-urlencoded",
+    });
+    expect(out).toEqual({
+      handler: "message",
+      message: { text: "hi" },
+    });
+  });
+
+  it("returns undefined for a raw JSON body", async () => {
+    const { normalizeFormUrlencodedBody } = await import("./inbound.js");
+    expect(
+      normalizeFormUrlencodedBody('{"handler":"message"}', {
+        "content-type": "application/json",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("returns undefined for a body with no key=value pairs", async () => {
+    const { normalizeFormUrlencodedBody } = await import("./inbound.js");
+    expect(
+      normalizeFormUrlencodedBody("plain text not json", {
+        "content-type": "text/plain",
+      }),
+    ).toBeUndefined();
   });
 });
