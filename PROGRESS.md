@@ -2,7 +2,7 @@
 
 ## Project: openclaw-cliq
 
-**Status:** Mentions adapter implemented (iteration 3 complete)
+**Status:** DM allowlist enforcement implemented (iteration 4 complete)
 
 ### What exists in this repo
 - `AGENTS.md` — project context and conventions
@@ -53,9 +53,22 @@
   - Added `src/mentions.test.ts` (16 tests). Total suite is 46/46 passing. Typecheck clean.
   - Fixup: removed an unused `import type { ResolvedCliqAccount }` from `mentions.ts` flagged by `noUnusedLocals`.
 
+### What is done in this run (iteration 4)
+- Implemented DM allowlist enforcement / admission at the webhook layer (previously unauthorized DMs were dispatched silently; the `security.dm` policy was defined on the plugin but never enforced at ingress).
+  - Added `src/admission.ts` with `resolveCliqDmPolicy`, `isCliqSenderAllowed`, and `resolveCliqDmAdmission`. Reuses the SDK's shared `isNormalizedSenderAllowed` from `openclaw/plugin-sdk/allow-from` so wildcard (`*`), case-insensitive, and empty-list semantics match every other bundled channel.
+  - Wired `resolveCliqDmAdmission` into the `/cliq/webhook` handler in `index.ts`, after the mention gate and before dispatch: `deny` → log warn + 200; `pairing` → log warn + 200 (pairing flow not yet implemented, placeholder); `allow` → proceed to dispatch.
+  - Added `src/admission.test.ts` (22 tests). Total suite is 68/68 passing. Typecheck clean.
+- `src/admission.ts` — DM admission decision:
+  - `CliqDmPolicy` type (`open` | `allowlist` | `pairing` | `disabled`), aligned with the SDK's `DmPolicy`.
+  - `resolveCliqDmPolicy(account)` — returns the effective policy, normalizing whitespace/case; unknown/unset values fall back to `allowlist` (the plugin's `security.dm.defaultPolicy`), i.e. deny-by-default.
+  - `isCliqSenderAllowed(senderId, allowFrom)` — thin wrapper around the SDK's `isNormalizedSenderAllowed` (from `openclaw/plugin-sdk/allow-from`): empty allowlist → false, `*` → true, else case-insensitive match.
+  - `resolveCliqDmAdmission(parsed, account)` → `{ decision: "allow" | "pairing" | "deny", policy, reason, senderAllowed }`. Groups always `allow` (mention gating handles them). DMs: `open`→allow, `disabled`→deny, `allowlist`→allow iff sender matches else deny, `pairing`→allow iff sender matches else `pairing` decision.
+- `src/admission.test.ts` — 22 vitest tests covering policy resolution (4), sender-allowed matcher (7), and the full admission decision across all policies/branches (11). All passing.
+- Webhook handler (`index.ts`) now calls `resolveCliqDmAdmission` after the mention gate: `deny` logs a `warn` and returns 200 (silent drop, no longer silent); `pairing` logs a `warn` and returns 200 (pairing flow not yet implemented — placeholder); `allow` proceeds to dispatch.
+
 ### What is still missing / incomplete
 - **Dispatch adapter wiring is UNVERIFIED against a live gateway.** `dispatchCliqInbound` constructs an `AssembledChannelTurn` and calls `runtime.channel.inbound.run` using best-effort shapes inferred from the installed `.d.ts` + the IBIZDigital reference repo (which used the older `core.channel.*` surface). The exact argument shapes for `resolveAgentRoute`, `finalizeInboundContext`, `formatAgentEnvelope`, `dispatchReplyWithBufferedBlockDispatcher`, and `recordInboundSession` need runtime integration testing against a real OpenClaw gateway. The pure functions (parse, verify, mention-gate) are fully unit-tested; the dispatch glue is not.
-- **No pairing flow** — `pairing` adapter not implemented (DM approval flow for new contacts). DM allowlist deny currently just drops the message silently.
+- **No pairing flow** — `pairing` adapter not implemented (DM approval flow for new contacts). DM allowlist deny currently just drops the message silently. *(Partly resolved in iteration 4 — the webhook handler now evaluates the DM policy and emits an `allow`/`pairing`/`deny` decision via `resolveCliqDmAdmission`; `deny` logs a warning instead of being silent. The actual `pairing` adapter (approval flow + pairing store integration) is still not implemented — when policy is `pairing` and the sender is unknown, the handler logs + drops as a placeholder.)
 - **No media/file sending** — `sendMedia` not implemented; capabilities.media is false.
 - **No `mentions` adapter** on the plugin object (stripRegexes/stripMentions for stripping the bot @handle from the agent-visible text). Mention detection is currently inbound-only via `resolveCliqMentionDecision`. *(Resolved in iteration 3 — see above.)*
 - **No Markdown→Cliq formatting** — outbound sends raw text.
@@ -68,7 +81,7 @@
 - **Self-message detection is naive** — matches `senderId === account.botId` or `senderName === account.botName`. Zoho bot self-events may need a more robust check.
 
 ### Next logical step
-Verify the inbound dispatch wiring against a live gateway (or build a runtime mock test for `dispatchCliqInbound`), then implement **DM allowlist enforcement / pairing** in the webhook handler so unauthorized DMs are rejected or routed through the pairing flow instead of silently dropped. The pure DM-allowlist check can reuse `cliqPlugin.security.dm.resolvePolicy` + `resolveAllowFrom` to decide allow/deny/pair before dispatch; a deny should log a warning (currently silent).
+Implement the **pairing flow** so that `pairing`-policy DMs from unknown senders kick off the documented pairing approval flow (invite/pair reply + pairing-store entry) instead of being logged + dropped as a placeholder. This requires wiring the `pairing` adapter on `cliqPlugin` (currently absent) and integrating the SDK's pairing-store helpers (`UpsertChannelPairingRequestForAccount`, `ReadChannelAllowFromStoreForAccount`) seen in `types-D7eu8baG.d.ts`. Alternatively, build a runtime-mock test for `dispatchCliqInbound` to verify the inbound dispatch wiring against the `runtime.channel.inbound.run` surface before the next feature work.
 
 ### Insights / blockers
 - The installed `openclaw@2026.6.11` `runtime.channel` surface (in `types-D7eu8baG.d.ts` around line 7093) exposes `text`, `reply` (incl. `dispatchReplyWithBufferedBlockDispatcher`, `finalizeInboundContext`, `formatAgentEnvelope`, `resolveEnvelopeFormatOptions`), `routing.resolveAgentRoute`, `session.*` (resolveStorePath, readSessionUpdatedAt, recordSessionMetaFromInbound, recordInboundSession, updateLastRoute), `mentions.*`, and `inbound.{run,buildContext,dispatchReply,runPreparedReply}`. The IBIZDigital repo used the same surface under the older `core.channel.*` alias and the legacy dispatch path (`dispatchReplyWithBufferedBlockDispatcher` + `finalizeInboundContext`), which is still present and is what `inbound.run` orchestrates under the hood.
@@ -85,3 +98,4 @@ Verify the inbound dispatch wiring against a live gateway (or build a runtime mo
 - 2026-07-04 (iteration 1): Set up project foundation — package.json, manifest, tsconfig, entry points, minimal channel plugin scaffold with config/setup/security/threading/outbound adapters, CliqClient with OAuth token refresh, 11 passing tests. Typecheck clean.
 - 2026-07-04 (iteration 2): Implemented inbound webhook path — payload parsing, secret verification, mention gating via `resolveInboundMentionDecision`, dispatch via `runtime.channel.inbound.run`. Replaced stub `/cliq/webhook` handler. Added `src/inbound.ts` + `src/inbound.test.ts` (19 tests). Total 30/30 tests passing, typecheck clean. Dispatch adapter wiring still needs live-gateway verification.
 - 2026-07-04 (iteration 3): Implemented the `mentions` adapter — added `src/mentions.ts` (`buildCliqMentionRegexes`, `stripCliqMentions`), wired `mentions` onto `cliqPlugin.base` (exposing `stripRegexes`/`stripPatterns`/`stripMentions` with safe account resolution), and stripped the bot @handle from the agent-visible envelope in `dispatchCliqInbound`. Added `src/mentions.test.ts` (16 tests). Total 46/46 tests passing, typecheck clean.
+- 2026-07-04 (iteration 4): Implemented DM allowlist enforcement at the webhook layer — added `src/admission.ts` (`resolveCliqDmPolicy`, `isCliqSenderAllowed`, `resolveCliqDmAdmission`) reusing the SDK's `isNormalizedSenderAllowed` from `openclaw/plugin-sdk/allow-from`, wired the admission decision into the `/cliq/webhook` handler (deny/pairing log + 200; allow proceeds), added `src/admission.test.ts` (22 tests). Total 68/68 tests passing, typecheck clean. The pairing *flow* itself is still a placeholder.

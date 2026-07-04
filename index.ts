@@ -2,6 +2,7 @@ import { defineChannelPluginEntry } from "openclaw/plugin-sdk/channel-core";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { cliqPlugin } from "./src/channel.js";
 import { resolveCliqConfig } from "./src/client.js";
+import { resolveCliqDmAdmission } from "./src/admission.js";
 import {
   dispatchCliqInbound,
   parseCliqWebhookPayload,
@@ -89,6 +90,26 @@ export default defineChannelPluginEntry({
           allowTextCommands: false,
         });
         if (decision.shouldSkip) {
+          res.statusCode = 200;
+          res.end("ok");
+          return true;
+        }
+
+        const admission = resolveCliqDmAdmission(parsed, account);
+        if (admission.decision === "deny") {
+          api.logger.warn?.(
+            `[cliq] inbound from ${parsed.senderId} denied: ${admission.reason}`,
+          );
+          res.statusCode = 200;
+          res.end("ok");
+          return true;
+        }
+        if (admission.decision === "pairing") {
+          // Pairing flow is not yet implemented. Log and drop the message so
+          // the sender does not get a free dispatch while the flow is wired up.
+          api.logger.warn?.(
+            `[cliq] inbound from ${parsed.senderId} requires pairing: ${admission.reason}`,
+          );
           res.statusCode = 200;
           res.end("ok");
           return true;
