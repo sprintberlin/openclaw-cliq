@@ -12,7 +12,7 @@ export interface CliqChannelConfig {
   botName?: string;
   webhookSecret?: string;
   allowFrom?: string[];
-  dmSecurity?: string;
+  dmPolicy?: string;
 }
 
 export interface ResolvedCliqAccount {
@@ -47,7 +47,7 @@ export function resolveCliqConfig(
     botName: section?.botName,
     webhookSecret: section?.webhookSecret,
     allowFrom: section?.allowFrom ?? [],
-    dmPolicy: section?.dmSecurity,
+    dmPolicy: section?.dmPolicy,
   };
 }
 

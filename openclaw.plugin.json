@@ -16,6 +16,10 @@
       "allowFrom": {
         "type": "array",
         "items": { "type": "string" }
+      },
+      "dmPolicy": {
+        "type": "string",
+        "enum": ["open", "allowlist", "pairing", "disabled"]
       }
     }
   },
@@ -33,6 +37,10 @@
           "allowFrom": {
             "type": "array",
             "items": { "type": "string" }
+          },
+          "dmPolicy": {
+            "type": "string",
+            "enum": ["open", "allowlist", "pairing", "disabled"]
           }
         },
         "required": ["clientId", "clientSecret", "botId"]
@@ -43,7 +51,8 @@
         "botId": { "label": "Bot unique name" },
         "botName": { "label": "Bot display name" },
         "webhookSecret": { "label": "Webhook shared secret", "sensitive": true },
-        "allowFrom": { "label": "Allowed senders (Zoho Cliq user ids)" }
+        "allowFrom": { "label": "Allowed senders (Zoho Cliq user ids)" },
+        "dmPolicy": { "label": "DM admission policy", "options": ["open", "allowlist", "pairing", "disabled"] }
       }
     }
   }
