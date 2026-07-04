@@ -16,6 +16,7 @@ import {
   buildCliqMentionRegexes,
   stripCliqMentions,
 } from "./mentions.js";
+import { markdownToCliq } from "./markdown.js";
 import {
   CLIQ_PAIRING_APPROVED_MESSAGE,
   CLIQ_PAIRING_ID_LABEL,
@@ -24,6 +25,7 @@ import {
 
 export { resolveCliqConfig, CliqClient, chunkMessage, type CliqChannelConfig, type ResolvedCliqAccount } from "./client.js";
 export { buildCliqMentionRegexes, stripCliqMentions } from "./mentions.js";
+export { markdownToCliq } from "./markdown.js";
 export {
   CLIQ_PAIRING_APPROVED_MESSAGE,
   CLIQ_PAIRING_ID_LABEL,
@@ -194,7 +196,7 @@ export const cliqPlugin: ChannelPlugin<ResolvedCliqAccount> = createChatChannelP
         );
         const result = await client.sendMessage({
           to: ctx.to,
-          text: ctx.text,
+          text: markdownToCliq(ctx.text),
         });
         return {
           messageId: result.messageId ?? "unknown",

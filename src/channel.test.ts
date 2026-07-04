@@ -97,6 +97,51 @@ describe("cliq plugin", () => {
     const pairing = cliqPlugin.pairing as { idLabel?: string };
     expect(pairing.idLabel).toBe("cliqSenderId");
   });
+
+  it("applies markdown→cliq formatting on outbound sendText", async () => {
+    const cfg = cfgWith({
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+    });
+    const calls: { text: string; userids?: string; chatid?: string }[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(
+          JSON.stringify({ access_token: "tok", expires_in: 3600 }),
+          { status: 200 },
+        );
+      }
+      if (init?.method === "POST") {
+        calls.push(
+          JSON.parse(init.body as string) as {
+            text: string;
+            userids?: string;
+            chatid?: string;
+          },
+        );
+        return new Response(JSON.stringify({ id: "msg-1" }), { status: 200 });
+      }
+      return new Response("", { status: 404 });
+    }) as typeof fetch;
+    try {
+      await cliqPlugin.outbound!.sendText!({
+        cfg,
+        to: "user-1",
+        text: "**bold** and *italic*",
+        accountId: undefined,
+      } as any);
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(calls).toHaveLength(1);
+    // Markdown must be converted to Cliq-native formatting before sending.
+    expect(calls[0].text).toBe("*bold* and _italic_");
+    // Outbound context lacks chatType, so the client defaults to `chatid`.
+    expect(calls[0].chatid ?? calls[0].userids).toBe("user-1");
+  });
 });
 
 describe("chunkMessage", () => {

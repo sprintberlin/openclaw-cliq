@@ -7,6 +7,7 @@ import type {
 import type { IncomingMessage } from "node:http";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { CliqClient, type ResolvedCliqAccount } from "./client.js";
+import { markdownToCliq } from "./markdown.js";
 import { stripCliqMentions } from "./mentions.js";
 
 /**
@@ -500,7 +501,7 @@ export async function dispatchCliqInbound(params: {
     if (!text) return;
     await client.sendMessage({
       to: deliverTo,
-      text,
+      text: markdownToCliq(text),
       isDm: !parsed.isGroup,
     });
   };
