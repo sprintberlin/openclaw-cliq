@@ -183,6 +183,12 @@ This project is developed **iteratively** by an autonomous coding agent (OpenCod
 5. Record any lasting insight in the **Learnings** section of this file (AGENTS.md), not in PROGRESS.md.
 6. Commit everything (code + PROGRESS.md, plus AGENTS.md if you learned something).
 
+### Verifying your work
+
+- **Unit tests** (`npm test`) cover pure logic. Run them.
+- **`npm run smoke:gateway` is the source of truth for loading/registration.** It builds the plugin and loads it into a REAL OpenClaw gateway runtime (isolated throwaway profile, no daemon/Zoho/secrets), then asserts the plugin status is `loaded` and it registers a `channel` capability. Whenever you touch the entry, manifest, channel registration, or anything load-related, run this and make it pass. **Do not declare loading/registration "verified" by reading `.d.ts` files — run the smoke.** (The older mock-based `load.test.ts` proves the route handler; the smoke proves the real loader accepts our shapes.)
+- The smoke covers **Stage 3** (load + capability registration). It does NOT yet cover **Stage 4** (a real inbound webhook POST dispatched through the agent pipeline) or **Stage 5** (a real Zoho Cliq round-trip — needs credentials, inherently a staging/manual step).
+
 ### Important
 
 - **One coherent increment per run.** Do not try to build everything at once.
@@ -206,6 +212,13 @@ Hard-won knowledge from previous iterations. Add to this section (deduped) whene
 - **Mention stripping:** the core `stripMentions` helper (`mentions-B1EJNjZS.js:166`) calls the plugin's `mentions.stripRegexes(...)` then `mentions.stripMentions(...)`. Implementing `stripRegexes` is sufficient for the shared path; `stripMentions` is an optional override.
 - **`resolveInboundMentionDecision`** accepts a flat params object or a nested `{ facts, policy }`; the nested form is preferred. For DMs force `wasMentioned: true`; for groups require an explicit mention.
 - **DM admission:** reuse the SDK's `isNormalizedSenderAllowed` from `openclaw/plugin-sdk/allow-from` so wildcard (`*`), case-insensitive and empty-list semantics match every other channel.
+
+### Gateway smoke / real-loader verification
+
+- **The plugin loads on a real gateway (verified against openclaw@2026.6.11).** `plugins inspect cliq --json --runtime` reports `status: "loaded"`, `shape: "plain-capability"`, and a `capabilities: [{ kind: "channel", channelIds: [...] }]` entry; `plugins doctor` reports "No plugin issues detected". The loader resolves the entry from `package.json` `main` → `dist/index.js` (NOT the manifest `openclaw.extensions` `./index.ts`), so **`dist/` must be built before install** — the smoke builds first.
+- **CLI commands that matter** (all headless, no running daemon needed): `openclaw --profile <p> plugins install . --link` (links a local plugin dir; `--force` is rejected with `--link`), `plugins inspect <id> --json --runtime` (loads the runtime — the real registration test), `plugins list --json` (`--enabled`/`--verbose`), `plugins doctor`.
+- **State isolation is mandatory when running against a box that has a real `~/.openclaw`.** On first run of a NEW profile, openclaw migrates legacy state (e.g. `exec-approvals.json`) out of the default profile into the new one, mutating `~/.openclaw`. The smoke sets a throwaway `HOME` + `OPENCLAW_STATE_DIR` + `OPENCLAW_CONFIG_PATH` so it can never touch a real profile. In ephemeral CI there is no `~/.openclaw`, so this is belt-and-suspenders there, but essential on a dev/prod host.
+- **`openclaw` is BOTH a `peerDependency` (runtime: the gateway provides it) AND a `devDependency` (so `npm ci` installs the CLI + SDK types for typecheck/tests/smoke).** A root package's `peerDependencies` are NOT auto-installed by npm; relying on the lockfile alone is fragile. The devDependency guarantees `node_modules/.bin/openclaw` exists for the smoke.
 
 ### Build / TypeScript
 

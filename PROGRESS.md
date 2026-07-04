@@ -11,18 +11,25 @@ The plugin is feature-complete against the SDK surface we can verify headlessly:
 webhook, mention gating, DM admission + pairing, Markdown→Cliq, `sendText`/`sendMedia`,
 cross-request OAuth token caching, a real `npm run build` producing `dist/`, and a full
 Zoho-side README. `dmPolicy` config schema is aligned across manifest, runtime and README.
-All tests green; typecheck and build exit clean. The open work is almost entirely
-**live-gateway verification** — nothing headless can prove the dispatch/pairing glue against
-a real OpenClaw gateway.
+All tests green; typecheck and build exit clean.
+
+**Real-gateway load is now VERIFIED** (openclaw@2026.6.11): `npm run smoke:gateway` builds
+the plugin, links it into an isolated gateway profile, loads the runtime, and asserts
+`status: loaded` + a registered `channel` capability (`plugins doctor` clean). So the entry,
+manifest, and channel registration are proven against the real loader — not just a mock. The
+remaining open work is the deeper pipeline: a real **inbound dispatch** (webhook → agent) and
+a real **Zoho round-trip**, neither of which the current smoke exercises.
 
 ## Plan
 
-- [ ] **Real-gateway install** — `npm link` / drop into a plugin dir on a live gateway,
-      restart, check `openclaw status` + logs load the plugin without errors.
+- [ ] **Stage-4 smoke: real inbound dispatch** — extend `scripts/smoke-gateway.sh` (or a
+      sibling) to start the gateway, POST a canonical Deluge payload to `/cliq/webhook`, and
+      assert the dispatch pipeline runs. Needs a stub agent / local fake model so the pipeline
+      does not require a real LLM, and a local mock for the outbound Zoho API call.
 - [ ] **Verify inbound dispatch** against a live gateway — the `runtime.channel.*` argument
       shapes (`resolveAgentRoute`, `finalizeInboundContext`, `formatAgentEnvelope`,
       `dispatchReplyWithBufferedBlockDispatcher`, `recordInboundSession`) are inferred from
-      the `.d.ts`, not runtime-tested.
+      the `.d.ts`, not runtime-tested. (Stage-4 smoke is how to prove this.)
 - [ ] **Verify pairing end-to-end** — `upsertPairingRequest`/`buildPairingReply` against a
       real pairing store, plus the `openclaw pairing approve cliq <code>` → `notify` path.
 - [ ] **Outbound DM vs channel** — `ChannelOutboundContext` has no `chatType`, so plugin-path
@@ -35,5 +42,7 @@ a real OpenClaw gateway.
 
 ## Open questions / blockers
 
-- The dispatch and pairing runtime glue is unit-tested with mocks only; correctness against a
-  real gateway is unproven. This is the single biggest risk and gates a public release.
+- Load + channel registration are now proven on a real gateway (Stage-3 smoke). The remaining
+  risk is the **dispatch and pairing runtime glue**, still unit-tested with mocks only —
+  correctness against a real gateway is unproven and gates a public release. A Stage-4 smoke
+  (webhook → dispatch, with a stub agent/model) is the way to close it.

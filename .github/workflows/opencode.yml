@@ -212,6 +212,18 @@ jobs:
           ~/.opencode/bin/opencode run "$(cat /tmp/prompt.txt)" 2>&1 | tee /tmp/opencode_run.log || echo "OpenCode run failed or exited non-zero" >> /tmp/opencode_run.log
           touch /tmp/opencode_run.log
 
+      - name: Gateway Smoke (Stage 3 — real plugin load)
+        # Non-blocking for now: surfaces in the workflow log for humans while the
+        # agent itself is expected to run `npm run smoke:gateway` during its turn
+        # (see AGENTS.md). Promote to a hard gate once it has proven stable in CI.
+        continue-on-error: true
+        run: |
+          if [ -f package.json ] && grep -q '"smoke:gateway"' package.json; then
+            npm run smoke:gateway
+          else
+            echo "No smoke:gateway script yet, skipping."
+          fi
+
       - name: Commit and Push
         id: git_commit
         env:
