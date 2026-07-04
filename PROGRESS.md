@@ -2,7 +2,7 @@
 
 ## Project: openclaw-cliq
 
-**Status:** sendMedia (file/attachment sending) implemented (iteration 8 complete)
+**Status:** plugin load + webhook smoke verified headlessly (iteration 9 complete)
 
 ### What exists in this repo
 - `AGENTS.md` — project context and conventions
@@ -31,6 +31,8 @@
 - `src/runtime-api.ts` — cross-request `CliqClient` registry so the OAuth access token is shared across webhook dispatches / outbound sends / pairing notifications instead of being re-fetched per request. `CliqClientRegistry` class (Map-keyed by `acct:<accountId>` or `cc:<clientId>:<botId>`): `getOrCreate`, `get`, `evict`, `clear`, `size`, static `buildKey`. Singleton helpers `getCliqClientRegistry`/`setCliqClientRegistry(null)`/`resolveCliqClient(account)`. All three send sites (outbound `sendText` in `channel.ts`, inbound dispatch `deliver` in `inbound.ts`, pairing challenge + `notifyCliqPairingApproval` in `pairing.ts`) now resolve the client via `resolveCliqClient(account)` instead of `new CliqClient(...)`.
 - `src/runtime-api.test.ts` — 19 vitest tests covering `buildKey` (4), instance methods (9, incl. a real-fetch-mocked token-cache-sharing test asserting only one OAuth round-trip across two `getOrCreate`+`getAccessToken` calls), and the singleton helpers (6). All passing.
 - `.github/` — coding agent infrastructure (pre-existing)
+- `src/load.test.ts` — 6 vitest tests verifying the plugin entry loads, `register()` wires the channel + cli + `/cliq/webhook` route, and the route handler responds correctly (GET→405, POST unconfigured→503, POST configured+mentioned→200 received, POST wrong secret→401). All passing.
+- `scripts/load-smoke.ts` — runnable headless smoke (`node --import tsx scripts/load-smoke.ts`) that imports the real entry, calls `register(mockApi)`, and issues a real `node:http` fetch POST against `/cliq/webhook` returning `200 {"status":"received"}`.
 
 ### What is done in this run (iteration 1)
 - Set up project foundation per issue #1
@@ -88,6 +90,25 @@
   - Extended `CliqRuntime` with a `pairing` slice (`{ buildPairingReply, upsertPairingRequest, readAllowFromStore? }`).
   - Added `src/pairing.test.ts` (17 tests) + 1 wiring assertion in `channel.test.ts`. Total suite is 86/86 passing. Typecheck clean.
 
+### What is done in this run (iteration 9)
+- Verified the plugin loads and the `/cliq/webhook` route responds, per issue #7 ("Install plugin locally and verify gateway loads it without errors"). This is a HEADLESS run (no real OpenClaw gateway / no Martin machine), so the verification is done via an in-process load that mirrors exactly what the gateway does when it imports the plugin entry.
+  - Confirmed the build is clean: `npm run typecheck` passes, `npm test` is 139/139 green (was 133 before this run).
+  - Added `src/load.test.ts` (6 vitest tests) that imports the default export from `index.ts`, asserts the `DefinedChannelPluginEntry` shape (`id === "cliq"`, `name`, `description`, `channelPlugin === cliqPlugin`, `register` is a function), then calls `entry.register(mockApi)` with `registrationMode: "full"` and captures every registered surface:
+    - `registerChannel({ plugin })` is called once.
+    - `registerCli` is called (cli metadata / `cliq` command descriptor).
+    - `registerHttpRoute({ path: "/cliq/webhook", auth: "plugin", handler })` is called once.
+  - The captured `/cliq/webhook` handler is then exercised directly with mock `IncomingMessage` (EventEmitter that emits `data`+`end` via `queueMicrotask`) + `ServerResponse` stubs:
+    - `GET /cliq/webhook` → `405 Method Not Allowed` + `Allow: POST` header.
+    - `POST` with a dummy Deluge payload but unconfigured channel → `503 cliq not configured` (acceptable HTTP response per acceptance criteria).
+    - `POST` with configured account + valid `x-cliq-webhook-secret` + a mentioned-in-group payload → `200 {"status":"received"}` (full dispatch path through the mocked `runtime.channel.inbound.run`).
+    - `POST` with a wrong secret → `401 unauthorized`.
+  - Added `scripts/load-smoke.ts` — a runnable headless smoke that mirrors what the OpenClaw gateway does at load time, runnable via `node --import tsx scripts/load-smoke.ts`. It:
+    1. Imports `cliqEntry` from `index.ts` (real ESM import — exercises the SDK's `defineChannelPluginEntry`).
+    2. Calls `cliqEntry.register(mockApi)` and asserts the `/cliq/webhook` route is registered.
+    3. Invokes the handler in-process with a dummy Deluge payload and prints the response (`200 {"status":"received"}`).
+    4. ALSO starts a real `node:http` server that delegates to the captured handler and issues a real `fetch` POST (curl-equivalent) against `http://127.0.0.1:<port>/cliq/webhook` — returns `200 {"status":"received"}` with `Content-Type: application/json`.
+  - Findings: the plugin entry loads with zero errors in a real Node 22 process; the `/cliq/webhook` route is registered with `auth: "plugin"`; a curl-style POST with a dummy Cliq payload returns `200 {"status":"received"}`.
+
 ### What is done in this run (iteration 8)
 - Implemented **`sendMedia` (file/attachment sending)** in the outbound adapter so the agent can send files and images in Zoho Cliq, and flipped `capabilities.media` from `false` to `true`.
   - `src/client.ts` additions:
@@ -134,6 +155,7 @@
 - Confirmed Cliq delimiter semantics from the bernesto/openclaw-cliq-plugin reference (`src/format.ts`), but wrote the converter from scratch per AGENTS.md.
 
 ### What is still missing / incomplete
+- **Real-gateway install unverified.** This iteration verified the plugin loads and the webhook responds via an in-process load that mirrors the gateway's `register(api)` path, plus a real `node:http` server curl-equivalent POST. It did NOT install the plugin into a running OpenClaw gateway on Martin's machine (headless run). The remaining acceptance-criterion step is to drop the repo into a plugin directory (or `npm link`) on a real gateway, restart it, and check `openclaw status` / gateway logs. No code change is expected to be needed — the entry shape and route registration are verified correct against the installed SDK (`openclaw@2026.6.11`).
 - **Dispatch adapter wiring is UNVERIFIED against a live gateway.** `dispatchCliqInbound` constructs an `AssembledChannelTurn` and calls `runtime.channel.inbound.run` using best-effort shapes inferred from the installed `.d.ts` + the IBIZDigital reference repo (which used the older `core.channel.*` surface). The exact argument shapes for `resolveAgentRoute`, `finalizeInboundContext`, `formatAgentEnvelope`, `dispatchReplyWithBufferedBlockDispatcher`, and `recordInboundSession` need runtime integration testing against a real OpenClaw gateway. The pure functions (parse, verify, mention-gate, admission, pairing) are fully unit-tested; the dispatch glue and the pairing-store runtime calls (`upsertPairingRequest`/`buildPairingReply`) are not.
 - **Pairing flow runtime calls are unit-tested with mocks only** — `issueCliqPairingChallenge` calls `runtime.channel.pairing.upsertPairingRequest` / `buildPairingReply` and `CliqClient.sendMessage`, all exercised via mocks. Live-gateway verification (real pairing store + real Cliq send) is still pending.
 - **Pairing approval CLI path unverified** — `notifyCliqPairingApproval` (the `pairing.text.notify` adapter) is unit-tested with a mock client; the SDK's `openclaw pairing approve cliq <code>` → `notify` invocation path is not verified end-to-end.
@@ -149,7 +171,7 @@
 - **Self-message detection is naive** — matches `senderId === account.botId` or `senderName === account.botName`. Zoho bot self-events may need a more robust check.
 
 ### Next logical step
-Verify the inbound dispatch wiring (`dispatchCliqInbound` → `runtime.channel.inbound.run`) and the pairing-store runtime calls against a live OpenClaw gateway (runtime integration test), since these are the only remaining unverified glue paths. The `sendMedia` increment from issue #3 is now done (iteration 8). Other candidate increments: add typing/heartbeat indicators; implement an interactive `setupWizard`; harden self-message detection; or add `outbound` `isDm` resolution for the plugin path (currently `ctx.to` defaults to `chatid` because `ChannelOutboundContext` lacks `chatType`).
+Install the plugin into a real running OpenClaw gateway (on Martin's machine / a staging gateway) and verify `openclaw status` shows the `cliq` channel loaded with no errors in the gateway logs — i.e. the one remaining acceptance criterion from issue #7 that a headless run cannot cover. After that, the next code increment is verifying the inbound dispatch wiring (`dispatchCliqInbound` → `runtime.channel.inbound.run`) and the pairing-store runtime calls against a live gateway (runtime integration test), since these are the only remaining unverified glue paths.
 
 ### Insights / blockers
 - **Cliq Markdown delimiter semantics** (confirmed from the bernesto reference repo's `src/format.ts`, which lists them as "confirmed via testing"): `*bold*` (single asterisk = bold, NOT italic), `_italic_` (single underscore), `~strike~` (single tilde), `__underline__` (double underscore), ``` `inline` ``` (renders bold-red, not monospace), ` ```block``` ``` (proper code block), `!blockquote` (line prefix), `#`/`###` headings, `[text](url)` links, `---` horizontal rule. Our converter targets the subset that overlaps standard Markdown (`**bold**`, `*italic*`, `~~strike~~`, `> quote`, tables, code).
@@ -179,3 +201,4 @@ Verify the inbound dispatch wiring (`dispatchCliqInbound` → `runtime.channel.i
 - 2026-07-04 (iteration 6): Implemented Markdown→Cliq outbound formatting — added `src/markdown.ts` (`markdownToCliq`, pure string transform converting `**bold**`/`__bold__`→`*bold*`, `*italic*`→`_italic_`, `~~strike~~`→`~strike~`, `> quote`→`!quote`, tables→plain text; preserves code spans/blocks and links via NUL-delimited placeholders), wired it into the outbound `sendText` (`src/channel.ts`) and the inbound dispatch `deliver` closure (`src/inbound.ts`), added `src/markdown.test.ts` (24 tests) + 1 outbound wiring assertion in `channel.test.ts` (mocks `globalThis.fetch`). Total 111/111 tests passing, typecheck clean. Confirmed Cliq delimiter semantics from the bernesto reference repo but wrote the converter from scratch.
 - 2026-07-04 (iteration 7): Implemented cross-request OAuth token caching — added `src/runtime-api.ts` (`CliqClientRegistry` keyed by `acct:<accountId>`/`cc:<clientId>:<botId>`, `getOrCreate`/`get`/`evict`/`clear`/`size`, static `buildKey`, singleton `getCliqClientRegistry`/`setCliqClientRegistry`/`resolveCliqClient`), replaced the three `new CliqClient(...)` sites (outbound `sendText`, inbound `deliver`, pairing challenge + approval notify) with `resolveCliqClient(account)` so the OAuth token is shared across requests, added `src/runtime-api.test.ts` (19 tests, incl. a real-fetch-mocked token-cache-sharing assertion proving one OAuth round-trip across two lookups). Total 130/130 tests passing, typecheck clean.
 - 2026-07-04 (iteration 8): Implemented `sendMedia` (file/attachment sending) — added `CliqMediaAttachment`, `loadCliqMediaAttachment` (http-fetch + local `mediaReadFile` paths, copies bytes into a standalone ArrayBuffer to avoid Node Buffer pool bleed), and `CliqClient.sendMediaMessage` (multipart/form-data POST to the bot message API with `attachments` Blob) in `src/client.ts`; wired `sendMedia` into `outbound.attachedResults` in `src/channel.ts` and flipped `capabilities.media` to `true`; added 3 sendMedia tests (http-upload multipart assertion, local-file upload via `mediaReadFile`, no-mediaUrl error). Total 133/133 tests passing, typecheck clean.
+- 2026-07-04 (iteration 9): Verified plugin load + `/cliq/webhook` smoke per issue #7 (headless). Added `src/load.test.ts` (6 tests: entry shape, register() wires channel+cli+/cliq/webhook route, GET→405, POST unconfigured→503, POST configured+valid+mentioned→200 received, POST wrong secret→401) and `scripts/load-smoke.ts` (runnable `node --import tsx` smoke that imports the real entry, calls register, and issues a real `node:http` fetch POST against `/cliq/webhook` → `200 {"status":"received"}`). Total 139/139 tests passing, typecheck clean. Real-gateway install on Martin's machine still pending (headless run).
