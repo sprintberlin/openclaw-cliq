@@ -12,8 +12,13 @@ import {
   type CliqChannelConfig,
   type ResolvedCliqAccount,
 } from "./client.js";
+import {
+  buildCliqMentionRegexes,
+  stripCliqMentions,
+} from "./mentions.js";
 
 export { resolveCliqConfig, CliqClient, chunkMessage, type CliqChannelConfig, type ResolvedCliqAccount } from "./client.js";
+export { buildCliqMentionRegexes, stripCliqMentions } from "./mentions.js";
 
 const CHANNEL_ID = "cliq" as const;
 
@@ -78,6 +83,23 @@ function resolveAccountFromCtx(cfg: OpenClawConfig, accountId?: string | null): 
   return resolveCliqConfig(cfg, accountId ?? null);
 }
 
+/**
+ * Resolve a Cliq account from a mention-adapter call without throwing. The
+ * `ChannelMentionAdapter` contract passes `cfg` as `OpenClawConfig | undefined`
+ * and the channel may be unconfigured; in that case there is nothing to strip.
+ */
+function resolveAccountSafe(
+  cfg: OpenClawConfig | undefined,
+  accountId?: string | null,
+): ResolvedCliqAccount | null {
+  if (!cfg) return null;
+  try {
+    return resolveCliqConfig(cfg, accountId ?? null);
+  } catch {
+    return null;
+  }
+}
+
 export const cliqPlugin: ChannelPlugin<ResolvedCliqAccount> = createChatChannelPlugin<ResolvedCliqAccount>({
   base: {
     id: CHANNEL_ID,
@@ -103,6 +125,23 @@ export const cliqPlugin: ChannelPlugin<ResolvedCliqAccount> = createChatChannelP
     },
     setup: {
       applyAccountConfig,
+    },
+    mentions: {
+      stripRegexes: ({ cfg, ctx }) => {
+        const account = resolveAccountSafe(cfg, ctx?.AccountId);
+        if (!account) return [];
+        return buildCliqMentionRegexes(account);
+      },
+      stripPatterns: ({ cfg, ctx }) => {
+        const account = resolveAccountSafe(cfg, ctx?.AccountId);
+        if (!account?.botName) return [];
+        return [`@${account.botName}`];
+      },
+      stripMentions: ({ text, cfg, ctx }) => {
+        const account = resolveAccountSafe(cfg, ctx?.AccountId);
+        if (!account) return text ?? "";
+        return stripCliqMentions(text ?? "", account);
+      },
     },
   },
 

@@ -2,7 +2,7 @@
 
 ## Project: openclaw-cliq
 
-**Status:** Inbound webhook path implemented (iteration 2 complete)
+**Status:** Mentions adapter implemented (iteration 3 complete)
 
 ### What exists in this repo
 - `AGENTS.md` — project context and conventions
@@ -26,6 +26,8 @@
   - `readJsonBody(req)` — size-limited JSON body reader
   - `dispatchCliqInbound({ runtime, cfg, account, parsed })` — dispatches into OpenClaw via `runtime.channel.inbound.run` with a minimal adapter that builds the turn context via `runtime.channel.routing.resolveAgentRoute` + `runtime.channel.reply.{resolveEnvelopeFormatOptions,formatAgentEnvelope,finalizeInboundContext,dispatchReplyWithBufferedBlockDispatcher}` + `runtime.channel.session.{resolveStorePath,readSessionUpdatedAt,recordInboundSession}` and delivers replies back through `CliqClient.sendMessage`
 - `src/inbound.test.ts` — 19 vitest tests covering secret verification (5), payload parsing (8), mention facts (2), and mention decision/skip logic (4). All passing.
+- `src/mentions.ts` — bot-mention stripping: `buildCliqMentionRegexes(account)` (case-insensitive `@botName`/`@botId` regexes with word-boundary, deduped) + `stripCliqMentions(text, account)` (pure strip + whitespace normalize). Used both by the plugin `mentions` adapter and the inbound dispatch path.
+- `src/mentions.test.ts` — 16 vitest tests covering regex construction (4), pure strip behavior (7), and the plugin `mentions` adapter wiring (5). All passing.
 - `.github/` — coding agent infrastructure (pre-existing)
 
 ### What is done in this run (iteration 1)
@@ -43,11 +45,19 @@
   - Studied the IBIZDigital/openclaw-cliq-channel reference repo for the real Deluge payload shape (string|object `message`, inconsistent `chat`/`channel` keys, wrapped `params`, `chat.type==="channel"` for groups, `-B` suffix convention for DM chat ids).
   - Added `src/inbound.test.ts` with 19 tests; total suite is 30/30 passing. Typecheck clean.
 
+### What is done in this run (iteration 3)
+- Implemented the `mentions` adapter so the bot @handle is stripped from the text the agent sees.
+  - Added `src/mentions.ts` with two pure, side-effect-free helpers: `buildCliqMentionRegexes({botId, botName})` (case-insensitive `@<name>\b` regexes, deduped by lowercase) and `stripCliqMentions(text, account)` (applies the regexes, collapses whitespace, trims; no-op when no bot identity configured).
+  - Wired a `mentions` adapter onto `cliqPlugin.base` (`createChatChannelPlugin` only accepts `base/security/pairing/threading/outbound`, so `mentions` lives on `base`, not at the top level). Exposes `stripRegexes`, `stripPatterns`, and `stripMentions` — all resolve the account safely via a new `resolveAccountSafe(cfg, accountId)` helper that returns `null` instead of throwing when the channel is unconfigured (the adapter contract passes `cfg: OpenClawConfig | undefined`).
+  - Updated `dispatchCliqInbound` to strip the bot @handle before building the agent envelope: `Body`/`RawBody`/`CommandBody` now use the cleaned text (so the agent doesn't echo the handle and command detection operates on the clean instruction). Delivery text to the channel is unaffected.
+  - Added `src/mentions.test.ts` (16 tests). Total suite is 46/46 passing. Typecheck clean.
+  - Fixup: removed an unused `import type { ResolvedCliqAccount }` from `mentions.ts` flagged by `noUnusedLocals`.
+
 ### What is still missing / incomplete
 - **Dispatch adapter wiring is UNVERIFIED against a live gateway.** `dispatchCliqInbound` constructs an `AssembledChannelTurn` and calls `runtime.channel.inbound.run` using best-effort shapes inferred from the installed `.d.ts` + the IBIZDigital reference repo (which used the older `core.channel.*` surface). The exact argument shapes for `resolveAgentRoute`, `finalizeInboundContext`, `formatAgentEnvelope`, `dispatchReplyWithBufferedBlockDispatcher`, and `recordInboundSession` need runtime integration testing against a real OpenClaw gateway. The pure functions (parse, verify, mention-gate) are fully unit-tested; the dispatch glue is not.
 - **No pairing flow** — `pairing` adapter not implemented (DM approval flow for new contacts). DM allowlist deny currently just drops the message silently.
 - **No media/file sending** — `sendMedia` not implemented; capabilities.media is false.
-- **No `mentions` adapter** on the plugin object (stripRegexes/stripMentions for stripping the bot @handle from the agent-visible text). Mention detection is currently inbound-only via `resolveCliqMentionDecision`.
+- **No `mentions` adapter** on the plugin object (stripRegexes/stripMentions for stripping the bot @handle from the agent-visible text). Mention detection is currently inbound-only via `resolveCliqMentionDecision`. *(Resolved in iteration 3 — see above.)*
 - **No Markdown→Cliq formatting** — outbound sends raw text.
 - **No typing/heartbeat indicators.**
 - **No real Zoho Cliq API integration tests** (would need credentials / mocked fetch).
@@ -58,10 +68,13 @@
 - **Self-message detection is naive** — matches `senderId === account.botId` or `senderName === account.botName`. Zoho bot self-events may need a more robust check.
 
 ### Next logical step
-Verify the inbound dispatch wiring against a live gateway (or build a runtime mock test for `dispatchCliqInbound`), then implement the **`mentions` adapter** (stripRegexes/stripMentions) so the bot @handle is removed from the text the agent sees, and implement **DM allowlist enforcement / pairing** in the webhook handler so unauthorized DMs are rejected or routed through the pairing flow instead of silently dropped.
+Verify the inbound dispatch wiring against a live gateway (or build a runtime mock test for `dispatchCliqInbound`), then implement **DM allowlist enforcement / pairing** in the webhook handler so unauthorized DMs are rejected or routed through the pairing flow instead of silently dropped. The pure DM-allowlist check can reuse `cliqPlugin.security.dm.resolvePolicy` + `resolveAllowFrom` to decide allow/deny/pair before dispatch; a deny should log a warning (currently silent).
 
 ### Insights / blockers
-- The installed `openclaw@2026.6.11` `runtime.channel` surface (in `types-CR1WAXpo.d.ts` around line 7204) exposes `text`, `reply` (incl. `dispatchReplyWithBufferedBlockDispatcher`, `finalizeInboundContext`, `formatAgentEnvelope`, `resolveEnvelopeFormatOptions`), `routing.resolveAgentRoute`, `session.*` (resolveStorePath, readSessionUpdatedAt, recordSessionMetaFromInbound, recordInboundSession, updateLastRoute), `mentions.*`, and `inbound.{run,buildContext,dispatchReply,runPreparedReply}`. The IBIZDigital repo used the same surface under the older `core.channel.*` alias and the legacy dispatch path (`dispatchReplyWithBufferedBlockDispatcher` + `finalizeInboundContext`), which is still present and is what `inbound.run` orchestrates under the hood.
+- The installed `openclaw@2026.6.11` `runtime.channel` surface (in `types-D7eu8baG.d.ts` around line 7093) exposes `text`, `reply` (incl. `dispatchReplyWithBufferedBlockDispatcher`, `finalizeInboundContext`, `formatAgentEnvelope`, `resolveEnvelopeFormatOptions`), `routing.resolveAgentRoute`, `session.*` (resolveStorePath, readSessionUpdatedAt, recordSessionMetaFromInbound, recordInboundSession, updateLastRoute), `mentions.*`, and `inbound.{run,buildContext,dispatchReply,runPreparedReply}`. The IBIZDigital repo used the same surface under the older `core.channel.*` alias and the legacy dispatch path (`dispatchReplyWithBufferedBlockDispatcher` + `finalizeInboundContext`), which is still present and is what `inbound.run` orchestrates under the hood.
+- `createChatChannelPlugin` (in `node_modules/openclaw/dist/core-CBhRRoge.d.ts:225`) only accepts `{ base, security, pairing, threading, outbound }`. Any other `ChannelPlugin` field — including `mentions`, `commands`, `lifecycle`, `groups`, `heartbeat`, etc. — must be placed on `base` (the `ChatChannelPluginBase` is `Omit<ChannelPlugin, "security" | "pairing" | "threading" | "outbound"> & Partial<Pick<...>>`). Putting `mentions` at the top level of the `createChatChannelPlugin` params is silently dropped (the resulting plugin object has `mentions: undefined`).
+- The core `stripMentions(text, ctx, cfg, agentId)` helper (`node_modules/openclaw/dist/mentions-B1EJNjZS.js:166`) calls the provider plugin's `mentions.stripRegexes({ctx,cfg,agentId})` to obtain regexes, applies them, then also calls `mentions.stripMentions({text,ctx,cfg,agentId})` for custom stripping. So implementing `stripRegexes` is sufficient for the SDK's shared path; `stripMentions` is an optional override. We expose both for robustness and for direct unit testing.
+- A `g`-flagged `RegExp` is **stateful** between `.test()` calls: `lastIndex` advances and the next call continues from there, yielding false negatives. `buildCliqMentionRegexes` returns fresh `g`-flagged regexes; `stripCliqMentions` resets `re.lastIndex = 0` before each `replace` (which is safe since `replace` does not advance `lastIndex` anyway, but defensive). Unit tests that call `.test()` repeatedly on the same regex must reset `lastIndex` between calls.
 - `resolveInboundMentionDecision` accepts either a flat params object or a nested `{ facts, policy }` object; the nested form is preferred per the docs. For DMs we force `wasMentioned: true` (a DM is always directed at the bot); for groups we require an explicit mention unless `requireMention` is relaxed.
 - The Deluge payload is inconsistent: `message` can be a plain string or `{ text, id, time }`; channel info can live under `payload.channel`, `payload.chat.channel_unique_name`, or be inferable from `chat.type === "channel"` / `chat.title`. `parseCliqWebhookPayload` tolerates all of these and unwraps a wrapped `params` object some Deluge configs send.
 - DM vs group detection: a chat id with a `-B` suffix indicates a bot DM (per IBIZDigital API notes), but we currently rely on `chat.type === "channel"` / presence of channel fields for group detection rather than the suffix, which is more robust to Cliq's inconsistent payloads.
@@ -71,3 +84,4 @@ Verify the inbound dispatch wiring against a live gateway (or build a runtime mo
 ### History
 - 2026-07-04 (iteration 1): Set up project foundation — package.json, manifest, tsconfig, entry points, minimal channel plugin scaffold with config/setup/security/threading/outbound adapters, CliqClient with OAuth token refresh, 11 passing tests. Typecheck clean.
 - 2026-07-04 (iteration 2): Implemented inbound webhook path — payload parsing, secret verification, mention gating via `resolveInboundMentionDecision`, dispatch via `runtime.channel.inbound.run`. Replaced stub `/cliq/webhook` handler. Added `src/inbound.ts` + `src/inbound.test.ts` (19 tests). Total 30/30 tests passing, typecheck clean. Dispatch adapter wiring still needs live-gateway verification.
+- 2026-07-04 (iteration 3): Implemented the `mentions` adapter — added `src/mentions.ts` (`buildCliqMentionRegexes`, `stripCliqMentions`), wired `mentions` onto `cliqPlugin.base` (exposing `stripRegexes`/`stripPatterns`/`stripMentions` with safe account resolution), and stripped the bot @handle from the agent-visible envelope in `dispatchCliqInbound`. Added `src/mentions.test.ts` (16 tests). Total 46/46 tests passing, typecheck clean.

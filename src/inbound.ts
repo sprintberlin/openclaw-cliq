@@ -7,6 +7,7 @@ import type {
 import type { IncomingMessage } from "node:http";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { CliqClient, type ResolvedCliqAccount } from "./client.js";
+import { stripCliqMentions } from "./mentions.js";
 
 /**
  * Minimal slice of `api.runtime` that the inbound dispatch path needs. Kept
@@ -431,19 +432,22 @@ export async function dispatchCliqInbound(params: {
     storePath,
     sessionKey: route.sessionKey,
   });
+  // Strip the bot @handle from the text the agent sees so the agent doesn't
+  // echo it back and so command detection operates on the clean instruction.
+  const cleanText = stripCliqMentions(parsed.text, account);
   const body = runtime.channel.reply.formatAgentEnvelope({
     channel: "Cliq",
     from: fromLabel,
     timestamp: parsed.timestamp ? Date.parse(parsed.timestamp) : undefined,
     previousTimestamp,
     envelope: envelopeOptions,
-    body: parsed.text,
+    body: cleanText,
   });
 
   const ctxPayload = runtime.channel.reply.finalizeInboundContext({
     Body: body,
-    RawBody: parsed.text,
-    CommandBody: parsed.text,
+    RawBody: cleanText,
+    CommandBody: cleanText,
     From: `cliq:${parsed.senderId}`,
     To: `cliq:${responseTarget}`,
     SessionKey: route.sessionKey,
