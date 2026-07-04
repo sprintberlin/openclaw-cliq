@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.js
+*.d.ts
+*.map
+.DS_Store
+opencode.json
+oh-my-tokens.json
+/tmp/

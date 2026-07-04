@@ -1,0 +1,91 @@
+default_tier: tier-2
+verification:
+  alias: minimax-m2.7
+  max_log_chars: 128000
+tiers:
+  tier-1:
+    model: claude-opus
+    reasoning: high
+  tier-2:
+    model: glm-5.2
+    reasoning: high
+  tier-3:
+    model: mimo-pro
+    reasoning: high
+  tier-4:
+    model: deepseek-pro
+    reasoning: high
+  tier-5:
+    model: kimi-k2
+    reasoning: high
+models:
+  gpt-5.5:
+    id: openai/gpt-5.5
+    name: OpenAI GPT-5.5
+    context_length: 1000000
+    cost_input_1M_usd: 5.0
+    cost_output_1M_usd: 30.0
+    description: OpenAI's frontier model for complex professional workloads.
+  claude-opus:
+    id: anthropic/claude-opus-4.7
+    name: Claude Opus 4.7 (High-End Expert)
+    context_length: 1000000
+    cost_input_1M_usd: 5.0
+    cost_output_1M_usd: 25.0
+    description: Built for long-running, asynchronous agents.
+  gemini-pro:
+    id: google/gemini-3.1-pro-preview
+    name: Google Gemini 3.1 Pro
+    context_length: 2000000
+    cost_input_1M_usd: 2.5
+    cost_output_1M_usd: 10.0
+    description: Solid alternative, great with large contexts.
+  mimo-pro:
+    id: xiaomi/mimo-v2.5-pro
+    name: Xiaomi MiMo V2.5 Pro
+    context_length: 1048576
+    cost_input_1M_usd: 1.0
+    cost_output_1M_usd: 3.0
+    description: Xiaomi's flagship model for general agentic capabilities.
+  grok-4.3:
+    id: x-ai/grok-4.3
+    name: xAI Grok 4.3
+    context_length: 1000000
+    cost_input_1M_usd: 1.25
+    cost_output_1M_usd: 2.5
+    description: Reasoning model from xAI for agentic workflows.
+  kimi-k2:
+    id: moonshotai/kimi-k2.6
+    name: MoonshotAI Kimi K2.6
+    context_length: 262142
+    cost_input_1M_usd: 0.74
+    cost_output_1M_usd: 3.49
+    description: Next-gen multimodal, ideal for long-horizon coding.
+  minimax-m2.7:
+    id: minimax/minimax-m2.7
+    name: MiniMax M2.7
+    context_length: 196608
+    cost_input_1M_usd: 0.3
+    cost_output_1M_usd: 1.2
+    description: Next-generation model for autonomous real-world productivity.
+  deepseek-pro:
+    id: deepseek/deepseek-v4-pro
+    name: DeepSeek V4 Pro
+    context_length: 1048576
+    cost_input_1M_usd: 0.435
+    cost_output_1M_usd: 0.87
+    description: Extremely cheap, MOE with 1M context window.
+  grok-4.1-fast:
+    id: x-ai/grok-4.1-fast
+    name: xAI Grok 4.1 Fast
+    context_length: 2000000
+    cost_input_1M_usd: 0.2
+    cost_output_1M_usd: 0.5
+    description: xAI's best agentic tool calling model.
+  glm-5.2:
+    id: z-ai/glm-5.2
+    name: Z.ai GLM 5.2
+    context_length: 1000000
+    cost_input_1M_usd: 1.2
+    cost_output_1M_usd: 4.1
+    description: Large-scale reasoning model with 1M context window.

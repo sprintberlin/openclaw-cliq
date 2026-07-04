@@ -1,0 +1,205 @@
+name: 🤖 OpenCode Autonomous Coder
+
+on:
+  issues:
+    types: [opened, edited, reopened, labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number to process'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  actions: read
+
+concurrency:
+  group: opencode-${{ github.event.issue.number || github.event.inputs.issue_number }}
+  cancel-in-progress: true
+
+jobs:
+  opencode-runner:
+    if: "github.event_name == 'workflow_dispatch' || (github.event.issue != null && !contains(github.event.issue.labels.*.name, 'aider') && !contains(github.event.issue.labels.*.name, 'follow-up') && !contains(github.event.issue.labels.*.name, 'needs-human') && !contains(github.event.issue.labels.*.name, 'on-hold'))"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.AIDERCX_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "Aider Yilmaz"
+          git config --global user.email "aider@sprintcx.de"
+          git config --global url."https://aidercx:${{ secrets.AIDERCX_TOKEN }}@github.com/".insteadOf "https://github.com/"
+
+      - name: Install System Dependencies & Tools
+        run: |
+          sudo apt-get update -qq || true
+          sudo apt-get install -y ripgrep > /dev/null 2>&1 || true
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod a+x /usr/local/bin/yq
+          curl -fsSL https://opencode.ai/install | bash
+          npm install -g mcporter
+          npm install oh-my-tokens --prefix ~/.opencode
+
+      - name: Create Prompt
+        env:
+          GH_TOKEN: ${{ secrets.AIDERCX_TOKEN }}
+          WORKFLOW_DISPATCH_ISSUE: ${{ github.event.inputs.issue_number }}
+          ACTUAL_ISSUE: ${{ github.event.issue.number }}
+        run: |
+          python3 .github/scripts/create_opencode_prompt.py
+
+      - name: Setup OpenCode Config
+        env:
+          ACTUAL_ISSUE: ${{ github.event.issue.number }}
+          WORKFLOW_DISPATCH_ISSUE: ${{ github.event.inputs.issue_number }}
+          GH_TOKEN: ${{ secrets.AIDERCX_TOKEN }}
+        run: |
+          ISSUE_NUMBER="${WORKFLOW_DISPATCH_ISSUE:-$ACTUAL_ISSUE}"
+          LABELS=$(gh issue view "$ISSUE_NUMBER" --json labels -t '{{range .labels}}{{.name}} {{end}}')
+
+          DEFAULT_TIER=$(yq -r '.default_tier' .github/opencode-models.yml)
+          SELECTED_TIER=""
+
+          for label in $LABELS; do
+            if [[ "$label" == tier-* ]]; then
+              TIER_EXISTS=$(yq -r ".tiers[\"$label\"]" .github/opencode-models.yml)
+              if [ "$TIER_EXISTS" != "null" ]; then
+                SELECTED_TIER="$label"
+                break
+              fi
+            fi
+          done
+
+          if [ -z "$SELECTED_TIER" ]; then
+            SELECTED_TIER="$DEFAULT_TIER"
+            echo "No valid tier label found. Falling back to default: $SELECTED_TIER"
+          else
+            echo "Found valid tier label on issue: $SELECTED_TIER"
+          fi
+
+          ALIAS=$(yq -r ".tiers[\"$SELECTED_TIER\"].model" .github/opencode-models.yml)
+          REASONING=$(yq -r ".tiers[\"$SELECTED_TIER\"].reasoning" .github/opencode-models.yml)
+          MODEL_STRING=$(yq -r ".models[\"$ALIAS\"].id" .github/opencode-models.yml)
+          MODEL_NAME=$(yq -r ".models[\"$ALIAS\"].name" .github/opencode-models.yml)
+          if [ "$MODEL_STRING" == "null" ] || [ -z "$MODEL_STRING" ]; then
+             echo "Error resolving model identity for alias $ALIAS. Falling back to safety model."
+             MODEL_STRING="anthropic/claude-opus-4.7"
+             MODEL_NAME="Claude Opus 4.7 (Safety Fallback)"
+          fi
+
+          if [ "$REASONING" == "null" ] || [ -z "$REASONING" ]; then
+            REASONING="medium"
+          fi
+
+          echo "Using Model: $MODEL_NAME ($MODEL_STRING)"
+          echo "Reasoning: $REASONING"
+
+          cat << JSON_EOF > opencode.json
+          {
+            "plugin": ["oh-my-tokens"],
+            "provider": {
+              "openrouter": {
+                "models": {
+                  "$MODEL_STRING": {
+                    "options": {
+                      "reasoningEffort": "$REASONING",
+                      "reasoning_effort": "$REASONING"
+                    }
+                  }
+                }
+              }
+            },
+            "agent": {
+              "build": {
+                "mode": "primary",
+                "model": "openrouter/$MODEL_STRING",
+                "options": {
+                  "reasoningEffort": "$REASONING"
+                },
+                "tools": { "write": true, "edit": true, "bash": true, "read": true },
+                "permission": { "edit": "allow", "write": "allow", "bash": { "*": "allow" }, "external_directory": {"/tmp/*": "allow", "/tmp": "allow"}, "read": "allow" }
+              }
+            }
+          }
+          JSON_EOF
+
+          cat << OMT_EOF > oh-my-tokens.json
+          {
+            "enrichment": "auto",
+            "budget": { "timezone": "UTC" },
+            "toast": { "enabled": false },
+            "retention": 30
+          }
+          OMT_EOF
+
+          echo "OPENCODE_MODEL_ID=$MODEL_STRING" >> $GITHUB_ENV
+          echo "OPENCODE_MODEL_NAME=$MODEL_NAME" >> $GITHUB_ENV
+          echo "OLD_HEAD=$(git rev-parse HEAD)" >> $GITHUB_ENV
+
+      - name: Debug OpenCode Config
+        run: |
+          echo "=== Generated opencode.json ==="
+          cat opencode.json
+          echo ""
+          echo "=== opencode debug config ==="
+          ~/.opencode/bin/opencode debug config 2>&1 || echo "debug config not available"
+
+      - name: Run OpenCode
+        id: opencode_run
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_KEY }}
+          GH_TOKEN: ${{ secrets.AIDERCX_TOKEN }}
+        run: |
+          set -o pipefail
+          ~/.opencode/bin/opencode run "$(cat /tmp/prompt.txt)" 2>&1 | tee /tmp/opencode_run.log || echo "OpenCode run failed or exited non-zero" >> /tmp/opencode_run.log
+          touch /tmp/opencode_run.log
+
+      - name: Commit and Push
+        id: git_commit
+        run: |
+          rm -f opencode.json oh-my-tokens.json
+          git restore AGENTS.md || true
+
+          git add .
+          if git diff --cached --quiet; then
+            echo "Working directory clean (no further changes left to commit)."
+          else
+            git commit -m "Updates #${{ env.ISSUE_NUMBER }} - implemented via OpenCode Agent"
+          fi
+
+          git pull origin main --rebase --autostash || true
+          git push origin HEAD
+
+          NEW_HEAD=$(git rev-parse HEAD)
+          if [ "$OLD_HEAD" != "$NEW_HEAD" ]; then
+            echo "CHANGES_MADE=true" >> $GITHUB_ENV
+          else
+            echo "CHANGES_MADE=false" >> $GITHUB_ENV
+          fi
+
+      - name: Token Cost Report
+        if: always()
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_KEY }}
+          OPENCODE_MODEL_ID: ${{ env.OPENCODE_MODEL_ID }}
+          OPENCODE_MODEL_NAME: ${{ env.OPENCODE_MODEL_NAME }}
+        run: |
+          python3 .github/scripts/opencode_token_report.py || echo "Token cost report step failed (non-fatal)"
+
+      - name: AI Verification & Issue Closing
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.AIDERCX_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_KEY }}
+        run: |
+          pip install pyyaml > /dev/null
+          python3 .github/scripts/opencode_verify_log.py
