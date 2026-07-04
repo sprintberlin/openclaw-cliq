@@ -57,6 +57,11 @@ jobs:
           git config --global user.email "aider@sprintcx.de"
           git config --global url."https://aidercx:${{ secrets.AIDERCX_TOKEN }}@github.com/".insteadOf "https://github.com/"
 
+      - name: Sync Latest Main
+        run: |
+          git fetch origin main
+          git checkout -B main origin/main
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -209,12 +214,17 @@ jobs:
 
       - name: Commit and Push
         id: git_commit
+        env:
+          GH_TOKEN: ${{ secrets.AIDERCX_TOKEN }}
         run: |
+          set -euo pipefail
+
           rm -f opencode.json oh-my-tokens.json
           git restore AGENTS.md || true
           # Never commit node_modules or build artifacts
           git reset node_modules dist .turbo 2>/dev/null || true
-          echo "node_modules/" >> .gitignore 2>/dev/null || true
+          touch .gitignore
+          grep -qxF "node_modules/" .gitignore || echo "node_modules/" >> .gitignore
 
           git add .
           if git diff --cached --quiet; then
@@ -223,8 +233,22 @@ jobs:
             git commit -m "Updates #${{ env.ISSUE_NUMBER }} - implemented via OpenCode Agent"
           fi
 
-          git pull origin main --rebase --autostash || true
-          git push origin HEAD
+          git fetch origin main
+          if ! git rebase origin/main; then
+            git rebase --abort || true
+
+            {
+              echo "OpenCode finished its local changes, but could not rebase them onto the current main branch."
+              echo ""
+              echo "The run was stopped before pushing to avoid corrupting main or pushing from a half-applied rebase state. Please re-run the agent after reconciling the conflicting files, or apply the local changes manually."
+            } > /tmp/opencode_rebase_conflict_comment.md
+
+            gh issue edit "${{ env.ISSUE_NUMBER }}" --repo "${{ github.repository }}" --add-label needs-human || true
+            gh issue comment "${{ env.ISSUE_NUMBER }}" --repo "${{ github.repository }}" --body-file /tmp/opencode_rebase_conflict_comment.md || true
+            exit 1
+          fi
+
+          git push origin HEAD:refs/heads/main
 
           NEW_HEAD=$(git rev-parse HEAD)
           if [ "$OLD_HEAD" != "$NEW_HEAD" ]; then
