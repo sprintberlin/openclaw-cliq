@@ -88,9 +88,10 @@ describe("cliq plugin", () => {
     expect(section.botName).toBe("Bot");
   });
 
-  it("advertises direct + group chat types and reply capability", () => {
+  it("advertises direct + group chat types, reply, and media capabilities", () => {
     expect(cliqPlugin.capabilities.chatTypes).toEqual(["direct", "group"]);
     expect(cliqPlugin.capabilities.reply).toBe(true);
+    expect(cliqPlugin.capabilities.media).toBe(true);
   });
 
   it("wires a pairing adapter with the cliq id label", () => {
@@ -145,6 +146,123 @@ describe("cliq plugin", () => {
     expect(calls[0].text).toBe("*bold* and _italic_");
     // Outbound context lacks chatType, so the client defaults to `chatid`.
     expect(calls[0].chatid ?? calls[0].userids).toBe("user-1");
+  });
+
+  it("uploads an http media attachment via multipart to the bot API", async () => {
+    setCliqClientRegistry(null);
+    const cfg = cfgWith({
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+    });
+    const seen: { url: string; method: string; body: unknown; headers: Record<string, string> }[] = [];
+    const mediaBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(JSON.stringify({ access_token: "tok", expires_in: 3600 }), { status: 200 });
+      }
+      if (urlStr.includes("/media/file.png")) {
+        return new Response(mediaBytes, { status: 200, headers: { "content-type": "image/png" } });
+      }
+      if (init?.method === "POST") {
+        const headers: Record<string, string> = {};
+        const h = init.headers;
+        if (h instanceof Headers) {
+          h.forEach((v, k) => { headers[k.toLowerCase()] = v; });
+        } else if (h && typeof h === "object") {
+          for (const [k, v] of Object.entries(h as Record<string, string>)) headers[k.toLowerCase()] = v;
+        }
+        seen.push({ url: urlStr, method: init.method ?? "POST", body: init.body, headers });
+        return new Response(JSON.stringify({ id: "msg-media-1" }), { status: 200 });
+      }
+      return new Response("", { status: 404 });
+    }) as typeof fetch;
+    try {
+      const result = await cliqPlugin.outbound!.sendMedia!({
+        cfg,
+        to: "user-1",
+        text: "**see this**",
+        mediaUrl: "https://example.com/media/file.png",
+        accountId: undefined,
+      } as any);
+      expect(result.messageId).toBe("msg-media-1");
+    } finally {
+      globalThis.fetch = original;
+    }
+    // The bot API call must be multipart/form-data with the file attached.
+    const post = seen.find((s) => s.url.includes("/bots/bot/message"));
+    expect(post).toBeDefined();
+    const form = post!.body as FormData;
+    expect(form).toBeInstanceOf(FormData);
+    expect(form.get("chatid")).toBe("user-1");
+    expect(form.get("text")).toBe("*see this*");
+    const file = form.get("attachments") as File;
+    expect(file).toBeInstanceOf(File);
+    expect(file.name).toBe("file.png");
+    expect(file.type).toBe("image/png");
+    expect(new Uint8Array(await file.arrayBuffer())).toEqual(mediaBytes);
+    // Authorization must be the OAuth token; body is a FormData (multipart) instance.
+    expect(post!.headers["authorization"]).toBe("Zoho-oauthtoken tok");
+    expect(form).toBeInstanceOf(FormData);
+  });
+
+  it("reads a local media file via mediaReadFile and uploads it", async () => {
+    setCliqClientRegistry(null);
+    const cfg = cfgWith({
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+    });
+    const seen: { url: string; body: unknown }[] = [];
+    const fileBytes = Buffer.from("hello world");
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(JSON.stringify({ access_token: "tok", expires_in: 3600 }), { status: 200 });
+      }
+      if (init?.method === "POST") {
+        seen.push({ url: urlStr, body: init.body });
+        return new Response(JSON.stringify({ id: "msg-media-2" }), { status: 200 });
+      }
+      return new Response("", { status: 404 });
+    }) as typeof fetch;
+    try {
+      const result = await cliqPlugin.outbound!.sendMedia!({
+        cfg,
+        to: "channel-1",
+        text: "doc",
+        mediaUrl: "/tmp/report.txt",
+        mediaReadFile: async () => fileBytes,
+        accountId: undefined,
+      } as any);
+      expect(result.messageId).toBe("msg-media-2");
+    } finally {
+      globalThis.fetch = original;
+    }
+    const post = seen.find((s) => s.url.includes("/bots/bot/message"));
+    expect(post).toBeDefined();
+    const form = post!.body as FormData;
+    expect(form.get("chatid")).toBe("channel-1");
+    expect(form.get("text")).toBe("doc");
+    const file = form.get("attachments") as File;
+    expect(file.name).toBe("report.txt");
+    expect(file.type).toBe("text/plain");
+    expect(new Uint8Array(await file.arrayBuffer())).toEqual(new Uint8Array(fileBytes));
+  });
+
+  it("throws when sendMedia is called without a mediaUrl", async () => {
+    const cfg = cfgWith({ clientId: "id", clientSecret: "secret", botId: "bot" });
+    await expect(
+      cliqPlugin.outbound!.sendMedia!({
+        cfg,
+        to: "user-1",
+        text: "no media",
+        accountId: undefined,
+      } as any),
+    ).rejects.toThrow(/mediaUrl/);
   });
 });
 

@@ -73,6 +73,90 @@ export interface SendMessageOptions {
   isDm?: boolean;
 }
 
+export interface CliqMediaAttachment {
+  bytes: Uint8Array;
+  fileName: string;
+  mimeType?: string;
+}
+
+export interface LoadCliqMediaAttachmentOptions {
+  mediaUrl: string;
+  mediaReadFile?: (filePath: string) => Promise<Buffer>;
+  mediaAccess?: { readFile?: (filePath: string) => Promise<Buffer> } | null;
+  fetchImpl?: typeof fetch;
+}
+
+function inferFileNameFromUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    const base = u.pathname.split("/").filter(Boolean).pop();
+    if (base) return decodeURIComponent(base);
+  } catch {
+    // not a URL; fall through to path handling
+  }
+  const parts = url.split(/[/\\]/).filter(Boolean);
+  return parts[parts.length - 1] || "attachment";
+}
+
+function inferFileNameFromPath(path: string): string {
+  const parts = path.split(/[/\\]/).filter(Boolean);
+  return parts[parts.length - 1] || "attachment";
+}
+
+const MIME_BY_EXT: Record<string, string> = {
+  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
+  webp: "image/webp", svg: "image/svg+xml", pdf: "application/pdf",
+  txt: "text/plain", json: "application/json", csv: "text/csv",
+  zip: "application/zip", mp3: "audio/mpeg", mp4: "video/mp4",
+  webm: "video/webm", mov: "video/quicktime", wav: "audio/wav",
+  ogg: "audio/ogg", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+};
+
+function inferMimeFromExt(fileName: string): string | undefined {
+  const ext = fileName.split(".").pop()?.toLowerCase();
+  if (!ext) return undefined;
+  return MIME_BY_EXT[ext];
+}
+
+export async function loadCliqMediaAttachment(
+  opts: LoadCliqMediaAttachmentOptions,
+): Promise<CliqMediaAttachment> {
+  const url = opts.mediaUrl;
+  const isHttp = /^https?:\/\//i.test(url);
+  if (isHttp) {
+    const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
+    const res = await fetchImpl(url);
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`cliq: media fetch failed (${res.status}): ${body}`);
+    }
+    const buf = new Uint8Array(await res.arrayBuffer());
+    const ct = res.headers.get("content-type") ?? undefined;
+    const fileName = inferFileNameFromUrl(url);
+    const mimeType = ct && ct !== "application/octet-stream" ? ct : (inferMimeFromExt(fileName) ?? ct);
+    return { bytes: buf, fileName, mimeType };
+  }
+  const readFile = opts.mediaReadFile ?? opts.mediaAccess?.readFile;
+  if (!readFile) {
+    throw new Error(`cliq: cannot read local media "${url}" — no mediaReadFile/mediaAccess.readFile provided`);
+  }
+  const buffer = await readFile(url);
+  const bytes = new Uint8Array(buffer.byteLength);
+  bytes.set(new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength));
+  const fileName = inferFileNameFromPath(url);
+  const mimeType = inferMimeFromExt(fileName);
+  return { bytes, fileName, mimeType };
+}
+
+export interface SendMediaMessageOptions {
+  to: string;
+  text?: string;
+  isDm?: boolean;
+  attachment: CliqMediaAttachment;
+}
+
 export class CliqClient {
   private accessToken: string | null = null;
   private tokenExpiresAt = 0;
@@ -129,6 +213,36 @@ export class CliqClient {
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       throw new Error(`cliq: sendMessage failed (${res.status}): ${body}`);
+    }
+    const data = (await res.json().catch(() => ({}))) as { id?: string };
+    return { messageId: data.id };
+  }
+
+  async sendMediaMessage(opts: SendMediaMessageOptions): Promise<{ messageId?: string }> {
+    const token = await this.getAccessToken("ZohoCliq.Webhooks.CREATE");
+    const url = `${this.apiBase}/api/v2/bots/${encodeURIComponent(this.botId)}/message`;
+    const form = new FormData();
+    if (opts.text) form.set("text", opts.text);
+    if (opts.isDm) {
+      form.set("userids", opts.to);
+    } else {
+      form.set("chatid", opts.to);
+    }
+    const mimeType = opts.attachment.mimeType ?? "application/octet-stream";
+    // Copy into a standalone ArrayBuffer so the Blob does not capture a shared
+    // Node Buffer pool (which would include unrelated adjacent allocations).
+    const standalone = new Uint8Array(opts.attachment.bytes.byteLength);
+    standalone.set(opts.attachment.bytes);
+    const blob = new Blob([standalone], { type: mimeType });
+    form.set("attachments", blob, opts.attachment.fileName);
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Zoho-oauthtoken ${token}` },
+      body: form,
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`cliq: sendMediaMessage failed (${res.status}): ${body}`);
     }
     const data = (await res.json().catch(() => ({}))) as { id?: string };
     return { messageId: data.id };

@@ -7,6 +7,7 @@ import type {
 } from "openclaw/plugin-sdk/channel-core";
 import {
   chunkMessage,
+  loadCliqMediaAttachment,
   resolveCliqConfig,
   type CliqChannelConfig,
   type ResolvedCliqAccount,
@@ -23,7 +24,7 @@ import {
   notifyCliqPairingApproval,
 } from "./pairing.js";
 
-export { resolveCliqConfig, CliqClient, chunkMessage, type CliqChannelConfig, type ResolvedCliqAccount } from "./client.js";
+export { resolveCliqConfig, CliqClient, chunkMessage, loadCliqMediaAttachment, type CliqChannelConfig, type ResolvedCliqAccount, type CliqMediaAttachment } from "./client.js";
 export { buildCliqMentionRegexes, stripCliqMentions } from "./mentions.js";
 export { markdownToCliq } from "./markdown.js";
 export {
@@ -126,7 +127,7 @@ export const cliqPlugin: ChannelPlugin<ResolvedCliqAccount> = createChatChannelP
     },
     capabilities: {
       chatTypes: ["direct", "group"],
-      media: false,
+      media: true,
       reply: true,
       edit: false,
       reactions: false,
@@ -193,6 +194,27 @@ export const cliqPlugin: ChannelPlugin<ResolvedCliqAccount> = createChatChannelP
         const result = await client.sendMessage({
           to: ctx.to,
           text: markdownToCliq(ctx.text),
+        });
+        return {
+          messageId: result.messageId ?? "unknown",
+          to: ctx.to,
+        };
+      },
+      sendMedia: async (ctx) => {
+        const account = resolveAccountFromCtx(ctx.cfg, ctx.accountId);
+        const client = resolveCliqClient(account);
+        if (!ctx.mediaUrl) {
+          throw new Error("cliq: sendMedia requires ctx.mediaUrl");
+        }
+        const attachment = await loadCliqMediaAttachment({
+          mediaUrl: ctx.mediaUrl,
+          mediaReadFile: ctx.mediaReadFile,
+          mediaAccess: ctx.mediaAccess,
+        });
+        const result = await client.sendMediaMessage({
+          to: ctx.to,
+          text: ctx.text ? markdownToCliq(ctx.text) : undefined,
+          attachment,
         });
         return {
           messageId: result.messageId ?? "unknown",
