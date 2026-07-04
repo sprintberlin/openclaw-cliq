@@ -18,15 +18,33 @@ permissions:
 
 concurrency:
   group: opencode-${{ github.event.issue.number || github.event.inputs.issue_number }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   opencode-runner:
-    if: "github.event_name == 'workflow_dispatch' || (github.event.issue != null && !contains(github.event.issue.labels.*.name, 'aider') && !contains(github.event.issue.labels.*.name, 'follow-up') && !contains(github.event.issue.labels.*.name, 'needs-human') && !contains(github.event.issue.labels.*.name, 'on-hold'))"
+    # Trigger logic:
+    # - workflow_dispatch: always run
+    # - labeled event with 'follow-up' label: re-trigger (agent removes it at start, verification may set it again)
+    # - opened/edited/reopened: run unless blocked by on-hold or needs-human
+    if: |
+      github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'follow-up')
+      || (github.event_name == 'issues' && github.event.action != 'labeled'
+          && !contains(github.event.issue.labels.*.name, 'aider')
+          && !contains(github.event.issue.labels.*.name, 'follow-up')
+          && !contains(github.event.issue.labels.*.name, 'needs-human')
+          && !contains(github.event.issue.labels.*.name, 'on-hold'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
+      - name: Remove follow-up label (prevent re-trigger loops)
+        if: contains(github.event.issue.labels.*.name, 'follow-up')
+        env:
+          GH_TOKEN: ${{ secrets.AIDERCX_TOKEN }}
+        run: |
+          gh issue edit ${{ github.event.issue.number }} --repo ${{ github.repository }} --remove-label follow-up || true
+
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
