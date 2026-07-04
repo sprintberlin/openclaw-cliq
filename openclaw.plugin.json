@@ -1,0 +1,40 @@
+{
+  "id": "cliq",
+  "kind": "channel",
+  "channels": ["cliq"],
+  "name": "Zoho Cliq",
+  "description": "Zoho Cliq channel plugin for OpenClaw",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  },
+  "channelConfigs": {
+    "cliq": {
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "clientId": { "type": "string" },
+          "clientSecret": { "type": "string" },
+          "botId": { "type": "string" },
+          "botName": { "type": "string" },
+          "webhookSecret": { "type": "string" },
+          "allowFrom": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "required": ["clientId", "clientSecret", "botId"]
+      },
+      "uiHints": {
+        "clientId": { "label": "OAuth client id" },
+        "clientSecret": { "label": "OAuth client secret", "sensitive": true },
+        "botId": { "label": "Bot unique name" },
+        "botName": { "label": "Bot display name" },
+        "webhookSecret": { "label": "Webhook shared secret", "sensitive": true },
+        "allowFrom": { "label": "Allowed senders (Zoho Cliq user ids)" }
+      }
+    }
+  }
+}
