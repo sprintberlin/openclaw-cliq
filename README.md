@@ -30,7 +30,7 @@ This guide walks through everything that must be configured **on the Zoho side**
 
 ### 1. Create a Zoho Cliq Bot
 
-1. Open **Zoho Cliq** → left sidebar → **Bots** (or open the [Cliq Developer Console](https://cliq.zoho.eu/dev/console/bots)).
+1. Open **Zoho Cliq** → left sidebar → **Bots** 
 2. Click **Create Bot**.
 3. Fill in:
    - **Bot Name** (display name, e.g. `OpenClaw Agent`) — this is what users see.
