@@ -12,3 +12,4 @@ oh-my-tokens.json
 !index.ts
 !setup-entry.ts
 !src/**/*.ts
+node_modules/
