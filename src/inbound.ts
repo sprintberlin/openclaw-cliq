@@ -278,7 +278,7 @@ export function parseCliqWebhookPayload(
 
   return {
     text,
-    messageId: messageId || `cliq-${Date.now()}`,
+    messageId: messageId || "",
     timestamp: time || new Date().toISOString(),
     senderId: user.id,
     senderName: userName,

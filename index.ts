@@ -12,6 +12,7 @@ import {
   verifyWebhookSecret,
   type CliqRuntime,
 } from "./src/inbound.js";
+import { claimCliqMessage, commitCliqMessage, releaseCliqMessage } from "./src/dedupe.js";
 
 export default defineChannelPluginEntry({
   id: "cliq",
@@ -129,6 +130,21 @@ export default defineChannelPluginEntry({
           return true;
         }
 
+        // Idempotency / de-dup: claim the message before dispatching so a
+        // Cliq redelivery of an already-processed (or in-flight) `messageId`
+        // is acknowledged without re-running the agent + side effects. On
+        // successful dispatch we `commit` (record the tombstone); on a
+        // retryable failure we `release` so the next redelivery can retry.
+        const claim = await claimCliqMessage(parsed, account);
+        if (claim && claim.kind !== "claimed") {
+          api.logger.debug?.(
+            `[cliq] inbound ${parsed.messageId} skipped as ${claim.kind}`,
+          );
+          res.statusCode = 200;
+          res.end("ok");
+          return true;
+        }
+
         // Durable-before-ack: by default await the inbound pipeline before
         // acknowledging Cliq so a crash mid-dispatch triggers redelivery
         // instead of a lost message. `ackPolicy: "immediate"` opts out
@@ -142,6 +158,16 @@ export default defineChannelPluginEntry({
           onError: (err, info) => {
             api.logger.error?.(`[cliq] ${info.kind} failed: ${String(err)}`);
           },
+        }).then((result) => {
+          // Commit the dedupe tombstone once dispatch resolves so a later
+          // redelivery within the TTL is dropped instead of re-processed.
+          void commitCliqMessage(claim?.key ?? null);
+          return result;
+        }, (err) => {
+          // Retryable failure: release the claim so the next redelivery can
+          // re-enter the pipeline (the tombstone is not recorded).
+          releaseCliqMessage(claim?.key ?? null, err);
+          throw err;
         });
 
         if (account.ackPolicy === "immediate") {

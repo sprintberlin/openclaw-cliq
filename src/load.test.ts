@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import cliqEntry from "../index.js";
 import { cliqPlugin } from "./channel.js";
+import { resetCliqDedupeForTest } from "./dedupe.js";
 
 type CapturedRoute = {
   path: string;
@@ -91,6 +92,10 @@ function buildMockApi() {
 }
 
 describe("plugin entry load + /cliq/webhook smoke", () => {
+  beforeEach(() => {
+    resetCliqDedupeForTest();
+  });
+
   it("exports a DefinedChannelPluginEntry for channel id 'cliq'", () => {
     expect(cliqEntry).toBeTruthy();
     expect(cliqEntry.id).toBe("cliq");
@@ -229,6 +234,10 @@ describe("plugin entry load + /cliq/webhook smoke", () => {
 });
 
 describe("durable-before-ack ingest (issue #12)", () => {
+  beforeEach(() => {
+    resetCliqDedupeForTest();
+  });
+
   function buildDurableMockApi(opts: {
     inboundRun: () => Promise<unknown>;
     ackPolicy?: "after_dispatch" | "immediate";

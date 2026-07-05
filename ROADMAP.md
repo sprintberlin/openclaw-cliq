@@ -34,8 +34,6 @@
 The difference between a demo and a real channel. Without these, messages get lost, duplicated,
 or the bot talks to itself.
 
-- **Idempotency / de-dup.** Cliq can redeliver; drop already-processed message ids (tombstone,
-  don't just delete) so callbacks/side effects don't rerun.
 - **Bot-loop / self-message protection.** Current self-detection is naive (`senderId===botId`).
   Harden it so the bot never answers its own or another bot's messages. See
   `docs/channels/bot-loop-protection.md`.
