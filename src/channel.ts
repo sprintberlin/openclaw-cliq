@@ -30,6 +30,7 @@ import { cliqAgentPromptAdapter } from "./agent-prompt.js";
 import { cliqOutboundPresentation } from "./outbound-presentation.js";
 import { cliqCommandsAdapter } from "./commands.js";
 import { cliqThreadingAdapter } from "./threading.js";
+import { cliqSecretsAdapter } from "./secret-contract.js";
 import {
   CLIQ_PAIRING_APPROVED_MESSAGE,
   CLIQ_PAIRING_ID_LABEL,
@@ -113,6 +114,14 @@ export {
   resolveCliqReplyTransport,
   resolveCliqCurrentChannelId,
 } from "./threading.js";
+export {
+  cliqSecretsAdapter,
+  cliqSecretTargetRegistryEntries,
+  collectCliqRuntimeConfigAssignments,
+} from "./secret-contract.js";
+export {
+  resolveCliqSecretString,
+} from "./secret-resolve.js";
 export {
   presentationToCliqCard,
   cliqButtonFromPortable,
@@ -262,6 +271,7 @@ export const cliqPlugin = createChatChannelPlugin<ResolvedCliqAccount, CliqStatu
     groups: cliqGroupsAdapter,
     agentPrompt: cliqAgentPromptAdapter,
     commands: cliqCommandsAdapter,
+    secrets: cliqSecretsAdapter,
   },
 
   security: {

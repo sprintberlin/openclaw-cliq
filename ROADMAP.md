@@ -35,8 +35,6 @@
 
 ## Phase 4 — Operational / multi-account / enterprise
 
-- **SecretRef-backed credentials** (`secret-contract-api.ts`). Support `openclaw secrets`
-  (audit/apply/reload) so clientSecret/webhookSecret aren't plaintext in config.
 - **Security audit** (`security-audit-contract-api.ts`). Contribute to `openclaw security` audits
   (open DM policy, missing webhook secret, wildcard allowlist).
 - **Session binding** (`session-binding-contract-api.ts`, `session-key-api.ts`). Correct session

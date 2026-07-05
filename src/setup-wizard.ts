@@ -6,6 +6,7 @@ import {
   type OpenClawConfig,
   type WizardPrompter,
 } from "openclaw/plugin-sdk/setup";
+import { hasConfiguredSecretInput } from "openclaw/plugin-sdk/secret-input-runtime";
 
 const CHANNEL = "cliq" as const;
 const DEFAULT_ACCOUNT_ID = "default";
@@ -28,12 +29,18 @@ function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-/** A channel is configured iff the three required OAuth/bot fields are set. */
+/**
+ * A channel is configured iff the three required OAuth/bot fields are set.
+ * `clientSecret` uses `hasConfiguredSecretInput` so a SecretRef-configured
+ * secret (the form `openclaw secrets apply` produces) still counts as present
+ * — otherwise the setup wizard would re-prompt for a plaintext value and
+ * clobber the configured ref.
+ */
 export function isCliqChannelConfigured(cfg: OpenClawConfig, _accountId?: string): boolean {
   const section = readCliqSection(cfg);
   return Boolean(
     asString(section.clientId) &&
-      asString(section.clientSecret) &&
+      hasConfiguredSecretInput(section.clientSecret) &&
       asString(section.botId),
   );
 }

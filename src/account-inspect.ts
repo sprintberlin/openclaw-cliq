@@ -1,4 +1,5 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
+import { hasConfiguredSecretInput } from "openclaw/plugin-sdk/secret-input-runtime";
 import {
   resolveCliqConfig,
   type CliqChannelConfig,
@@ -92,8 +93,21 @@ function readSection(cfg: OpenClawConfig): CliqChannelConfig | undefined {
   return channels?.["cliq"];
 }
 
+/**
+ * Whether a Cliq channel section is "configured" — all three core credentials
+ * (clientId / clientSecret / botId) are present. The secret fields use the
+ * SDK's `hasConfiguredSecretInput` so a SecretRef-configured `clientSecret`
+ * (the form `openclaw secrets apply` produces) still counts as present,
+ * rather than being reported as missing because the value is no longer a
+ * plaintext string.
+ */
 function isConfiguredSection(section: CliqChannelConfig | undefined): boolean {
-  return Boolean(section && section.clientId && section.clientSecret && section.botId);
+  return Boolean(
+    section &&
+      section.clientId &&
+      hasConfiguredSecretInput(section.clientSecret) &&
+      section.botId,
+  );
 }
 
 /**
@@ -128,11 +142,15 @@ export function inspectCliqAccount(params: {
     }
   }
 
-  const clientSecret = section?.clientSecret;
-  const tokenStatus: CliqCredentialStatus = clientSecret
+  const clientSecretConfigured =
+    section?.clientSecret !== undefined &&
+    hasConfiguredSecretInput(section.clientSecret);
+  const tokenStatus: CliqCredentialStatus = clientSecretConfigured
     ? "available"
     : "missing";
-  const tokenSource: "config" | "none" = clientSecret ? "config" : "none";
+  const tokenSource: "config" | "none" = clientSecretConfigured
+    ? "config"
+    : "none";
 
   return {
     accountId,
@@ -149,8 +167,14 @@ export function inspectCliqAccount(params: {
       clientId: section?.clientId,
       botId: section?.botId,
       botName: section?.botName,
-      webhookSecret: Boolean(section?.webhookSecret),
-      refreshToken: Boolean(section?.refreshToken),
+      webhookSecret: Boolean(
+        section?.webhookSecret !== undefined &&
+          hasConfiguredSecretInput(section.webhookSecret),
+      ),
+      refreshToken: Boolean(
+        section?.refreshToken !== undefined &&
+          hasConfiguredSecretInput(section.refreshToken),
+      ),
       allowFrom: resolved?.allowFrom ?? section?.allowFrom ?? [],
       dmPolicy: section?.dmPolicy,
       selfSenderIds: resolved?.selfSenderIds ?? section?.selfSenderIds ?? [],

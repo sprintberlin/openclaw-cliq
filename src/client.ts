@@ -1,4 +1,5 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
+import type { SecretInput } from "openclaw/plugin-sdk/secret-input-runtime";
 import { withSendRetry, type RetryOptions } from "./send-retry.js";
 import {
   getCliqDefaultLogger,
@@ -6,6 +7,7 @@ import {
   type CliqLogger,
 } from "./logger.js";
 import type { CliqButton } from "./presentation.js";
+import { resolveCliqSecretString } from "./secret-resolve.js";
 
 const EU_API_BASE = "https://cliq.zoho.eu";
 const EU_OAUTH_BASE = "https://accounts.zoho.eu";
@@ -14,10 +16,21 @@ const MESSAGE_CHAR_LIMIT = 5000;
 
 export interface CliqChannelConfig {
   clientId?: string;
-  clientSecret?: string;
+  /**
+   * OAuth `client_credentials` grant secret. May be a plaintext string or a
+   * structured SecretRef (the form `openclaw secrets apply` rewrites plaintext
+   * into); resolved to a literal string by `resolveCliqConfig` via
+   * `resolveCliqSecretString` (plaintext + env-backed refs synchronously).
+   */
+  clientSecret?: SecretInput;
   botId?: string;
   botName?: string;
-  webhookSecret?: string;
+  /**
+   * Shared secret used to verify `x-cliq-webhook-secret` on inbound delivery.
+   * Plaintext or SecretRef (resolved at runtime). Recommended; when unset (or
+   * when a configured ref cannot be resolved) inbound verification is skipped.
+   */
+  webhookSecret?: SecretInput;
   allowFrom?: string[];
   dmPolicy?: string;
   /**
@@ -66,9 +79,12 @@ export interface CliqChannelConfig {
    * `oauthtoken_scope_invalid`). Bot DMs (`ZohoCliq.Webhooks.CREATE`)
    * keep using `client_credentials`. When unset, behavior is unchanged
    * (client_credentials for everything; channel posts / edits will fail
-   * at the API with a scope error — i.e. DM-only setups keep working).
-   */
-   refreshToken?: string;
+    * at the API with a scope error — i.e. DM-only setups keep working).
+    *
+    * May be a plaintext string or a structured SecretRef (resolved at runtime
+    * by `resolveCliqConfig` via `resolveCliqSecretString`).
+    */
+    refreshToken?: SecretInput;
   /**
    * Reaction guidance for the agent's system prompt. Cliq supports outbound
    * reactions (the `react` message-action), so the default is `"minimal"`
@@ -114,7 +130,11 @@ export function resolveCliqConfig(
     "cliq"
   ];
   const clientId = section?.clientId;
-  const clientSecret = section?.clientSecret;
+  const clientSecret = resolveCliqSecretString({
+    cfg,
+    value: section?.clientSecret,
+    path: "channels.cliq.clientSecret",
+  });
   const botId = section?.botId;
   if (!clientId) throw new Error("cliq: clientId is required");
   if (!clientSecret) throw new Error("cliq: clientSecret is required");
@@ -123,19 +143,29 @@ export function resolveCliqConfig(
   const ackPolicy: "after_dispatch" | "immediate" =
     ackPolicyRaw === "immediate" ? "immediate" : "after_dispatch";
   const blockStreaming = section?.streaming?.preview === "on";
+  const webhookSecret = resolveCliqSecretString({
+    cfg,
+    value: section?.webhookSecret,
+    path: "channels.cliq.webhookSecret",
+  });
+  const refreshToken = resolveCliqSecretString({
+    cfg,
+    value: section?.refreshToken,
+    path: "channels.cliq.refreshToken",
+  });
   return {
     accountId: accountId ?? null,
     clientId,
     clientSecret,
     botId,
     botName: section?.botName,
-    webhookSecret: section?.webhookSecret,
+    webhookSecret: webhookSecret || undefined,
     allowFrom: section?.allowFrom ?? [],
     dmPolicy: section?.dmPolicy,
     ackPolicy,
     selfSenderIds: section?.selfSenderIds ?? [],
     blockStreaming,
-    refreshToken: section?.refreshToken,
+    refreshToken: refreshToken || undefined,
   };
 }
 
