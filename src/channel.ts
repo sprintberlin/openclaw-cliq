@@ -22,6 +22,7 @@ import { resolveCliqClient } from "./runtime-api.js";
 import { cliqHeartbeatAdapter } from "./heartbeat.js";
 import { cliqStatusAdapter, type CliqStatusProbe } from "./status.js";
 import { cliqDirectoryAdapter } from "./directory.js";
+import { cliqDoctorAdapter } from "./doctor.js";
 import {
   CLIQ_PAIRING_APPROVED_MESSAGE,
   CLIQ_PAIRING_ID_LABEL,
@@ -34,6 +35,7 @@ export { markdownToCliq } from "./markdown.js";
 export { cliqHeartbeatAdapter, probeCliqHeartbeat, type CliqHeartbeatProbeResult } from "./heartbeat.js";
 export { cliqStatusAdapter, probeCliqStatus, resolveCliqStatusAccount, type CliqStatusProbe } from "./status.js";
 export { cliqDirectoryAdapter, applyCliqDirectoryQueryAndLimit } from "./directory.js";
+export { cliqDoctorAdapter, collectCliqPreviewWarnings, collectCliqMutableAllowlistWarnings } from "./doctor.js";
 export {
   CLIQ_PAIRING_APPROVED_MESSAGE,
   CLIQ_PAIRING_ID_LABEL,
@@ -169,6 +171,7 @@ export const cliqPlugin = createChatChannelPlugin<ResolvedCliqAccount, CliqStatu
     heartbeat: cliqHeartbeatAdapter,
     status: cliqStatusAdapter,
     directory: cliqDirectoryAdapter,
+    doctor: cliqDoctorAdapter,
   },
 
   security: {
