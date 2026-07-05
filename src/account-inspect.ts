@@ -6,14 +6,19 @@ import {
 } from "./client.js";
 
 /**
- * OAuth scopes this plugin requests from Zoho. The webhook/bot-message surface
- * needs `ZohoCliq.Webhooks.CREATE`; the directory adapter reads
- * `ZohoCliq.Users.READ` + `ZohoCliq.Channels.READ`. Exposed on the inspected
- * account so `openclaw channels inspect` can render what scopes the plugin
- * will mint tokens for (useful when filing the Zoho OAuth client grant).
+ * OAuth scopes this plugin requests from Zoho. The webhook/bot-message
+ * (DM) surface needs `ZohoCliq.Webhooks.CREATE`; channel posts go through
+ * the channelsbyname endpoint and need `ZohoCliq.Channels.UPDATE`; the
+ * directory adapter reads `ZohoCliq.Users.READ` + `ZohoCliq.Channels.READ`;
+ * live-edit / message-edit uses `ZohoCliq.Messages.UPDATE`. Exposed on the
+ * inspected account so `openclaw channels inspect` can render what scopes
+ * the plugin will mint tokens for (useful when filing the Zoho OAuth client
+ * grant — all listed scopes must be consented for the corresponding surface
+ * to work).
  */
 export const CLIQ_OAUTH_SCOPES: readonly string[] = [
   "ZohoCliq.Webhooks.CREATE",
+  "ZohoCliq.Channels.UPDATE",
   "ZohoCliq.Channels.READ",
   "ZohoCliq.Users.READ",
   "ZohoCliq.Messages.UPDATE",

@@ -77,11 +77,13 @@ The plugin uses the **`client_credentials`** OAuth grant (no refresh token, no u
 
    | Scope | Purpose |
    | --- | --- |
-   | `ZohoCliq.Webhooks.CREATE` | Post bot messages (the plugin's primary send scope) |
+   | `ZohoCliq.Webhooks.CREATE` | Post bot DMs (the `/bots/{botId}/message` send path) |
+   | `ZohoCliq.Channels.UPDATE` | Post bot messages to channels (the `/channelsbyname/{unique_name}/message` send path) |
    | `ZohoCliq.Channels.READ` | Read channel / chat metadata |
    | `ZohoCliq.Users.READ` | Resolve sender user info |
+   | `ZohoCliq.Messages.UPDATE` | Edit a sent message in place (live-edit streaming previews) |
 
-   The plugin requests `ZohoCliq.Webhooks.CREATE` at runtime via `client_credentials`; list all three when registering the client so the granted token carries the full set.
+   The plugin requests each scope at runtime via `client_credentials` (per-scope token cache); list all five when registering the client so the granted token carries the full set. **Note:** if you previously consented with only the three original scopes, you must re-consent (generate a fresh self-client token) with `ZohoCliq.Channels.UPDATE` added — channel replies will be rejected with `invalid_scope` / 401 until you do.
 
 4. Use the **EU** OAuth token endpoint:
 
@@ -222,7 +224,7 @@ Both should trigger a `POST /cliq/webhook` on your gateway (visible in the gatew
 - The bot is **active/published** in Cliq.
 - The Deluge handler is saved and the webhook URL / secret are correct.
 - The gateway host is reachable from the public internet (curl `https://<gateway-host>/cliq/webhook` from an external host — a `405 Method Not Allowed` on GET means the route is live).
-- The OAuth client has the three scopes from step 3 and the EU endpoint is in use.
+- The OAuth client has all the scopes from step 3 (including `ZohoCliq.Channels.UPDATE` for channel replies) and the EU endpoint is in use.
 
 #### Smoke testing with curl
 

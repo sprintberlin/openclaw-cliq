@@ -71,6 +71,11 @@
 - **Confirm the DM reply round-trip on a real Cliq bot.** The outbound DM-vs-channel routing fix
   shipped in code (#11); a real Zoho round-trip on a live bot is the remaining confirmation
   (needs credentials — self-hosted runner or manual).
+- **Confirm the channel reply round-trip on a real Cliq bot.** The channelsbyname send path
+  (#26) shipped in code; a real channel @mention → bot reply round-trip (with the
+  `ZohoCliq.Channels.UPDATE` scope consented) is the remaining confirmation. Also confirm the
+  bot is added as a participant of the target channel (Cliq rejects channel posts from
+  non-participant bots).
 - **Stage-4 smoke: real inbound dispatch.** Start the gateway, POST a canonical Deluge payload to
   `/cliq/webhook`, assert the pipeline dispatches to an agent (stub agent / local fake model; mock
   the outbound Cliq API). Extends `scripts/smoke-gateway.sh`.

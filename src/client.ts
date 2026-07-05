@@ -274,11 +274,14 @@ function readCliqChannelName(rec: CliqChannelRecord): string | undefined {
 /**
  * Normalize an OpenClaw route target (`ctx.to`) into a raw Zoho Cliq id plus a
  * DM flag. The inbound path encodes the chat type in the target prefix:
- *   - `cliq:user:<id>` / `cliq:dm:<id>`  → DM, deliver via `userids`
- *   - `cliq:chat:<id>`                   → group/channel, deliver via `chatid`
- *   - `cliq:channel:<name>`              → group/channel, deliver via `chatid`
- * Targets without the `cliq:` prefix are treated as group/channel ids so raw
- * ids stored in older sessions keep working (defaulting to `chatid`).
+ *   - `cliq:user:<id>` / `cliq:dm:<id>`  → DM, deliver via `userids` to /bots/{botId}/message
+ *   - `cliq:chat:<id>`                   → group/channel, deliver via channelsbyname
+ *   - `cliq:channel:<uniqueName>`        → group/channel, deliver via channelsbyname
+ * The `to` for a non-DM target MUST be the channel unique name (the
+ * channelsbyname endpoint keys off it in the URL path); a bare chat id is
+ * only a fallback when the inbound payload carried no unique name. Targets
+ * without the `cliq:` prefix are treated as group/channel ids so raw ids
+ * stored in older sessions keep working (defaulting to channelsbyname).
  */
 export function normalizeCliqRouteTarget(to: string): NormalizedCliqTarget {
   if (!to) return { to, isDm: false };
@@ -400,15 +403,24 @@ export class CliqClient {
   }
 
   async sendMessage(opts: SendMessageOptions): Promise<{ messageId?: string; chatId?: string }> {
-    const token = await this.getAccessToken("ZohoCliq.Webhooks.CREATE");
-    const url = `${this.apiBase}/api/v2/bots/${encodeURIComponent(this.botId)}/message`;
+    const isDm = Boolean(opts.isDm);
+    // DMs use the bot-message endpoint (scope ZohoCliq.Webhooks.CREATE).
+    // Channel posts use the channelsbyname endpoint with the channel unique
+    // name in the path and the bot identity as a `bot_unique_name` query
+    // param (scope ZohoCliq.Channels.UPDATE). The bot-message endpoint
+    // rejects `chatid` ("'chatid' is an extra key in the JSON Object"), so
+    // group sends MUST NOT go through /bots/{botId}/message. See issue #26.
+    const scope = isDm ? "ZohoCliq.Webhooks.CREATE" : "ZohoCliq.Channels.UPDATE";
+    const token = await this.getAccessToken(scope);
+    const targetKind = isDm ? "dm" : "channel";
+    let url: string;
     const payload: Record<string, unknown> = { text: opts.text };
-    if (opts.isDm) {
+    if (isDm) {
+      url = `${this.apiBase}/api/v2/bots/${encodeURIComponent(this.botId)}/message`;
       payload.userids = opts.to;
     } else {
-      payload.chatid = opts.to;
+      url = `${this.apiBase}/api/v2/channelsbyname/${encodeURIComponent(opts.to)}/message?bot_unique_name=${encodeURIComponent(this.botId)}`;
     }
-    const targetKind = opts.isDm ? "dm" : "channel";
     this.logger.info?.(
       `[cliq] send: ${targetKind} id=${opts.to} textLen=${opts.text.length}`,
     );
@@ -443,14 +455,18 @@ export class CliqClient {
   }
 
   async sendMediaMessage(opts: SendMediaMessageOptions): Promise<{ messageId?: string }> {
-    const token = await this.getAccessToken("ZohoCliq.Webhooks.CREATE");
-    const url = `${this.apiBase}/api/v2/bots/${encodeURIComponent(this.botId)}/message`;
+    const isDm = Boolean(opts.isDm);
+    const scope = isDm ? "ZohoCliq.Webhooks.CREATE" : "ZohoCliq.Channels.UPDATE";
+    const token = await this.getAccessToken(scope);
     const form = new FormData();
     if (opts.text) form.set("text", opts.text);
-    if (opts.isDm) {
+    let url: string;
+    if (isDm) {
+      url = `${this.apiBase}/api/v2/bots/${encodeURIComponent(this.botId)}/message`;
       form.set("userids", opts.to);
     } else {
-      form.set("chatid", opts.to);
+      // Channel media post: channelsbyname endpoint (see sendMessage/issue #26).
+      url = `${this.apiBase}/api/v2/channelsbyname/${encodeURIComponent(opts.to)}/message?bot_unique_name=${encodeURIComponent(this.botId)}`;
     }
     const mimeType = opts.attachment.mimeType ?? "application/octet-stream";
     // Copy into a standalone ArrayBuffer so the Blob does not capture a shared

@@ -484,13 +484,18 @@ export async function dispatchCliqInbound(params: {
 
   // Build the outbound response target. The prefix encodes chat type so the
   // outbound `sendText`/`sendMedia` path (which only sees `ctx.to`) can decide
-  // `userids` (DM) vs `chatid` (group) without a chatType field:
+  // `userids` + /bots/{botId}/message (DM) vs channelsbyname (channel) without
+  // a chatType field:
   //   - DM            → `user:<senderId>`    (delivered via `userids`)
-  //   - group/channel → `chat:<chatId>` or `channel:<channelUniqueName>` (via `chatid`)
+  //   - group/channel → `channel:<channelUniqueName>` (preferred — the
+  //                     channelsbyname endpoint needs the unique name in the
+  //                     URL path), falling back to `chat:<chatId>` when the
+  //                     inbound payload carried no unique name (a rare edge
+  //                     case where the channel send will likely fail).
   const responseTarget = parsed.isGroup
-    ? parsed.chatId
-      ? `chat:${parsed.chatId}`
-      : `channel:${parsed.channelUniqueName}`
+    ? parsed.channelUniqueName
+      ? `channel:${parsed.channelUniqueName}`
+      : `chat:${parsed.chatId}`
     : `user:${parsed.senderId}`;
   const fromLabel = parsed.isGroup
     ? (parsed.channelName ?? `channel:${parsed.channelUniqueName}`)

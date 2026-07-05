@@ -167,7 +167,7 @@ describe("cliq plugin", () => {
       clientSecret: "secret",
       botId: "bot",
     });
-    const calls: { text: string; userids?: string; chatid?: string }[] = [];
+    const seen: { url: string; body: string }[] = [];
     const original = globalThis.fetch;
     globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
       const urlStr = typeof url === "string" ? url : url.toString();
@@ -178,13 +178,7 @@ describe("cliq plugin", () => {
         );
       }
       if (init?.method === "POST") {
-        calls.push(
-          JSON.parse(init.body as string) as {
-            text: string;
-            userids?: string;
-            chatid?: string;
-          },
-        );
+        seen.push({ url: urlStr, body: init.body as string });
         return new Response(JSON.stringify({ id: "msg-1" }), { status: 200 });
       }
       return new Response("", { status: 404 });
@@ -199,12 +193,16 @@ describe("cliq plugin", () => {
     } finally {
       globalThis.fetch = original;
     }
-    expect(calls).toHaveLength(1);
+    expect(seen).toHaveLength(1);
+    const parsed = JSON.parse(seen[0].body) as { text: string };
     // Markdown must be converted to Cliq-native formatting before sending.
-    expect(calls[0].text).toBe("*bold* and _italic_");
-    // A bare target with no `cliq:` prefix defaults to group/channel delivery.
-    expect(calls[0].chatid ?? calls[0].userids).toBe("user-1");
-    expect(calls[0].userids).toBeUndefined();
+    expect(parsed.text).toBe("*bold* and _italic_");
+    // A bare target with no `cliq:` prefix defaults to group/channel delivery,
+    // which now routes through the channelsbyname endpoint (no chatid key).
+    expect(seen[0].url).toContain("/channelsbyname/user-1/message");
+    expect(seen[0].url).toContain("bot_unique_name=bot");
+    expect(parsed).not.toHaveProperty("chatid");
+    expect(parsed).not.toHaveProperty("userids");
   });
 
   it("sendText routes DM targets via userids with isDm (issue #11)", async () => {
@@ -214,7 +212,7 @@ describe("cliq plugin", () => {
       clientSecret: "secret",
       botId: "bot",
     });
-    const calls: { text: string; userids?: string; chatid?: string }[] = [];
+    const seen: { url: string; body: string }[] = [];
     const original = globalThis.fetch;
     globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
       const urlStr = typeof url === "string" ? url : url.toString();
@@ -225,13 +223,7 @@ describe("cliq plugin", () => {
         );
       }
       if (init?.method === "POST") {
-        calls.push(
-          JSON.parse(init.body as string) as {
-            text: string;
-            userids?: string;
-            chatid?: string;
-          },
-        );
+        seen.push({ url: urlStr, body: init.body as string });
         return new Response(JSON.stringify({ id: "msg-dm-1" }), { status: 200 });
       }
       return new Response("", { status: 404 });
@@ -246,19 +238,22 @@ describe("cliq plugin", () => {
     } finally {
       globalThis.fetch = original;
     }
-    expect(calls).toHaveLength(1);
-    expect(calls[0].userids).toBe("20098819618");
-    expect(calls[0].chatid).toBeUndefined();
+    expect(seen).toHaveLength(1);
+    const parsed = JSON.parse(seen[0].body) as { text: string; userids?: string };
+    // DMs route to the bot-message endpoint with userids (no chatid).
+    expect(seen[0].url).toContain("/bots/bot/message");
+    expect(parsed.userids).toBe("20098819618");
+    expect(parsed).not.toHaveProperty("chatid");
   });
 
-  it("sendText routes group chat targets via chatid (issue #11)", async () => {
+  it("sendText routes group chat targets through channelsbyname (issue #26)", async () => {
     setCliqClientRegistry(null);
     const cfg = cfgWith({
       clientId: "id",
       clientSecret: "secret",
       botId: "bot",
     });
-    const calls: { text: string; userids?: string; chatid?: string }[] = [];
+    const seen: { url: string; body: string }[] = [];
     const original = globalThis.fetch;
     globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
       const urlStr = typeof url === "string" ? url : url.toString();
@@ -269,13 +264,7 @@ describe("cliq plugin", () => {
         );
       }
       if (init?.method === "POST") {
-        calls.push(
-          JSON.parse(init.body as string) as {
-            text: string;
-            userids?: string;
-            chatid?: string;
-          },
-        );
+        seen.push({ url: urlStr, body: init.body as string });
         return new Response(JSON.stringify({ id: "msg-grp-1" }), { status: 200 });
       }
       return new Response("", { status: 404 });
@@ -290,12 +279,89 @@ describe("cliq plugin", () => {
     } finally {
       globalThis.fetch = original;
     }
-    expect(calls).toHaveLength(1);
-    expect(calls[0].chatid).toBe("CT_channel_chat");
-    expect(calls[0].userids).toBeUndefined();
+    expect(seen).toHaveLength(1);
+    const parsed = JSON.parse(seen[0].body) as { text: string };
+    // Channel posts route to channelsbyname/<unique_name>/message with the
+    // bot identity as a bot_unique_name query param. The body is just
+    // { text } — NO chatid key (the bot endpoint rejects it: issue #26).
+    expect(seen[0].url).toContain("/channelsbyname/CT_channel_chat/message");
+    expect(seen[0].url).toContain("bot_unique_name=bot");
+    expect(parsed).not.toHaveProperty("chatid");
+    expect(parsed).not.toHaveProperty("userids");
+    expect(parsed.text).toBe("hello group");
   });
 
-  it("uploads an http media attachment via multipart to the bot API", async () => {
+  it("sendText routes cliq:channel:<name> through channelsbyname (issue #26)", async () => {
+    setCliqClientRegistry(null);
+    const cfg = cfgWith({
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+    });
+    const seen: { url: string; body: string }[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(
+          JSON.stringify({ access_token: "tok", expires_in: 3600 }),
+          { status: 200 },
+        );
+      }
+      if (init?.method === "POST") {
+        seen.push({ url: urlStr, body: init.body as string });
+        return new Response(JSON.stringify({ id: "msg-grp-2" }), { status: 200 });
+      }
+      return new Response("", { status: 404 });
+    }) as typeof fetch;
+    try {
+      await cliqPlugin.outbound!.sendText!({
+        cfg,
+        to: "cliq:channel:dev-team",
+        text: "hi team",
+        accountId: undefined,
+      } as any);
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(seen).toHaveLength(1);
+    expect(seen[0].url).toContain("/channelsbyname/dev-team/message");
+    expect(seen[0].url).toContain("bot_unique_name=bot");
+  });
+
+  it("sendText uses ZohoCliq.Channels.UPDATE scope for channels, Webhooks.CREATE for DMs (issue #26)", async () => {
+    setCliqClientRegistry(null);
+    const cfg = cfgWith({
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+    });
+    const oauthScopes: string[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        const scope = new URL(urlStr).searchParams.get("scope");
+        oauthScopes.push(scope ?? "");
+        return new Response(JSON.stringify({ access_token: "tok", expires_in: 3600 }), { status: 200 });
+      }
+      if (init?.method === "POST") {
+        return new Response(JSON.stringify({ id: "m" }), { status: 200 });
+      }
+      return new Response("", { status: 404 });
+    }) as typeof fetch;
+    try {
+      await cliqPlugin.outbound!.sendText!({ cfg, to: "cliq:user:u1", text: "dm", accountId: undefined } as any);
+      setCliqClientRegistry(null);
+      await cliqPlugin.outbound!.sendText!({ cfg, to: "cliq:channel:dev-team", text: "chan", accountId: undefined } as any);
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(oauthScopes).toContain("ZohoCliq.Webhooks.CREATE");
+    expect(oauthScopes).toContain("ZohoCliq.Channels.UPDATE");
+  });
+
+  it("uploads an http media attachment via multipart to the bot DM API", async () => {
     setCliqClientRegistry(null);
     const cfg = cfgWith({
       clientId: "id",
@@ -329,7 +395,7 @@ describe("cliq plugin", () => {
     try {
       const result = await cliqPlugin.outbound!.sendMedia!({
         cfg,
-        to: "user-1",
+        to: "cliq:user:user-1",
         text: "**see this**",
         mediaUrl: "https://example.com/media/file.png",
         accountId: undefined,
@@ -338,13 +404,14 @@ describe("cliq plugin", () => {
     } finally {
       globalThis.fetch = original;
     }
-    // The bot API call must be multipart/form-data with the file attached.
+    // The bot DM API call must be multipart/form-data with userids + the file attached.
     const post = seen.find((s) => s.url.includes("/bots/bot/message"));
     expect(post).toBeDefined();
     const form = post!.body as FormData;
     expect(form).toBeInstanceOf(FormData);
-    expect(form.get("chatid")).toBe("user-1");
+    expect(form.get("userids")).toBe("user-1");
     expect(form.get("text")).toBe("*see this*");
+    expect(form.get("chatid")).toBeNull();
     const file = form.get("attachments") as File;
     expect(file).toBeInstanceOf(File);
     expect(file.name).toBe("file.png");
@@ -352,10 +419,59 @@ describe("cliq plugin", () => {
     expect(new Uint8Array(await file.arrayBuffer())).toEqual(mediaBytes);
     // Authorization must be the OAuth token; body is a FormData (multipart) instance.
     expect(post!.headers["authorization"]).toBe("Zoho-oauthtoken tok");
-    expect(form).toBeInstanceOf(FormData);
   });
 
-  it("reads a local media file via mediaReadFile and uploads it", async () => {
+  it("uploads a media attachment to a channel via the channelsbyname endpoint (issue #26)", async () => {
+    setCliqClientRegistry(null);
+    const cfg = cfgWith({
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+    });
+    const seen: { url: string; body: unknown }[] = [];
+    const mediaBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(JSON.stringify({ access_token: "tok", expires_in: 3600 }), { status: 200 });
+      }
+      if (urlStr.includes("/media/file.png")) {
+        return new Response(mediaBytes, { status: 200, headers: { "content-type": "image/png" } });
+      }
+      if (init?.method === "POST") {
+        seen.push({ url: urlStr, body: init.body });
+        return new Response(JSON.stringify({ id: "msg-media-chan" }), { status: 200 });
+      }
+      return new Response("", { status: 404 });
+    }) as typeof fetch;
+    try {
+      const result = await cliqPlugin.outbound!.sendMedia!({
+        cfg,
+        to: "cliq:channel:dev-team",
+        text: "see this",
+        mediaUrl: "https://example.com/media/file.png",
+        accountId: undefined,
+      } as any);
+      expect(result.messageId).toBe("msg-media-chan");
+    } finally {
+      globalThis.fetch = original;
+    }
+    const post = seen.find((s) => s.url.includes("/channelsbyname/dev-team/message"));
+    expect(post).toBeDefined();
+    expect(post!.url).toContain("bot_unique_name=bot");
+    const form = post!.body as FormData;
+    expect(form).toBeInstanceOf(FormData);
+    // Channel media posts must NOT carry a chatid or userids key (issue #26).
+    expect(form.get("chatid")).toBeNull();
+    expect(form.get("userids")).toBeNull();
+    expect(form.get("text")).toBe("see this");
+    const file = form.get("attachments") as File;
+    expect(file).toBeInstanceOf(File);
+    expect(file.name).toBe("file.png");
+  });
+
+  it("reads a local media file via mediaReadFile and uploads it to a DM", async () => {
     setCliqClientRegistry(null);
     const cfg = cfgWith({
       clientId: "id",
@@ -379,7 +495,7 @@ describe("cliq plugin", () => {
     try {
       const result = await cliqPlugin.outbound!.sendMedia!({
         cfg,
-        to: "channel-1",
+        to: "cliq:user:u-1",
         text: "doc",
         mediaUrl: "/tmp/report.txt",
         mediaReadFile: async () => fileBytes,
@@ -392,8 +508,9 @@ describe("cliq plugin", () => {
     const post = seen.find((s) => s.url.includes("/bots/bot/message"));
     expect(post).toBeDefined();
     const form = post!.body as FormData;
-    expect(form.get("chatid")).toBe("channel-1");
+    expect(form.get("userids")).toBe("u-1");
     expect(form.get("text")).toBe("doc");
+    expect(form.get("chatid")).toBeNull();
     const file = form.get("attachments") as File;
     expect(file.name).toBe("report.txt");
     expect(file.type).toBe("text/plain");
@@ -640,7 +757,7 @@ describe("outbound error classification + retry (Closes #15)", () => {
       (reg as unknown as { clients: Map<string, unknown> }).clients.set("cc:id:bot", fastClient);
       await cliqPlugin.outbound!.sendText!({
         cfg,
-        to: "user-1",
+        to: "cliq:user:user-1",
         text: "hello",
         accountId: undefined,
       } as any);
