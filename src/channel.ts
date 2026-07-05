@@ -8,6 +8,7 @@ import type {
 import {
   chunkMessage,
   loadCliqMediaAttachment,
+  normalizeCliqRouteTarget,
   resolveCliqConfig,
   type CliqChannelConfig,
   type ResolvedCliqAccount,
@@ -24,7 +25,7 @@ import {
   notifyCliqPairingApproval,
 } from "./pairing.js";
 
-export { resolveCliqConfig, CliqClient, chunkMessage, loadCliqMediaAttachment, type CliqChannelConfig, type ResolvedCliqAccount, type CliqMediaAttachment } from "./client.js";
+export { resolveCliqConfig, CliqClient, chunkMessage, loadCliqMediaAttachment, normalizeCliqRouteTarget, type CliqChannelConfig, type ResolvedCliqAccount, type CliqMediaAttachment, type NormalizedCliqTarget } from "./client.js";
 export { buildCliqMentionRegexes, stripCliqMentions } from "./mentions.js";
 export { markdownToCliq } from "./markdown.js";
 export {
@@ -191,8 +192,10 @@ export const cliqPlugin: ChannelPlugin<ResolvedCliqAccount> = createChatChannelP
       sendText: async (ctx) => {
         const account = resolveAccountFromCtx(ctx.cfg, ctx.accountId);
         const client = resolveCliqClient(account);
+        const target = normalizeCliqRouteTarget(ctx.to);
         const result = await client.sendMessage({
-          to: ctx.to,
+          to: target.to,
+          isDm: target.isDm,
           text: markdownToCliq(ctx.text),
         });
         return {
@@ -211,8 +214,10 @@ export const cliqPlugin: ChannelPlugin<ResolvedCliqAccount> = createChatChannelP
           mediaReadFile: ctx.mediaReadFile,
           mediaAccess: ctx.mediaAccess,
         });
+        const target = normalizeCliqRouteTarget(ctx.to);
         const result = await client.sendMediaMessage({
-          to: ctx.to,
+          to: target.to,
+          isDm: target.isDm,
           text: ctx.text ? markdownToCliq(ctx.text) : undefined,
           attachment,
         });

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { cliqPlugin } from "./channel.js";
-import { chunkMessage, resolveCliqConfig } from "./client.js";
+import { chunkMessage, normalizeCliqRouteTarget, resolveCliqConfig } from "./client.js";
 import { setCliqClientRegistry } from "./runtime-api.js";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 
@@ -144,8 +144,97 @@ describe("cliq plugin", () => {
     expect(calls).toHaveLength(1);
     // Markdown must be converted to Cliq-native formatting before sending.
     expect(calls[0].text).toBe("*bold* and _italic_");
-    // Outbound context lacks chatType, so the client defaults to `chatid`.
+    // A bare target with no `cliq:` prefix defaults to group/channel delivery.
     expect(calls[0].chatid ?? calls[0].userids).toBe("user-1");
+    expect(calls[0].userids).toBeUndefined();
+  });
+
+  it("sendText routes DM targets via userids with isDm (issue #11)", async () => {
+    setCliqClientRegistry(null);
+    const cfg = cfgWith({
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+    });
+    const calls: { text: string; userids?: string; chatid?: string }[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(
+          JSON.stringify({ access_token: "tok", expires_in: 3600 }),
+          { status: 200 },
+        );
+      }
+      if (init?.method === "POST") {
+        calls.push(
+          JSON.parse(init.body as string) as {
+            text: string;
+            userids?: string;
+            chatid?: string;
+          },
+        );
+        return new Response(JSON.stringify({ id: "msg-dm-1" }), { status: 200 });
+      }
+      return new Response("", { status: 404 });
+    }) as typeof fetch;
+    try {
+      await cliqPlugin.outbound!.sendText!({
+        cfg,
+        to: "cliq:user:20098819618",
+        text: "hello dm",
+        accountId: undefined,
+      } as any);
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(calls).toHaveLength(1);
+    expect(calls[0].userids).toBe("20098819618");
+    expect(calls[0].chatid).toBeUndefined();
+  });
+
+  it("sendText routes group chat targets via chatid (issue #11)", async () => {
+    setCliqClientRegistry(null);
+    const cfg = cfgWith({
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+    });
+    const calls: { text: string; userids?: string; chatid?: string }[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(
+          JSON.stringify({ access_token: "tok", expires_in: 3600 }),
+          { status: 200 },
+        );
+      }
+      if (init?.method === "POST") {
+        calls.push(
+          JSON.parse(init.body as string) as {
+            text: string;
+            userids?: string;
+            chatid?: string;
+          },
+        );
+        return new Response(JSON.stringify({ id: "msg-grp-1" }), { status: 200 });
+      }
+      return new Response("", { status: 404 });
+    }) as typeof fetch;
+    try {
+      await cliqPlugin.outbound!.sendText!({
+        cfg,
+        to: "cliq:chat:CT_channel_chat",
+        text: "hello group",
+        accountId: undefined,
+      } as any);
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(calls).toHaveLength(1);
+    expect(calls[0].chatid).toBe("CT_channel_chat");
+    expect(calls[0].userids).toBeUndefined();
   });
 
   it("uploads an http media attachment via multipart to the bot API", async () => {
@@ -263,6 +352,47 @@ describe("cliq plugin", () => {
         accountId: undefined,
       } as any),
     ).rejects.toThrow(/mediaUrl/);
+  });
+});
+
+describe("normalizeCliqRouteTarget (issue #11)", () => {
+  it("routes cliq:user:<id> to a DM user target", () => {
+    expect(normalizeCliqRouteTarget("cliq:user:20098819618")).toEqual({
+      to: "20098819618",
+      isDm: true,
+    });
+  });
+
+  it("routes cliq:dm:<id> to a DM user target", () => {
+    expect(normalizeCliqRouteTarget("cliq:dm:20098819618")).toEqual({
+      to: "20098819618",
+      isDm: true,
+    });
+  });
+
+  it("routes cliq:chat:<id> to a group chat target", () => {
+    expect(normalizeCliqRouteTarget("cliq:chat:CT_channel_chat")).toEqual({
+      to: "CT_channel_chat",
+      isDm: false,
+    });
+  });
+
+  it("routes cliq:channel:<name> to a group chat target", () => {
+    expect(normalizeCliqRouteTarget("cliq:channel:dev-team")).toEqual({
+      to: "dev-team",
+      isDm: false,
+    });
+  });
+
+  it("defaults a bare id to group delivery (backward compat)", () => {
+    expect(normalizeCliqRouteTarget("20098819618")).toEqual({
+      to: "20098819618",
+      isDm: false,
+    });
+  });
+
+  it("handles empty input", () => {
+    expect(normalizeCliqRouteTarget("")).toEqual({ to: "", isDm: false });
   });
 });
 

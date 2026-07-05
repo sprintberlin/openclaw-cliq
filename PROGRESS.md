@@ -11,17 +11,23 @@ The plugin is feature-complete against the SDK surface we can verify headlessly:
 webhook, mention gating, DM admission + pairing, Markdown→Cliq, `sendText`/`sendMedia`,
 cross-request OAuth token caching, a real `npm run build` producing `dist/`, and a full
 Zoho-side README. `dmPolicy` config schema is aligned across manifest, runtime and README.
-All tests green; typecheck and build exit clean.
+All tests green; typecheck and build exit clean; gateway smoke still passes.
 
-**Real-gateway load is now VERIFIED** (openclaw@2026.6.11): `npm run smoke:gateway` builds
-the plugin, links it into an isolated gateway profile, loads the runtime, and asserts
-`status: loaded` + a registered `channel` capability (`plugins doctor` clean). So the entry,
-manifest, and channel registration are proven against the real loader — not just a mock. The
-remaining open work is the deeper pipeline: a real **inbound dispatch** (webhook → agent) and
-a real **Zoho round-trip**, neither of which the current smoke exercises.
+**Issue #11 fixed (DM reply delivery):** runtime testing on Martin's gateway proved inbound +
+agent dispatch work for a real Cliq user, but the agent reply never landed in the Cliq DM
+because the outbound `sendText`/`sendMedia` path (a) didn't pass `isDm` for direct sessions
+(so `CliqClient` defaulted to `chatid`) and (b) forwarded `ctx.to` verbatim including the
+`cliq:` route prefix. Fixed by making the inbound `responseTarget` chat-type-aware
+(`user:<id>` for DMs, `chat:<id>`/`channel:<name>` for groups) and adding
+`normalizeCliqRouteTarget()` which the outbound path now uses to strip the prefix and set
+`isDm`. New tests cover DM-via-`userids`, group-via-`chatid`, and the normalizer. A real
+Zoho round-trip on Martin's box is the remaining confirmation (needs credentials).
 
 ## Plan
 
+- [ ] **Confirm issue #11 fix end-to-end on Martin's gateway** — re-run the real Cliq DM
+      test with the new build and confirm the agent reply now appears in the Cliq DM via
+      `userids`. (Headless run can only ship the code; Martin verifies the round-trip.)
 - [ ] **Stage-4 smoke: real inbound dispatch** — extend `scripts/smoke-gateway.sh` (or a
       sibling) to start the gateway, POST a canonical Deluge payload to `/cliq/webhook`, and
       assert the dispatch pipeline runs. Needs a stub agent / local fake model so the pipeline
@@ -32,9 +38,6 @@ a real **Zoho round-trip**, neither of which the current smoke exercises.
       the `.d.ts`, not runtime-tested. (Stage-4 smoke is how to prove this.)
 - [ ] **Verify pairing end-to-end** — `upsertPairingRequest`/`buildPairingReply` against a
       real pairing store, plus the `openclaw pairing approve cliq <code>` → `notify` path.
-- [ ] **Outbound DM vs channel** — `ChannelOutboundContext` has no `chatType`, so plugin-path
-      `sendText`/`sendMedia` default to `chatid`. Decide a `user:`/`chat:` prefix convention
-      on `ctx.to` (or extend the context) so outbound DMs route correctly.
 - [ ] **Robust self-message detection** — currently naive (`senderId === botId` /
       `senderName === botName`); Zoho bot self-events may need a sturdier check.
 - [ ] **setup wizard** — only `applyAccountConfig` exists; no interactive `setupWizard`.

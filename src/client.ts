@@ -157,6 +157,32 @@ export interface SendMediaMessageOptions {
   attachment: CliqMediaAttachment;
 }
 
+export interface NormalizedCliqTarget {
+  to: string;
+  isDm: boolean;
+}
+
+/**
+ * Normalize an OpenClaw route target (`ctx.to`) into a raw Zoho Cliq id plus a
+ * DM flag. The inbound path encodes the chat type in the target prefix:
+ *   - `cliq:user:<id>` / `cliq:dm:<id>`  → DM, deliver via `userids`
+ *   - `cliq:chat:<id>`                   → group/channel, deliver via `chatid`
+ *   - `cliq:channel:<name>`              → group/channel, deliver via `chatid`
+ * Targets without the `cliq:` prefix are treated as group/channel ids so raw
+ * ids stored in older sessions keep working (defaulting to `chatid`).
+ */
+export function normalizeCliqRouteTarget(to: string): NormalizedCliqTarget {
+  if (!to) return { to, isDm: false };
+  const m = /^cliq:([a-z]+):(.+)$/i.exec(to);
+  if (!m) return { to, isDm: false };
+  const kind = m[1].toLowerCase();
+  const id = m[2];
+  if (kind === "user" || kind === "dm") {
+    return { to: id, isDm: true };
+  }
+  return { to: id, isDm: false };
+}
+
 export class CliqClient {
   private accessToken: string | null = null;
   private tokenExpiresAt = 0;
