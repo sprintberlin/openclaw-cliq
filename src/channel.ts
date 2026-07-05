@@ -21,17 +21,19 @@ import { markdownToCliq } from "./markdown.js";
 import { resolveCliqClient } from "./runtime-api.js";
 import { cliqHeartbeatAdapter } from "./heartbeat.js";
 import { cliqStatusAdapter, type CliqStatusProbe } from "./status.js";
+import { cliqDirectoryAdapter } from "./directory.js";
 import {
   CLIQ_PAIRING_APPROVED_MESSAGE,
   CLIQ_PAIRING_ID_LABEL,
   notifyCliqPairingApproval,
 } from "./pairing.js";
 
-export { resolveCliqConfig, CliqClient, chunkMessage, loadCliqMediaAttachment, normalizeCliqRouteTarget, type CliqChannelConfig, type ResolvedCliqAccount, type CliqMediaAttachment, type NormalizedCliqTarget } from "./client.js";
+export { resolveCliqConfig, CliqClient, chunkMessage, loadCliqMediaAttachment, normalizeCliqRouteTarget, type CliqChannelConfig, type ResolvedCliqAccount, type CliqMediaAttachment, type NormalizedCliqTarget, type CliqDirectoryEntry, type CliqUserRecord, type CliqChannelRecord } from "./client.js";
 export { buildCliqMentionRegexes, stripCliqMentions } from "./mentions.js";
 export { markdownToCliq } from "./markdown.js";
 export { cliqHeartbeatAdapter, probeCliqHeartbeat, type CliqHeartbeatProbeResult } from "./heartbeat.js";
 export { cliqStatusAdapter, probeCliqStatus, resolveCliqStatusAccount, type CliqStatusProbe } from "./status.js";
+export { cliqDirectoryAdapter, applyCliqDirectoryQueryAndLimit } from "./directory.js";
 export {
   CLIQ_PAIRING_APPROVED_MESSAGE,
   CLIQ_PAIRING_ID_LABEL,
@@ -166,6 +168,7 @@ export const cliqPlugin = createChatChannelPlugin<ResolvedCliqAccount, CliqStatu
     },
     heartbeat: cliqHeartbeatAdapter,
     status: cliqStatusAdapter,
+    directory: cliqDirectoryAdapter,
   },
 
   security: {

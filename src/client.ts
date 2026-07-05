@@ -192,6 +192,64 @@ export interface NormalizedCliqTarget {
   isDm: boolean;
 }
 
+/** A raw Zoho Cliq user record as returned by `GET /api/v2/users`. */
+export interface CliqUserRecord {
+  id?: string;
+  user_id?: string;
+  email?: string;
+  first_name?: string;
+  last_name?: string;
+  name?: string;
+  display_name?: string;
+  [key: string]: unknown;
+}
+
+/** A raw Zoho Cliq channel record as returned by `GET /api/v2/channels`. */
+export interface CliqChannelRecord {
+  id?: string;
+  channel_id?: string;
+  name?: string;
+  unique_name?: string;
+  display_name?: string;
+  [key: string]: unknown;
+}
+
+/** A normalized directory entry derived from a raw Cliq user/channel record. */
+export interface CliqDirectoryEntry {
+  kind: "user" | "group";
+  id: string;
+  name?: string;
+  handle?: string;
+  raw?: unknown;
+}
+
+/** Pull a string id from a Cliq user record (tolerates `id` / `user_id`). */
+function readCliqUserId(rec: CliqUserRecord): string | undefined {
+  return rec.id ?? rec.user_id ?? undefined;
+}
+
+/** Pull a display name from a Cliq user record (tolerates several fields). */
+function readCliqUserName(rec: CliqUserRecord): string | undefined {
+  const parts = [
+    rec.first_name,
+    rec.last_name,
+  ].filter((p): p is string => Boolean(p && p.trim()));
+  if (parts.length) return parts.join(" ").trim();
+  return rec.display_name ?? rec.name ?? rec.email ?? undefined;
+}
+
+/** Pull a string id from a Cliq channel record (tolerates `id` / `channel_id`). */
+function readCliqChannelId(rec: CliqChannelRecord): string | undefined {
+  return rec.id ?? rec.channel_id ?? undefined;
+}
+
+/** Pull a display name from a Cliq channel record. */
+function readCliqChannelName(rec: CliqChannelRecord): string | undefined {
+  return rec.display_name ?? rec.name ?? rec.unique_name ?? undefined;
+}
+
+
+
 /**
  * Normalize an OpenClaw route target (`ctx.to`) into a raw Zoho Cliq id plus a
  * DM flag. The inbound path encodes the chat type in the target prefix:
@@ -214,8 +272,7 @@ export function normalizeCliqRouteTarget(to: string): NormalizedCliqTarget {
 }
 
 export class CliqClient {
-  private accessToken: string | null = null;
-  private tokenExpiresAt = 0;
+  private readonly tokens = new Map<string, { token: string; expiresAt: number }>();
   private readonly retryOptions: Required<RetryOptions>;
 
   constructor(
@@ -238,8 +295,9 @@ export class CliqClient {
 
   async getAccessToken(scope = "ZohoCliq.Webhooks.CREATE"): Promise<string> {
     const now = Date.now();
-    if (this.accessToken && now < this.tokenExpiresAt - 60_000) {
-      return this.accessToken;
+    const cached = this.tokens.get(scope);
+    if (cached && now < cached.expiresAt - 60_000) {
+      return cached.token;
     }
     const url = new URL(`${this.oauthBase}/oauth/v2/token`);
     url.searchParams.set("grant_type", "client_credentials");
@@ -255,9 +313,11 @@ export class CliqClient {
     if (!data.access_token) {
       throw new Error("cliq: OAuth response did not include access_token");
     }
-    this.accessToken = data.access_token;
-    this.tokenExpiresAt = now + (data.expires_in ?? 3600) * 1000;
-    return this.accessToken;
+    this.tokens.set(scope, {
+      token: data.access_token,
+      expiresAt: now + (data.expires_in ?? 3600) * 1000,
+    });
+    return data.access_token;
   }
 
   async sendMessage(opts: SendMessageOptions): Promise<{ messageId?: string }> {
@@ -319,5 +379,96 @@ export class CliqClient {
     );
     const data = JSON.parse(res.body || "{}") as { id?: string };
     return { messageId: data.id };
+  }
+
+  /**
+   * Fetch an authenticated JSON document from the Cliq REST API. Used by the
+   * directory listing endpoints (`/api/v2/users`, `/api/v2/channels`) which
+   * are read-only GETs scoped to `ZohoCliq.Users.READ` / `ZohoCliq.Channels.READ`.
+   * Throws on a non-2xx with the response body for diagnostics.
+   */
+  private async getJson(path: string, scope: string): Promise<unknown> {
+    const token = await this.getAccessToken(scope);
+    const url = `${this.apiBase}${path}`;
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { Authorization: `Zoho-oauthtoken ${token}` },
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`cliq: GET ${path} failed (${res.status}): ${body}`);
+    }
+    return res.json();
+  }
+
+  /**
+   * List Zoho Cliq users (organization peers) for the directory. Paginates
+   * via the `from`/`limit` query params (Cliq's max page size is 200) up to
+   * `maxItems`, then returns normalized entries. The raw record is kept on
+   * `raw` for callers that need extra fields. Never throws on a malformed
+   * record — it is skipped.
+   */
+  async listUsers(maxItems = 500): Promise<CliqDirectoryEntry[]> {
+    const entries: CliqDirectoryEntry[] = [];
+    const pageSize = 200;
+    let from = 0;
+    while (entries.length < maxItems) {
+      const limit = Math.min(pageSize, maxItems - entries.length);
+      const path = `/api/v2/users?from=${from}&limit=${limit}`;
+      const json = (await this.getJson(path, "ZohoCliq.Users.READ")) as {
+        users?: CliqUserRecord[];
+      } | CliqUserRecord[];
+      const recs = Array.isArray(json) ? json : json?.users ?? [];
+      if (recs.length === 0) break;
+      for (const rec of recs) {
+        const id = readCliqUserId(rec);
+        if (!id) continue;
+        entries.push({
+          kind: "user",
+          id,
+          name: readCliqUserName(rec),
+          raw: rec,
+        });
+      }
+      if (recs.length < limit) break;
+      from += recs.length;
+    }
+    return entries;
+  }
+
+  /**
+   * List Zoho Cliq channels (group chats the bot/user can see) for the
+   * directory. Paginates like `listUsers`. Channel ids become directory
+   * entries of kind `group`; `unique_name` (when present) is exposed as the
+   * `handle` so routing can target either `cliq:chat:<id>` or
+   * `cliq:channel:<unique_name>`.
+   */
+  async listChannels(maxItems = 500): Promise<CliqDirectoryEntry[]> {
+    const entries: CliqDirectoryEntry[] = [];
+    const pageSize = 200;
+    let from = 0;
+    while (entries.length < maxItems) {
+      const limit = Math.min(pageSize, maxItems - entries.length);
+      const path = `/api/v2/channels?from=${from}&limit=${limit}`;
+      const json = (await this.getJson(path, "ZohoCliq.Channels.READ")) as {
+        channels?: CliqChannelRecord[];
+      } | CliqChannelRecord[];
+      const recs = Array.isArray(json) ? json : json?.channels ?? [];
+      if (recs.length === 0) break;
+      for (const rec of recs) {
+        const id = readCliqChannelId(rec);
+        if (!id) continue;
+        entries.push({
+          kind: "group",
+          id,
+          name: readCliqChannelName(rec),
+          handle: rec.unique_name ?? undefined,
+          raw: rec,
+        });
+      }
+      if (recs.length < limit) break;
+      from += recs.length;
+    }
+    return entries;
   }
 }

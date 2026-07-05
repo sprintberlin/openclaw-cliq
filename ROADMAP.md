@@ -31,8 +31,6 @@
 
 ## Phase 2 — Core UX parity (what users immediately notice)
 
-- **Directory lookup** (`directory` adapter). `openclaw directory` to list Cliq users/channels
-  (peers/groups) so routing + allowlists can use real ids. See `createChannelDirectoryAdapter`.
 - **Plugin doctor** (`doctor-contract-api.ts`). Contribute cliq-specific diagnostics to
   `openclaw plugins doctor` / `openclaw doctor` (missing creds, bad EU endpoint, webhook
   unreachable).
