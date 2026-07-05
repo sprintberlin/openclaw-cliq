@@ -179,3 +179,69 @@ describe("cliq reactions config schema", () => {
     expect(r?.enum).toEqual(["minimal", "extensive", "off"]);
   });
 });
+
+describe("cliq replyToMode config schema", () => {
+  const schema = manifest.channelConfigs.cliq.schema;
+  const baseConfig = {
+    clientId: "id",
+    clientSecret: "sec",
+    botId: "bot",
+  };
+
+  it("accepts replyToMode with each valid enum value", () => {
+    for (const m of ["off", "first", "all", "batched"]) {
+      const errors = validate(schema, { ...baseConfig, replyToMode: m });
+      expect(errors).toEqual([]);
+    }
+  });
+
+  it("rejects an unknown replyToMode value", () => {
+    const errors = validate(schema, { ...baseConfig, replyToMode: "always" });
+    expect(errors.some((e) => e.includes("not one of"))).toBe(true);
+  });
+
+  it("accepts replyToModeByChatType with valid chat-type keys + modes", () => {
+    const errors = validate(schema, {
+      ...baseConfig,
+      replyToModeByChatType: {
+        direct: "off",
+        group: "first",
+        channel: "all",
+      },
+    });
+    expect(errors).toEqual([]);
+  });
+
+  it("rejects an unknown chat-type key in replyToModeByChatType", () => {
+    const errors = validate(schema, {
+      ...baseConfig,
+      replyToModeByChatType: { forum: "all" },
+    });
+    expect(
+      errors.some((e) => e.includes('must not have additional properties: "forum"')),
+    ).toBe(true);
+  });
+
+  it("rejects extra keys inside replyToModeByChatType (additionalProperties:false)", () => {
+    const errors = validate(schema, {
+      ...baseConfig,
+      replyToModeByChatType: { group: "first", extra: 1 },
+    });
+    expect(
+      errors.some((e) => e.includes('must not have additional properties: "extra"')),
+    ).toBe(true);
+  });
+
+  it("the top-level configSchema also declares replyToMode + replyToModeByChatType", () => {
+    expect(manifest.configSchema.properties?.replyToMode).toBeDefined();
+    expect(manifest.configSchema.properties?.replyToMode?.enum).toEqual([
+      "off",
+      "first",
+      "all",
+      "batched",
+    ]);
+    expect(
+      manifest.configSchema.properties?.replyToModeByChatType,
+    ).toBeDefined();
+  });
+});

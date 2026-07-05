@@ -31,6 +31,20 @@
         "enum": ["after_dispatch", "immediate"],
         "default": "after_dispatch"
       },
+      "replyToMode": {
+        "type": "string",
+        "enum": ["off", "first", "all", "batched"],
+        "default": "off"
+      },
+      "replyToModeByChatType": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "direct": { "type": "string", "enum": ["off", "first", "all", "batched"] },
+          "group": { "type": "string", "enum": ["off", "first", "all", "batched"] },
+          "channel": { "type": "string", "enum": ["off", "first", "all", "batched"] }
+        }
+      },
       "groupPolicy": {
         "type": "string",
         "enum": ["open", "disabled", "allowlist"]
@@ -118,6 +132,20 @@
             "enum": ["after_dispatch", "immediate"],
             "default": "after_dispatch"
           },
+          "replyToMode": {
+            "type": "string",
+            "enum": ["off", "first", "all", "batched"],
+            "default": "off"
+          },
+          "replyToModeByChatType": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "direct": { "type": "string", "enum": ["off", "first", "all", "batched"] },
+              "group": { "type": "string", "enum": ["off", "first", "all", "batched"] },
+              "channel": { "type": "string", "enum": ["off", "first", "all", "batched"] }
+            }
+          },
           "groupPolicy": {
             "type": "string",
             "enum": ["open", "disabled", "allowlist"]
@@ -188,6 +216,8 @@
         "selfSenderIds": { "label": "Bot sender ids to ignore (self / other bots)" },
         "dmPolicy": { "label": "DM admission policy", "options": ["open", "allowlist", "pairing", "disabled"] },
         "ackPolicy": { "label": "Webhook ack timing", "options": ["after_dispatch", "immediate"] },
+        "replyToMode": { "label": "Reply-to metadata mode (Cliq cannot render reply quotes; off = none, all = carry inbound id for correlation)", "options": ["off", "first", "all", "batched"] },
+        "replyToModeByChatType": { "label": "Per-chat-type reply-to mode override (direct / group / channel)" },
         "groupPolicy": { "label": "Group admission policy", "options": ["open", "allowlist", "disabled"] },
         "groups": { "label": "Per-group config (keyed by channel unique name)" },
         "streaming": { "label": "Streaming preview", "options": ["off", "on"] },

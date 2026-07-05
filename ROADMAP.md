@@ -33,11 +33,6 @@
 
 ---
 
-## Phase 3 — Rich messaging & agent-facing features
-
-- **Threading fidelity.** Map Cliq threads/replies properly (beyond the current top-level
-  `reply` mode); Discord's `thread-binding-api.ts` is the model.
-
 ## Phase 4 — Operational / multi-account / enterprise
 
 - **SecretRef-backed credentials** (`secret-contract-api.ts`). Support `openclaw secrets`

@@ -29,6 +29,7 @@ import { cliqGroupsAdapter } from "./group-policy.js";
 import { cliqAgentPromptAdapter } from "./agent-prompt.js";
 import { cliqOutboundPresentation } from "./outbound-presentation.js";
 import { cliqCommandsAdapter } from "./commands.js";
+import { cliqThreadingAdapter } from "./threading.js";
 import {
   CLIQ_PAIRING_APPROVED_MESSAGE,
   CLIQ_PAIRING_ID_LABEL,
@@ -105,6 +106,13 @@ export {
   buildCliqModelBrowseChannelData,
   CLIQ_COMMANDS_MODELS_PAGE_SIZE,
 } from "./commands.js";
+export {
+  cliqThreadingAdapter,
+  resolveCliqReplyToMode,
+  buildCliqThreadingToolContext,
+  resolveCliqReplyTransport,
+  resolveCliqCurrentChannelId,
+} from "./threading.js";
 export {
   presentationToCliqCard,
   cliqButtonFromPortable,
@@ -265,7 +273,7 @@ export const cliqPlugin = createChatChannelPlugin<ResolvedCliqAccount, CliqStatu
     },
   },
 
-  threading: { topLevelReplyToMode: "reply" },
+  threading: cliqThreadingAdapter,
 
   pairing: {
     text: {

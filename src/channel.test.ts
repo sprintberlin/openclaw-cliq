@@ -152,6 +152,41 @@ describe("cliq plugin", () => {
     expect(section.streaming).toEqual({ preview: "on" });
   });
 
+  it("wires the threading adapter (not the legacy topLevelReplyToMode shape)", () => {
+    const threading = cliqPlugin.threading as {
+      resolveReplyToMode?: unknown;
+      allowExplicitReplyTagsWhenOff?: boolean;
+      buildToolContext?: unknown;
+      resolveReplyTransport?: unknown;
+      resolveCurrentChannelId?: unknown;
+      topLevelReplyToMode?: unknown;
+    };
+    expect(typeof threading.resolveReplyToMode).toBe("function");
+    expect(threading.allowExplicitReplyTagsWhenOff).toBe(true);
+    expect(typeof threading.buildToolContext).toBe("function");
+    expect(typeof threading.resolveReplyTransport).toBe("function");
+    expect(typeof threading.resolveCurrentChannelId).toBe("function");
+    // The broken `topLevelReplyToMode: "reply"` (treated as a channel id,
+    // resolved to "off" via a non-existent cfg.channels["reply"] lookup)
+    // must NOT be present — the resolver form replaces it.
+    expect(threading.topLevelReplyToMode).toBeUndefined();
+  });
+
+  it("threading.resolveReplyToMode defaults to off and honors channels.cliq.replyToMode", () => {
+    const threading = cliqPlugin.threading as {
+      resolveReplyToMode: (p: { cfg: any; chatType?: string | null }) => string;
+    };
+    expect(
+      threading.resolveReplyToMode({ cfg: cfgWith({ clientId: "id", clientSecret: "s", botId: "b" }), chatType: "group" }),
+    ).toBe("off");
+    expect(
+      threading.resolveReplyToMode({
+        cfg: cfgWith({ clientId: "id", clientSecret: "s", botId: "b", replyToMode: "all" }),
+        chatType: "group",
+      }),
+    ).toBe("all");
+  });
+
   it("wires a pairing adapter with the cliq id label", () => {
     expect(cliqPlugin.pairing).toBeDefined();
     const pairing = cliqPlugin.pairing as { idLabel?: string };
