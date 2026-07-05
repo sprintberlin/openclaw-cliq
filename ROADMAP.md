@@ -31,8 +31,6 @@
 
 ## Phase 2 — Core UX parity (what users immediately notice)
 
-- **Setup wizard** (`setup-plugin-api.ts`). Interactive `openclaw configure` for Cliq
-  (clientId/secret/botId/webhookSecret) instead of hand-editing `openclaw.json`.
 - **Rich account inspect** (`account-inspect-api.ts`). Fuller `inspectAccount` output (bot
   identity, scopes, configured surfaces).
 
