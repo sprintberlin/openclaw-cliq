@@ -34,9 +34,6 @@
 The difference between a demo and a real channel. Without these, messages get lost, duplicated,
 or the bot talks to itself.
 
-- **Bot-loop / self-message protection.** Current self-detection is naive (`senderId===botId`).
-  Harden it so the bot never answers its own or another bot's messages. See
-  `docs/channels/bot-loop-protection.md`.
 - **Outbound error classification + retry.** Wrap Cliq API sends with retry on 429/5xx honoring
   any `retry-after`, treat 401/404 as fatal, and fall back rich→plain on a formatting-rejected
   400. See Telegram `send-error-predicates.ts` / flood-wait handling.

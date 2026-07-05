@@ -19,6 +19,7 @@ function account(overrides: Partial<ResolvedCliqAccount> = {}): ResolvedCliqAcco
     allowFrom: [],
     dmPolicy: undefined,
     ackPolicy: "after_dispatch",
+    selfSenderIds: [],
     ...overrides,
   };
 }

@@ -92,6 +92,7 @@ function applyAccountConfig(params: {
   writeField("botName");
   writeField("webhookSecret");
   if (Array.isArray(input.allowFrom)) target["allowFrom"] = input.allowFrom;
+  if (Array.isArray(input.selfSenderIds)) target["selfSenderIds"] = input.selfSenderIds;
   return next as unknown as OpenClawConfig;
 }
 

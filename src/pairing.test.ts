@@ -21,6 +21,7 @@ function account(overrides: Partial<ResolvedCliqAccount> = {}): ResolvedCliqAcco
     allowFrom: [],
     dmPolicy: "pairing",
     ackPolicy: "after_dispatch",
+    selfSenderIds: [],
     ...overrides,
   };
 }

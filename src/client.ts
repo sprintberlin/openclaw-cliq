@@ -14,6 +14,16 @@ export interface CliqChannelConfig {
   allowFrom?: string[];
   dmPolicy?: string;
   /**
+   * Additional sender ids / names / emails whose inbound messages are
+   * silently dropped as "self" (never dispatched to an agent). Use this to
+   * ignore the bot's own alternate identity (e.g. its Zoho user id when the
+   * webhook delivers a zuid that differs from `botId`) and other Cliq bots
+   * in the same workspace that must not trigger this agent (bot-to-bot
+   * loop prevention). The bot's own `botId` and `botName` are always
+   * treated as self implicitly; this list is for *additional* identities.
+   */
+  selfSenderIds?: string[];
+  /**
    * When the webhook acknowledges Cliq relative to the inbound dispatch.
    * - `"after_dispatch"` (default): await `runtime.channel.inbound.run`
    *   before sending HTTP 200. A crash mid-dispatch means Cliq never sees
@@ -37,6 +47,7 @@ export interface ResolvedCliqAccount {
   allowFrom: string[];
   dmPolicy: string | undefined;
   ackPolicy: "after_dispatch" | "immediate";
+  selfSenderIds: string[];
 }
 
 export function resolveCliqConfig(
@@ -65,6 +76,7 @@ export function resolveCliqConfig(
     allowFrom: section?.allowFrom ?? [],
     dmPolicy: section?.dmPolicy,
     ackPolicy,
+    selfSenderIds: section?.selfSenderIds ?? [],
   };
 }
 

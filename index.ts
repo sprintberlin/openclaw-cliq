@@ -13,6 +13,7 @@ import {
   type CliqRuntime,
 } from "./src/inbound.js";
 import { claimCliqMessage, commitCliqMessage, releaseCliqMessage } from "./src/dedupe.js";
+import { isCliqSelfMessage } from "./src/self-message.js";
 
 export default defineChannelPluginEntry({
   id: "cliq",
@@ -81,7 +82,19 @@ export default defineChannelPluginEntry({
           return true;
         }
 
-        if (parsed.senderId === account.botId || parsed.senderName === account.botName) {
+        // Self-message / bot-loop protection: the bot must never answer its
+        // own messages (or those of another Cliq bot the operator marked as
+        // ignorable via `selfSenderIds`). Match case-insensitively across
+        // senderId, senderName, and senderEmail against {botId, botName,
+        // selfSenderIds}. The configured `botId`/`botName` always count as
+        // self; `selfSenderIds` adds the bot's alternate identity (e.g. its
+        // Zoho user id when the webhook delivers a zuid) and any other bots
+        // that must not trigger this agent.
+        const selfMatch = isCliqSelfMessage(parsed, account);
+        if (selfMatch.self) {
+          api.logger.debug?.(
+            `[cliq] inbound ${parsed.messageId} dropped as self-message (matched ${selfMatch.matchedField}="${selfMatch.matchedValue}")`,
+          );
           res.statusCode = 200;
           res.end("ok");
           return true;
