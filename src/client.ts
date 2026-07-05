@@ -1,4 +1,5 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
+import { withSendRetry, type RetryOptions } from "./send-retry.js";
 
 const EU_API_BASE = "https://cliq.zoho.eu";
 const EU_OAUTH_BASE = "https://accounts.zoho.eu";
@@ -215,6 +216,7 @@ export function normalizeCliqRouteTarget(to: string): NormalizedCliqTarget {
 export class CliqClient {
   private accessToken: string | null = null;
   private tokenExpiresAt = 0;
+  private readonly retryOptions: Required<RetryOptions>;
 
   constructor(
     private readonly clientId: string,
@@ -222,7 +224,17 @@ export class CliqClient {
     private readonly botId: string,
     private readonly apiBase = EU_API_BASE,
     private readonly oauthBase = EU_OAUTH_BASE,
-  ) {}
+    retryOptions?: RetryOptions,
+  ) {
+    const base = retryOptions ?? {};
+    this.retryOptions = {
+      maxAttempts: base.maxAttempts ?? 3,
+      baseDelayMs: base.baseDelayMs ?? 500,
+      maxDelayMs: base.maxDelayMs ?? 8_000,
+      sleep: base.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))),
+      random: base.random ?? Math.random,
+    };
+  }
 
   async getAccessToken(scope = "ZohoCliq.Webhooks.CREATE"): Promise<string> {
     const now = Date.now();
@@ -257,19 +269,22 @@ export class CliqClient {
     } else {
       payload.chatid = opts.to;
     }
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Zoho-oauthtoken ${token}`,
-        "Content-Type": "application/json",
+    const res = await withSendRetry(
+      async () => {
+        const r = await fetch(url, {
+          method: "POST",
+          headers: {
+            Authorization: `Zoho-oauthtoken ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        });
+        const body = await r.text().catch(() => "");
+        return { status: r.status, body, headers: r.headers };
       },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new Error(`cliq: sendMessage failed (${res.status}): ${body}`);
-    }
-    const data = (await res.json().catch(() => ({}))) as { id?: string };
+      this.retryOptions,
+    );
+    const data = JSON.parse(res.body || "{}") as { id?: string };
     return { messageId: data.id };
   }
 
@@ -290,16 +305,19 @@ export class CliqClient {
     standalone.set(opts.attachment.bytes);
     const blob = new Blob([standalone], { type: mimeType });
     form.set("attachments", blob, opts.attachment.fileName);
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { Authorization: `Zoho-oauthtoken ${token}` },
-      body: form,
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new Error(`cliq: sendMediaMessage failed (${res.status}): ${body}`);
-    }
-    const data = (await res.json().catch(() => ({}))) as { id?: string };
+    const res = await withSendRetry(
+      async () => {
+        const r = await fetch(url, {
+          method: "POST",
+          headers: { Authorization: `Zoho-oauthtoken ${token}` },
+          body: form,
+        });
+        const body = await r.text().catch(() => "");
+        return { status: r.status, body, headers: r.headers };
+      },
+      this.retryOptions,
+    );
+    const data = JSON.parse(res.body || "{}") as { id?: string };
     return { messageId: data.id };
   }
 }

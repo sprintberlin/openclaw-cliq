@@ -13,6 +13,7 @@ import {
   type CliqChannelConfig,
   type ResolvedCliqAccount,
 } from "./client.js";
+import { CliqSendError } from "./send-retry.js";
 import {
   buildCliqMentionRegexes,
   stripCliqMentions,
@@ -194,15 +195,35 @@ export const cliqPlugin: ChannelPlugin<ResolvedCliqAccount> = createChatChannelP
         const account = resolveAccountFromCtx(ctx.cfg, ctx.accountId);
         const client = resolveCliqClient(account);
         const target = normalizeCliqRouteTarget(ctx.to);
-        const result = await client.sendMessage({
-          to: target.to,
-          isDm: target.isDm,
-          text: markdownToCliq(ctx.text),
-        });
-        return {
-          messageId: result.messageId ?? "unknown",
-          to: ctx.to,
-        };
+        const richText = markdownToCliq(ctx.text);
+        try {
+          const result = await client.sendMessage({
+            to: target.to,
+            isDm: target.isDm,
+            text: richText,
+          });
+          return {
+            messageId: result.messageId ?? "unknown",
+            to: ctx.to,
+          };
+        } catch (err) {
+          // Fall back rich→plain on a formatting-rejected 400: retry once
+          // with the raw agent text (no markdown→cliq conversion). Only this
+          // error kind is recoverable; transient ones are already retried
+          // inside the client, and fatal ones must surface to the caller.
+          if (err instanceof CliqSendError && err.kind === "format_rejected" && ctx.text !== richText) {
+            const result = await client.sendMessage({
+              to: target.to,
+              isDm: target.isDm,
+              text: ctx.text,
+            });
+            return {
+              messageId: result.messageId ?? "unknown",
+              to: ctx.to,
+            };
+          }
+          throw err;
+        }
       },
       sendMedia: async (ctx) => {
         const account = resolveAccountFromCtx(ctx.cfg, ctx.accountId);

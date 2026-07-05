@@ -34,9 +34,6 @@
 The difference between a demo and a real channel. Without these, messages get lost, duplicated,
 or the bot talks to itself.
 
-- **Outbound error classification + retry.** Wrap Cliq API sends with retry on 429/5xx honoring
-  any `retry-after`, treat 401/404 as fatal, and fall back rich→plain on a formatting-rejected
-  400. See Telegram `send-error-predicates.ts` / flood-wait handling.
 - **Webhook security hardening.** Constant-time secret compare, single-header enforcement,
   connection close + 401 on failure, and rate-limit only failed-auth attempts (never throttle
   Cliq's real delivery). See Telegram "Webhook security ordering".

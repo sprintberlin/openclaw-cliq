@@ -416,3 +416,166 @@ describe("chunkMessage", () => {
     expect(chunks.join("")).toBe(text);
   });
 });
+
+describe("outbound error classification + retry (Closes #15)", () => {
+  function mockFetchSeq(statuses: number[], opts?: { bodies?: string[]; retryAfter?: string }) {
+    const calls: { url: string; body: string }[] = [];
+    const original = globalThis.fetch;
+    const bodies = opts?.bodies ?? statuses.map(() => JSON.stringify({ id: "m-1" }));
+    let i = 0;
+    globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(JSON.stringify({ access_token: "tok", expires_in: 3600 }), { status: 200 });
+      }
+      const status = statuses[Math.min(i, statuses.length - 1)];
+      const body = bodies[Math.min(i, bodies.length - 1)];
+      calls.push({ url: urlStr, body: init?.body as string });
+      i++;
+      const headers: Record<string, string> = {};
+      if (opts?.retryAfter) headers["retry-after"] = opts.retryAfter;
+      return new Response(body, { status, headers });
+    }) as typeof fetch;
+    return {
+      calls,
+      restore: () => { globalThis.fetch = original; },
+    };
+  }
+
+  it("retries transient (5xx) then succeeds on a follow-up 200", async () => {
+    setCliqClientRegistry(null);
+    const cfg = cfgWith({ clientId: "id", clientSecret: "secret", botId: "bot" });
+    const mock = mockFetchSeq([500, 200]);
+    try {
+      // Patch the client factory to use a fast backoff for this test.
+      const { setCliqClientRegistry, getCliqClientRegistry } = await import("./runtime-api.js");
+      setCliqClientRegistry(null);
+      // Inject a client with a tiny sleep so the test runs fast.
+      const { CliqClient } = await import("./client.js");
+      const fastClient = new CliqClient("id", "secret", "bot", undefined, undefined, {
+        maxAttempts: 3,
+        baseDelayMs: 1,
+        maxDelayMs: 5,
+        sleep: async () => {},
+        random: () => 0.1,
+      });
+      // Reach into the registry cache and replace the client the outbound path resolves.
+      const reg = getCliqClientRegistry();
+      (reg as unknown as { clients: Map<string, unknown> }).clients.set("cc:id:bot", fastClient);
+      await cliqPlugin.outbound!.sendText!({
+        cfg,
+        to: "user-1",
+        text: "hello",
+        accountId: undefined,
+      } as any);
+    } finally {
+      mock.restore();
+    }
+    // Two send attempts: the 500 retry and the 200 success.
+    const sendCalls = mock.calls.filter((c) => c.url.includes("/bots/bot/message"));
+    expect(sendCalls).toHaveLength(2);
+  });
+
+  it("falls back rich→plain on a format_rejected 400", async () => {
+    setCliqClientRegistry(null);
+    const cfg = cfgWith({ clientId: "id", clientSecret: "secret", botId: "bot" });
+    const calls: { text: string }[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(JSON.stringify({ access_token: "tok", expires_in: 3600 }), { status: 200 });
+      }
+      if (init?.method === "POST") {
+        const parsed = JSON.parse(init.body as string) as { text: string };
+        // First send (rich, markdown-converted) is rejected as a format error.
+        // Second send (plain raw text) succeeds.
+        const isRich = parsed.text !== "raw **agent** text";
+        calls.push({ text: parsed.text });
+        if (isRich) {
+          return new Response("invalid markdown format", { status: 400 });
+        }
+        return new Response(JSON.stringify({ id: "m-plain" }), { status: 200 });
+      }
+      return new Response("", { status: 404 });
+    }) as typeof fetch;
+    try {
+      const result = await cliqPlugin.outbound!.sendText!({
+        cfg,
+        to: "user-1",
+        text: "raw **agent** text",
+        accountId: undefined,
+      } as any);
+      expect(result.messageId).toBe("m-plain");
+    } finally {
+      globalThis.fetch = original;
+    }
+    // Two sends: first rich (converted), second raw fallback.
+    expect(calls).toHaveLength(2);
+    expect(calls[0].text).not.toBe("raw **agent** text"); // rich (converted)
+    expect(calls[1].text).toBe("raw **agent** text");       // plain fallback
+  });
+
+  it("surfaces fatal (404) without retry or fallback", async () => {
+    setCliqClientRegistry(null);
+    const cfg = cfgWith({ clientId: "id", clientSecret: "secret", botId: "bot" });
+    let attempts = 0;
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(JSON.stringify({ access_token: "tok", expires_in: 3600 }), { status: 200 });
+      }
+      if (init?.method === "POST") {
+        attempts++;
+        return new Response("bot not found", { status: 404 });
+      }
+      return new Response("", { status: 404 });
+    }) as typeof fetch;
+    try {
+      await expect(
+        cliqPlugin.outbound!.sendText!({
+          cfg,
+          to: "user-1",
+          text: "hello",
+          accountId: undefined,
+        } as any),
+      ).rejects.toThrow(/fatal/);
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(attempts).toBe(1);
+  });
+
+  it("surfaces transient exhausts as CliqSendError(transient) without fallback", async () => {
+    setCliqClientRegistry(null);
+    const cfg = cfgWith({ clientId: "id", clientSecret: "secret", botId: "bot" });
+    let attempts = 0;
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(JSON.stringify({ access_token: "tok", expires_in: 3600 }), { status: 200 });
+      }
+      if (init?.method === "POST") {
+        attempts++;
+        return new Response("boom", { status: 500 });
+      }
+      return new Response("", { status: 404 });
+    }) as typeof fetch;
+    try {
+      await expect(
+        cliqPlugin.outbound!.sendText!({
+          cfg,
+          to: "user-1",
+          text: "hello",
+          accountId: undefined,
+        } as any),
+      ).rejects.toThrow(/transient/);
+    } finally {
+      globalThis.fetch = original;
+    }
+    // Retried up to maxAttempts (default 3), no plain fallback.
+    expect(attempts).toBe(3);
+  });
+});
