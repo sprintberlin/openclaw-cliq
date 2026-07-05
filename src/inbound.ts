@@ -7,9 +7,9 @@ import type {
 import type { IncomingMessage } from "node:http";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import type { ResolvedCliqAccount } from "./client.js";
-import { markdownToCliq } from "./markdown.js";
 import { stripCliqMentions } from "./mentions.js";
 import { resolveCliqClient } from "./runtime-api.js";
+import { createLiveEditDeliver } from "./live-edit.js";
 
 /**
  * Minimal slice of `api.runtime` that the inbound dispatch path needs. Kept
@@ -545,15 +545,19 @@ export async function dispatchCliqInbound(params: {
   const deliverTo = parsed.isGroup
     ? (parsed.channelUniqueName ?? parsed.chatId)
     : parsed.senderId;
-  const deliver = async (payload: { text?: string; mediaUrl?: string }) => {
-    const text = payload.text;
-    if (!text) return;
-    await client.sendMessage({
-      to: deliverTo,
-      text: markdownToCliq(text),
-      isDm: !parsed.isGroup,
-    });
-  };
+  // Live-edit-in-place: when block streaming is opted in for the account,
+  // the buffered block dispatcher delivers the agent's reply as progressive
+  // blocks. Instead of sending each block as a separate message, edit a
+  // single draft message in place as the reply grows (overflowing to a new
+  // message at the 5000-char cap). When block streaming is off (default),
+  // the single final reply is chunked and sent (the live-edit loop's
+  // disabled path). See `live-edit.ts` for chatId-resolution caveats.
+  const deliver = createLiveEditDeliver({
+    client,
+    to: deliverTo,
+    isDm: !parsed.isGroup,
+    enabled: account.blockStreaming,
+  });
   const handleOnError =
     onError ??
     ((err: unknown, info: { kind: string }) => {
