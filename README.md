@@ -104,17 +104,64 @@ When registering / re-consenting the self-client, request **all five** scopes so
 
 #### 3c. Obtain the user-context refresh token (required for channel posts + edits)
 
-This is a **one-time** exchange. The refresh token does not expire (unless revoked), so you only do this once per Cliq org.
+Channel posts need a **user-context** token, which `client_credentials` cannot provide
+(Zoho issues a `client_credentials` token that *claims* the `ZohoCliq.Channels.UPDATE`
+scope, but the channel API rejects it with `oauthtoken_scope_invalid`). You get a
+user-context token from a **refresh token**, obtained once via the Self Client's
+authorization-code flow. This is a **two-step** process — a short-lived **code** that you
+exchange for a permanent **refresh token**.
 
-1. In the **[Zoho API Console](https://api-console.zoho.eu)**, open your **Self Client**.
-2. Under **Generate Access Token**, choose **Grant Type: Authorization Code** (a.k.a. "Self Client" code flow).
-3. Enter the same **scopes** as above (space-separated: `ZohoCliq.Webhooks.CREATE ZohoCliq.Channels.UPDATE ZohoCliq.Channels.READ ZohoCliq.Users.READ ZohoCliq.Messages.UPDATE`).
-4. Click **Generate**. The self-client flow returns both a short-lived `access_token` (ignore it) and a long-lived **`refresh_token`** — copy the `refresh_token`.
-5. Put the `refresh_token` in the plugin config as `refreshToken` (see §4).
+> **Why only once:** only the *code* is short-lived (10 minutes, single-use). The
+> **refresh token you get from it does not expire** — it survives gateway restarts and any
+> amount of downtime. You do this once per Cliq org and never again (unless you revoke it).
 
-> The self-client authorization-code flow is the documented way to get a refresh token for a single-org server integration without standing up a redirect URL. See Zoho's OAuth docs for the exact button names if the console UI differs.
+**Step 1 — generate the code (valid 10 minutes):**
 
-If you skip this step, the plugin still works for **bot DMs** (the `client_credentials` path). Channel @mention replies and message edits will fail with `oauthtoken_scope_invalid` until a refresh token is provided.
+1. In the **[Zoho API Console](https://api-console.zoho.eu)** → your **Self Client** → tab **Generate Code**.
+2. **Scope** (the Self Client field is comma-separated, no spaces):
+   ```
+   ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Messages.UPDATE,ZohoCliq.Channels.READ,ZohoCliq.Users.READ
+   ```
+3. **Time Duration:** 10 minutes. **Scope Description:** anything (e.g. `openclaw`). Pick your **portal/org** if prompted.
+4. Click **Create** and copy the code — it looks like `1000.<hex>.<hex>`.
+
+**Step 2 — exchange the code for a refresh token (do this within the 10 minutes):**
+
+The Self Client console gives you a *code*, not the token. Exchange it against the EU token
+endpoint (no `redirect_uri` is needed for the self-client flow):
+
+```bash
+curl -X POST "https://accounts.zoho.eu/oauth/v2/token" \
+  -d "grant_type=authorization_code" \
+  -d "client_id=<clientId>" \
+  -d "client_secret=<clientSecret>" \
+  -d "code=<code from step 1>"
+```
+
+The response is JSON:
+
+```json
+{
+  "access_token": "1000....",     // short-lived (~1h) — ignore it
+  "refresh_token": "1000....",    // PERMANENT — this is the one you keep
+  "scope": "ZohoCliq.Webhooks.CREATE ZohoCliq.Channels.UPDATE ...",
+  "expires_in": 3600
+}
+```
+
+Copy the **`refresh_token`** value.
+
+**Step 3 — store it:** put the `refresh_token` in the plugin config as `refreshToken` (see §4).
+From then on the plugin mints its own short-lived access tokens from it automatically
+(`grant_type=refresh_token`), forever.
+
+> **Troubleshooting:**
+> - `invalid_code` on exchange → the code expired (>10 min) or was already used once. Generate a fresh one.
+> - Channel replies still `oauthtoken_scope_invalid` → the `refreshToken` is missing from config, or was minted without `ZohoCliq.Channels.UPDATE`. Re-run 3c with the full scope list.
+> - `channel_not_exists` on a real channel → the bot is not a **participant** of that channel (invite it: channel ⋯ → **Bots**), or you used the channel's *display name* instead of its **unique name** (the technical name — e.g. a channel shown as "Finance" may have the unique name `invest`).
+
+If you skip 3c entirely, the plugin still works for **bot DMs** (the `client_credentials`
+path); only channel @mention replies and live-edit message edits require the refresh token.
 
 ---
 
