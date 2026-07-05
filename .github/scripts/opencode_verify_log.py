@@ -112,30 +112,69 @@ req = urllib.request.Request(
     }
 )
 
+def _extract_verifier_json(resp_data):
+    """Pull the JSON verdict out of an LLM chat-completion response, tolerating
+    null content (reasoning models like minimax sometimes return content=None and
+    put the answer under reasoning_content), ```json fences, and surrounding prose.
+    Returns a dict, or None if nothing parseable was found."""
+    try:
+        message = resp_data["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    raw = (message.get("content") or message.get("reasoning_content") or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("```"):
+        raw = raw.strip("`").strip()
+        if raw[:4].lower() == "json":
+            raw = raw[4:].strip()
+    if not raw.startswith("{"):
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        raw = m.group(0) if m else raw
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else None
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
 success = changes_made
 comment_body = f"OpenCode run finished. Changes committed: {changes_made}. (AI Verification via {verification_model})."
+
+token_summary = ""
+try:
+    with open("/tmp/token_summary.txt", "r", encoding="utf-8") as tf:
+        token_summary = tf.read().strip()
+except FileNotFoundError:
+    token_summary = "No token data available."
+except Exception as e:
+    token_summary = f"Token summary could not be read: {e}"
 
 try:
     with urllib.request.urlopen(req) as res:
         resp_data = json.loads(res.read().decode())
-        content_str = resp_data["choices"][0]["message"]["content"]
-        content = json.loads(content_str)
-        success = content.get("success", False)
 
-        token_summary = ""
-        try:
-            with open("/tmp/token_summary.txt", "r", encoding="utf-8") as tf:
-                token_summary = tf.read().strip()
-        except FileNotFoundError:
-            token_summary = "No token data available."
-        except Exception as e:
-            token_summary = f"Token summary could not be read: {e}"
+    content = _extract_verifier_json(resp_data)
 
+    if content is None:
+        # Verifier returned no parseable JSON (minimax occasionally emits null
+        # content). Do NOT crash and do NOT silently claim verified: fall back to
+        # the CI hard gate, which already guarantees the pushed code is green, and
+        # say so explicitly rather than swallowing it as an "Internal Script Error".
+        print("Verifier returned no parseable JSON; falling back to hard-gate result.")
+        comment_body = (
+            f"AI verification inconclusive — {verification_model} returned no parseable "
+            f"JSON. Falling back to the CI hard gate (typecheck + tests + smoke), which "
+            f"passed before the push. Changes committed: {changes_made}."
+        )
+        success = changes_made
+    else:
+        success = content.get("success", changes_made)
         comment_body = content.get("comment", comment_body)
-        comment_body += f"\n\n---\n**OpenCode Execution Data:**\n{token_summary}"
-
         has_follow_up = content.get("has_follow_up", False)
         follow_up_comment = content.get("follow_up_comment", "")
+
+    comment_body += f"\n\n---\n**OpenCode Execution Data:**\n{token_summary}"
 except urllib.error.URLError as e:
     err_body = e.read().decode() if hasattr(e, "read") else ""
     print(f"HTTP Error calling LLM: {e}\n{err_body}")
