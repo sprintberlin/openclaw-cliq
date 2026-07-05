@@ -25,9 +25,14 @@ Zoho round-trip on Martin's box is the remaining confirmation (needs credentials
 
 ## Plan
 
-- [ ] **Confirm issue #11 fix end-to-end on Martin's gateway** — re-run the real Cliq DM
-      test with the new build and confirm the agent reply now appears in the Cliq DM via
-      `userids`. (Headless run can only ship the code; Martin verifies the round-trip.)
+> Next items are drawn from **ROADMAP.md** (the parity north star). Phase 1 there —
+> correctness & reliability — outranks the Stage-4 smoke.
+
+- [ ] **Confirm issue #11 fix end-to-end on Martin's gateway** — the outbound DM-vs-channel
+      routing fix (ROADMAP Phase 1, `normalizeCliqRouteTarget` + chat-type-aware
+      `responseTarget`) shipped in code; re-run the real Cliq DM test with the new build and
+      confirm the agent reply now lands in the DM via `userids`. (Headless run can only ship
+      the code; Martin verifies the round-trip.)
 - [ ] **Stage-4 smoke: real inbound dispatch** — extend `scripts/smoke-gateway.sh` (or a
       sibling) to start the gateway, POST a canonical Deluge payload to `/cliq/webhook`, and
       assert the dispatch pipeline runs. Needs a stub agent / local fake model so the pipeline

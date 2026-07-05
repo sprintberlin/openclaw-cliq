@@ -163,9 +163,10 @@ openclaw-cliq/
 
 This project is developed **iteratively** by an autonomous coding agent (OpenCode via GitHub Actions). The human defines the **goal** (the Vision above); the agent evolves the **plan** and the code, one increment per run.
 
-### The two working files
+### The working files
 
 - **AGENTS.md** (this file) — the constitution: goal, conventions, SDK reference, and the **Learnings** section below (durable, hard-won knowledge — SDK quirks and gotchas). Stable; grows slowly.
+- **ROADMAP.md** — the **north star**: the curated feature-parity target derived from the bundled Telegram & Discord channels, organized into priority phases. Stable; changes only when priorities shift. PROGRESS.md's Plan pulls its next items from the top open phase here.
 - **PROGRESS.md** — the living plan: a short **State** (where we are now) plus a **Plan** (a self-maintained backlog of open items, top item = next step). The agent **rewrites it in place** every run.
 
 **History and changelog do NOT live in a tracked file.** git log holds the commits; the issue comments (posted by the verify bot) hold the per-run summaries. Never append a per-run log to PROGRESS.md — that is what made it explode before.
