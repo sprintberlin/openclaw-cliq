@@ -99,6 +99,18 @@ describe("cliq plugin", () => {
     expect(cliqPlugin.capabilities.edit).toBe(true);
   });
 
+  it("wires presentation capabilities + renderPresentation + sendPayload on the outbound adapter", () => {
+    const outbound = cliqPlugin.outbound as {
+      presentationCapabilities?: { supported?: boolean; buttons?: boolean };
+      renderPresentation?: unknown;
+      sendPayload?: unknown;
+    };
+    expect(outbound.presentationCapabilities?.supported).toBe(true);
+    expect(outbound.presentationCapabilities?.buttons).toBe(true);
+    expect(typeof outbound.renderPresentation).toBe("function");
+    expect(typeof outbound.sendPayload).toBe("function");
+  });
+
   it("publishes block-streaming coalesce defaults tuned for Cliq", () => {
     const streaming = (cliqPlugin as { streaming?: { blockStreamingCoalesceDefaults?: { minChars: number; idleMs: number } } }).streaming;
     expect(streaming?.blockStreamingCoalesceDefaults).toBeDefined();

@@ -27,6 +27,7 @@ import { inspectCliqAccount } from "./account-inspect.js";
 import { cliqMessageActions } from "./message-actions.js";
 import { cliqGroupsAdapter } from "./group-policy.js";
 import { cliqAgentPromptAdapter } from "./agent-prompt.js";
+import { cliqOutboundPresentation } from "./outbound-presentation.js";
 import {
   CLIQ_PAIRING_APPROVED_MESSAGE,
   CLIQ_PAIRING_ID_LABEL,
@@ -57,6 +58,14 @@ export {
   type InspectedCliqAccount,
   type InspectedCliqAccountConfig,
 } from "./account-inspect.js";
+export {
+  cliqOutboundPresentation,
+  renderCliqPresentation,
+  sendCliqPayload,
+  isCliqCardChannelData,
+  type CliqRenderedCard,
+  type CliqOutboundPresentation,
+} from "./outbound-presentation.js";
 export {
   CLIQ_PAIRING_APPROVED_MESSAGE,
   CLIQ_PAIRING_ID_LABEL,
@@ -259,6 +268,7 @@ export const cliqPlugin = createChatChannelPlugin<ResolvedCliqAccount, CliqStatu
       deliveryMode: "direct",
       textChunkLimit: 5000,
       chunker: (text, limit) => chunkMessage(text, limit),
+      ...cliqOutboundPresentation,
     },
     attachedResults: {
       channel: CHANNEL_ID,

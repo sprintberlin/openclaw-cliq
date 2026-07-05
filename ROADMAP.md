@@ -35,14 +35,6 @@
 
 ## Phase 3 — Rich messaging & agent-facing features
 
-- **Interactive elements — outbound `renderPresentation` path.** Render
-  agent-emitted portable `MessagePresentation` payloads (replies that carry
-  `presentation`) into Cliq cards via the outbound adapter's
-  `renderPresentation` + `sendPayload` hooks (`ChannelOutboundAdapter`), so
-  block-streaming previews and agent replies with buttons render natively
-  rather than degrading to fallback text. The explicit
-  `message(action=send, buttons=[...])` tool path already works; this is the
-  reply-side rendering.
 - **Native/custom commands** (`commands`). Slash-style Cliq commands mapped to agent actions.
 - **Threading fidelity.** Map Cliq threads/replies properly (beyond the current top-level
   `reply` mode); Discord's `thread-binding-api.ts` is the model.
