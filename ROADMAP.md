@@ -31,8 +31,6 @@
 
 ## Phase 2 — Core UX parity (what users immediately notice)
 
-- **Typing indicator** (`heartbeat.sendTyping`). Show the bot "typing…" while the agent works.
-  See `heartbeat` in `src/channel.ts`.
 - **Account status + probe** (`status` adapter). Make `openclaw status` / `openclaw channels`
   report Cliq account health (bot reachable, OAuth valid). See
   `createComputedAccountStatusAdapter` usage in Telegram.

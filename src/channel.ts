@@ -20,6 +20,7 @@ import {
 } from "./mentions.js";
 import { markdownToCliq } from "./markdown.js";
 import { resolveCliqClient } from "./runtime-api.js";
+import { cliqHeartbeatAdapter } from "./heartbeat.js";
 import {
   CLIQ_PAIRING_APPROVED_MESSAGE,
   CLIQ_PAIRING_ID_LABEL,
@@ -29,6 +30,7 @@ import {
 export { resolveCliqConfig, CliqClient, chunkMessage, loadCliqMediaAttachment, normalizeCliqRouteTarget, type CliqChannelConfig, type ResolvedCliqAccount, type CliqMediaAttachment, type NormalizedCliqTarget } from "./client.js";
 export { buildCliqMentionRegexes, stripCliqMentions } from "./mentions.js";
 export { markdownToCliq } from "./markdown.js";
+export { cliqHeartbeatAdapter, probeCliqHeartbeat, type CliqHeartbeatProbeResult } from "./heartbeat.js";
 export {
   CLIQ_PAIRING_APPROVED_MESSAGE,
   CLIQ_PAIRING_ID_LABEL,
@@ -161,6 +163,7 @@ export const cliqPlugin: ChannelPlugin<ResolvedCliqAccount> = createChatChannelP
         return stripCliqMentions(text ?? "", account);
       },
     },
+    heartbeat: cliqHeartbeatAdapter,
   },
 
   security: {

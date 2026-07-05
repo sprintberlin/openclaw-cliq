@@ -100,6 +100,18 @@ describe("cliq plugin", () => {
     expect(pairing.idLabel).toBe("cliqSenderId");
   });
 
+  it("wires a heartbeat adapter with checkReady + sendTyping + clearTyping", () => {
+    expect(cliqPlugin.heartbeat).toBeDefined();
+    const heartbeat = cliqPlugin.heartbeat as {
+      checkReady?: unknown;
+      sendTyping?: unknown;
+      clearTyping?: unknown;
+    };
+    expect(typeof heartbeat.checkReady).toBe("function");
+    expect(typeof heartbeat.sendTyping).toBe("function");
+    expect(typeof heartbeat.clearTyping).toBe("function");
+  });
+
   it("applies markdown→cliq formatting on outbound sendText", async () => {
     // Reset the client registry so this test starts with no cached OAuth
     // token and the mocked fetch OAuth branch is exercised deterministically.
