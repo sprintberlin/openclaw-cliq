@@ -35,8 +35,6 @@
 
 ## Phase 4 — Operational / multi-account / enterprise
 
-- **Session binding** (`session-binding-contract-api.ts`, `session-key-api.ts`). Correct session
-  keying per chat/thread/account.
 - **Legacy state migrations** (`legacy-state-migrations-api.ts`). Safe config/state upgrades.
 - **Multi-account** hardening. Verify multiple Cliq bots/accounts coexist (token cache already
   keyed; confirm routing + status + directory are per-account).
