@@ -20,6 +20,7 @@ import {
 } from "./src/webhook-security.js";
 import { claimCliqMessage, commitCliqMessage, releaseCliqMessage } from "./src/dedupe.js";
 import { isCliqSelfMessage } from "./src/self-message.js";
+import { cliqSecurityAuditCollector } from "./src/security-audit.js";
 
 /**
  * Per-IP fixed-window limiter for *failed* webhook authentications. Legit
@@ -62,6 +63,11 @@ export default defineChannelPluginEntry({
     // creates; the outbound sendText / inbound deliver paths resolve their
     // client through the registry, so all sends flow through this sink.
     getCliqClientRegistry().setLogger(api.logger);
+    // Contribute Cliq-specific findings to `openclaw security audit`:
+    // missing webhook secret (critical), wildcard allowFrom (critical), open
+    // DM policy (warn), and plaintext secret storage (warn). The collector
+    // is pure (config reads only) and never throws.
+    api.registerSecurityAuditCollector(cliqSecurityAuditCollector);
     api.registerHttpRoute({
       path: "/cliq/webhook",
       auth: "plugin",

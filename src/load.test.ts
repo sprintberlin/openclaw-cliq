@@ -68,6 +68,7 @@ function buildMockApi() {
   const routes: CapturedRoute[] = [];
   let registeredChannel = false;
   let cliRegistered = false;
+  const securityAuditCollectors: Array<(ctx: unknown) => unknown> = [];
   const api = {
     registrationMode: "full" as const,
     config: {} as Record<string, unknown>,
@@ -87,8 +88,17 @@ function buildMockApi() {
     registerHttpRoute: (params: CapturedRoute) => {
       routes.push(params);
     },
+    registerSecurityAuditCollector: (collector: (ctx: unknown) => unknown) => {
+      securityAuditCollectors.push(collector);
+    },
   };
-  return { api, routes, isRegistered: () => registeredChannel, cliRegistered: () => cliRegistered };
+  return {
+    api,
+    routes,
+    isRegistered: () => registeredChannel,
+    cliRegistered: () => cliRegistered,
+    securityAuditCollectors,
+  };
 }
 
 describe("plugin entry load + /cliq/webhook smoke", () => {
@@ -106,7 +116,7 @@ describe("plugin entry load + /cliq/webhook smoke", () => {
   });
 
   it("register() wires channel registration, cli metadata, and the /cliq/webhook route", () => {
-    const { api, routes, isRegistered, cliRegistered } = buildMockApi();
+    const { api, routes, isRegistered, cliRegistered, securityAuditCollectors } = buildMockApi();
     cliqEntry.register(api as any);
     expect(isRegistered()).toBe(true);
     expect(cliRegistered()).toBe(true);
@@ -114,6 +124,11 @@ describe("plugin entry load + /cliq/webhook smoke", () => {
     expect(webhook).toBeTruthy();
     expect(webhook!.auth).toBe("plugin");
     expect(typeof webhook!.handler).toBe("function");
+    // The security-audit collector must be registered so `openclaw security
+    // audit` surfaces Cliq findings (missing webhook secret, wildcard
+    // allowFrom, open DM policy, plaintext secrets).
+    expect(securityAuditCollectors).toHaveLength(1);
+    expect(typeof securityAuditCollectors[0]).toBe("function");
   });
 
   it("GET /cliq/webhook → 405 Method Not Allowed (Allow: POST)", async () => {
@@ -287,6 +302,7 @@ describe("durable-before-ack ingest (issue #12)", () => {
       registerHttpRoute: (params: CapturedRoute) => {
         routes.push(params);
       },
+      registerSecurityAuditCollector: () => {},
     };
     return { api, routes };
   }

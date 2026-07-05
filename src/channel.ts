@@ -123,6 +123,11 @@ export {
   resolveCliqSecretString,
 } from "./secret-resolve.js";
 export {
+  collectCliqSecurityAuditFindings,
+  cliqSecurityAuditCollector,
+  type CliqSecurityAuditFinding,
+} from "./security-audit.js";
+export {
   presentationToCliqCard,
   cliqButtonFromPortable,
   cliqButtonFromOption,
