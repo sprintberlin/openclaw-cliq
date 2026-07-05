@@ -35,8 +35,6 @@
 
 ## Phase 3 — Rich messaging & agent-facing features
 
-- **Message actions for agents** (`actions` / `ChannelMessageActionAdapter`). Let the agent
-  edit/delete its messages and react. See `channel-actions.ts`.
 - **Reactions** (inbound reaction notifications + outbound ack reactions).
 - **Interactive elements** (Cliq buttons/cards). Analog to Telegram inline buttons / Discord
   components; expose via `agentPrompt.messageToolCapabilities`.

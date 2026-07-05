@@ -742,6 +742,53 @@ export class CliqClient {
   }
 
   /**
+   * Delete an existing chat message via the Cliq chat-messages API:
+   * `DELETE /api/v2/chats/{chatId}/messages/{messageId}`. Like `editMessage`,
+   * this requires the `ZohoCliq.Messages.UPDATE` scope, which cannot be
+   * obtained via `client_credentials` — a user-context refresh token is
+   * required (see issue #27). Returns `true` on a 2xx (Cliq returns 204 No
+   * Content on success); throws on a non-2xx with the response body for
+   * diagnostics. Carries the same transient/fatal retry as `sendMessage`
+   * (429/5xx retried with backoff; 4xx fatal).
+   */
+  async deleteMessage(opts: {
+    chatId: string;
+    messageId: string;
+  }): Promise<boolean> {
+    const token = await this.resolveOutboundToken(
+      "ZohoCliq.Messages.UPDATE",
+      true,
+    );
+    const url = `${this.apiBase}/api/v2/chats/${encodeURIComponent(opts.chatId)}/messages/${encodeURIComponent(opts.messageId)}`;
+    this.logger.info?.(
+      `[cliq] delete: chatId=${opts.chatId} messageId=${opts.messageId}`,
+    );
+    let attempt = 0;
+    const res = await withSendRetry(
+      async () => {
+        attempt++;
+        const r = await fetch(url, {
+          method: "DELETE",
+          headers: { Authorization: `Zoho-oauthtoken ${token}` },
+        });
+        const body = await r.text().catch(() => "");
+        if (r.ok) {
+          this.logger.info?.(
+            `[cliq] delete ok: status=${r.status} chatId=${opts.chatId} messageId=${opts.messageId} attempt=${attempt}`,
+          );
+        } else {
+          this.logger.warn?.(
+            `[cliq] delete non-2xx: status=${r.status} chatId=${opts.chatId} messageId=${opts.messageId} attempt=${attempt} body=${truncateForLog(body)}`,
+          );
+        }
+        return { status: r.status, body, headers: r.headers };
+      },
+      this.retryOptions,
+    );
+    return res.status >= 200 && res.status < 300;
+  }
+
+  /**
    * Fetch an authenticated JSON document from the Cliq REST API using the
    * user-context (refresh-token) access token. Used by endpoints that need a
    * user-consented scope the `client_credentials` grant cannot obtain
