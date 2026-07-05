@@ -32,6 +32,7 @@ import { cliqCommandsAdapter } from "./commands.js";
 import { cliqThreadingAdapter } from "./threading.js";
 import { cliqSecretsAdapter } from "./secret-contract.js";
 import { cliqMessagingAdapter } from "./messaging.js";
+import { cliqLifecycleAdapter } from "./legacy-state-migrations.js";
 import {
   CLIQ_PAIRING_APPROVED_MESSAGE,
   CLIQ_PAIRING_ID_LABEL,
@@ -142,6 +143,13 @@ export {
   cliqSecurityAuditCollector,
   type CliqSecurityAuditFinding,
 } from "./security-audit.js";
+export {
+  cliqLegacyConfigRules,
+  normalizeCliqCompatibilityConfig,
+  repairCliqConfig,
+  detectCliqLegacyStateMigrations,
+  cliqLifecycleAdapter,
+} from "./legacy-state-migrations.js";
 export {
   presentationToCliqCard,
   cliqButtonFromPortable,
@@ -293,6 +301,7 @@ export const cliqPlugin = createChatChannelPlugin<ResolvedCliqAccount, CliqStatu
     commands: cliqCommandsAdapter,
     secrets: cliqSecretsAdapter,
     messaging: cliqMessagingAdapter,
+    lifecycle: cliqLifecycleAdapter,
   },
 
   security: {

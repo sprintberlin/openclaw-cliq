@@ -3,6 +3,11 @@ import type {
   ChannelDoctorAdapter,
   ChannelDoctorEmptyAllowlistAccountContext,
 } from "openclaw/plugin-sdk/channel-contract";
+import {
+  cliqLegacyConfigRules,
+  normalizeCliqCompatibilityConfig,
+  repairCliqConfig,
+} from "./legacy-state-migrations.js";
 
 /**
  * Read the raw (possibly unconfigured) Cliq channel section from cfg. Returns
@@ -145,11 +150,16 @@ function shouldSkipDefaultEmptyGroupAllowlistWarning(
  *    warning does not apply.
  *
  * `legacyConfigRules` / `normalizeCompatibilityConfig` / `repairConfig` are
- * not yet contributed: the plugin has no retired keys to migrate. Add them
- * here if a config key is ever renamed or removed.
+ * contributed for the snake_case alias set operators paste from Zoho's
+ * API/Deluge docs (`client_id`, `client_secret`, `bot_id`, …). See
+ * `src/legacy-state-migrations.ts` for the rewrite logic; the rules surface
+ * the same set as declarative doctor warnings.
  */
 export const cliqDoctorAdapter: ChannelDoctorAdapter = {
   dmAllowFromMode: "topOnly",
+  legacyConfigRules: cliqLegacyConfigRules,
+  normalizeCompatibilityConfig: normalizeCliqCompatibilityConfig,
+  repairConfig: repairCliqConfig,
   collectPreviewWarnings: collectCliqPreviewWarnings,
   collectMutableAllowlistWarnings: collectCliqMutableAllowlistWarnings,
   shouldSkipDefaultEmptyGroupAllowlistWarning,
@@ -162,4 +172,7 @@ export {
   collectCliqPreviewWarnings,
   collectCliqMutableAllowlistWarnings,
   readCliqSection as readCliqDoctorSection,
+  cliqLegacyConfigRules,
+  normalizeCliqCompatibilityConfig,
+  repairCliqConfig,
 };
