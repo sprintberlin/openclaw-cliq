@@ -29,11 +29,6 @@
 
 ---
 
-## Phase 2 — Core UX parity (what users immediately notice)
-
-- **Rich account inspect** (`account-inspect-api.ts`). Fuller `inspectAccount` output (bot
-  identity, scopes, configured surfaces).
-
 ## Phase 3 — Rich messaging & agent-facing features
 
 - **Streaming previews** (`live.capabilities` + finalizer). Stream partial replies by editing a

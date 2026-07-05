@@ -9,7 +9,6 @@ import {
   loadCliqMediaAttachment,
   normalizeCliqRouteTarget,
   resolveCliqConfig,
-  type CliqChannelConfig,
   type ResolvedCliqAccount,
 } from "./client.js";
 import { CliqSendError } from "./send-retry.js";
@@ -24,6 +23,7 @@ import { cliqStatusAdapter, type CliqStatusProbe } from "./status.js";
 import { cliqDirectoryAdapter } from "./directory.js";
 import { cliqDoctorAdapter } from "./doctor.js";
 import { cliqSetupWizard } from "./setup-wizard.js";
+import { inspectCliqAccount } from "./account-inspect.js";
 import {
   CLIQ_PAIRING_APPROVED_MESSAGE,
   CLIQ_PAIRING_ID_LABEL,
@@ -46,6 +46,15 @@ export {
   type CliqSetupCredentials,
 } from "./setup-wizard.js";
 export {
+  inspectCliqAccount,
+  CLIQ_OAUTH_SCOPES,
+  CLIQ_API_BASE,
+  CLIQ_OAUTH_BASE,
+  type CliqCredentialStatus,
+  type InspectedCliqAccount,
+  type InspectedCliqAccountConfig,
+} from "./account-inspect.js";
+export {
   CLIQ_PAIRING_APPROVED_MESSAGE,
   CLIQ_PAIRING_ID_LABEL,
   issueCliqPairingChallenge,
@@ -54,11 +63,6 @@ export {
 } from "./pairing.js";
 
 const CHANNEL_ID = "cliq" as const;
-
-function readSection(cfg: OpenClawConfig): CliqChannelConfig {
-  const channels = (cfg as unknown as { channels?: Record<string, unknown> }).channels;
-  return (channels?.["cliq"] as CliqChannelConfig | undefined) ?? {};
-}
 
 function listAccountIds(cfg: OpenClawConfig): string[] {
   const channels = (cfg as unknown as { channels?: Record<string, unknown> }).channels;
@@ -76,15 +80,8 @@ function resolveAccount(
   return resolveCliqConfig(cfg, accountId);
 }
 
-function inspectAccount(cfg: OpenClawConfig, _accountId?: string | null) {
-  const section = readSection(cfg);
-  const hasCore = Boolean(section.clientId && section.clientSecret && section.botId);
-  return {
-    enabled: hasCore,
-    configured: hasCore,
-    tokenStatus: section.clientSecret ? ("available" as const) : ("missing" as const),
-    accountId: _accountId ?? null,
-  };
+function inspectAccount(cfg: OpenClawConfig, accountId?: string | null) {
+  return inspectCliqAccount({ cfg, accountId });
 }
 
 function applyAccountConfig(params: {
