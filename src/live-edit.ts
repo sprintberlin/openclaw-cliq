@@ -17,12 +17,14 @@
  *   - DMs: `sendMessage` returns `message_details[<userId>].{chat_id, message_id}` →
  *     a reliable chatId, so live-edit works fully.
  *   - Groups/channel posts: `sendMessage` returns only a top-level `{ id }` (the
- *     message id); the chat id is NOT in the response. We fall back to the
- *     `chatid` we addressed the message to (`to`). That id is usually a valid
- *     chat id for the edit API, but not guaranteed (Cliq's chat-message edit API
- *     is documented against the numeric chat id, which may differ from a channel
- *     unique name). If the edit fails, we gracefully degrade to a new message —
- *     the draft is simply not reused.
+ *     message id); the chat id is NOT in the response. We resolve the channel
+ *     unique name → chat id (`CT_xxx`) once via `CliqClient.resolveChannelChatId`
+ *     (cached per account) and use that as the draft chat id. When an edit with
+ *     that chat id still fails, we fall back to listing recent chat messages
+ *     (`CliqClient.listChatMessages`) to recover the canonical editable
+ *     `{ chat_id, message_id }` for the just-sent message (the bernesto
+ *     reference pattern) and retry the edit once. If recovery also fails, we
+ *     gracefully degrade to a new message — the draft is simply not reused.
  *
  * When block streaming is OFF (the default), each agent reply is a single `deliver`
  * call with the full text. The legacy path sends it as one message; this module
@@ -36,7 +38,10 @@ import { markdownToCliq } from "./markdown.js";
 const DEFAULT_CHAR_LIMIT = 5000;
 
 export interface LiveEditDeliverOptions {
-  client: Pick<CliqClient, "sendMessage" | "editMessage">;
+  client: Pick<
+    CliqClient,
+    "sendMessage" | "editMessage" | "resolveChannelChatId" | "listChatMessages"
+  >;
   /** Raw Cliq id the message is addressed to (user id for DMs, chatid/channel id for groups). */
   to: string;
   /** Whether this is a DM (delivered via `userids`) or a group (via `chatid`). */
@@ -108,10 +113,18 @@ export function createLiveEditDeliver(
       stats.sends++;
       draftMessageId = result.messageId;
       // For DMs the send response carries chat_id in message_details; for
-      // groups it is absent, so we fall back to the addressed chatid. If
-      // that id is not a valid chat id for the edit API, edits will fail
-      // and degrade to sends.
-      draftChatId = result.chatId ?? (isDm ? undefined : to);
+      // group/channel posts it is absent, so we resolve the channel unique
+      // name → chat id once (cached) via `resolveChannelChatId`. That id is
+      // what the chat-message edit API expects (NOT the channel unique name).
+      // When resolution fails (channel not found / no refresh token / API
+      // error) we leave draftChatId undefined → edits fall back to a new send.
+      if (result.chatId) {
+        draftChatId = result.chatId;
+      } else if (!isDm) {
+        draftChatId = (await client.resolveChannelChatId(to)) ?? undefined;
+      } else {
+        draftChatId = undefined;
+      }
       accumulated = plainText;
       return;
     }
@@ -166,7 +179,37 @@ export function createLiveEditDeliver(
       stats.edits++;
       accumulated = candidate;
     } catch {
-      // Edit failed (wrong chatId, message too old to edit, permissions, …).
+      // Edit failed. For group/channel posts the chat id we resolved may
+      // not be the canonical one the edit API expects (the bot-message send
+      // `id` is not always the chat-message `message_id`), so attempt a
+      // one-shot recovery: list recent chat messages and look up the
+      // editable ref matching our draft message id. If found, retry the
+      // edit with the recovered chat id; the recovered id is cached as the
+      // draft chat id for subsequent edits this turn. DMs skip this — the
+      // DM send response already carries the authoritative chat id.
+      let recovered = false;
+      if (!isDm && draftChatId) {
+        try {
+          const recent = await client.listChatMessages(draftChatId, { limit: 50 });
+          const match = recent.find((m) => m.messageId === draftMessageId);
+          if (match && match.chatId && match.chatId !== draftChatId) {
+            await client.editMessage({
+              chatId: match.chatId,
+              messageId: draftMessageId,
+              text: richCandidate,
+            });
+            draftChatId = match.chatId;
+            stats.edits++;
+            recovered = true;
+          }
+        } catch {
+          // recovery failed — fall through to the new-message fallback
+        }
+      }
+      if (recovered) {
+        accumulated = candidate;
+        return;
+      }
       // Degrade to a new message carrying the accumulated text so no content
       // is lost; that new message becomes the editable draft going forward.
       stats.editFailures++;

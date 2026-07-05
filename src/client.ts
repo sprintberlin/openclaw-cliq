@@ -252,6 +252,7 @@ export interface CliqUserRecord {
 export interface CliqChannelRecord {
   id?: string;
   channel_id?: string;
+  chat_id?: string;
   name?: string;
   unique_name?: string;
   display_name?: string;
@@ -290,6 +291,60 @@ function readCliqChannelId(rec: CliqChannelRecord): string | undefined {
 /** Pull a display name from a Cliq channel record. */
 function readCliqChannelName(rec: CliqChannelRecord): string | undefined {
   return rec.display_name ?? rec.name ?? rec.unique_name ?? undefined;
+}
+
+/**
+ * Pull a chat id (`CT_xxx`) from a Cliq channel record. The channelsbyname
+ * GET returns the channel as a top-level object OR wrapped under a
+ * `channel` key (varies by API version); we tolerate both, plus the
+ * `id` / `channel_id` / `chat_id` field-name variance.
+ */
+function readCliqChannelChatId(data: unknown): string | undefined {
+  if (!data || typeof data !== "object") return undefined;
+  const obj = data as Record<string, unknown>;
+  const rec = (obj.channel && typeof obj.channel === "object"
+    ? (obj.channel as CliqChannelRecord)
+    : (obj as CliqChannelRecord));
+  return rec.chat_id ?? rec.id ?? rec.channel_id ?? undefined;
+}
+
+/** A normalized reference to a chat message (the editable id pair). */
+export interface CliqChatMessageRef {
+  messageId: string;
+  chatId: string;
+  text?: string;
+}
+
+/**
+ * Parse a `GET /api/v2/chats/{chatId}/messages` response into a list of
+ * message refs. The response shape is `{ messages: [...] }` (or a bare
+ * array in some API versions); each entry is parsed defensively for
+ * `message_id` / `id` and `chat_id`, plus an optional `text` (used to
+ * disambiguate when the message id alone does not match). Records missing
+ * a resolvable id are skipped, never thrown on.
+ */
+function parseCliqChatMessages(data: unknown): CliqChatMessageRef[] {
+  if (!data || typeof data !== "object") return [];
+  const obj = data as Record<string, unknown>;
+  const list = obj.messages ?? obj.data ?? data;
+  if (!Array.isArray(list)) return [];
+  const refs: CliqChatMessageRef[] = [];
+  for (const entry of list) {
+    if (!entry || typeof entry !== "object") continue;
+    const rec = entry as Record<string, unknown>;
+    const messageId =
+      typeof rec.message_id === "string" ? rec.message_id
+        : typeof rec.id === "string" ? rec.id
+        : undefined;
+    const chatId =
+      typeof rec.chat_id === "string" ? rec.chat_id
+        : typeof rec.chatId === "string" ? rec.chatId
+        : undefined;
+    if (!messageId || !chatId) continue;
+    const text = typeof rec.text === "string" ? rec.text : undefined;
+    refs.push({ messageId, chatId, text });
+  }
+  return refs;
 }
 
 
@@ -366,6 +421,15 @@ export class CliqClient {
   private readonly tokens = new Map<string, { token: string; expiresAt: number }>();
   private readonly retryOptions: Required<RetryOptions>;
   private readonly logger: CliqLogger;
+  /**
+   * Cache of resolved channel unique name → chat id (`CT_xxx`). The mapping
+   * is stable for the lifetime of a channel, so it is cached per client
+   * (and therefore per account) to avoid a `GET /channelsbyname/{name}`
+   * round-trip on every group/channel send. Used by live-edit streaming to
+   * address the chat-message edit API with a valid chat id instead of the
+   * channel unique name (which the edit endpoint rejects).
+   */
+  private readonly channelChatIdCache = new Map<string, string>();
 
   /**
    * Cache key under which the user-context (refresh-token) access token is
@@ -675,6 +739,95 @@ export class CliqClient {
       messageId: parsed.messageId ?? opts.messageId,
       chatId: parsed.chatId ?? opts.chatId,
     };
+  }
+
+  /**
+   * Fetch an authenticated JSON document from the Cliq REST API using the
+   * user-context (refresh-token) access token. Used by endpoints that need a
+   * user-consented scope the `client_credentials` grant cannot obtain
+   * (e.g. reading chat messages — `ZohoCliq.Messages.UPDATE` / channel
+   * context). Throws if no `refreshToken` is configured (the refresh-token
+   * grant is the only way to mint a usable token for these endpoints).
+   */
+  private async getJsonUserContext(path: string): Promise<unknown> {
+    const token = await this.getRefreshedAccessToken();
+    const url = `${this.apiBase}${path}`;
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { Authorization: `Zoho-oauthtoken ${token}` },
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`cliq: GET ${path} failed (${res.status}): ${body}`);
+    }
+    return res.json();
+  }
+
+  /**
+   * Resolve a Zoho Cliq channel unique name (the handle used in the
+   * channelsbyname send URL) to its underlying chat id (`CT_xxx`) — the id
+   * the chat-message edit API (`PUT /api/v2/chats/{chatId}/messages/...`)
+   * requires. A channel POST's bot-message send response returns only a
+   * top-level `{ id }` (the message id), NOT the chat id, so live-edit
+   * streaming for group/channel posts must resolve the chat id separately.
+   *
+   * The mapping is cached per client (per account) — a channel's chat id is
+   * stable. Returns `undefined` when the channel cannot be resolved (not
+   * found, API error, or the record carries no resolvable id); the caller
+   * (live-edit) treats that as "no editable chat id" and degrades to a new
+   * message per block. Never throws so a directory/resolve failure cannot
+   * break an agent turn.
+   */
+  async resolveChannelChatId(channelUniqueName: string): Promise<string | undefined> {
+    const key = channelUniqueName;
+    const cached = this.channelChatIdCache.get(key);
+    if (cached) return cached;
+    const path = `/api/v2/channelsbyname/${encodeURIComponent(channelUniqueName)}`;
+    let data: unknown;
+    try {
+      data = await this.getJson(path, "ZohoCliq.Channels.READ");
+    } catch (err) {
+      this.logger.warn?.(
+        `[cliq] resolveChannelChatId: GET ${path} failed (${String(err)})`,
+      );
+      return undefined;
+    }
+    const chatId = readCliqChannelChatId(data);
+    if (chatId) {
+      this.channelChatIdCache.set(key, chatId);
+      this.logger.debug?.(
+        `[cliq] resolveChannelChatId: ${channelUniqueName} -> ${chatId}`,
+      );
+    } else {
+      this.logger.warn?.(
+        `[cliq] resolveChannelChatId: no chat id in record for ${channelUniqueName}`,
+      );
+    }
+    return chatId;
+  }
+
+  /**
+   * Fetch the most recent messages of a chat (`GET /api/v2/chats/{chatId}/messages`).
+   * Used by live-edit streaming to recover the editable chat-message ref for a
+   * just-sent channel post when the direct chat-id edit fails — the bot-message
+   * send `id` is not always the same as the chat-message `message_id` the edit
+   * API expects, so listing recent messages and matching by id/text recovers
+   * the canonical `{ chat_id, message_id }` (the bernesto reference pattern).
+   *
+   * Requires a user-context refresh token (chat-message reads need a
+   * user-consented scope the `client_credentials` grant cannot obtain, same
+   * constraint as channel posts + edits). Throws if no refresh token is
+   * configured or the API rejects the request; the live-edit caller wraps the
+   * call in try/catch and degrades to a new message on failure.
+   */
+  async listChatMessages(
+    chatId: string,
+    opts: { limit?: number } = {},
+  ): Promise<CliqChatMessageRef[]> {
+    const limit = Math.max(1, Math.min(opts.limit ?? 50, 200));
+    const path = `/api/v2/chats/${encodeURIComponent(chatId)}/messages?from=0&limit=${limit}`;
+    const data = await this.getJsonUserContext(path);
+    return parseCliqChatMessages(data);
   }
 
   /**

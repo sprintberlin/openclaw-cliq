@@ -35,12 +35,6 @@
 
 ## Phase 3 — Rich messaging & agent-facing features
 
-- **Live-edit streaming for group/channel posts.** Resolve the real `chatId` for a
-  group/channel bot post (its send response returns only a top-level `{ id }`, no chatId),
-  so the edit API `PUT /api/v2/chats/{chatId}/messages/{messageId}` targets a valid chat
-  instead of a channel unique name — via `GET /api/v2/chats/{chatId}/messages` (the bernesto
-  reference pattern). Until then group posts fall back to a new message per chunk rather than
-  the growing-draft UX.
 - **Message actions for agents** (`actions` / `ChannelMessageActionAdapter`). Let the agent
   edit/delete its messages and react. See `channel-actions.ts`.
 - **Reactions** (inbound reaction notifications + outbound ack reactions).

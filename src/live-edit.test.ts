@@ -9,6 +9,8 @@ import type { CliqClient } from "./client.js";
 interface FakeClient {
   sends: { to: string; text: string; isDm?: boolean }[];
   edits: { chatId: string; messageId: string; text: string }[];
+  chatIdResolves: { name: string; chatId: string | undefined }[];
+  messageListCalls: { chatId: string; limit?: number }[];
   sendMessage: (opts: { to: string; text: string; isDm?: boolean }) => Promise<{
     messageId?: string;
     chatId?: string;
@@ -18,17 +20,32 @@ interface FakeClient {
     messageId: string;
     text: string;
   }) => Promise<{ messageId?: string; chatId?: string }>;
+  resolveChannelChatId: (name: string) => Promise<string | undefined>;
+  listChatMessages: (
+    chatId: string,
+    opts?: { limit?: number },
+  ) => Promise<{ messageId: string; chatId: string; text?: string }[]>;
 }
 
 function makeFakeClient(opts: {
   dmChatId?: string;
   editFails?: boolean;
-} = {}): FakeClient & Pick<CliqClient, "sendMessage" | "editMessage"> {
+  channelChatId?: string | undefined;
+  recentMessages?: { messageId: string; chatId: string; text?: string }[];
+  channelResolveFails?: boolean;
+} = {}): FakeClient & Pick<
+  CliqClient,
+  "sendMessage" | "editMessage" | "resolveChannelChatId" | "listChatMessages"
+> {
   const sends: { to: string; text: string; isDm?: boolean }[] = [];
   const edits: { chatId: string; messageId: string; text: string }[] = [];
+  const chatIdResolves: { name: string; chatId: string | undefined }[] = [];
+  const messageListCalls: { chatId: string; limit?: number }[] = [];
   const fake: FakeClient = {
     sends,
     edits,
+    chatIdResolves,
+    messageListCalls,
     sendMessage: vi.fn(async (o: { to: string; text: string; isDm?: boolean }) => {
       sends.push(o);
       // DM send: respond with message_details-style ref (chatId present).
@@ -41,6 +58,15 @@ function makeFakeClient(opts: {
       edits.push(o);
       if (opts.editFails) throw new Error("edit rejected");
       return { messageId: o.messageId, chatId: o.chatId };
+    }),
+    resolveChannelChatId: vi.fn(async (name: string) => {
+      const result = opts.channelResolveFails ? undefined : (opts.channelChatId ?? undefined);
+      chatIdResolves.push({ name, chatId: result });
+      return result;
+    }),
+    listChatMessages: vi.fn(async (chatId: string, callOpts?: { limit?: number }) => {
+      messageListCalls.push({ chatId, limit: callOpts?.limit });
+      return opts.recentMessages ?? [];
     }),
   };
   return fake;
@@ -198,19 +224,99 @@ describe("createLiveEditDeliver — enabled (live-edit)", () => {
     expect(stats?.editFailures).toBe(1);
   });
 
-  it("group posts fall back to `to` as chatId for edits", async () => {
-    const fake = makeFakeClient();
+  it("group posts resolve the channel chat id via resolveChannelChatId for edits", async () => {
+    const fake = makeFakeClient({ channelChatId: "CT_dev_team" });
     const deliver = createLiveEditDeliver({
       client: fake,
-      to: "CT_channel_chat",
+      to: "dev-team",
       isDm: false,
       enabled: true,
     });
     await deliver({ text: "first" });
     await deliver({ text: "second" });
-    // Group send returned no chatId → the `to` (chatid) is used for edit.
+    // The channel unique name was resolved to a chat id once after the send.
+    expect(fake.chatIdResolves).toHaveLength(1);
+    expect(fake.chatIdResolves[0].name).toBe("dev-team");
+    expect(fake.chatIdResolves[0].chatId).toBe("CT_dev_team");
+    // Edit targets the resolved chat id (NOT the channel unique name).
     expect(fake.edits).toHaveLength(1);
-    expect(fake.edits[0].chatId).toBe("CT_channel_chat");
+    expect(fake.edits[0].chatId).toBe("CT_dev_team");
+    expect(fake.edits[0].messageId).toBe("m1");
+  });
+
+  it("group posts with no resolvable chat id leave the draft non-editable", async () => {
+    const fake = makeFakeClient({ channelChatId: undefined });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "dev-team",
+      isDm: false,
+      enabled: true,
+    });
+    await deliver({ text: "first" });
+    await deliver({ text: "second" });
+    // Resolution returned undefined → no draftChatId → each block is a fresh
+    // send, and each group send re-attempts resolution (negatives are not
+    // cached, since a missing channel may become available later).
+    expect(fake.chatIdResolves).toHaveLength(2);
+    expect(fake.edits).toHaveLength(0);
+    expect(fake.sends).toHaveLength(2);
+    const stats = getLiveEditDeliverStats(deliver);
+    expect(stats?.editFailures).toBe(0);
+  });
+
+  it("group edit failure recovers via listChatMessages then retries", async () => {
+    // First edit fails (wrong chat id), but listChatMessages returns the
+    // canonical editable ref with a different chat id → retry succeeds.
+    let editCalls = 0;
+    const fake = makeFakeClient({
+      channelChatId: "CT_dev_team",
+      recentMessages: [{ messageId: "m1", chatId: "CT_real_chat" }],
+    });
+    const edits = fake.edits;
+    fake.editMessage = vi.fn(async (o) => {
+      editCalls++;
+      edits.push(o);
+      if (editCalls === 1) throw new Error("wrong chat id");
+      return { messageId: o.messageId, chatId: o.chatId };
+    });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "dev-team",
+      isDm: false,
+      enabled: true,
+    });
+    await deliver({ text: "first" });
+    await deliver({ text: "second" });
+    // First edit (with resolved chat id) failed → recovery listed messages
+    // → second edit (with recovered chat id) succeeded.
+    expect(edits).toHaveLength(2);
+    expect(edits[0].chatId).toBe("CT_dev_team");
+    expect(edits[1].chatId).toBe("CT_real_chat");
+    expect(fake.messageListCalls).toHaveLength(1);
+    expect(fake.messageListCalls[0].chatId).toBe("CT_dev_team");
+    const stats = getLiveEditDeliverStats(deliver);
+    expect(stats?.edits).toBe(1); // the recovered retry counts as a successful edit
+    expect(stats?.editFailures).toBe(0);
+  });
+
+  it("group edit failure with no recoverable ref degrades to a new message", async () => {
+    const fake = makeFakeClient({
+      channelChatId: "CT_dev_team",
+      editFails: true,
+      recentMessages: [],
+    });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "dev-team",
+      isDm: false,
+      enabled: true,
+    });
+    await deliver({ text: "first" });
+    await deliver({ text: "second" });
+    expect(fake.sends).toHaveLength(2);
+    expect(fake.sends[1].text).toBe("first\n\nsecond");
+    const stats = getLiveEditDeliverStats(deliver);
+    expect(stats?.editFailures).toBe(1);
   });
 
   it("converts markdown on send and edit", async () => {
