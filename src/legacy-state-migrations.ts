@@ -5,7 +5,6 @@ import type {
 } from "openclaw/plugin-sdk/channel-contract";
 import type {
   ChannelLegacyStateMigrationPlan,
-  ChannelLifecycleAdapter,
 } from "openclaw/plugin-sdk/channel-runtime";
 
 /**
@@ -159,13 +158,3 @@ export function detectCliqLegacyStateMigrations(_params: {
 }): ChannelLegacyStateMigrationPlan[] {
   return [];
 }
-
-/**
- * Lifecycle adapter for the Cliq channel. Forwards `detectLegacyStateMigrations`
- * to the detector above. The other lifecycle hooks (account config change /
- * removal, startup maintenance) are intentionally omitted — the Cliq client
- * registry resolves accounts lazily and has no per-account state to flush.
- */
-export const cliqLifecycleAdapter: ChannelLifecycleAdapter = {
-  detectLegacyStateMigrations: detectCliqLegacyStateMigrations,
-};

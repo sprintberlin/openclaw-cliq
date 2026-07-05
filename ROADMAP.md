@@ -33,11 +33,6 @@
 
 ---
 
-## Phase 4 — Operational / multi-account / enterprise
-
-- **`lifecycle` hooks.** Register webhook on start, clean up on stop, instead of relying on
-  manual Deluge setup.
-
 ## Phase 5 — Verification ladder (prove it, don't guess)
 
 - **Stage-4 smoke: real inbound dispatch.** Start the gateway, POST a canonical Deluge payload to

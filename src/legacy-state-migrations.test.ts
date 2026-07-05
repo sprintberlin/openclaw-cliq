@@ -5,7 +5,6 @@ import {
   normalizeCliqCompatibilityConfig,
   repairCliqConfig,
   detectCliqLegacyStateMigrations,
-  cliqLifecycleAdapter,
 } from "./legacy-state-migrations.js";
 
 function cfgWith(section: Record<string, unknown>): OpenClawConfig {
@@ -228,11 +227,5 @@ describe("detectCliqLegacyStateMigrations", () => {
       oauthDir: "/tmp/oauth",
     });
     expect(plans).toEqual([]);
-  });
-
-  it("is wired on the lifecycle adapter", () => {
-    expect(cliqLifecycleAdapter.detectLegacyStateMigrations).toBe(
-      detectCliqLegacyStateMigrations,
-    );
   });
 });

@@ -32,7 +32,7 @@ import { cliqCommandsAdapter } from "./commands.js";
 import { cliqThreadingAdapter } from "./threading.js";
 import { cliqSecretsAdapter } from "./secret-contract.js";
 import { cliqMessagingAdapter } from "./messaging.js";
-import { cliqLifecycleAdapter } from "./legacy-state-migrations.js";
+import { cliqLifecycleAdapter } from "./lifecycle.js";
 import {
   CLIQ_PAIRING_APPROVED_MESSAGE,
   CLIQ_PAIRING_ID_LABEL,
@@ -148,8 +148,13 @@ export {
   normalizeCliqCompatibilityConfig,
   repairCliqConfig,
   detectCliqLegacyStateMigrations,
-  cliqLifecycleAdapter,
 } from "./legacy-state-migrations.js";
+export {
+  cliqLifecycleAdapter,
+  runCliqStartupMaintenance,
+  onCliqAccountConfigChanged,
+  onCliqAccountRemoved,
+} from "./lifecycle.js";
 export {
   presentationToCliqCard,
   cliqButtonFromPortable,
