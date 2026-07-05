@@ -44,8 +44,6 @@
   `heartbeat.setReaction` / ack-reaction runtime hook for plugin channels).
 - **Interactive elements** (Cliq buttons/cards). Analog to Telegram inline buttons / Discord
   components; expose via `agentPrompt.messageToolCapabilities`.
-- **Group tool policy** (`groups` adapter: `resolveRequireMention`, `resolveToolPolicy`).
-  Per-group mention requirement and tool-permission scoping. See `docs/channels/group-messages.md`.
 - **Native/custom commands** (`commands`). Slash-style Cliq commands mapped to agent actions.
 - **Threading fidelity.** Map Cliq threads/replies properly (beyond the current top-level
   `reply` mode); Discord's `thread-binding-api.ts` is the model.

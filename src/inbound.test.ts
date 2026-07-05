@@ -6,8 +6,10 @@ import {
   readJsonBody,
   resolveCliqMentionDecision,
   resolveCliqMentionFacts,
+  dispatchCliqInbound,
   type CliqWebhookPayload,
   type ParsedCliqInbound,
+  type CliqRuntime,
 } from "./inbound.js";
 import { verifyWebhookSecret } from "./webhook-security.js";
 import type { ResolvedCliqAccount } from "./client.js";
@@ -434,5 +436,92 @@ describe("normalizeFormUrlencodedBody (issue #10)", () => {
         "content-type": "text/plain",
       }),
     ).toBeUndefined();
+  });
+});
+
+describe("dispatchCliqInbound context fields", () => {
+  function mockRuntime(capture: { ctxPayload?: Record<string, unknown> }): CliqRuntime {
+    return {
+      channel: {
+        routing: {
+          resolveAgentRoute: () => ({
+            agentId: "agent-1",
+            sessionKey: "sess-1",
+            accountId: "default",
+          }),
+        },
+        session: {
+          resolveStorePath: () => "/tmp/store",
+          readSessionUpdatedAt: () => undefined,
+          recordInboundSession: () => undefined,
+        },
+        reply: {
+          resolveEnvelopeFormatOptions: () => ({}),
+          formatAgentEnvelope: (p: Record<string, unknown>) => String(p.body ?? ""),
+          finalizeInboundContext: (fields: Record<string, unknown>) => {
+            capture.ctxPayload = fields;
+            return fields;
+          },
+          dispatchReplyWithBufferedBlockDispatcher: async () => undefined,
+        },
+        inbound: {
+          run: async () => undefined,
+        },
+        pairing: {
+          buildPairingReply: () => "",
+          upsertPairingRequest: async () => ({ code: "CODE", created: true }),
+        },
+      },
+    };
+  }
+
+  it("sets From to cliq:group:<uniqueName> and fills GroupChannel for group messages", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload(groupPayload());
+    expect(parsed).not.toBeNull();
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account(),
+      parsed: parsed!,
+    });
+    expect(capture.ctxPayload?.From).toBe("cliq:group:dev-team");
+    expect(capture.ctxPayload?.GroupChannel).toBe("dev-team");
+    expect(capture.ctxPayload?.GroupSubject).toBe("dev-team");
+    expect(capture.ctxPayload?.ChatType).toBe("channel");
+    expect(capture.ctxPayload?.To).toBe("cliq:channel:dev-team");
+  });
+
+  it("sets From to cliq:<senderId> for DMs and leaves GroupChannel unset", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    expect(parsed).not.toBeNull();
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account(),
+      parsed: parsed!,
+    });
+    expect(capture.ctxPayload?.From).toBe("cliq:u1");
+    expect(capture.ctxPayload?.GroupChannel).toBeUndefined();
+    expect(capture.ctxPayload?.GroupSubject).toBeUndefined();
+    expect(capture.ctxPayload?.ChatType).toBe("direct");
+  });
+
+  it("falls back to chatId in From when channel unique name is absent", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload(
+      groupPayload({
+        chat: { id: "CT_channel_chat", type: "channel", chat_type: "channel", title: "#ops" },
+      }),
+    );
+    expect(parsed).not.toBeNull();
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account(),
+      parsed: parsed!,
+    });
+    expect(capture.ctxPayload?.From).toBe("cliq:group:CT_channel_chat");
   });
 });

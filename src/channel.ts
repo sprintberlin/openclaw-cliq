@@ -25,6 +25,7 @@ import { cliqDoctorAdapter } from "./doctor.js";
 import { cliqSetupWizard } from "./setup-wizard.js";
 import { inspectCliqAccount } from "./account-inspect.js";
 import { cliqMessageActions } from "./message-actions.js";
+import { cliqGroupsAdapter } from "./group-policy.js";
 import {
   CLIQ_PAIRING_APPROVED_MESSAGE,
   CLIQ_PAIRING_ID_LABEL,
@@ -70,6 +71,12 @@ export {
   CLIQ_ACTIONS_ALL,
   type CliqClientLike,
 } from "./message-actions.js";
+export {
+  cliqGroupsAdapter,
+  resolveCliqGroupRequireMention,
+  resolveCliqGroupToolPolicy,
+  resolveCliqGroupId,
+} from "./group-policy.js";
 
 const CHANNEL_ID = "cliq" as const;
 
@@ -201,6 +208,7 @@ export const cliqPlugin = createChatChannelPlugin<ResolvedCliqAccount, CliqStatu
     doctor: cliqDoctorAdapter,
     setupWizard: cliqSetupWizard,
     actions: cliqMessageActions,
+    groups: cliqGroupsAdapter,
   },
 
   security: {

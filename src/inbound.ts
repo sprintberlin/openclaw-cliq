@@ -522,11 +522,28 @@ export async function dispatchCliqInbound(params: {
     body: cleanText,
   });
 
+  // The inbound `From` is the originating conversation id: the sender for
+  // DMs, the group for group/channel messages. Setting `From` to
+  // `cliq:group:<uniqueName>` for groups lets the runtime's
+  // `extractExplicitGroupId` resolve the channel unique name so the `groups`
+  // adapter (per-group `requireMention` + tool policy) can look up
+  // `channels.cliq.groups` entries. `GroupChannel`/`GroupSubject` carry the
+  // display name as a fallback for Deluge payloads that omit the unique name.
+  const groupIdForCtx = parsed.isGroup
+    ? (parsed.channelUniqueName ?? parsed.chatId)
+    : parsed.senderId;
+  const fromField = parsed.isGroup
+    ? `cliq:group:${groupIdForCtx}`
+    : `cliq:${parsed.senderId}`;
+  const groupLabel = parsed.isGroup
+    ? (parsed.channelName ?? parsed.channelUniqueName ?? parsed.chatId)
+    : undefined;
+
   const ctxPayload = runtime.channel.reply.finalizeInboundContext({
     Body: body,
     RawBody: cleanText,
     CommandBody: cleanText,
-    From: `cliq:${parsed.senderId}`,
+    From: fromField,
     To: `cliq:${responseTarget}`,
     SessionKey: route.sessionKey,
     AccountId: account.accountId ?? undefined,
@@ -535,6 +552,8 @@ export async function dispatchCliqInbound(params: {
     SenderName: parsed.senderName,
     SenderId: parsed.senderId,
     SenderUsername: parsed.senderEmail,
+    GroupChannel: groupLabel,
+    GroupSubject: groupLabel,
     WasMentioned: parsed.isGroup ? parsed.isMention : undefined,
     Provider: "cliq",
     Surface: "cliq",

@@ -31,6 +31,44 @@
         "enum": ["after_dispatch", "immediate"],
         "default": "after_dispatch"
       },
+      "groupPolicy": {
+        "type": "string",
+        "enum": ["open", "disabled", "allowlist"]
+      },
+      "groups": {
+        "type": "object",
+        "propertyNames": { "type": "string" },
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "requireMention": { "type": "boolean" },
+            "ingest": { "type": "boolean" },
+            "tools": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "allow": { "type": "array", "items": { "type": "string" } },
+                "alsoAllow": { "type": "array", "items": { "type": "string" } },
+                "deny": { "type": "array", "items": { "type": "string" } }
+              }
+            },
+            "toolsBySender": {
+              "type": "object",
+              "propertyNames": { "type": "string" },
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "allow": { "type": "array", "items": { "type": "string" } },
+                  "alsoAllow": { "type": "array", "items": { "type": "string" } },
+                  "deny": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            }
+          }
+        }
+      },
       "streaming": {
         "type": "object",
         "additionalProperties": false,
@@ -69,6 +107,44 @@
             "enum": ["after_dispatch", "immediate"],
             "default": "after_dispatch"
           },
+          "groupPolicy": {
+            "type": "string",
+            "enum": ["open", "disabled", "allowlist"]
+          },
+          "groups": {
+            "type": "object",
+            "propertyNames": { "type": "string" },
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "requireMention": { "type": "boolean" },
+                "ingest": { "type": "boolean" },
+                "tools": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "allow": { "type": "array", "items": { "type": "string" } },
+                    "alsoAllow": { "type": "array", "items": { "type": "string" } },
+                    "deny": { "type": "array", "items": { "type": "string" } }
+                  }
+                },
+                "toolsBySender": {
+                  "type": "object",
+                  "propertyNames": { "type": "string" },
+                  "additionalProperties": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "allow": { "type": "array", "items": { "type": "string" } },
+                      "alsoAllow": { "type": "array", "items": { "type": "string" } },
+                      "deny": { "type": "array", "items": { "type": "string" } }
+                    }
+                  }
+                }
+              }
+            }
+          },
           "streaming": {
             "type": "object",
             "additionalProperties": false,
@@ -90,6 +166,8 @@
         "selfSenderIds": { "label": "Bot sender ids to ignore (self / other bots)" },
         "dmPolicy": { "label": "DM admission policy", "options": ["open", "allowlist", "pairing", "disabled"] },
         "ackPolicy": { "label": "Webhook ack timing", "options": ["after_dispatch", "immediate"] },
+        "groupPolicy": { "label": "Group admission policy", "options": ["open", "allowlist", "disabled"] },
+        "groups": { "label": "Per-group config (keyed by channel unique name)" },
         "streaming": { "label": "Streaming preview", "options": ["off", "on"] }
       }
     }
