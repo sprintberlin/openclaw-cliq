@@ -2,7 +2,6 @@ import {
   createChatChannelPlugin,
 } from "openclaw/plugin-sdk/channel-core";
 import type {
-  ChannelPlugin,
   OpenClawConfig,
 } from "openclaw/plugin-sdk/channel-core";
 import {
@@ -21,6 +20,7 @@ import {
 import { markdownToCliq } from "./markdown.js";
 import { resolveCliqClient } from "./runtime-api.js";
 import { cliqHeartbeatAdapter } from "./heartbeat.js";
+import { cliqStatusAdapter, type CliqStatusProbe } from "./status.js";
 import {
   CLIQ_PAIRING_APPROVED_MESSAGE,
   CLIQ_PAIRING_ID_LABEL,
@@ -31,6 +31,7 @@ export { resolveCliqConfig, CliqClient, chunkMessage, loadCliqMediaAttachment, n
 export { buildCliqMentionRegexes, stripCliqMentions } from "./mentions.js";
 export { markdownToCliq } from "./markdown.js";
 export { cliqHeartbeatAdapter, probeCliqHeartbeat, type CliqHeartbeatProbeResult } from "./heartbeat.js";
+export { cliqStatusAdapter, probeCliqStatus, resolveCliqStatusAccount, type CliqStatusProbe } from "./status.js";
 export {
   CLIQ_PAIRING_APPROVED_MESSAGE,
   CLIQ_PAIRING_ID_LABEL,
@@ -120,7 +121,7 @@ function resolveAccountSafe(
   }
 }
 
-export const cliqPlugin: ChannelPlugin<ResolvedCliqAccount> = createChatChannelPlugin<ResolvedCliqAccount>({
+export const cliqPlugin = createChatChannelPlugin<ResolvedCliqAccount, CliqStatusProbe>({
   base: {
     id: CHANNEL_ID,
     meta: {
@@ -164,6 +165,7 @@ export const cliqPlugin: ChannelPlugin<ResolvedCliqAccount> = createChatChannelP
       },
     },
     heartbeat: cliqHeartbeatAdapter,
+    status: cliqStatusAdapter,
   },
 
   security: {
