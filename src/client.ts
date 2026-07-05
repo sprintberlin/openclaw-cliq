@@ -1,5 +1,10 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { withSendRetry, type RetryOptions } from "./send-retry.js";
+import {
+  getCliqDefaultLogger,
+  truncateForLog,
+  type CliqLogger,
+} from "./logger.js";
 
 const EU_API_BASE = "https://cliq.zoho.eu";
 const EU_OAUTH_BASE = "https://accounts.zoho.eu";
@@ -334,6 +339,7 @@ function parseCliqMessageRef(body: string): { messageId?: string; chatId?: strin
 export class CliqClient {
   private readonly tokens = new Map<string, { token: string; expiresAt: number }>();
   private readonly retryOptions: Required<RetryOptions>;
+  private readonly logger: CliqLogger;
 
   constructor(
     private readonly clientId: string,
@@ -342,6 +348,7 @@ export class CliqClient {
     private readonly apiBase = EU_API_BASE,
     private readonly oauthBase = EU_OAUTH_BASE,
     retryOptions?: RetryOptions,
+    logger?: CliqLogger,
   ) {
     const base = retryOptions ?? {};
     this.retryOptions = {
@@ -351,6 +358,10 @@ export class CliqClient {
       sleep: base.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))),
       random: base.random ?? Math.random,
     };
+    // Fall back to the module-level default logger (console, or the gateway
+    // `api.logger` injected via `setCliqDefaultLogger` at registration). A
+    // caller-supplied logger always wins so tests can capture exact calls.
+    this.logger = logger ?? getCliqDefaultLogger();
   }
 
   async getAccessToken(scope = "ZohoCliq.Webhooks.CREATE"): Promise<string> {
@@ -364,19 +375,27 @@ export class CliqClient {
     url.searchParams.set("client_id", this.clientId);
     url.searchParams.set("client_secret", this.clientSecret);
     url.searchParams.set("scope", scope);
+    this.logger.debug?.(`[cliq] oauth: requesting access token (scope=${scope})`);
     const res = await fetch(url, { method: "POST" });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
+      this.logger.error?.(
+        `[cliq] oauth: token request failed status=${res.status} scope=${scope} body=${truncateForLog(body)}`,
+      );
       throw new Error(`cliq: OAuth token request failed (${res.status}): ${body}`);
     }
     const data = (await res.json()) as { access_token?: string; expires_in?: number };
     if (!data.access_token) {
+      this.logger.error?.(`[cliq] oauth: response missing access_token (scope=${scope})`);
       throw new Error("cliq: OAuth response did not include access_token");
     }
     this.tokens.set(scope, {
       token: data.access_token,
       expiresAt: now + (data.expires_in ?? 3600) * 1000,
     });
+    this.logger.debug?.(
+      `[cliq] oauth: access token acquired (scope=${scope} expires_in=${data.expires_in ?? 3600}s)`,
+    );
     return data.access_token;
   }
 
@@ -389,8 +408,14 @@ export class CliqClient {
     } else {
       payload.chatid = opts.to;
     }
+    const targetKind = opts.isDm ? "dm" : "channel";
+    this.logger.info?.(
+      `[cliq] send: ${targetKind} id=${opts.to} textLen=${opts.text.length}`,
+    );
+    let attempt = 0;
     const res = await withSendRetry(
       async () => {
+        attempt++;
         const r = await fetch(url, {
           method: "POST",
           headers: {
@@ -400,6 +425,16 @@ export class CliqClient {
           body: JSON.stringify(payload),
         });
         const body = await r.text().catch(() => "");
+        if (r.ok) {
+          const ref = parseCliqMessageRef(body);
+          this.logger.info?.(
+            `[cliq] send ok: status=${r.status} ${targetKind} id=${opts.to} messageId=${ref.messageId ?? "-"} attempt=${attempt}`,
+          );
+        } else {
+          this.logger.warn?.(
+            `[cliq] send non-2xx: status=${r.status} ${targetKind} id=${opts.to} attempt=${attempt} body=${truncateForLog(body)}`,
+          );
+        }
         return { status: r.status, body, headers: r.headers };
       },
       this.retryOptions,
@@ -424,14 +459,30 @@ export class CliqClient {
     standalone.set(opts.attachment.bytes);
     const blob = new Blob([standalone], { type: mimeType });
     form.set("attachments", blob, opts.attachment.fileName);
+    const targetKind = opts.isDm ? "dm" : "channel";
+    this.logger.info?.(
+      `[cliq] send media: ${targetKind} id=${opts.to} fileName=${opts.attachment.fileName} bytes=${opts.attachment.bytes.byteLength}${opts.text ? ` textLen=${opts.text.length}` : ""}`,
+    );
+    let attempt = 0;
     const res = await withSendRetry(
       async () => {
+        attempt++;
         const r = await fetch(url, {
           method: "POST",
           headers: { Authorization: `Zoho-oauthtoken ${token}` },
           body: form,
         });
         const body = await r.text().catch(() => "");
+        if (r.ok) {
+          const parsed = JSON.parse(body || "{}") as { id?: string };
+          this.logger.info?.(
+            `[cliq] send media ok: status=${r.status} ${targetKind} id=${opts.to} messageId=${parsed.id ?? "-"} attempt=${attempt}`,
+          );
+        } else {
+          this.logger.warn?.(
+            `[cliq] send media non-2xx: status=${r.status} ${targetKind} id=${opts.to} attempt=${attempt} body=${truncateForLog(body)}`,
+          );
+        }
         return { status: r.status, body, headers: r.headers };
       },
       this.retryOptions,
@@ -463,8 +514,13 @@ export class CliqClient {
   }): Promise<{ messageId?: string; chatId?: string }> {
     const token = await this.getAccessToken("ZohoCliq.Messages.UPDATE");
     const url = `${this.apiBase}/api/v2/chats/${encodeURIComponent(opts.chatId)}/messages/${encodeURIComponent(opts.messageId)}`;
+    this.logger.info?.(
+      `[cliq] edit: chatId=${opts.chatId} messageId=${opts.messageId} textLen=${opts.text.length}`,
+    );
+    let attempt = 0;
     const res = await withSendRetry(
       async () => {
+        attempt++;
         const r = await fetch(url, {
           method: "PUT",
           headers: {
@@ -474,6 +530,15 @@ export class CliqClient {
           body: JSON.stringify({ text: opts.text }),
         });
         const body = await r.text().catch(() => "");
+        if (r.ok) {
+          this.logger.info?.(
+            `[cliq] edit ok: status=${r.status} chatId=${opts.chatId} messageId=${opts.messageId} attempt=${attempt}`,
+          );
+        } else {
+          this.logger.warn?.(
+            `[cliq] edit non-2xx: status=${r.status} chatId=${opts.chatId} messageId=${opts.messageId} attempt=${attempt} body=${truncateForLog(body)}`,
+          );
+        }
         return { status: r.status, body, headers: r.headers };
       },
       this.retryOptions,

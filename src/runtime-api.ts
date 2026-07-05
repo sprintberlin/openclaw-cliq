@@ -21,6 +21,7 @@
  */
 
 import { CliqClient, type ResolvedCliqAccount } from "./client.js";
+import type { CliqLogger } from "./logger.js";
 
 /** Minimal identity shape needed to key a cached client. */
 export interface CliqAccountIdentity {
@@ -31,6 +32,7 @@ export interface CliqAccountIdentity {
 
 export class CliqClientRegistry {
   private readonly clients = new Map<string, CliqClient>();
+  private logger?: CliqLogger;
 
   /**
    * Build the cache key for an account. Prefers `accountId` (stable across
@@ -51,10 +53,26 @@ export class CliqClientRegistry {
         account.clientId,
         account.clientSecret,
         account.botId,
+        undefined,
+        undefined,
+        undefined,
+        this.logger,
       );
       this.clients.set(key, client);
     }
     return client;
+  }
+
+  /**
+   * Inject the gateway `api.logger` so every client created by this registry
+   * emits its outbound send logs to the gateway log sink instead of the
+   * console fallback. Called once from `registerFull` at plugin registration.
+   * Existing cached clients keep whatever logger they were constructed with
+   * (typically the console fallback) — clients are created lazily on first
+   * send, so in practice this is set before any client exists.
+   */
+  setLogger(logger: CliqLogger): void {
+    this.logger = logger;
   }
 
   /** Return the cached client for the account, or undefined when absent. */

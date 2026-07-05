@@ -2,6 +2,7 @@ import { defineChannelPluginEntry } from "openclaw/plugin-sdk/channel-core";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { cliqPlugin } from "./src/channel.js";
 import { resolveCliqConfig } from "./src/client.js";
+import { getCliqClientRegistry } from "./src/runtime-api.js";
 import { resolveCliqDmAdmission } from "./src/admission.js";
 import { issueCliqPairingChallenge } from "./src/pairing.js";
 import {
@@ -55,6 +56,12 @@ export default defineChannelPluginEntry({
     );
   },
   registerFull(api) {
+    // Route outbound Cliq send logs (OAuth token fetch, bot-message POST,
+    // HTTP status, errors) to the gateway logger so the outbound hop is
+    // diagnosable. The registry threads this into every CliqClient it
+    // creates; the outbound sendText / inbound deliver paths resolve their
+    // client through the registry, so all sends flow through this sink.
+    getCliqClientRegistry().setLogger(api.logger);
     api.registerHttpRoute({
       path: "/cliq/webhook",
       auth: "plugin",
