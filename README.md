@@ -139,73 +139,45 @@ The Cliq bot must forward every mention / message event to the OpenClaw webhook.
 
 ```deluge
 // === Configuration (set these once) ===
-webhookUrl   = "https://<gateway-host>/cliq/webhook";
-webhookSecret = "<the same secret you put in openclaw.json as webhookSecret>";
+// Public URL of your gateway's /cliq/webhook route. If you expose the gateway
+// port directly (no reverse proxy / TLS) this is http://<host>:18789/cliq/webhook.
+webhookUrl    = "https://<gateway-host>/cliq/webhook";
+webhookSecret = "<the same secret you set as webhookSecret in openclaw.json>";
 
-/*
- * Builds the JSON payload the plugin expects and POSTs it.
- * The plugin tolerates string|object `message` and a couple of
- * channel/chat key variants, but the shape below is canonical.
- */
+// Cliq provides `message`, `user`, and `chat` in the Message/Mention handler
+// scope. The plugin's parser accepts these Cliq objects as-is (it tolerates the
+// different chat/channel key variants), so just forward them directly.
 payload = Map();
-payload.put("handler", "mention");  // use "message" in the Message Handler
-
-// message
-message = Map();
-message.put("text", message);
-message.put("id", message_id);
-message.put("time", message_time);
+payload.put("handler", "message");   // <-- use "mention" in the Mention Handler
 payload.put("message", message);
-
-// sender
-user = Map();
-user.put("id", user.get("id"));
-user.put("name", user.get("name"));
-user.put("email_id", user.get("email_id"));
 payload.put("user", user);
-
-// chat / channel context
-chat = Map();
-chat.put("id", chat.get("chat_id"));
-chat.put("type", chat.get("chat_type"));         // "channel" for groups
-chat.put("title", chat.get("chat_title"));
 payload.put("chat", chat);
 
-channel = Map();
-channel.put("id", channel.get("channel_id"));
-channel.put("name", channel.get("channel_name"));
-channel.put("unique_name", channel.get("channel_unique_name"));
-payload.put("channel", channel);
+// Auth + content type. The secret header is REQUIRED when webhookSecret is set
+// in openclaw.json; Content-Type MUST be application/json.
+headers = Map();
+headers.put("Content-Type", "application/json");
+headers.put("x-cliq-webhook-secret", webhookSecret);
 
-// mentions (mention handler only)
-if (mentions.size() > 0) {
-    mentionList = List();
-    for each  m in mentions {
-        item = Map();
-        item.put("id", m.get("id"));
-        item.put("name", m.get("name"));
-        item.put("type", m.get("type"));
-        mentionList.add(item);
-    }
-    payload.put("mentions", mentionList);
-}
-
-// POST to OpenClaw as raw JSON.
-// IMPORTANT: use `body: payload.toString()` (NOT `parameters:`). The
-// `parameters` form posts an `application/x-www-form-urlencoded` body
-// (e.g. `handler=mention&...`) which the plugin rejects with HTTP 400
-// because it is not valid JSON. `body:` + the `application/json`
-// header above sends the raw JSON object the parser expects.
-response = invokeUrl
+// POST to OpenClaw as raw JSON. Use `body:` (NOT `parameters:`) — see note below.
+invoke_response = invokeUrl
 [
-    url: webhookUrl
-    type: POST
-    body: payload.toString()
+    url    : webhookUrl
+    type   : POST
+    body   : payload.toString()
     headers: headers
 ];
 
-info "openclaw webhook forwarded: " + response.get("status");
+// The reply is delivered by the OpenClaw gateway via the Cliq bot API, so the
+// handler itself returns an empty response.
+response = Map();
+return response;
 ```
+
+> This is the same script for both handlers — the **only** difference is the
+> `handler` value: `"message"` in the **Message Handler** (DMs) and `"mention"`
+> in the **Mention Handler** (channel/group @mentions). Group vs DM is detected
+> automatically from the forwarded `chat` object, so no extra mapping is needed.
 
 > **Do not use `parameters: payload.toString()`.** In Deluge, `invokeUrl`'s
 > `parameters:` key serializes the value as form-urlencoded data
