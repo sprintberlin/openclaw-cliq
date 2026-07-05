@@ -39,7 +39,7 @@ import {
   notifyCliqPairingApproval,
 } from "./pairing.js";
 
-export { resolveCliqConfig, CliqClient, chunkMessage, loadCliqMediaAttachment, normalizeCliqRouteTarget, type CliqChannelConfig, type ResolvedCliqAccount, type CliqMediaAttachment, type NormalizedCliqTarget, type CliqDirectoryEntry, type CliqUserRecord, type CliqChannelRecord, type CliqReactionGuidanceConfig } from "./client.js";
+export { resolveCliqConfig, CliqClient, chunkMessage, loadCliqMediaAttachment, normalizeCliqRouteTarget, readEffectiveCliqSection, CLIQ_DEFAULT_ACCOUNT_ID, type CliqChannelConfig, type ResolvedCliqAccount, type CliqMediaAttachment, type NormalizedCliqTarget, type CliqDirectoryEntry, type CliqUserRecord, type CliqChannelRecord, type CliqReactionGuidanceConfig, type EffectiveCliqSection } from "./client.js";
 export { buildCliqMentionRegexes, stripCliqMentions } from "./mentions.js";
 export { markdownToCliq } from "./markdown.js";
 export { cliqHeartbeatAdapter, probeCliqHeartbeat, type CliqHeartbeatProbeResult } from "./heartbeat.js";
@@ -193,14 +193,27 @@ function applyAccountConfig(params: {
   accountId: string;
   input: Record<string, unknown>;
 }): OpenClawConfig {
-  const { cfg, input } = params;
+  const { cfg, accountId, input } = params;
   const next = structuredClone(cfg) as unknown as {
     channels?: Record<string, Record<string, unknown>>;
   };
   if (!next.channels) next.channels = {};
   if (!next.channels["cliq"]) next.channels["cliq"] = {};
   const section = next.channels["cliq"];
-  const target: Record<string, unknown> = section;
+  // Non-default accountIds write into `accounts.<accountId>` so multiple Cliq
+  // bots/accounts coexist (each with its own clientId/clientSecret/botId).
+  // The default / unnamed account writes to the top-level section (the
+  // single-account convention; backward compatible with existing configs).
+  const isPerAccount = accountId && accountId !== "default";
+  const target: Record<string, unknown> = isPerAccount
+    ? (() => {
+        const sec = section as Record<string, unknown>;
+        if (!sec.accounts) sec.accounts = {};
+        const accts = sec.accounts as Record<string, Record<string, unknown>>;
+        if (!accts[accountId]) accts[accountId] = {};
+        return accts[accountId];
+      })()
+    : section;
   const writeField = (key: string) => {
     if (input[key] !== undefined) target[key] = input[key];
   };

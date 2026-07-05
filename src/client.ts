@@ -126,14 +126,16 @@ export function resolveCliqConfig(
   cfg: OpenClawConfig,
   accountId?: string | null,
 ): ResolvedCliqAccount {
-  const section = (cfg.channels as Record<string, CliqChannelConfig | undefined> | undefined)?.[
-    "cliq"
-  ];
+  const effective = readEffectiveCliqSection(cfg, accountId);
+  const section = effective.section;
   const clientId = section?.clientId;
+  const secretPathPrefix = effective.isPerAccount
+    ? `channels.cliq.accounts.${effective.accountId}`
+    : "channels.cliq";
   const clientSecret = resolveCliqSecretString({
     cfg,
     value: section?.clientSecret,
-    path: "channels.cliq.clientSecret",
+    path: `${secretPathPrefix}.clientSecret`,
   });
   const botId = section?.botId;
   if (!clientId) throw new Error("cliq: clientId is required");
@@ -146,15 +148,15 @@ export function resolveCliqConfig(
   const webhookSecret = resolveCliqSecretString({
     cfg,
     value: section?.webhookSecret,
-    path: "channels.cliq.webhookSecret",
+    path: `${secretPathPrefix}.webhookSecret`,
   });
   const refreshToken = resolveCliqSecretString({
     cfg,
     value: section?.refreshToken,
-    path: "channels.cliq.refreshToken",
+    path: `${secretPathPrefix}.refreshToken`,
   });
   return {
-    accountId: accountId ?? null,
+    accountId: effective.accountId,
     clientId,
     clientSecret,
     botId,
@@ -167,6 +169,67 @@ export function resolveCliqConfig(
     blockStreaming,
     refreshToken: refreshToken || undefined,
   };
+}
+
+/** The single-account convention id (no `accounts.*` nesting). */
+export const CLIQ_DEFAULT_ACCOUNT_ID = "default";
+
+export interface EffectiveCliqSection {
+  section: CliqChannelConfig | undefined;
+  accountId: string | null;
+  /** Whether resolution came from a per-account override (`accounts.<id>`). */
+  isPerAccount: boolean;
+}
+
+function readTopLevelCliqSection(
+  cfg: OpenClawConfig,
+): CliqChannelConfig | undefined {
+  const channels = (cfg as unknown as {
+    channels?: Record<string, CliqChannelConfig | undefined>;
+  }).channels;
+  return channels?.["cliq"];
+}
+
+/**
+ * Read the effective Cliq section for an account: a per-account override
+ * (`channels.cliq.accounts.<accountId>`) overlaid on the top-level
+ * `channels.cliq` section. This is what makes multi-bot / multi-account configs
+ * work — each account can carry its own credentials, botId, allowFrom, …,
+ * while shared config (webhookSecret, dmPolicy) can live at the top level.
+ *
+ * Resolution rules:
+ *  - `accountId` null/undefined/`"default"` → top-level section verbatim
+ *    (the single-account convention; backward compatible).
+ *  - Non-default `accountId` with an `accounts.<accountId>` entry → that
+ *    entry's fields override the top-level ones (shallow merge; `allowFrom`
+ *    and `selfSenderIds` are REPLACED when present in the override, matching
+ *    the bundled-channel convention).
+ *  - Non-default `accountId` with NO matching `accounts` entry → top-level
+ *    section (preserves the prior behavior so a stray accountId never breaks
+ *    resolution).
+ *
+ * The returned `accountId` is the resolved one (null for the unnamed
+ * single-account case so `CliqClientRegistry` keys by `clientId:botId`).
+ */
+export function readEffectiveCliqSection(
+  cfg: OpenClawConfig,
+  accountId?: string | null,
+): EffectiveCliqSection {
+  const top = readTopLevelCliqSection(cfg);
+  const acct =
+    accountId && accountId !== CLIQ_DEFAULT_ACCOUNT_ID ? accountId : null;
+  if (!top || !acct) {
+    return { section: top, accountId: acct, isPerAccount: false };
+  }
+  const accounts = (top as unknown as {
+    accounts?: Record<string, CliqChannelConfig | undefined>;
+  }).accounts;
+  const override = accounts?.[acct];
+  if (!override) {
+    return { section: top, accountId: acct, isPerAccount: false };
+  }
+  const merged: CliqChannelConfig = { ...top, ...override };
+  return { section: merged, accountId: acct, isPerAccount: true };
 }
 
 export function chunkMessage(text: string, limit = MESSAGE_CHAR_LIMIT): string[] {

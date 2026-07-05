@@ -1,6 +1,7 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { hasConfiguredSecretInput } from "openclaw/plugin-sdk/secret-input-runtime";
 import {
+  readEffectiveCliqSection,
   resolveCliqConfig,
   type CliqChannelConfig,
   type ResolvedCliqAccount,
@@ -86,11 +87,8 @@ export interface InspectedCliqAccount {
   config: InspectedCliqAccountConfig;
 }
 
-function readSection(cfg: OpenClawConfig): CliqChannelConfig | undefined {
-  const channels = (cfg as unknown as {
-    channels?: Record<string, CliqChannelConfig | undefined>;
-  }).channels;
-  return channels?.["cliq"];
+function readSection(cfg: OpenClawConfig, accountId?: string | null): CliqChannelConfig | undefined {
+  return readEffectiveCliqSection(cfg, accountId).section;
 }
 
 /**
@@ -130,7 +128,7 @@ export function inspectCliqAccount(params: {
   accountId?: string | null;
 }): InspectedCliqAccount {
   const accountId = (params.accountId ?? null) ?? DEFAULT_ACCOUNT_ID;
-  const section = readSection(params.cfg);
+  const section = readSection(params.cfg, params.accountId);
   const configured = isConfiguredSection(section);
 
   let resolved: ResolvedCliqAccount | null = null;

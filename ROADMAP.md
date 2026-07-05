@@ -35,8 +35,6 @@
 
 ## Phase 4 — Operational / multi-account / enterprise
 
-- **Multi-account** hardening. Verify multiple Cliq bots/accounts coexist (token cache already
-  keyed; confirm routing + status + directory are per-account).
 - **`lifecycle` hooks.** Register webhook on start, clean up on stop, instead of relying on
   manual Deluge setup.
 
