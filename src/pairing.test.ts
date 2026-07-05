@@ -22,6 +22,7 @@ function account(overrides: Partial<ResolvedCliqAccount> = {}): ResolvedCliqAcco
     dmPolicy: "pairing",
     ackPolicy: "after_dispatch",
     selfSenderIds: [],
+    blockStreaming: false,
     ...overrides,
   };
 }

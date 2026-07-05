@@ -36,6 +36,18 @@ export interface CliqChannelConfig {
    *   round-trip and you accept the lost-message risk.
    */
   ackPolicy?: "after_dispatch" | "immediate";
+  /**
+   * Streaming preview configuration. The SDK coalesces agent output into
+   * progressive "block" deliveries (separate messages) rather than waiting
+   * for the full reply, when block streaming is enabled. Plugin-channel
+   * live-edit-in-place (editing a single message as the draft grows) is not
+   * exposed by the SDK; block streaming is the available progressive-delivery
+   * mechanism.
+   * - `preview: "on"` opts this account into block streaming (the SDK's
+   *   `agents.defaults.blockStreamingDefault` must also permit it).
+   * - `preview: "off"` (default) keeps the legacy single-final-reply behavior.
+   */
+  streaming?: { preview?: "on" | "off" };
 }
 
 export interface ResolvedCliqAccount {
@@ -49,6 +61,8 @@ export interface ResolvedCliqAccount {
   dmPolicy: string | undefined;
   ackPolicy: "after_dispatch" | "immediate";
   selfSenderIds: string[];
+  /** Whether progressive (block-streaming) reply delivery is opted-in for this account. */
+  blockStreaming: boolean;
 }
 
 export function resolveCliqConfig(
@@ -67,6 +81,7 @@ export function resolveCliqConfig(
   const ackPolicyRaw = section?.ackPolicy;
   const ackPolicy: "after_dispatch" | "immediate" =
     ackPolicyRaw === "immediate" ? "immediate" : "after_dispatch";
+  const blockStreaming = section?.streaming?.preview === "on";
   return {
     accountId: accountId ?? null,
     clientId,
@@ -78,6 +93,7 @@ export function resolveCliqConfig(
     dmPolicy: section?.dmPolicy,
     ackPolicy,
     selfSenderIds: section?.selfSenderIds ?? [],
+    blockStreaming,
   };
 }
 
@@ -271,6 +287,50 @@ export function normalizeCliqRouteTarget(to: string): NormalizedCliqTarget {
   return { to: id, isDm: false };
 }
 
+/**
+ * Parse a Cliq bot-message / chat-message API response into a message ref.
+ *
+ * The bot-message send response is inconsistent: a top-level `{ id }` for
+ * channel posts, or a nested `{ message_details: { "<userId>": { chat_id,
+ * message_id } } }` for bot DMs. The chat-message edit response echoes
+ * neither reliably. We parse defensively, extracting `messageId` (from
+ * `id`, `message_id`, or `message_details[<any>].message_id`) and `chatId`
+ * (from `message_details[<any>].chat_id`), never throwing on a malformed
+ * body — the caller treats a missing id as "send succeeded but no ref".
+ */
+function parseCliqMessageRef(body: string): { messageId?: string; chatId?: string } {
+  if (!body) return {};
+  let data: unknown;
+  try {
+    data = JSON.parse(body);
+  } catch {
+    return {};
+  }
+  if (!data || typeof data !== "object") return {};
+  const obj = data as Record<string, unknown>;
+  const topId = typeof obj.id === "string" ? obj.id : undefined;
+  const topMessageId =
+    typeof obj.message_id === "string" ? obj.message_id : undefined;
+  const topChatId =
+    typeof obj.chat_id === "string" ? obj.chat_id : undefined;
+  let nestedChatId: string | undefined;
+  let nestedMessageId: string | undefined;
+  const details = obj.message_details;
+  if (details && typeof details === "object") {
+    for (const value of Object.values(details as Record<string, unknown>)) {
+      if (value && typeof value === "object") {
+        const entry = value as Record<string, unknown>;
+        if (typeof entry.chat_id === "string") nestedChatId = entry.chat_id;
+        if (typeof entry.message_id === "string") nestedMessageId = entry.message_id;
+      }
+    }
+  }
+  return {
+    messageId: topMessageId ?? nestedMessageId ?? topId,
+    chatId: nestedChatId ?? topChatId,
+  };
+}
+
 export class CliqClient {
   private readonly tokens = new Map<string, { token: string; expiresAt: number }>();
   private readonly retryOptions: Required<RetryOptions>;
@@ -320,7 +380,7 @@ export class CliqClient {
     return data.access_token;
   }
 
-  async sendMessage(opts: SendMessageOptions): Promise<{ messageId?: string }> {
+  async sendMessage(opts: SendMessageOptions): Promise<{ messageId?: string; chatId?: string }> {
     const token = await this.getAccessToken("ZohoCliq.Webhooks.CREATE");
     const url = `${this.apiBase}/api/v2/bots/${encodeURIComponent(this.botId)}/message`;
     const payload: Record<string, unknown> = { text: opts.text };
@@ -344,8 +404,7 @@ export class CliqClient {
       },
       this.retryOptions,
     );
-    const data = JSON.parse(res.body || "{}") as { id?: string };
-    return { messageId: data.id };
+    return parseCliqMessageRef(res.body);
   }
 
   async sendMediaMessage(opts: SendMediaMessageOptions): Promise<{ messageId?: string }> {
@@ -379,6 +438,51 @@ export class CliqClient {
     );
     const data = JSON.parse(res.body || "{}") as { id?: string };
     return { messageId: data.id };
+  }
+
+  /**
+   * Edit an existing chat message in place via the Cliq chat-messages API:
+   * `PUT /api/v2/chats/{chatId}/messages/{messageId}` with body `{ text }`.
+   * The text MUST already be in Cliq-native formatting (the caller runs
+   * `markdownToCliq`); this method does not re-format. Requires the
+   * `ZohoCliq.Messages.UPDATE` scope (minted + cached per-scope, separate
+   * from the webhook bot-message token).
+   *
+   * Used as the building block for live-edit streaming previews and for the
+   * future message-action adapter (edit/delete). Carries the same
+   * transient/fatal/format classification + retry as `sendMessage`.
+   *
+   * Returns `{ messageId, chatId }` for symmetry with `sendMessage` (the
+   * Cliq edit response does not always echo the id, so we fall back to the
+   * caller-supplied ids).
+   */
+  async editMessage(opts: {
+    chatId: string;
+    messageId: string;
+    text: string;
+  }): Promise<{ messageId?: string; chatId?: string }> {
+    const token = await this.getAccessToken("ZohoCliq.Messages.UPDATE");
+    const url = `${this.apiBase}/api/v2/chats/${encodeURIComponent(opts.chatId)}/messages/${encodeURIComponent(opts.messageId)}`;
+    const res = await withSendRetry(
+      async () => {
+        const r = await fetch(url, {
+          method: "PUT",
+          headers: {
+            Authorization: `Zoho-oauthtoken ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ text: opts.text }),
+        });
+        const body = await r.text().catch(() => "");
+        return { status: r.status, body, headers: r.headers };
+      },
+      this.retryOptions,
+    );
+    const parsed = parseCliqMessageRef(res.body);
+    return {
+      messageId: parsed.messageId ?? opts.messageId,
+      chatId: parsed.chatId ?? opts.chatId,
+    };
   }
 
   /**

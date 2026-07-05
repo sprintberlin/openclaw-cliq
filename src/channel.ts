@@ -107,6 +107,7 @@ function applyAccountConfig(params: {
   writeField("webhookSecret");
   if (Array.isArray(input.allowFrom)) target["allowFrom"] = input.allowFrom;
   if (Array.isArray(input.selfSenderIds)) target["selfSenderIds"] = input.selfSenderIds;
+  if (input.streaming !== undefined) target["streaming"] = input.streaming;
   return next as unknown as OpenClawConfig;
 }
 
@@ -145,8 +146,18 @@ export const cliqPlugin = createChatChannelPlugin<ResolvedCliqAccount, CliqStatu
       chatTypes: ["direct", "group"],
       media: true,
       reply: true,
-      edit: false,
+      edit: true,
       reactions: false,
+      blockStreaming: true,
+    },
+    streaming: {
+      // Coalesce defaults consumed by the SDK's block-streaming resolver
+      // (getChannelPlugin(id)?.streaming?.blockStreamingCoalesceDefaults).
+      // Tuned for Cliq's 5000-char message limit: min 800 chars before a
+      // block flushes (avoids tiny fragments), 1s idle coalesce window
+      // (balances perceived responsiveness against API chatter). Operators
+      // opt an account in via `channels.cliq.streaming.preview: "on"`.
+      blockStreamingCoalesceDefaults: { minChars: 800, idleMs: 1_000 },
     },
     config: {
       listAccountIds,

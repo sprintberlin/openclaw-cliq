@@ -29,6 +29,13 @@
         "type": "string",
         "enum": ["after_dispatch", "immediate"],
         "default": "after_dispatch"
+      },
+      "streaming": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "preview": { "type": "string", "enum": ["on", "off"], "default": "off" }
+        }
       }
     }
   },
@@ -59,6 +66,13 @@
             "type": "string",
             "enum": ["after_dispatch", "immediate"],
             "default": "after_dispatch"
+          },
+          "streaming": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "preview": { "type": "string", "enum": ["on", "off"], "default": "off" }
+            }
           }
         },
         "required": ["clientId", "clientSecret", "botId"]
@@ -72,7 +86,8 @@
         "allowFrom": { "label": "Allowed senders (Zoho Cliq user ids)" },
         "selfSenderIds": { "label": "Bot sender ids to ignore (self / other bots)" },
         "dmPolicy": { "label": "DM admission policy", "options": ["open", "allowlist", "pairing", "disabled"] },
-        "ackPolicy": { "label": "Webhook ack timing", "options": ["after_dispatch", "immediate"] }
+        "ackPolicy": { "label": "Webhook ack timing", "options": ["after_dispatch", "immediate"] },
+        "streaming": { "label": "Streaming preview", "options": ["off", "on"] }
       }
     }
   }

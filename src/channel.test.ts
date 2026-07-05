@@ -94,6 +94,52 @@ describe("cliq plugin", () => {
     expect(cliqPlugin.capabilities.media).toBe(true);
   });
 
+  it("advertises block-streaming + edit capabilities for streaming previews", () => {
+    expect(cliqPlugin.capabilities.blockStreaming).toBe(true);
+    expect(cliqPlugin.capabilities.edit).toBe(true);
+  });
+
+  it("publishes block-streaming coalesce defaults tuned for Cliq", () => {
+    const streaming = (cliqPlugin as { streaming?: { blockStreamingCoalesceDefaults?: { minChars: number; idleMs: number } } }).streaming;
+    expect(streaming?.blockStreamingCoalesceDefaults).toBeDefined();
+    const coalesce = streaming!.blockStreamingCoalesceDefaults!;
+    expect(coalesce.minChars).toBeGreaterThan(0);
+    expect(coalesce.idleMs).toBeGreaterThanOrEqual(0);
+    // minChars must stay well under the 5000-char message cap so blocks flush.
+    expect(coalesce.minChars).toBeLessThanOrEqual(5000);
+  });
+
+  it("resolves streaming.preview=on into blockStreaming=true on the account", () => {
+    const cfg = cfgWith({
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+      streaming: { preview: "on" },
+    });
+    const account = resolveCliqConfig(cfg);
+    expect(account.blockStreaming).toBe(true);
+  });
+
+  it("defaults blockStreaming=false when streaming.preview is unset", () => {
+    const cfg = cfgWith({
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+    });
+    expect(resolveCliqConfig(cfg).blockStreaming).toBe(false);
+  });
+
+  it("applies streaming config through applyAccountConfig", () => {
+    const cfg = cfgWith({});
+    const next = cliqPlugin.setup!.applyAccountConfig({
+      cfg,
+      accountId: "default",
+      input: { streaming: { preview: "on" } },
+    } as any);
+    const section = (next as any).channels.cliq;
+    expect(section.streaming).toEqual({ preview: "on" });
+  });
+
   it("wires a pairing adapter with the cliq id label", () => {
     expect(cliqPlugin.pairing).toBeDefined();
     const pairing = cliqPlugin.pairing as { idLabel?: string };
@@ -364,6 +410,124 @@ describe("cliq plugin", () => {
         accountId: undefined,
       } as any),
     ).rejects.toThrow(/mediaUrl/);
+  });
+});
+
+describe("CliqClient.editMessage — Cliq message edit API (streaming preview building block)", () => {
+  it("PUTs to /chats/{chatId}/messages/{messageId} with the Messages.UPDATE scope", async () => {
+    setCliqClientRegistry(null);
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient("id", "secret", "bot");
+    const seen: { url: string; method?: string; body?: string; auth?: string }[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        // Capture the scope requested — editMessage must use Messages.UPDATE.
+        const scope = new URL(urlStr).searchParams.get("scope");
+        seen.push({ url: `oauth?scope=${scope}` });
+        return new Response(JSON.stringify({ access_token: "edit-tok", expires_in: 3600 }), { status: 200 });
+      }
+      seen.push({
+        url: urlStr,
+        method: init?.method,
+        body: init?.body as string,
+        auth: (init?.headers as Record<string, string>)?.["Authorization"],
+      });
+      return new Response(JSON.stringify({ message_id: "m-1", chat_id: "CT_x" }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const result = await client.editMessage({ chatId: "CT_chat1", messageId: "m-1", text: "*updated*" });
+      expect(result.messageId).toBe("m-1");
+      expect(result.chatId).toBe("CT_x");
+    } finally {
+      globalThis.fetch = original;
+    }
+    // The OAuth token request must have asked for the Messages.UPDATE scope.
+    const oauth = seen.find((s) => s.url.startsWith("oauth?scope="));
+    expect(oauth?.url).toContain("ZohoCliq.Messages.UPDATE");
+    const put = seen.find((s) => s.method === "PUT");
+    expect(put).toBeDefined();
+    expect(put!.url).toContain("/chats/CT_chat1/messages/m-1");
+    expect(put!.auth).toBe("Zoho-oauthtoken edit-tok");
+    expect(JSON.parse(put!.body!)).toEqual({ text: "*updated*" });
+  });
+
+  it("classifies a 400 format error as format_rejected (no retry fallback inside editMessage)", async () => {
+    setCliqClientRegistry(null);
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, {
+      maxAttempts: 2,
+      baseDelayMs: 1,
+      maxDelayMs: 5,
+      sleep: async () => {},
+      random: () => 0.1,
+    });
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(JSON.stringify({ access_token: "t", expires_in: 3600 }), { status: 200 });
+      }
+      return new Response("invalid markdown format", { status: 400 });
+    }) as typeof fetch;
+    try {
+      await expect(
+        client.editMessage({ chatId: "CT_chat1", messageId: "m-1", text: "x" }),
+      ).rejects.toMatchObject({ kind: "format_rejected", status: 400 });
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});
+
+describe("CliqClient.sendMessage message-ref parsing", () => {
+  it("extracts messageId + chatId from a bot-DM message_details response", async () => {
+    setCliqClientRegistry(null);
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient("id", "secret", "bot");
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(JSON.stringify({ access_token: "t", expires_in: 3600 }), { status: 200 });
+      }
+      const body = JSON.parse(init?.body as string) as { userids?: string };
+      return new Response(
+        JSON.stringify({
+          message_details: { [body.userids!]: { chat_id: "CT_dm-1", message_id: "msg-99" } },
+        }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+    try {
+      const result = await client.sendMessage({ to: "u-1", isDm: true, text: "hi" });
+      expect(result.messageId).toBe("msg-99");
+      expect(result.chatId).toBe("CT_dm-1");
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it("extracts messageId from a top-level { id } channel response", async () => {
+    setCliqClientRegistry(null);
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient("id", "secret", "bot");
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(JSON.stringify({ access_token: "t", expires_in: 3600 }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ id: "msg-chan-1" }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const result = await client.sendMessage({ to: "CT_channel", isDm: false, text: "hi" });
+      expect(result.messageId).toBe("msg-chan-1");
+      expect(result.chatId).toBeUndefined();
+    } finally {
+      globalThis.fetch = original;
+    }
   });
 });
 

@@ -16,6 +16,7 @@ export const CLIQ_OAUTH_SCOPES: readonly string[] = [
   "ZohoCliq.Webhooks.CREATE",
   "ZohoCliq.Channels.READ",
   "ZohoCliq.Users.READ",
+  "ZohoCliq.Messages.UPDATE",
 ] as const;
 
 /** Hard-coded EU endpoints (see AGENTS.md — `.com` would require a code change). */
@@ -44,6 +45,8 @@ export interface InspectedCliqAccountConfig {
   dmPolicy?: string;
   selfSenderIds: string[];
   ackPolicy: "after_dispatch" | "immediate";
+  /** Whether progressive (block-streaming) reply delivery is opted-in. */
+  streamingPreview: "on" | "off";
 }
 
 export interface InspectedCliqAccount {
@@ -140,6 +143,8 @@ export function inspectCliqAccount(params: {
       dmPolicy: section?.dmPolicy,
       selfSenderIds: resolved?.selfSenderIds ?? section?.selfSenderIds ?? [],
       ackPolicy: resolved?.ackPolicy ?? "after_dispatch",
+      streamingPreview:
+        (section?.streaming?.preview === "on" ? "on" : "off"),
     },
   };
 }

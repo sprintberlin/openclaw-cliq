@@ -120,6 +120,26 @@ describe("inspectCliqAccount", () => {
     expect(r.scopes).toContain("ZohoCliq.Webhooks.CREATE");
     expect(r.scopes).toContain("ZohoCliq.Channels.READ");
     expect(r.scopes).toContain("ZohoCliq.Users.READ");
+    expect(r.scopes).toContain("ZohoCliq.Messages.UPDATE");
+  });
+
+  it("reports streamingPreview=on when opted in", () => {
+    const r = inspectCliqAccount({
+      cfg: cfgWith({
+        clientId: "id",
+        clientSecret: "secret",
+        botId: "bot",
+        streaming: { preview: "on" },
+      }),
+    });
+    expect(r.config.streamingPreview).toBe("on");
+  });
+
+  it("defaults streamingPreview=off when unset", () => {
+    const r = inspectCliqAccount({
+      cfg: cfgWith({ clientId: "id", clientSecret: "s", botId: "b" }),
+    });
+    expect(r.config.streamingPreview).toBe("off");
   });
 
   it("treats a missing channels.cliq section as unconfigured", () => {

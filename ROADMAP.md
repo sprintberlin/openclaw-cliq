@@ -31,9 +31,15 @@
 
 ## Phase 3 — Rich messaging & agent-facing features
 
-- **Streaming previews** (`live.capabilities` + finalizer). Stream partial replies by editing a
-  message in place (Cliq message edit API), with debounce + final materialize. Biggest UX gap vs
-  Telegram. See `docs/channels/telegram.md` "Live stream preview" and `capabilities.live`.
+- **Live-edit streaming in place** (send + edit a single message as the agent
+  draft grows, instead of block-streaming separate messages). Requires a
+  partial-reply hook the SDK plugin-channel inbound path does not currently
+  expose (bundled Telegram/Discord own their `editMessage`-based draft stream;
+  the bernesto reference repo implements one outside the SDK dispatcher).
+  `CliqClient.editMessage` (PUT `/api/v2/chats/{chatId}/messages/{messageId}`,
+  `ZohoCliq.Messages.UPDATE` scope) + `capabilities.edit`/`blockStreaming` +
+  `streaming.blockStreamingCoalesceDefaults` are wired as the foundation;
+  this item is the remaining send+edit dispatch loop.
 - **Message actions for agents** (`actions` / `ChannelMessageActionAdapter`). Let the agent
   edit/delete its messages and react. See `channel-actions.ts`.
 - **Reactions** (inbound reaction notifications + outbound ack reactions).

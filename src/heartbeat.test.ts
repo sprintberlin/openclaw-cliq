@@ -113,6 +113,7 @@ describe("cliq heartbeat adapter", () => {
         dmPolicy: undefined,
         ackPolicy: "after_dispatch" as const,
         selfSenderIds: [],
+        blockStreaming: false,
       };
       const result = await probeCliqHeartbeat(account);
       expect(result.ok).toBe(true);
