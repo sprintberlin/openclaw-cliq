@@ -28,6 +28,7 @@ import { cliqMessageActions } from "./message-actions.js";
 import { cliqGroupsAdapter } from "./group-policy.js";
 import { cliqAgentPromptAdapter } from "./agent-prompt.js";
 import { cliqOutboundPresentation } from "./outbound-presentation.js";
+import { cliqCommandsAdapter } from "./commands.js";
 import {
   CLIQ_PAIRING_APPROVED_MESSAGE,
   CLIQ_PAIRING_ID_LABEL,
@@ -93,6 +94,17 @@ export {
   resolveCliqInboundFormattingHints,
   resolveCliqReactionGuidance,
 } from "./agent-prompt.js";
+export {
+  cliqCommandsAdapter,
+  cliqCommandButton,
+  buildCliqCommandsListChannelData,
+  buildCliqModelsMenuChannelData,
+  buildCliqModelsProviderChannelData,
+  buildCliqModelsAddProviderChannelData,
+  buildCliqModelsListChannelData,
+  buildCliqModelBrowseChannelData,
+  CLIQ_COMMANDS_MODELS_PAGE_SIZE,
+} from "./commands.js";
 export {
   presentationToCliqCard,
   cliqButtonFromPortable,
@@ -241,6 +253,7 @@ export const cliqPlugin = createChatChannelPlugin<ResolvedCliqAccount, CliqStatu
     actions: cliqMessageActions,
     groups: cliqGroupsAdapter,
     agentPrompt: cliqAgentPromptAdapter,
+    commands: cliqCommandsAdapter,
   },
 
   security: {

@@ -35,7 +35,6 @@
 
 ## Phase 3 — Rich messaging & agent-facing features
 
-- **Native/custom commands** (`commands`). Slash-style Cliq commands mapped to agent actions.
 - **Threading fidelity.** Map Cliq threads/replies properly (beyond the current top-level
   `reply` mode); Discord's `thread-binding-api.ts` is the model.
 
