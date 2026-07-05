@@ -136,3 +136,46 @@ describe("cliq resolveCliqConfig reads dmPolicy (issue #9)", () => {
     expect(account.dmPolicy).toBeUndefined();
   });
 });
+
+describe("cliq reactions config schema", () => {
+  const schema = manifest.channelConfigs.cliq.schema;
+  const baseConfig = {
+    clientId: "id",
+    clientSecret: "sec",
+    botId: "bot",
+  };
+
+  it("accepts reactions.agentGuidance with each valid enum value", () => {
+    for (const g of ["minimal", "extensive", "off"]) {
+      const errors = validate(schema, {
+        ...baseConfig,
+        reactions: { agentGuidance: g },
+      });
+      expect(errors).toEqual([]);
+    }
+  });
+
+  it("rejects an unknown agentGuidance value", () => {
+    const errors = validate(schema, {
+      ...baseConfig,
+      reactions: { agentGuidance: "always" },
+    });
+    expect(errors.some((e) => e.includes("not one of"))).toBe(true);
+  });
+
+  it("rejects extra keys inside reactions (additionalProperties:false)", () => {
+    const errors = validate(schema, {
+      ...baseConfig,
+      reactions: { agentGuidance: "minimal", extra: 1 },
+    });
+    expect(
+      errors.some((e) => e.includes('must not have additional properties: "extra"')),
+    ).toBe(true);
+  });
+
+  it("the top-level configSchema also declares reactions", () => {
+    expect(manifest.configSchema.properties?.reactions).toBeDefined();
+    const r = manifest.configSchema.properties?.reactions?.properties?.agentGuidance;
+    expect(r?.enum).toEqual(["minimal", "extensive", "off"]);
+  });
+});

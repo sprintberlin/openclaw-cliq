@@ -43,7 +43,10 @@
   Outbound ack reactions are blocked on the same surface (no
   `heartbeat.setReaction` / ack-reaction runtime hook for plugin channels).
 - **Interactive elements** (Cliq buttons/cards). Analog to Telegram inline buttons / Discord
-  components; expose via `agentPrompt.messageToolCapabilities`.
+  components; expose via `agentPrompt.messageToolCapabilities` and implement
+  button-sending in `CliqClient` (currently `messageToolCapabilities` returns
+  `[]` truthfully — no `inlineButtons`/`richText` advertised until the client
+  can actually render them).
 - **Native/custom commands** (`commands`). Slash-style Cliq commands mapped to agent actions.
 - **Threading fidelity.** Map Cliq threads/replies properly (beyond the current top-level
   `reply` mode); Discord's `thread-binding-api.ts` is the model.

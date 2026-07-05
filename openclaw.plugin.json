@@ -75,6 +75,17 @@
         "properties": {
           "preview": { "type": "string", "enum": ["on", "off"], "default": "off" }
         }
+      },
+      "reactions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "agentGuidance": {
+            "type": "string",
+            "enum": ["minimal", "extensive", "off"],
+            "default": "minimal"
+          }
+        }
       }
     }
   },
@@ -151,6 +162,17 @@
             "properties": {
               "preview": { "type": "string", "enum": ["on", "off"], "default": "off" }
             }
+          },
+          "reactions": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "agentGuidance": {
+                "type": "string",
+                "enum": ["minimal", "extensive", "off"],
+                "default": "minimal"
+              }
+            }
           }
         },
         "required": ["clientId", "clientSecret", "botId"]
@@ -168,7 +190,8 @@
         "ackPolicy": { "label": "Webhook ack timing", "options": ["after_dispatch", "immediate"] },
         "groupPolicy": { "label": "Group admission policy", "options": ["open", "allowlist", "disabled"] },
         "groups": { "label": "Per-group config (keyed by channel unique name)" },
-        "streaming": { "label": "Streaming preview", "options": ["off", "on"] }
+        "streaming": { "label": "Streaming preview", "options": ["off", "on"] },
+        "reactions": { "label": "Agent reaction guidance", "options": ["minimal", "extensive", "off"] }
       }
     }
   }

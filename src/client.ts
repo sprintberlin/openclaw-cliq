@@ -67,8 +67,21 @@ export interface CliqChannelConfig {
    * (client_credentials for everything; channel posts / edits will fail
    * at the API with a scope error — i.e. DM-only setups keep working).
    */
-  refreshToken?: string;
+   refreshToken?: string;
+  /**
+   * Reaction guidance for the agent's system prompt. Cliq supports outbound
+   * reactions (the `react` message-action), so the default is `"minimal"`
+   * (react sparingly for acknowledgements / sentiment). Set to `"extensive"`
+   * to encourage liberal reactions, or `"off"` to suppress the reactions
+   * prompt section entirely.
+   */
+  reactions?: CliqReactionGuidanceConfig;
 }
+
+/** Per-account reaction-guidance config (under `channels.cliq.reactions`). */
+export type CliqReactionGuidanceConfig = {
+  agentGuidance?: "minimal" | "extensive" | "off";
+};
 
 export interface ResolvedCliqAccount {
   accountId: string | null;

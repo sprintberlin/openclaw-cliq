@@ -26,13 +26,14 @@ import { cliqSetupWizard } from "./setup-wizard.js";
 import { inspectCliqAccount } from "./account-inspect.js";
 import { cliqMessageActions } from "./message-actions.js";
 import { cliqGroupsAdapter } from "./group-policy.js";
+import { cliqAgentPromptAdapter } from "./agent-prompt.js";
 import {
   CLIQ_PAIRING_APPROVED_MESSAGE,
   CLIQ_PAIRING_ID_LABEL,
   notifyCliqPairingApproval,
 } from "./pairing.js";
 
-export { resolveCliqConfig, CliqClient, chunkMessage, loadCliqMediaAttachment, normalizeCliqRouteTarget, type CliqChannelConfig, type ResolvedCliqAccount, type CliqMediaAttachment, type NormalizedCliqTarget, type CliqDirectoryEntry, type CliqUserRecord, type CliqChannelRecord } from "./client.js";
+export { resolveCliqConfig, CliqClient, chunkMessage, loadCliqMediaAttachment, normalizeCliqRouteTarget, type CliqChannelConfig, type ResolvedCliqAccount, type CliqMediaAttachment, type NormalizedCliqTarget, type CliqDirectoryEntry, type CliqUserRecord, type CliqChannelRecord, type CliqReactionGuidanceConfig } from "./client.js";
 export { buildCliqMentionRegexes, stripCliqMentions } from "./mentions.js";
 export { markdownToCliq } from "./markdown.js";
 export { cliqHeartbeatAdapter, probeCliqHeartbeat, type CliqHeartbeatProbeResult } from "./heartbeat.js";
@@ -77,6 +78,12 @@ export {
   resolveCliqGroupToolPolicy,
   resolveCliqGroupId,
 } from "./group-policy.js";
+export {
+  cliqAgentPromptAdapter,
+  resolveCliqMessageToolHints,
+  resolveCliqInboundFormattingHints,
+  resolveCliqReactionGuidance,
+} from "./agent-prompt.js";
 
 const CHANNEL_ID = "cliq" as const;
 
@@ -209,6 +216,7 @@ export const cliqPlugin = createChatChannelPlugin<ResolvedCliqAccount, CliqStatu
     setupWizard: cliqSetupWizard,
     actions: cliqMessageActions,
     groups: cliqGroupsAdapter,
+    agentPrompt: cliqAgentPromptAdapter,
   },
 
   security: {
