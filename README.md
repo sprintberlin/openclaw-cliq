@@ -10,7 +10,7 @@ A native OpenClaw channel plugin that connects OpenClaw agents to [Zoho Cliq](ht
 
 ## Development
 
-This plugin is developed iteratively by an autonomous coding agent (OpenCode via GitHub Actions). See `AGENTS.md` for project context and `PROGRESS.md` for current development state.
+This plugin is developed iteratively by an autonomous coding agent (OpenCode via GitHub Actions). See `AGENTS.md` for project context and conventions, and `ROADMAP.md` for the open worklist / feature-parity target.
 
 ---
 

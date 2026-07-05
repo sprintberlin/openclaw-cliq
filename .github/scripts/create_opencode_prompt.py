@@ -63,17 +63,17 @@ prompt = f"""Issue #{issue_num}: {title}
 You MUST follow the contextual guidelines in AGENTS.md (project goal, conventions, Learnings).
 
 HOW TO WORK:
-1. Read PROGRESS.md (State + Plan) and skim the existing code.
+1. Read ROADMAP.md (what's left), skim the existing code (what exists), and check recent `git log` (what just changed).
 2. Decide the scope from THIS issue:
    - If the issue names a concrete task or bug  -> do exactly that.
-   - If the issue is empty or just says "iterate"/"next step" -> take the TOP open item from the Plan in PROGRESS.md.
+   - If the issue is empty or just says "iterate"/"next step" -> take the TOP open item of the highest open phase in ROADMAP.md.
 3. Implement ONE coherent increment, with tests where applicable.
-4. REWRITE PROGRESS.md IN PLACE (do NOT append):
-   - Update the State (2-3 sentences on where we are now).
-   - Maintain the Plan: check off / remove done items, add newly discovered work, reorder so the top item is the next concrete step. Keep ~5-7 open items.
-   - Do NOT keep a per-run changelog or history here -- git and the issue comments already hold that.
-5. Record any lasting insight (SDK quirks, gotchas) in the Learnings section of AGENTS.md, NOT in PROGRESS.md.
-6. Commit everything (code + PROGRESS.md, plus AGENTS.md if you learned something).
+4. Update ROADMAP.md by editing OPEN WORK ONLY:
+   - DELETE the line(s) you completed. Never mark [x], never strike through, never add a "Done"/"History"/"State" section.
+   - Add any newly discovered work to the right phase; reorder if priorities shifted.
+   - No file records the past -- history lives in git and the issue comments, never in a tracked file.
+5. Record any lasting TECHNICAL insight (SDK quirks, gotchas -- facts about the world, not "what I did") in the Learnings section of AGENTS.md.
+6. Commit the code + the ROADMAP edit. Reference this issue and close it (e.g. "Closes #{issue_num}") when the work is complete.
 
 This is a HEADLESS run. You must modify all files yourself. Do not ask for human input."""
 

@@ -163,26 +163,25 @@ openclaw-cliq/
 
 This project is developed **iteratively** by an autonomous coding agent (OpenCode via GitHub Actions). The human defines the **goal** (the Vision above); the agent evolves the **plan** and the code, one increment per run.
 
-### The working files
+### The two working files
 
-- **AGENTS.md** (this file) — the constitution: goal, conventions, SDK reference, and the **Learnings** section below (durable, hard-won knowledge — SDK quirks and gotchas). Stable; grows slowly.
-- **ROADMAP.md** — the **north star**: the curated feature-parity target derived from the bundled Telegram & Discord channels, organized into priority phases. Stable; changes only when priorities shift. PROGRESS.md's Plan pulls its next items from the top open phase here.
-- **PROGRESS.md** — the living plan: a short **State** (where we are now) plus a **Plan** (a self-maintained backlog of open items, top item = next step). The agent **rewrites it in place** every run.
+- **AGENTS.md** (this file) — the constitution: goal, conventions, SDK reference, and the **Learnings** section below (durable, hard-won knowledge — SDK quirks and gotchas). Stable; grows slowly. Learnings are timeless facts about the world, NOT a record of what was done.
+- **ROADMAP.md** — the single living worklist and north star: the feature-parity target vs the bundled Telegram/Discord channels, organized into priority phases. It holds **only open work**.
 
-**History and changelog do NOT live in a tracked file.** git log holds the commits; the issue comments (posted by the verify bot) hold the per-run summaries. Never append a per-run log to PROGRESS.md — that is what made it explode before.
+**No file records the past.** The repo's tracked files describe only the future (ROADMAP) and the timeless (AGENTS.md). History — what was done, when, why — lives entirely in git: `git log`, closed issues, and the verify-bot's issue comments. Never write a changelog, "State", "Done", or per-run log into any tracked file.
+
+**The ROADMAP's one hard rule: finishing an item means DELETING its line.** Never mark `[x]`, never strike through, never add a "Done"/"History" section. git remembers what was removed (`git log -p ROADMAP.md`).
 
 ### How to work an issue
 
-1. Read `PROGRESS.md` (State + Plan) and skim the existing code.
+1. Read `ROADMAP.md` (what's left), skim the existing code (what exists), and check recent `git log` (what just changed).
 2. Decide the scope **from the issue**:
    - If it names a concrete task or bug → do exactly that.
-   - If it is empty or just says "iterate" / "next step" → take the top open item from the Plan.
+   - If it is empty or just says "iterate" / "next step" → take the **top open item of the highest open phase** in ROADMAP.md.
 3. Implement one coherent increment, with tests where applicable.
-4. **Rewrite `PROGRESS.md` in place** (do not append):
-   - Update the **State** (2–3 sentences).
-   - Maintain the **Plan**: check off / remove done items, add newly discovered work, reorder so the top item is the next concrete step. Keep ~5–7 open items.
-5. Record any lasting insight in the **Learnings** section of this file (AGENTS.md), not in PROGRESS.md.
-6. Commit everything (code + PROGRESS.md, plus AGENTS.md if you learned something).
+4. **Update ROADMAP.md by editing open work only:** delete the line(s) you completed, add any newly discovered work to the right phase, reorder if priorities shifted. Do NOT record what you did anywhere in the file.
+5. Record any lasting *technical* insight (SDK quirks, gotchas) in the **Learnings** section of this file (AGENTS.md) — again, facts about the world, not "what I did".
+6. Commit the code + the ROADMAP edit. Reference the issue in the commit and **close it** (`Closes #N`) when the work is complete — that, plus the verify-bot's comment, is the history record.
 
 ### Verifying your work
 
@@ -193,8 +192,8 @@ This project is developed **iteratively** by an autonomous coding agent (OpenCod
 ### Important
 
 - **One coherent increment per run.** Do not try to build everything at once.
-- **Be honest in PROGRESS.md.** If something is half-done or broken, say so in State/Plan.
-- **Keep PROGRESS.md small.** It holds current state and open work only — never a history.
+- **Be honest about unfinished work.** If something is half-done or broken, capture the remaining work as an open ROADMAP item (or an issue), not as a prose "status" note.
+- **No history in tracked files.** ROADMAP holds only open work; done = delete the line. Everything about the past goes in git and issues.
 - **Read the OpenClaw Plugin SDK docs** at https://docs.openclaw.ai/plugins/sdk-channel-plugins and https://docs.openclaw.ai/plugins/building-plugins. Also study the Telegram channel docs at https://docs.openclaw.ai/channels/telegram — it is the closest reference implementation.
 - **Check the reference repos** for patterns, but write original code.
 
