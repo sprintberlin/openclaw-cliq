@@ -73,7 +73,8 @@ HOW TO WORK:
    - Add any newly discovered work to the right phase; reorder if priorities shifted.
    - No file records the past -- history lives in git and the issue comments, never in a tracked file.
 5. Record any lasting TECHNICAL insight (SDK quirks, gotchas -- facts about the world, not "what I did") in the Learnings section of AGENTS.md.
-6. Commit the code + the ROADMAP edit. Reference this issue and close it (e.g. "Closes #{issue_num}") when the work is complete.
+6. Run `npx tsc --noEmit`, `npx vitest run`, and `npm run smoke:gateway` yourself and make them ALL pass -- a CI hard gate blocks the push if any fails.
+7. Commit the code + the ROADMAP edit with a conventional-commit message that ends with "Closes #{issue_num}". Do NOT push -- the workflow pushes after a hard gate re-runs typecheck + tests + smoke. Do NOT run `git push` and do NOT close the issue manually; it closes automatically via "Closes #{issue_num}" when the workflow pushes.
 
 This is a HEADLESS run. You must modify all files yourself. Do not ask for human input."""
 

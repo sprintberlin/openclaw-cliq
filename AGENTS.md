@@ -181,7 +181,8 @@ This project is developed **iteratively** by an autonomous coding agent (OpenCod
 3. Implement one coherent increment, with tests where applicable.
 4. **Update ROADMAP.md by editing open work only:** delete the line(s) you completed, add any newly discovered work to the right phase, reorder if priorities shifted. Do NOT record what you did anywhere in the file.
 5. Record any lasting *technical* insight (SDK quirks, gotchas) in the **Learnings** section of this file (AGENTS.md) — again, facts about the world, not "what I did".
-6. Commit the code + the ROADMAP edit. Reference the issue in the commit and **close it** (`Closes #N`) when the work is complete — that, plus the verify-bot's comment, is the history record.
+6. Run `npx tsc --noEmit`, `npm test`, and `npm run smoke:gateway` and make them all pass — a CI **hard gate** blocks the push if any fails.
+7. Commit the code + the ROADMAP edit with a conventional-commit message ending in `Closes #N`. **Do NOT push** — the workflow pushes after the hard gate re-runs typecheck + tests + smoke, and the issue closes automatically via `Closes #N`. That commit, plus the verify-bot's comment, is the history record.
 
 ### Verifying your work
 

@@ -212,17 +212,28 @@ jobs:
           ~/.opencode/bin/opencode run "$(cat /tmp/prompt.txt)" 2>&1 | tee /tmp/opencode_run.log || echo "OpenCode run failed or exited non-zero" >> /tmp/opencode_run.log
           touch /tmp/opencode_run.log
 
-      - name: Gateway Smoke (Stage 3 — real plugin load)
-        # Non-blocking for now: surfaces in the workflow log for humans while the
-        # agent itself is expected to run `npm run smoke:gateway` during its turn
-        # (see AGENTS.md). Promote to a hard gate once it has proven stable in CI.
-        continue-on-error: true
+      - name: Verify agent output (HARD GATE — blocks the push on failure)
+        # Runs on the agent's working tree AFTER its turn and BEFORE the push.
+        # typecheck + tests + real-gateway smoke must all pass; if any fails the
+        # job stops here, "Commit and Push" never runs, and nothing reaches main.
+        # The agent is instructed to commit but NOT push (see AGENTS.md / the
+        # prompt), so the push is owned by the workflow and this gate truly guards
+        # it. The verify bot (if: always()) still runs and flags the issue.
         run: |
-          if [ -f package.json ] && grep -q '"smoke:gateway"' package.json; then
-            npm run smoke:gateway
-          else
-            echo "No smoke:gateway script yet, skipping."
+          set -e
+          if [ -f tsconfig.json ]; then
+            echo "== typecheck =="
+            npx tsc --noEmit
           fi
+          if [ -f package.json ] && npx vitest --version >/dev/null 2>&1; then
+            echo "== tests =="
+            npx vitest run
+          fi
+          if [ -f package.json ] && grep -q '"smoke:gateway"' package.json; then
+            echo "== gateway smoke =="
+            npm run smoke:gateway
+          fi
+          echo "HARD GATE PASSED — typecheck + tests + smoke are green."
 
       - name: Commit and Push
         id: git_commit
