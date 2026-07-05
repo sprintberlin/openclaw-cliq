@@ -35,13 +35,6 @@
 
 ## Phase 3 — Rich messaging & agent-facing features
 
-- **Inbound reaction notifications.** Surface Cliq message-reaction events to
-  the agent (analog to Telegram's `reactionNotifications`). Requires SDK
-  inbound-event plumbing (`ChannelMessagingAdapter` / `InboundEventKind` for
-  reactions) not exposed to plugin channels via `createChatChannelPlugin`, so
-  this needs either an SDK extension or a plugin-owned dispatch hook.
-  Outbound ack reactions are blocked on the same surface (no
-  `heartbeat.setReaction` / ack-reaction runtime hook for plugin channels).
 - **Interactive elements** (Cliq buttons/cards). Analog to Telegram inline buttons / Discord
   components; expose via `agentPrompt.messageToolCapabilities` and implement
   button-sending in `CliqClient` (currently `messageToolCapabilities` returns
@@ -72,6 +65,22 @@
   the outbound Cliq API). Extends `scripts/smoke-gateway.sh`.
 - **Contract/test API** (`test-api.ts`). Adopt the SDK's channel test contract so the plugin is
   exercised the same way the bundled channels are.
+
+---
+
+## Blocked on upstream (not actionable until resolved)
+
+Open work we *want*, gated on an external dependency. Do not pick these in an iterate run —
+they cannot be built with the current public SDK. Move an item back into a phase once its
+blocker is resolved.
+
+- **Inbound reaction notifications** (+ outbound ack reactions). Surface Cliq message-reaction
+  events to the agent, and set ack reactions. Blocked: the public plugin SDK exposes no
+  inbound non-message event hook for plugin channels — `createChatChannelPlugin` only wires
+  message-turn ingress, and there is no `heartbeat.setReaction` / ack-reaction runtime hook.
+  Only bundled channels (Telegram/Discord) can do this. Tracked upstream:
+  **openclaw/openclaw#100447**. Revisit when that lands. (Outbound *agent-invoked* reactions
+  via the `react` message-action already work — this item is only the inbound/ack side.)
 
 ---
 
