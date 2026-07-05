@@ -53,6 +53,21 @@ export interface CliqChannelConfig {
    * - `preview: "off"` (default) keeps the legacy single-final-reply behavior.
    */
   streaming?: { preview?: "on" | "off" };
+  /**
+   * Optional user-context OAuth **refresh token** obtained once via the
+   * self-client `authorization_code` flow (see README §3). When set, the
+   * client mints access tokens via `grant_type=refresh_token` for the
+   * outbound paths that require a *user-consented* token — channel posts
+   * (`ZohoCliq.Channels.UPDATE`) and message edits
+   * (`ZohoCliq.Messages.UPDATE`) — because the `client_credentials` grant
+   * cannot obtain a usable token for those scopes (Zoho issues a token
+   * that reports the scope but rejects it on use with
+   * `oauthtoken_scope_invalid`). Bot DMs (`ZohoCliq.Webhooks.CREATE`)
+   * keep using `client_credentials`. When unset, behavior is unchanged
+   * (client_credentials for everything; channel posts / edits will fail
+   * at the API with a scope error — i.e. DM-only setups keep working).
+   */
+  refreshToken?: string;
 }
 
 export interface ResolvedCliqAccount {
@@ -68,6 +83,13 @@ export interface ResolvedCliqAccount {
   selfSenderIds: string[];
   /** Whether progressive (block-streaming) reply delivery is opted-in for this account. */
   blockStreaming: boolean;
+  /**
+   * Optional user-context refresh token (see `CliqChannelConfig.refreshToken`).
+   * When set, channel posts + message edits mint access tokens via the
+   * refresh-token grant; otherwise those paths fall back to
+   * `client_credentials` (which only works for bot DMs).
+   */
+  refreshToken?: string;
 }
 
 export function resolveCliqConfig(
@@ -99,6 +121,7 @@ export function resolveCliqConfig(
     ackPolicy,
     selfSenderIds: section?.selfSenderIds ?? [],
     blockStreaming,
+    refreshToken: section?.refreshToken,
   };
 }
 
@@ -344,6 +367,14 @@ export class CliqClient {
   private readonly retryOptions: Required<RetryOptions>;
   private readonly logger: CliqLogger;
 
+  /**
+   * Cache key under which the user-context (refresh-token) access token is
+   * stored. A refresh-token access token is NOT scoped per-request — it
+   * carries whatever scopes were consented at the authorization-code grant
+   * — so it is cached as a single shared entry, not one per scope.
+   */
+  private static readonly REFRESH_TOKEN_KEY = "__refresh_token__";
+
   constructor(
     private readonly clientId: string,
     private readonly clientSecret: string,
@@ -352,6 +383,7 @@ export class CliqClient {
     private readonly oauthBase = EU_OAUTH_BASE,
     retryOptions?: RetryOptions,
     logger?: CliqLogger,
+    private readonly refreshToken?: string,
   ) {
     const base = retryOptions ?? {};
     this.retryOptions = {
@@ -402,6 +434,71 @@ export class CliqClient {
     return data.access_token;
   }
 
+  /**
+   * Mint an access token via the user-context `refresh_token` grant. Used by
+   * the outbound paths that require a user-consented token (channel posts
+   * via `ZohoCliq.Channels.UPDATE` and message edits via
+   * `ZohoCliq.Messages.UPDATE`) — the `client_credentials` grant cannot
+   * obtain a usable token for those scopes (Zoho issues a token whose
+   * response reports the scope, but the API rejects it with
+   * `oauthtoken_scope_invalid`). A refresh-token access token carries all
+   * scopes consented at the authorization-code grant, so it is cached as a
+   * single shared entry (not per-scope) and reused for both the channel and
+   * edit paths. Throws if no `refreshToken` is configured.
+   */
+  async getRefreshedAccessToken(): Promise<string> {
+    if (!this.refreshToken) {
+      throw new Error(
+        "cliq: no refreshToken configured — channel posts and message edits require a user-context token (see README §3)",
+      );
+    }
+    const now = Date.now();
+    const cached = this.tokens.get(CliqClient.REFRESH_TOKEN_KEY);
+    if (cached && now < cached.expiresAt - 60_000) {
+      return cached.token;
+    }
+    const url = new URL(`${this.oauthBase}/oauth/v2/token`);
+    url.searchParams.set("grant_type", "refresh_token");
+    url.searchParams.set("client_id", this.clientId);
+    url.searchParams.set("client_secret", this.clientSecret);
+    url.searchParams.set("refresh_token", this.refreshToken);
+    this.logger.debug?.(`[cliq] oauth: refreshing user-context access token`);
+    const res = await fetch(url, { method: "POST" });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      this.logger.error?.(
+        `[cliq] oauth: refresh token request failed status=${res.status} body=${truncateForLog(body)}`,
+      );
+      throw new Error(`cliq: OAuth refresh token request failed (${res.status}): ${body}`);
+    }
+    const data = (await res.json()) as { access_token?: string; expires_in?: number };
+    if (!data.access_token) {
+      this.logger.error?.(`[cliq] oauth: refresh response missing access_token`);
+      throw new Error("cliq: OAuth refresh response did not include access_token");
+    }
+    this.tokens.set(CliqClient.REFRESH_TOKEN_KEY, {
+      token: data.access_token,
+      expiresAt: now + (data.expires_in ?? 3600) * 1000,
+    });
+    this.logger.debug?.(
+      `[cliq] oauth: refreshed access token acquired (expires_in=${data.expires_in ?? 3600}s)`,
+    );
+    return data.access_token;
+  }
+
+  /**
+   * Resolve the access token for an outbound send/edit. When a
+   * `refreshToken` is configured AND the operation requires a user-context
+   * scope (channel posts / edits), use the refresh-token grant; otherwise
+   * fall back to `client_credentials` (the DM path and the no-refreshToken
+   * DM-only setup).
+   */
+  private resolveOutboundToken(scope: string, needsUserContext: boolean): Promise<string> {
+    return needsUserContext && this.refreshToken
+      ? this.getRefreshedAccessToken()
+      : this.getAccessToken(scope);
+  }
+
   async sendMessage(opts: SendMessageOptions): Promise<{ messageId?: string; chatId?: string }> {
     const isDm = Boolean(opts.isDm);
     // DMs use the bot-message endpoint (scope ZohoCliq.Webhooks.CREATE).
@@ -410,8 +507,15 @@ export class CliqClient {
     // param (scope ZohoCliq.Channels.UPDATE). The bot-message endpoint
     // rejects `chatid` ("'chatid' is an extra key in the JSON Object"), so
     // group sends MUST NOT go through /bots/{botId}/message. See issue #26.
+    // The Channels.UPDATE scope CANNOT be obtained via client_credentials
+    // (Zoho issues a token that reports the scope but rejects it on use with
+    // `oauthtoken_scope_invalid`); a user-context refresh token is required
+    // for channel posts. See issue #27. When no refreshToken is configured,
+    // the channel path falls back to client_credentials (which will fail at
+    // the API — i.e. DM-only setups keep working unchanged).
     const scope = isDm ? "ZohoCliq.Webhooks.CREATE" : "ZohoCliq.Channels.UPDATE";
-    const token = await this.getAccessToken(scope);
+    const needsUserContext = !isDm;
+    const token = await this.resolveOutboundToken(scope, needsUserContext);
     const targetKind = isDm ? "dm" : "channel";
     let url: string;
     const payload: Record<string, unknown> = { text: opts.text };
@@ -457,7 +561,8 @@ export class CliqClient {
   async sendMediaMessage(opts: SendMediaMessageOptions): Promise<{ messageId?: string }> {
     const isDm = Boolean(opts.isDm);
     const scope = isDm ? "ZohoCliq.Webhooks.CREATE" : "ZohoCliq.Channels.UPDATE";
-    const token = await this.getAccessToken(scope);
+    const needsUserContext = !isDm;
+    const token = await this.resolveOutboundToken(scope, needsUserContext);
     const form = new FormData();
     if (opts.text) form.set("text", opts.text);
     let url: string;
@@ -528,7 +633,13 @@ export class CliqClient {
     messageId: string;
     text: string;
   }): Promise<{ messageId?: string; chatId?: string }> {
-    const token = await this.getAccessToken("ZohoCliq.Messages.UPDATE");
+    // The Messages.UPDATE scope cannot be obtained via client_credentials
+    // (same oauthtoken_scope_invalid failure as Channels.UPDATE); a
+    // user-context refresh token is required for edits. See issue #27.
+    const token = await this.resolveOutboundToken(
+      "ZohoCliq.Messages.UPDATE",
+      true,
+    );
     const url = `${this.apiBase}/api/v2/chats/${encodeURIComponent(opts.chatId)}/messages/${encodeURIComponent(opts.messageId)}`;
     this.logger.info?.(
       `[cliq] edit: chatId=${opts.chatId} messageId=${opts.messageId} textLen=${opts.text.length}`,

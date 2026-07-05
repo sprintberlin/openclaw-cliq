@@ -57,6 +57,7 @@ export class CliqClientRegistry {
         undefined,
         undefined,
         this.logger,
+        account.refreshToken,
       );
       this.clients.set(key, client);
     }

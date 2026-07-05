@@ -102,6 +102,7 @@ describe("applyCliqCredentials", () => {
       botId: "bot",
       botName: "OpenClaw",
       webhookSecret: "WH",
+      refreshToken: "RT",
     });
     const section = (next as unknown as { channels: { cliq: Record<string, unknown> } })
       .channels.cliq;
@@ -110,6 +111,7 @@ describe("applyCliqCredentials", () => {
     expect(section.botId).toBe("bot");
     expect(section.botName).toBe("OpenClaw");
     expect(section.webhookSecret).toBe("WH");
+    expect(section.refreshToken).toBe("RT");
     expect(section.enabled).toBe(true);
   });
 
@@ -126,7 +128,7 @@ describe("applyCliqCredentials", () => {
     expect(section.allowFrom).toEqual(["a"]);
   });
 
-  it("does not set botName/webhookSecret when undefined", () => {
+  it("does not set botName/webhookSecret/refreshToken when undefined", () => {
     const next = applyCliqCredentials(cfgWith({}), {
       clientId: "CID",
       clientSecret: "S",
@@ -136,18 +138,20 @@ describe("applyCliqCredentials", () => {
       .channels.cliq;
     expect(section.botName).toBeUndefined();
     expect(section.webhookSecret).toBeUndefined();
+    expect(section.refreshToken).toBeUndefined();
   });
 });
 
 describe("promptCliqCredentials — fresh setup (no existing config)", () => {
-  it("prompts for the three required fields + optional botName + webhookSecret", async () => {
-    // Order: clientId(text), clientSecret(text), botId(text), botName(text), webhookSecret(text)
+  it("prompts for the three required fields + optional botName + webhookSecret + refreshToken", async () => {
+    // Order: clientId(text), clientSecret(text), botId(text), botName(text), webhookSecret(text), refreshToken(text)
     const { prompter, calls } = makeScriptedPrompter([
       { method: "text", value: "CID" },
       { method: "text", value: "SECRET" },
       { method: "text", value: "bot" },
       { method: "text", value: "OpenClaw" },
       { method: "text", value: "WH" },
+      { method: "text", value: "RT" },
     ]);
     const creds = await promptCliqCredentials(prompter, cfgWith({}));
     expect(creds).toEqual({
@@ -156,23 +160,26 @@ describe("promptCliqCredentials — fresh setup (no existing config)", () => {
       botId: "bot",
       botName: "OpenClaw",
       webhookSecret: "WH",
+      refreshToken: "RT",
     });
     // No "keep existing" confirms, since nothing is configured.
     const confirms = calls.filter((c) => c.method === "confirm");
     expect(confirms).toHaveLength(0);
   });
 
-  it("allows empty botName and empty webhookSecret (become undefined)", async () => {
+  it("allows empty botName and empty webhookSecret and empty refreshToken (become undefined)", async () => {
     const { prompter } = makeScriptedPrompter([
       { method: "text", value: "CID" },
       { method: "text", value: "SECRET" },
       { method: "text", value: "bot" },
       { method: "text", value: "" },
       { method: "text", value: "" },
+      { method: "text", value: "" },
     ]);
     const creds = await promptCliqCredentials(prompter, cfgWith({}));
     expect(creds.botName).toBeUndefined();
     expect(creds.webhookSecret).toBeUndefined();
+    expect(creds.refreshToken).toBeUndefined();
   });
 });
 
@@ -184,9 +191,11 @@ describe("promptCliqCredentials — re-running over existing config", () => {
       botId: "bot",
       botName: "OpenClaw",
       webhookSecret: "WH",
+      refreshToken: "RT",
     });
-    // Order of confirms: keep clientId? keep clientSecret? keep botId? keep botName? keep webhookSecret?
+    // Order of confirms: keep clientId? clientSecret? botId? botName? webhookSecret? refreshToken?
     const { prompter, calls } = makeScriptedPrompter([
+      { method: "confirm", value: true },
       { method: "confirm", value: true },
       { method: "confirm", value: true },
       { method: "confirm", value: true },
@@ -200,6 +209,7 @@ describe("promptCliqCredentials — re-running over existing config", () => {
       botId: "bot",
       botName: "OpenClaw",
       webhookSecret: "WH",
+      refreshToken: "RT",
     });
     const texts = calls.filter((c) => c.method === "text");
     expect(texts).toHaveLength(0);
@@ -212,6 +222,7 @@ describe("promptCliqCredentials — re-running over existing config", () => {
       botId: "bot",
       botName: "OpenClaw",
       webhookSecret: "WH",
+      refreshToken: "RT",
     });
     const { prompter } = makeScriptedPrompter([
       { method: "confirm", value: false }, // keep clientId? no
@@ -220,6 +231,7 @@ describe("promptCliqCredentials — re-running over existing config", () => {
       { method: "confirm", value: true }, // keep botId
       { method: "confirm", value: true }, // keep botName
       { method: "confirm", value: true }, // keep webhookSecret
+      { method: "confirm", value: true }, // keep refreshToken
     ]);
     const creds = await promptCliqCredentials(prompter, existing);
     expect(creds.clientId).toBe("NEWCID");
@@ -235,6 +247,7 @@ describe("promptCliqCredentials — env var shortcut", () => {
         { method: "confirm", value: true }, // use env? yes
         { method: "text", value: "SECRET" },
         { method: "text", value: "bot" },
+        { method: "text", value: "" },
         { method: "text", value: "" },
         { method: "text", value: "" },
       ]);
@@ -256,6 +269,7 @@ describe("promptCliqCredentials — env var shortcut", () => {
         botId: "bot",
         botName: "OpenClaw",
         webhookSecret: "WH",
+        refreshToken: "RT",
       });
       const { prompter } = makeScriptedPrompter([
         { method: "confirm", value: true }, // keep clientId
@@ -264,6 +278,7 @@ describe("promptCliqCredentials — env var shortcut", () => {
         { method: "confirm", value: true }, // keep botId
         { method: "confirm", value: true }, // keep botName
         { method: "confirm", value: true }, // keep webhookSecret
+        { method: "confirm", value: true }, // keep refreshToken
       ]);
       const creds = await promptCliqCredentials(prompter, existing);
       expect(creds.clientSecret).toBe("ENV_SECRET");
@@ -312,6 +327,7 @@ describe("cliqSetupWizard", () => {
       { method: "text", value: "bot" },
       { method: "text", value: "OpenClaw" },
       { method: "text", value: "WH" },
+      { method: "text", value: "RT" },
     ]);
     const result = await cliqSetupWizard.finalize!({
       cfg: cfgWith({}),
@@ -329,6 +345,7 @@ describe("cliqSetupWizard", () => {
     expect(section.botId).toBe("bot");
     expect(section.botName).toBe("OpenClaw");
     expect(section.webhookSecret).toBe("WH");
+    expect(section.refreshToken).toBe("RT");
     expect(section.enabled).toBe(true);
   });
 });

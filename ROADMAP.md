@@ -72,10 +72,12 @@
   shipped in code (#11); a real Zoho round-trip on a live bot is the remaining confirmation
   (needs credentials — self-hosted runner or manual).
 - **Confirm the channel reply round-trip on a real Cliq bot.** The channelsbyname send path
-  (#26) shipped in code; a real channel @mention → bot reply round-trip (with the
-  `ZohoCliq.Channels.UPDATE` scope consented) is the remaining confirmation. Also confirm the
-  bot is added as a participant of the target channel (Cliq rejects channel posts from
-  non-participant bots).
+  (#26) and the user-context refresh-token grant for `ZohoCliq.Channels.UPDATE` (#27)
+  shipped in code; a real channel @mention → bot reply round-trip (with a `refreshToken`
+  obtained via the self-client authorization_code flow, scopes `ZohoCliq.Webhooks.CREATE
+  ZohoCliq.Channels.UPDATE ZohoCliq.Messages.UPDATE` consented) is the remaining
+  confirmation. Also confirm the bot is added as a participant of the target channel
+  (Cliq rejects channel posts from non-participant bots).
 - **Stage-4 smoke: real inbound dispatch.** Start the gateway, POST a canonical Deluge payload to
   `/cliq/webhook`, assert the pipeline dispatches to an agent (stub agent / local fake model; mock
   the outbound Cliq API). Extends `scripts/smoke-gateway.sh`.

@@ -105,6 +105,7 @@ function applyAccountConfig(params: {
   writeField("botId");
   writeField("botName");
   writeField("webhookSecret");
+  writeField("refreshToken");
   if (Array.isArray(input.allowFrom)) target["allowFrom"] = input.allowFrom;
   if (Array.isArray(input.selfSenderIds)) target["selfSenderIds"] = input.selfSenderIds;
   if (input.streaming !== undefined) target["streaming"] = input.streaming;

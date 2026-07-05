@@ -67,25 +67,18 @@ The plugin registers a single HTTP route at **`POST /cliq/webhook`** on your Ope
 
 ### 3. OAuth / API Credentials
 
-The plugin uses the **`client_credentials`** OAuth grant (no refresh token, no user interaction — the plugin fetches a fresh access token automatically when the cached one expires).
+The plugin uses **two** OAuth grant types, because the **`client_credentials`** grant CANNOT obtain a usable token for the `ZohoCliq.Channels.UPDATE` or `ZohoCliq.Messages.UPDATE` scopes — Zoho issues a token whose response *reports* the scope, but the API rejects it on use with `{"code":"oauthtoken_scope_invalid"}`. So:
+
+- **Bot DMs** (`/bots/{botId}/message`, scope `ZohoCliq.Webhooks.CREATE`) → `client_credentials` (the plugin fetches a fresh access token automatically when the cached one expires; no refresh token, no user interaction).
+- **Channel posts** (`/channelsbyname/{unique_name}/message`, scope `ZohoCliq.Channels.UPDATE`) and **message edits** (`/chats/{chatId}/messages/{messageId}`, scope `ZohoCliq.Messages.UPDATE`) → a **user-context refresh token** obtained once via the self-client `authorization_code` flow. The plugin mints short-lived access tokens from it via `grant_type=refresh_token` and caches them until they expire (~1h). Without a refresh token, channel replies and live-edit streaming previews will fail with `oauthtoken_scope_invalid` — DM-only setups keep working.
+
+#### 3a. Create the OAuth client
 
 1. Open the **[Zoho API Console](https://api-console.zoho.eu)** (EU). Choose **Self Client** if you do not already have one for Cliq.
 2. Create a **Server-based Application** (or Self Client) and note:
    - **Client ID**
    - **Client Secret**
-3. Generate the access token once manually (or via the "Self Client" → **Generate Access Token** flow) using these **scopes**:
-
-   | Scope | Purpose |
-   | --- | --- |
-   | `ZohoCliq.Webhooks.CREATE` | Post bot DMs (the `/bots/{botId}/message` send path) |
-   | `ZohoCliq.Channels.UPDATE` | Post bot messages to channels (the `/channelsbyname/{unique_name}/message` send path) |
-   | `ZohoCliq.Channels.READ` | Read channel / chat metadata |
-   | `ZohoCliq.Users.READ` | Resolve sender user info |
-   | `ZohoCliq.Messages.UPDATE` | Edit a sent message in place (live-edit streaming previews) |
-
-   The plugin requests each scope at runtime via `client_credentials` (per-scope token cache); list all five when registering the client so the granted token carries the full set. **Note:** if you previously consented with only the three original scopes, you must re-consent (generate a fresh self-client token) with `ZohoCliq.Channels.UPDATE` added — channel replies will be rejected with `invalid_scope` / 401 until you do.
-
-4. Use the **EU** OAuth token endpoint:
+3. Use the **EU** OAuth token endpoint:
 
    ```
    https://accounts.zoho.eu/oauth/v2/token
@@ -93,7 +86,35 @@ The plugin uses the **`client_credentials`** OAuth grant (no refresh token, no u
 
    (The plugin hard-codes `https://accounts.zoho.eu`. Do **not** use `accounts.zoho.com` unless your Zoho account is on the US data center.)
 
-5. Copy **Client ID** and **Client Secret** — they go into `clientId` / `clientSecret` in the plugin config below.
+4. Copy **Client ID** and **Client Secret** — they go into `clientId` / `clientSecret` in the plugin config below.
+
+#### 3b. Consent the scopes
+
+When registering / re-consenting the self-client, request **all five** scopes so both the `client_credentials` (DM) and refresh-token (channel/edit) paths work:
+
+| Scope | Grant | Purpose |
+| --- | --- | --- |
+| `ZohoCliq.Webhooks.CREATE` | `client_credentials` | Post bot DMs (the `/bots/{botId}/message` send path) |
+| `ZohoCliq.Channels.UPDATE` | refresh token | Post bot messages to channels (the `/channelsbyname/{unique_name}/message` send path) |
+| `ZohoCliq.Channels.READ` | `client_credentials` | Read channel / chat metadata |
+| `ZohoCliq.Users.READ` | `client_credentials` | Resolve sender user info |
+| `ZohoCliq.Messages.UPDATE` | refresh token | Edit a sent message in place (live-edit streaming previews) |
+
+> If you previously consented with only the original three scopes, you must re-consent (generate a fresh self-client token) with `ZohoCliq.Channels.UPDATE` and `ZohoCliq.Messages.UPDATE` added — channel replies will be rejected with `invalid_scope` / 401 until you do.
+
+#### 3c. Obtain the user-context refresh token (required for channel posts + edits)
+
+This is a **one-time** exchange. The refresh token does not expire (unless revoked), so you only do this once per Cliq org.
+
+1. In the **[Zoho API Console](https://api-console.zoho.eu)**, open your **Self Client**.
+2. Under **Generate Access Token**, choose **Grant Type: Authorization Code** (a.k.a. "Self Client" code flow).
+3. Enter the same **scopes** as above (space-separated: `ZohoCliq.Webhooks.CREATE ZohoCliq.Channels.UPDATE ZohoCliq.Channels.READ ZohoCliq.Users.READ ZohoCliq.Messages.UPDATE`).
+4. Click **Generate**. The self-client flow returns both a short-lived `access_token` (ignore it) and a long-lived **`refresh_token`** — copy the `refresh_token`.
+5. Put the `refresh_token` in the plugin config as `refreshToken` (see §4).
+
+> The self-client authorization-code flow is the documented way to get a refresh token for a single-org server integration without standing up a redirect URL. See Zoho's OAuth docs for the exact button names if the console UI differs.
+
+If you skip this step, the plugin still works for **bot DMs** (the `client_credentials` path). Channel @mention replies and message edits will fail with `oauthtoken_scope_invalid` until a refresh token is provided.
 
 ---
 
@@ -107,11 +128,12 @@ Add the `cliq` channel to your `openclaw.json` (or via `openclaw setup` / the se
     "cliq": {
       "accounts": {
         "default": {
-          "clientId": "<OAuth client id from step 3>",
-          "clientSecret": "<OAuth client secret from step 3>",
+          "clientId": "<OAuth client id from step 3a>",
+          "clientSecret": "<OAuth client secret from step 3a>",
           "botId": "openclaw_agent",      // Bot Unique Name from step 1
           "botName": "OpenClaw Agent",    // Bot display name from step 1
           "webhookSecret": "<secret from step 2>",
+          "refreshToken": "<refresh token from step 3c — required for channel posts / edits>",
           "allowFrom": ["<zoho user id of each allowed DM sender>"],
           "dmPolicy": "allowlist"         // "open" | "allowlist" | "pairing" | "disabled"
         }
@@ -128,6 +150,7 @@ Add the `cliq` channel to your `openclaw.json` (or via `openclaw setup` / the se
 | `botId` | yes | Bot **Unique Name** (the path segment in the bot message API). |
 | `botName` | recommended | Bot display name. Used to strip the `@botName` mention from the text the agent sees. |
 | `webhookSecret` | recommended | Shared secret the Deluge handler sends in the `x-cliq-webhook-secret` header. If unset, the webhook accepts all requests (not recommended). |
+| `refreshToken` | recommended | User-context OAuth refresh token (sensitive). Obtained once via the self-client `authorization_code` flow (§3c). **Required for channel @mention replies and live-edit message edits** — without it, those paths fail with `oauthtoken_scope_invalid` (the `client_credentials` grant cannot obtain a usable token for `ZohoCliq.Channels.UPDATE` / `ZohoCliq.Messages.UPDATE`). DM-only setups can leave it unset. |
 | `allowFrom` | optional | Array of Zoho Cliq user ids allowed to DM the bot (only effective when `dmPolicy` is `allowlist` or `pairing`). |
 | `dmPolicy` | optional | DM admission policy. Default is `allowlist` (deny by default). `pairing` starts the OpenClaw pairing approval flow for unknown senders. Accepted values: `open`, `allowlist`, `pairing`, `disabled` (schema-validated — unknown field names like `dmSecurity` are rejected). |
 
@@ -224,7 +247,7 @@ Both should trigger a `POST /cliq/webhook` on your gateway (visible in the gatew
 - The bot is **active/published** in Cliq.
 - The Deluge handler is saved and the webhook URL / secret are correct.
 - The gateway host is reachable from the public internet (curl `https://<gateway-host>/cliq/webhook` from an external host — a `405 Method Not Allowed` on GET means the route is live).
-- The OAuth client has all the scopes from step 3 (including `ZohoCliq.Channels.UPDATE` for channel replies) and the EU endpoint is in use.
+- The OAuth client has all the scopes from step 3b (including `ZohoCliq.Channels.UPDATE` for channel replies) and the EU endpoint is in use. For channel @mention replies and message edits, `refreshToken` from step 3c must be set — otherwise those paths fail with `oauthtoken_scope_invalid`.
 
 #### Smoke testing with curl
 

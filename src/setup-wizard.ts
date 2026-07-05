@@ -15,6 +15,7 @@ export const CLIQ_ENV_VARS = {
   clientId: "CLIQ_CLIENT_ID",
   clientSecret: "CLIQ_CLIENT_SECRET",
   webhookSecret: "CLIQ_WEBHOOK_SECRET",
+  refreshToken: "CLIQ_REFRESH_TOKEN",
 } as const;
 
 /** Read the `channels.cliq` section as a mutable record. */
@@ -57,6 +58,7 @@ export interface CliqSetupCredentials {
   botId?: string;
   botName?: string;
   webhookSecret?: string;
+  refreshToken?: string;
 }
 
 /**
@@ -74,10 +76,12 @@ export async function promptCliqCredentials(
   const existingBotId = asString(section.botId);
   const existingBotName = asString(section.botName);
   const existingWebhookSecret = asString(section.webhookSecret);
+  const existingRefreshToken = asString(section.refreshToken);
 
   const envClientId = asString(process.env[CLIQ_ENV_VARS.clientId]);
   const envClientSecret = asString(process.env[CLIQ_ENV_VARS.clientSecret]);
   const envWebhookSecret = asString(process.env[CLIQ_ENV_VARS.webhookSecret]);
+  const envRefreshToken = asString(process.env[CLIQ_ENV_VARS.refreshToken]);
 
   const required = (value: string) =>
     value.trim() ? undefined : "This field is required.";
@@ -239,7 +243,51 @@ export async function promptCliqCredentials(
     if (webhookSecret.trim() === "") webhookSecret = undefined;
   }
 
-  return { clientId, clientSecret, botId, botName, webhookSecret };
+  // Refresh token (optional but required for channel posts + message edits).
+  // The client_credentials grant cannot obtain a usable token for
+  // ZohoCliq.Channels.UPDATE / ZohoCliq.Messages.UPDATE; a user-context
+  // refresh token (obtained once via the self-client authorization_code
+  // flow — see README §3) is required for the channel reply + live-edit
+  // paths. DM-only setups can leave this blank.
+  let refreshToken = existingRefreshToken;
+  if (refreshToken) {
+    if (
+      await prompter.confirm({
+        message: "Keep the existing refresh token?",
+        initialValue: true,
+      })
+    ) {
+      // keep
+    } else if (
+      envRefreshToken &&
+      (await maybeUseEnv("refresh token", CLIQ_ENV_VARS.refreshToken, envRefreshToken))
+    ) {
+      refreshToken = envRefreshToken;
+    } else {
+      refreshToken = await prompter.text({
+        message:
+          "User-context OAuth refresh token (required for channel posts / message edits; leave empty for DM-only)",
+        placeholder: "1000.abcdef…",
+        sensitive: true,
+      });
+      if (refreshToken.trim() === "") refreshToken = undefined;
+    }
+  } else if (
+    envRefreshToken &&
+    (await maybeUseEnv("refresh token", CLIQ_ENV_VARS.refreshToken, envRefreshToken))
+  ) {
+    refreshToken = envRefreshToken;
+  } else {
+    refreshToken = await prompter.text({
+      message:
+        "User-context OAuth refresh token (required for channel posts / message edits; leave empty for DM-only — see README §3)",
+      placeholder: "1000.abcdef…",
+      sensitive: true,
+    });
+    if (refreshToken.trim() === "") refreshToken = undefined;
+  }
+
+  return { clientId, clientSecret, botId, botName, webhookSecret, refreshToken };
 }
 
 /** Apply collected credentials to the channel config section. */
@@ -253,6 +301,7 @@ export function applyCliqCredentials(
   if (creds.botId) patch.botId = creds.botId;
   if (creds.botName !== undefined) patch.botName = creds.botName;
   if (creds.webhookSecret !== undefined) patch.webhookSecret = creds.webhookSecret;
+  if (creds.refreshToken !== undefined) patch.refreshToken = creds.refreshToken;
   return patchCliqSection(cfg, patch);
 }
 
@@ -263,7 +312,11 @@ const cliqFinalize: NonNullable<ChannelSetupWizard["finalize"]> = async ({
   await prompter.note(
     [
       "Create a self-client at https://api-console.zoho.eu (EU endpoint) with scopes:",
-      "  ZohoCliq.Webhooks.CREATE, ZohoCliq.Channels.READ, ZohoCliq.Users.READ",
+      "  ZohoCliq.Webhooks.CREATE, ZohoCliq.Channels.UPDATE, ZohoCliq.Channels.READ,",
+      "  ZohoCliq.Users.READ, ZohoCliq.Messages.UPDATE.",
+      "Bot DMs use client_credentials; channel posts + message edits need a",
+      "user-context refresh token — obtain one via the self-client",
+      "authorization_code flow (see README §3) and set refreshToken below.",
       "Then register a Deluge webhook handler in your Cliq bot that POSTs to",
       "<gateway>/cliq/webhook with the x-cliq-webhook-secret header.",
     ].join("\n"),

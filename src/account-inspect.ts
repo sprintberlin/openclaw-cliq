@@ -46,6 +46,11 @@ export interface InspectedCliqAccountConfig {
   botName?: string;
   /** Whether a webhook shared secret is configured (presence only). */
   webhookSecret: boolean;
+  /**
+   * Whether a user-context OAuth refresh token is configured (presence
+   * only — required for channel posts and message edits; see README §3).
+   */
+  refreshToken: boolean;
   allowFrom: string[];
   dmPolicy?: string;
   selfSenderIds: string[];
@@ -144,6 +149,7 @@ export function inspectCliqAccount(params: {
       botId: section?.botId,
       botName: section?.botName,
       webhookSecret: Boolean(section?.webhookSecret),
+      refreshToken: Boolean(section?.refreshToken),
       allowFrom: resolved?.allowFrom ?? section?.allowFrom ?? [],
       dmPolicy: section?.dmPolicy,
       selfSenderIds: resolved?.selfSenderIds ?? section?.selfSenderIds ?? [],

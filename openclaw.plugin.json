@@ -13,6 +13,7 @@
       "botId": { "type": "string" },
       "botName": { "type": "string" },
       "webhookSecret": { "type": "string" },
+      "refreshToken": { "type": "string" },
       "allowFrom": {
         "type": "array",
         "items": { "type": "string" }
@@ -50,6 +51,7 @@
           "botId": { "type": "string" },
           "botName": { "type": "string" },
           "webhookSecret": { "type": "string" },
+          "refreshToken": { "type": "string" },
           "allowFrom": {
             "type": "array",
             "items": { "type": "string" }
@@ -83,6 +85,7 @@
         "botId": { "label": "Bot unique name" },
         "botName": { "label": "Bot display name" },
         "webhookSecret": { "label": "Webhook shared secret", "sensitive": true },
+        "refreshToken": { "label": "User-context OAuth refresh token (required for channel posts / edits)", "sensitive": true },
         "allowFrom": { "label": "Allowed senders (Zoho Cliq user ids)" },
         "selfSenderIds": { "label": "Bot sender ids to ignore (self / other bots)" },
         "dmPolicy": { "label": "DM admission policy", "options": ["open", "allowlist", "pairing", "disabled"] },
