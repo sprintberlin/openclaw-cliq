@@ -13,6 +13,18 @@ export interface CliqChannelConfig {
   webhookSecret?: string;
   allowFrom?: string[];
   dmPolicy?: string;
+  /**
+   * When the webhook acknowledges Cliq relative to the inbound dispatch.
+   * - `"after_dispatch"` (default): await `runtime.channel.inbound.run`
+   *   before sending HTTP 200. A crash mid-dispatch means Cliq never sees
+   *   the 200 and redelivers (no lost message). On dispatch error the
+   *   webhook returns 500 so Cliq redelivers.
+   * - `"immediate"`: fire-and-forget (legacy behavior). Faster, but a
+   *   crash between ack and dispatch completion loses the message. Use only
+   *   when the Cliq/Deluge `invokeUrl` timeout is tighter than the agent
+   *   round-trip and you accept the lost-message risk.
+   */
+  ackPolicy?: "after_dispatch" | "immediate";
 }
 
 export interface ResolvedCliqAccount {
@@ -24,6 +36,7 @@ export interface ResolvedCliqAccount {
   webhookSecret?: string;
   allowFrom: string[];
   dmPolicy: string | undefined;
+  ackPolicy: "after_dispatch" | "immediate";
 }
 
 export function resolveCliqConfig(
@@ -39,6 +52,9 @@ export function resolveCliqConfig(
   if (!clientId) throw new Error("cliq: clientId is required");
   if (!clientSecret) throw new Error("cliq: clientSecret is required");
   if (!botId) throw new Error("cliq: botId is required");
+  const ackPolicyRaw = section?.ackPolicy;
+  const ackPolicy: "after_dispatch" | "immediate" =
+    ackPolicyRaw === "immediate" ? "immediate" : "after_dispatch";
   return {
     accountId: accountId ?? null,
     clientId,
@@ -48,6 +64,7 @@ export function resolveCliqConfig(
     webhookSecret: section?.webhookSecret,
     allowFrom: section?.allowFrom ?? [],
     dmPolicy: section?.dmPolicy,
+    ackPolicy,
   };
 }
 

@@ -129,7 +129,12 @@ export default defineChannelPluginEntry({
           return true;
         }
 
-        dispatchCliqInbound({
+        // Durable-before-ack: by default await the inbound pipeline before
+        // acknowledging Cliq so a crash mid-dispatch triggers redelivery
+        // instead of a lost message. `ackPolicy: "immediate"` opts out
+        // (legacy fire-and-forget) for setups whose Cliq/Deluge timeout is
+        // tighter than the agent round-trip.
+        const dispatchPromise = dispatchCliqInbound({
           runtime,
           cfg,
           account,
@@ -137,13 +142,32 @@ export default defineChannelPluginEntry({
           onError: (err, info) => {
             api.logger.error?.(`[cliq] ${info.kind} failed: ${String(err)}`);
           },
-        }).catch((err) => {
-          api.logger.error?.(`[cliq] inbound dispatch failed: ${String(err)}`);
         });
 
-        res.statusCode = 200;
-        res.setHeader("Content-Type", "application/json");
-        res.end(JSON.stringify({ status: "received" }));
+        if (account.ackPolicy === "immediate") {
+          dispatchPromise.catch((err) => {
+            api.logger.error?.(
+              `[cliq] inbound dispatch failed: ${String(err)}`,
+            );
+          });
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ status: "received" }));
+          return true;
+        }
+
+        try {
+          await dispatchPromise;
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ status: "received" }));
+        } catch (err) {
+          api.logger.error?.(
+            `[cliq] inbound dispatch failed: ${String(err)}`,
+          );
+          res.statusCode = 500;
+          res.end("dispatch failed");
+        }
         return true;
       },
     });

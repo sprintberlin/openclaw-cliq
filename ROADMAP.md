@@ -34,10 +34,6 @@
 The difference between a demo and a real channel. Without these, messages get lost, duplicated,
 or the bot talks to itself.
 
-- **Durable-before-ack ingest.** Only ack the webhook (200) after the inbound is durably spooled,
-  so a crash mid-dispatch triggers Cliq redelivery instead of a lost message. Study Telegram's
-  spool + `after_agent_dispatch` ack policy (`AGENTS.md` "Reliability Invariants",
-  `receive.defaultAckPolicy` in `src/channel.ts`).
 - **Idempotency / de-dup.** Cliq can redeliver; drop already-processed message ids (tombstone,
   don't just delete) so callbacks/side effects don't rerun.
 - **Bot-loop / self-message protection.** Current self-detection is naive (`senderId===botId`).

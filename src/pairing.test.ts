@@ -20,6 +20,7 @@ function account(overrides: Partial<ResolvedCliqAccount> = {}): ResolvedCliqAcco
     webhookSecret: undefined,
     allowFrom: [],
     dmPolicy: "pairing",
+    ackPolicy: "after_dispatch",
     ...overrides,
   };
 }

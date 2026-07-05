@@ -228,6 +228,141 @@ describe("plugin entry load + /cliq/webhook smoke", () => {
   });
 });
 
+describe("durable-before-ack ingest (issue #12)", () => {
+  function buildDurableMockApi(opts: {
+    inboundRun: () => Promise<unknown>;
+    ackPolicy?: "after_dispatch" | "immediate";
+  }) {
+    const routes: CapturedRoute[] = [];
+    const api = {
+      registrationMode: "full" as const,
+      config: {
+        channels: {
+          cliq: {
+            clientId: "id",
+            clientSecret: "secret",
+            botId: "bot",
+            botName: "openclaw-bot",
+            webhookSecret: "s3cr3t",
+            ...(opts.ackPolicy ? { ackPolicy: opts.ackPolicy } : {}),
+          },
+        },
+      } as Record<string, unknown>,
+      logger: {
+        warn: () => {},
+        error: () => {},
+        info: () => {},
+        debug: () => {},
+      },
+      runtime: {
+        channel: {
+          routing: {
+            resolveAgentRoute: () => ({ agentId: "agent-1", sessionKey: "sess-1" }),
+          },
+          session: {
+            resolveStorePath: () => "/store/agent-1",
+            readSessionUpdatedAt: () => undefined,
+            recordInboundSession: () => undefined,
+          },
+          reply: {
+            resolveEnvelopeFormatOptions: () => ({}),
+            formatAgentEnvelope: () => "envelope text",
+            finalizeInboundContext: () => ({}),
+            dispatchReplyWithBufferedBlockDispatcher: async () => undefined,
+          },
+          inbound: { run: opts.inboundRun },
+        },
+      } as Record<string, unknown>,
+      registerChannel: () => {},
+      registerCli: () => {},
+      registerHttpRoute: (params: CapturedRoute) => {
+        routes.push(params);
+      },
+    };
+    return { api, routes };
+  }
+
+  const mentionPayload = {
+    message: { text: "@openclaw-bot hello", id: "m1", time: "2026-07-04T10:00:00Z" },
+    user: { id: "user-123", name: "Alice" },
+    chat: { id: "chat-1-B", type: "channel" },
+    channel: { unique_name: "general" },
+    mentions: [{ id: "bot", type: "bot" }],
+    handler: "mention",
+  };
+
+  it("default ackPolicy awaits dispatch; on success returns 200", async () => {
+    let runCalled = 0;
+    const { api, routes } = buildDurableMockApi({
+      inboundRun: async () => {
+        runCalled++;
+        return undefined;
+      },
+    });
+    cliqEntry.register(api as any);
+    const webhook = routes.find((r) => r.path === "/cliq/webhook")!;
+    const res = makeRes();
+    await webhook.handler(
+      makeReq("POST", mentionPayload, { "x-cliq-webhook-secret": "s3cr3t" }),
+      res as unknown as any,
+    );
+    expect(runCalled).toBe(1);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ status: "received" });
+  });
+
+  it("default ackPolicy awaits dispatch; on failure returns 500 so Cliq redelivers", async () => {
+    let runCalled = 0;
+    const { api, routes } = buildDurableMockApi({
+      inboundRun: async () => {
+        runCalled++;
+        throw new Error("spool failed");
+      },
+    });
+    cliqEntry.register(api as any);
+    const webhook = routes.find((r) => r.path === "/cliq/webhook")!;
+    const res = makeRes();
+    await webhook.handler(
+      makeReq("POST", mentionPayload, { "x-cliq-webhook-secret": "s3cr3t" }),
+      res as unknown as any,
+    );
+    expect(runCalled).toBe(1);
+    expect(res.statusCode).toBe(500);
+    expect(res.body).toBe("dispatch failed");
+  });
+
+  it("ackPolicy=immediate acks 200 without awaiting dispatch", async () => {
+    let runStarted = false;
+    let runResolved = false;
+    const { api, routes } = buildDurableMockApi({
+      ackPolicy: "immediate",
+      inboundRun: async () => {
+        runStarted = true;
+        // Simulate a long agent round-trip; the webhook must ack before this
+        // resolves (fire-and-forget).
+        await new Promise((r) => setTimeout(r, 50));
+        runResolved = true;
+      },
+    });
+    cliqEntry.register(api as any);
+    const webhook = routes.find((r) => r.path === "/cliq/webhook")!;
+    const res = makeRes();
+    await webhook.handler(
+      makeReq("POST", mentionPayload, { "x-cliq-webhook-secret": "s3cr3t" }),
+      res as unknown as any,
+    );
+    expect(runStarted).toBe(true);
+    expect(res.statusCode).toBe(200);
+    expect(res.ended).toBe(true);
+    // The dispatch is still running when we acked.
+    expect(runResolved).toBe(false);
+    // Give the fire-and-forget dispatch a chance to finish so the test
+    // doesn't leak an unhandled rejection.
+    await new Promise((r) => setTimeout(r, 80));
+    expect(runResolved).toBe(true);
+  });
+});
+
 describe("build configuration (issue #7: npm run build)", () => {
   it("package.json exposes a build script invoking tsc -p tsconfig.build.json", () => {
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));

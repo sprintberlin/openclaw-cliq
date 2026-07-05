@@ -15,6 +15,7 @@ function account(over: Partial<ResolvedCliqAccount> = {}): ResolvedCliqAccount {
     botId: "bot",
     allowFrom: [],
     dmPolicy: undefined,
+    ackPolicy: "after_dispatch",
     ...over,
   };
 }

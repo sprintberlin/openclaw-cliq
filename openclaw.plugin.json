@@ -20,6 +20,11 @@
       "dmPolicy": {
         "type": "string",
         "enum": ["open", "allowlist", "pairing", "disabled"]
+      },
+      "ackPolicy": {
+        "type": "string",
+        "enum": ["after_dispatch", "immediate"],
+        "default": "after_dispatch"
       }
     }
   },
@@ -41,6 +46,11 @@
           "dmPolicy": {
             "type": "string",
             "enum": ["open", "allowlist", "pairing", "disabled"]
+          },
+          "ackPolicy": {
+            "type": "string",
+            "enum": ["after_dispatch", "immediate"],
+            "default": "after_dispatch"
           }
         },
         "required": ["clientId", "clientSecret", "botId"]
@@ -52,7 +62,8 @@
         "botName": { "label": "Bot display name" },
         "webhookSecret": { "label": "Webhook shared secret", "sensitive": true },
         "allowFrom": { "label": "Allowed senders (Zoho Cliq user ids)" },
-        "dmPolicy": { "label": "DM admission policy", "options": ["open", "allowlist", "pairing", "disabled"] }
+        "dmPolicy": { "label": "DM admission policy", "options": ["open", "allowlist", "pairing", "disabled"] },
+        "ackPolicy": { "label": "Webhook ack timing", "options": ["after_dispatch", "immediate"] }
       }
     }
   }
