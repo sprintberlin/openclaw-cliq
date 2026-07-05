@@ -22,6 +22,7 @@ export const CLIQ_OAUTH_SCOPES: readonly string[] = [
   "ZohoCliq.Channels.READ",
   "ZohoCliq.Users.READ",
   "ZohoCliq.Messages.UPDATE",
+  "ZohoCliq.messageactions.CREATE",
 ] as const;
 
 /** Hard-coded EU endpoints (see AGENTS.md — `.com` would require a code change). */

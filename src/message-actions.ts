@@ -42,11 +42,12 @@ const CLIQ_ACTIONS_ALL: readonly ChannelMessageActionName[] = [
   "edit",
   "delete",
   "read",
+  "react",
 ];
 
 /** Actions that need a user-context refresh token (issue #27). */
 const CLIQ_ACTIONS_NEEDING_REFRESH_TOKEN: ReadonlySet<ChannelMessageActionName> =
-  new Set<ChannelMessageActionName>(["edit", "delete", "read"]);
+  new Set<ChannelMessageActionName>(["edit", "delete", "read", "react"]);
 
 function resolveAccountSafe(
   cfg: OpenClawConfig,
@@ -185,6 +186,16 @@ interface CliqClientLike {
     { messageId: string; chatId: string; text?: string }[]
   >;
   resolveChannelChatId(channelUniqueName: string): Promise<string | undefined>;
+  addMessageReaction(opts: {
+    chatId: string;
+    messageId: string;
+    emoji: string;
+  }): Promise<boolean>;
+  removeMessageReaction(opts: {
+    chatId: string;
+    messageId: string;
+    emoji: string;
+  }): Promise<boolean>;
 }
 
 async function handleSend(
@@ -311,6 +322,50 @@ async function handleRead(
 }
 
 /**
+ * Add or remove a reaction (emoji) on a chat message. The agent supplies
+ * `messageId` + `emoji` and either an explicit `chatId` or a `to` route
+ * target resolvable to a channel chat id (DM chat ids cannot be resolved
+ * from a bare user id — same caveat as edit/delete). `op: "remove"` (any
+ * case) deletes the bot's reaction; the default adds it. The emoji may be a
+ * Zomoji shortcode (`:smile:`) or a unicode character (`😄`).
+ */
+async function handleReact(
+  client: CliqClientLike,
+  params: Record<string, unknown>,
+): Promise<AgentToolResult<unknown>> {
+  const messageId = readString(params, "messageId");
+  const emoji = readString(params, "emoji") ?? readString(params, "reaction");
+  if (!messageId) return errorResult("`messageId` is required for react.");
+  if (!emoji) return errorResult("`emoji` (e.g. \":smile:\" or \"😄\") is required for react.");
+  const chatId = await resolveChatIdForAction(client, params);
+  if (!chatId) {
+    return errorResult(
+      "`chatId` could not be resolved — pass `chatId` explicitly (DM chat ids are per-user-pair and cannot be resolved from a user id).",
+    );
+  }
+  const opRaw = readString(params, "op");
+  const op: "add" | "remove" =
+    opRaw?.toLowerCase() === "remove" ? "remove" : "add";
+  try {
+    const ok =
+      op === "remove"
+        ? await client.removeMessageReaction({ chatId, messageId, emoji })
+        : await client.addMessageReaction({ chatId, messageId, emoji });
+    if (!ok) {
+      return errorResult(
+        `react ${op} rejected for message ${messageId} in chat ${chatId}.`,
+      );
+    }
+    return okResult(
+      `${op === "remove" ? "Removed" : "Added"} reaction ${emoji} on message ${messageId} in chat ${chatId}.`,
+      { action: "react", op, chatId, messageId, emoji },
+    );
+  } catch (err) {
+    return errorResult(`react ${op} failed: ${String(err)}`);
+  }
+}
+
+/**
  * The Cliq message-action adapter. `handleAction` resolves the account from
  * `ctx.cfg` + `ctx.accountId`, builds the `CliqClient` via the registry (so
  * OAuth tokens are shared across turns), and dispatches to the per-action
@@ -352,6 +407,8 @@ export const cliqMessageActions: ChannelMessageActionAdapter = {
           return await handleDelete(client, params);
         case "read":
           return await handleRead(client, params);
+        case "react":
+          return await handleReact(client, params);
         default:
           return errorResult(`unsupported action: ${action}`);
       }

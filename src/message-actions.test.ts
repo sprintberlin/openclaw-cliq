@@ -45,29 +45,36 @@ interface FakeClient {
   edits: { chatId: string; messageId: string; text: string }[];
   deletes: { chatId: string; messageId: string }[];
   reads: { chatId: string; limit?: number }[];
+  reacts: { chatId: string; messageId: string; emoji: string; op: "add" | "remove" }[];
   chatIdResolves: string[];
   sendMessage: CliqClientLike["sendMessage"];
   editMessage: CliqClientLike["editMessage"];
   deleteMessage: CliqClientLike["deleteMessage"];
   listChatMessages: CliqClientLike["listChatMessages"];
   resolveChannelChatId: CliqClientLike["resolveChannelChatId"];
+  addMessageReaction: CliqClientLike["addMessageReaction"];
+  removeMessageReaction: CliqClientLike["removeMessageReaction"];
 }
 
 function makeFakeClient(opts: {
   chatIdFor?: string;
   deleteOk?: boolean;
+  reactOk?: boolean;
   messages?: { messageId: string; chatId: string; text?: string }[];
 } = {}): FakeClient {
   const sends: FakeClient["sends"] = [];
   const edits: FakeClient["edits"] = [];
   const deletes: FakeClient["deletes"] = [];
   const reads: FakeClient["reads"] = [];
+  const reacts: FakeClient["reacts"] = [];
   const chatIdResolves: string[] = [];
+  const reactOk = opts.reactOk ?? true;
   return {
     sends,
     edits,
     deletes,
     reads,
+    reacts,
     chatIdResolves,
     sendMessage: vi.fn(async (o: { to: string; text: string; isDm?: boolean }) => {
       sends.push(o);
@@ -89,6 +96,14 @@ function makeFakeClient(opts: {
       chatIdResolves.push(name);
       return opts.chatIdFor ?? "CT_resolved";
     }),
+    addMessageReaction: vi.fn(async (o: { chatId: string; messageId: string; emoji: string }) => {
+      reacts.push({ ...o, op: "add" });
+      return reactOk;
+    }),
+    removeMessageReaction: vi.fn(async (o: { chatId: string; messageId: string; emoji: string }) => {
+      reacts.push({ ...o, op: "remove" });
+      return reactOk;
+    }),
   };
 }
 
@@ -109,7 +124,7 @@ describe("cliqMessageActions.describeMessageTool", () => {
     const cfg = makeCfg(makeAccount({ refreshToken: "rt" }));
     const discovery = describeCliqMessageTool({ cfg });
     expect(discovery!.actions?.slice().sort()).toEqual(
-      ["send", "edit", "delete", "read"].slice().sort(),
+      ["send", "edit", "delete", "read", "react"].slice().sort(),
     );
   });
 
@@ -136,6 +151,7 @@ describe("resolveCliqActions", () => {
     expect(out).toContain("edit");
     expect(out).toContain("delete");
     expect(out).toContain("read");
+    expect(out).toContain("react");
   });
 });
 
@@ -357,6 +373,116 @@ describe("cliqMessageActions.handleAction", () => {
       });
       expect(result.details).toMatchObject({ action: "read", chatId: "CT_chan", count: 1 });
       expect(client.reads).toEqual([{ chatId: "CT_chan", limit: 10 }]);
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("react (add): dispatches addMessageReaction with the resolved chat id + emoji", async () => {
+    const client = makeFakeClient({ chatIdFor: "CT_chan" });
+    const account = makeAccount({ refreshToken: "rt" });
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!({
+        channel: "cliq",
+        action: "react",
+        cfg: makeCfg(account),
+        params: { to: "cliq:channel:general", messageId: "m1", emoji: ":smile:" },
+        accountId: null,
+      });
+      expect(result.details).toMatchObject({ action: "react", op: "add", chatId: "CT_chan", messageId: "m1", emoji: ":smile:" });
+      expect(client.reacts).toEqual([{ chatId: "CT_chan", messageId: "m1", emoji: ":smile:", op: "add" }]);
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("react (remove): op=remove dispatches removeMessageReaction", async () => {
+    const client = makeFakeClient({ chatIdFor: "CT_chan" });
+    const account = makeAccount({ refreshToken: "rt" });
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!({
+        channel: "cliq",
+        action: "react",
+        cfg: makeCfg(account),
+        params: { to: "cliq:channel:general", messageId: "m1", emoji: "😄", op: "remove" },
+        accountId: null,
+      });
+      expect(result.details).toMatchObject({ action: "react", op: "remove", emoji: "😄" });
+      expect(client.reacts).toEqual([{ chatId: "CT_chan", messageId: "m1", emoji: "😄", op: "remove" }]);
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("react without refresh token is rejected up front", async () => {
+    const client = makeFakeClient();
+    const account = makeAccount({ refreshToken: undefined });
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!({
+        channel: "cliq",
+        action: "react",
+        cfg: makeCfg(account),
+        params: { chatId: "CT_x", messageId: "m1", emoji: ":smile:" },
+        accountId: null,
+      });
+      expect(result.details).toMatchObject({ status: "failed" });
+      expect(result.details).toMatchObject({ error: expect.stringContaining("refresh token") });
+      expect(client.reacts).toHaveLength(0);
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("react: missing emoji is a failure (no throw)", async () => {
+    const client = makeFakeClient({ chatIdFor: "CT_chan" });
+    const account = makeAccount({ refreshToken: "rt" });
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!({
+        channel: "cliq",
+        action: "react",
+        cfg: makeCfg(account),
+        params: { chatId: "CT_x", messageId: "m1" },
+        accountId: null,
+      });
+      expect(result.details).toMatchObject({ status: "failed" });
+      expect(client.reacts).toHaveLength(0);
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("react: surfaces a rejected react as a failure", async () => {
+    const client = makeFakeClient({ chatIdFor: "CT_chan", reactOk: false });
+    const account = makeAccount({ refreshToken: "rt" });
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!({
+        channel: "cliq",
+        action: "react",
+        cfg: makeCfg(account),
+        params: { chatId: "CT_x", messageId: "m1", emoji: ":smile:" },
+        accountId: null,
+      });
+      expect(result.details).toMatchObject({ status: "failed" });
     } finally {
       setCliqClientRegistry(null);
     }

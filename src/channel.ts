@@ -157,7 +157,7 @@ export const cliqPlugin = createChatChannelPlugin<ResolvedCliqAccount, CliqStatu
       media: true,
       reply: true,
       edit: true,
-      reactions: false,
+      reactions: true,
       blockStreaming: true,
     },
     streaming: {

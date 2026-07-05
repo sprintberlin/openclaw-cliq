@@ -35,7 +35,13 @@
 
 ## Phase 3 — Rich messaging & agent-facing features
 
-- **Reactions** (inbound reaction notifications + outbound ack reactions).
+- **Inbound reaction notifications.** Surface Cliq message-reaction events to
+  the agent (analog to Telegram's `reactionNotifications`). Requires SDK
+  inbound-event plumbing (`ChannelMessagingAdapter` / `InboundEventKind` for
+  reactions) not exposed to plugin channels via `createChatChannelPlugin`, so
+  this needs either an SDK extension or a plugin-owned dispatch hook.
+  Outbound ack reactions are blocked on the same surface (no
+  `heartbeat.setReaction` / ack-reaction runtime hook for plugin channels).
 - **Interactive elements** (Cliq buttons/cards). Analog to Telegram inline buttons / Discord
   components; expose via `agentPrompt.messageToolCapabilities`.
 - **Group tool policy** (`groups` adapter: `resolveRequireMention`, `resolveToolPolicy`).

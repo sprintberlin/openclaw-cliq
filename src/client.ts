@@ -878,6 +878,111 @@ export class CliqClient {
   }
 
   /**
+   * Add a reaction (emoji) to a chat message via the Cliq reactions API:
+   * `POST /api/v2/chats/{chatId}/messages/{messageId}/reactions` with body
+   * `{ emoji_code }`. Requires the `ZohoCliq.messageactions.CREATE` scope
+   * (a user-context scope the `client_credentials` grant cannot obtain a
+   * usable token for — same constraint as channel posts + edits, see issue
+   * #27), so the path routes through the refresh-token grant when one is
+   * configured and falls back to `client_credentials` otherwise (which will
+   * fail at the API — DM-only setups keep working). Returns `true` on 2xx.
+   *
+   * `emoji` may be a Zomoji shortcode (e.g. `:smile:`) or a unicode emoji
+   * character (e.g. `😄`); both are accepted by the Cliq API verbatim.
+   */
+  async addMessageReaction(opts: {
+    chatId: string;
+    messageId: string;
+    emoji: string;
+  }): Promise<boolean> {
+    const token = await this.resolveOutboundToken(
+      "ZohoCliq.messageactions.CREATE",
+      true,
+    );
+    const url = `${this.apiBase}/api/v2/chats/${encodeURIComponent(opts.chatId)}/messages/${encodeURIComponent(opts.messageId)}/reactions`;
+    this.logger.info?.(
+      `[cliq] react add: chatId=${opts.chatId} messageId=${opts.messageId}`,
+    );
+    let attempt = 0;
+    const res = await withSendRetry(
+      async () => {
+        attempt++;
+        const r = await fetch(url, {
+          method: "POST",
+          headers: {
+            Authorization: `Zoho-oauthtoken ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ emoji_code: opts.emoji }),
+        });
+        const body = await r.text().catch(() => "");
+        if (r.ok) {
+          this.logger.info?.(
+            `[cliq] react add ok: status=${r.status} chatId=${opts.chatId} messageId=${opts.messageId} attempt=${attempt}`,
+          );
+        } else {
+          this.logger.warn?.(
+            `[cliq] react add non-2xx: status=${r.status} chatId=${opts.chatId} messageId=${opts.messageId} attempt=${attempt} body=${truncateForLog(body)}`,
+          );
+        }
+        return { status: r.status, body, headers: r.headers };
+      },
+      this.retryOptions,
+    );
+    return res.status >= 200 && res.status < 300;
+  }
+
+  /**
+   * Remove a reaction (emoji) from a chat message via the Cliq reactions
+   * API: `DELETE /api/v2/chats/{chatId}/messages/{messageId}/reactions` with
+   * body `{ emoji_code }`. Like `addMessageReaction`, this requires the
+   * `ZohoCliq.messageactions.CREATE` scope (the delete endpoint reuses the
+   * CREATE scope per the Cliq REST docs) and a user-context refresh token.
+   * Returns `true` on 2xx.
+   */
+  async removeMessageReaction(opts: {
+    chatId: string;
+    messageId: string;
+    emoji: string;
+  }): Promise<boolean> {
+    const token = await this.resolveOutboundToken(
+      "ZohoCliq.messageactions.CREATE",
+      true,
+    );
+    const url = `${this.apiBase}/api/v2/chats/${encodeURIComponent(opts.chatId)}/messages/${encodeURIComponent(opts.messageId)}/reactions`;
+    this.logger.info?.(
+      `[cliq] react remove: chatId=${opts.chatId} messageId=${opts.messageId}`,
+    );
+    let attempt = 0;
+    const res = await withSendRetry(
+      async () => {
+        attempt++;
+        const r = await fetch(url, {
+          method: "DELETE",
+          headers: {
+            Authorization: `Zoho-oauthtoken ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ emoji_code: opts.emoji }),
+        });
+        const body = await r.text().catch(() => "");
+        if (r.ok) {
+          this.logger.info?.(
+            `[cliq] react remove ok: status=${r.status} chatId=${opts.chatId} messageId=${opts.messageId} attempt=${attempt}`,
+          );
+        } else {
+          this.logger.warn?.(
+            `[cliq] react remove non-2xx: status=${r.status} chatId=${opts.chatId} messageId=${opts.messageId} attempt=${attempt} body=${truncateForLog(body)}`,
+          );
+        }
+        return { status: r.status, body, headers: r.headers };
+      },
+      this.retryOptions,
+    );
+    return res.status >= 200 && res.status < 300;
+  }
+
+  /**
    * Fetch an authenticated JSON document from the Cliq REST API. Used by the
    * directory listing endpoints (`/api/v2/users`, `/api/v2/channels`) which
    * are read-only GETs scoped to `ZohoCliq.Users.READ` / `ZohoCliq.Channels.READ`.

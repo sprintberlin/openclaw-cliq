@@ -90,7 +90,7 @@ The plugin uses **two** OAuth grant types, because the **`client_credentials`** 
 
 #### 3b. Consent the scopes
 
-When registering / re-consenting the self-client, request **all five** scopes so both the `client_credentials` (DM) and refresh-token (channel/edit) paths work:
+When registering / re-consenting the self-client, request **all six** scopes so both the `client_credentials` (DM) and refresh-token (channel/edit) paths work:
 
 | Scope | Grant | Purpose |
 | --- | --- | --- |
@@ -99,8 +99,9 @@ When registering / re-consenting the self-client, request **all five** scopes so
 | `ZohoCliq.Channels.READ` | `client_credentials` | Read channel / chat metadata |
 | `ZohoCliq.Users.READ` | `client_credentials` | Resolve sender user info |
 | `ZohoCliq.Messages.UPDATE` | refresh token | Edit a sent message in place (live-edit streaming previews) |
+| `ZohoCliq.messageactions.CREATE` | refresh token | Add / remove message reactions (the `message(action=react)` tool) |
 
-> If you previously consented with only the original three scopes, you must re-consent (generate a fresh self-client token) with `ZohoCliq.Channels.UPDATE` and `ZohoCliq.Messages.UPDATE` added — channel replies will be rejected with `invalid_scope` / 401 until you do.
+> If you previously consented with only the original three scopes, you must re-consent (generate a fresh self-client token) with `ZohoCliq.Channels.UPDATE` and `ZohoCliq.Messages.UPDATE` added — channel replies will be rejected with `invalid_scope` / 401 until you do. Reactions (`ZohoCliq.messageactions.CREATE`) are optional — skip the scope if you don't need the `react` action, and the plugin will simply not advertise reaction support.
 
 #### 3c. Obtain the user-context refresh token (required for channel posts + edits)
 
@@ -120,7 +121,7 @@ exchange for a permanent **refresh token**.
 1. In the **[Zoho API Console](https://api-console.zoho.eu)** → your **Self Client** → tab **Generate Code**.
 2. **Scope** (the Self Client field is comma-separated, no spaces):
    ```
-   ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Messages.UPDATE,ZohoCliq.Channels.READ,ZohoCliq.Users.READ
+   ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Messages.UPDATE,ZohoCliq.Channels.READ,ZohoCliq.Users.READ,ZohoCliq.messageactions.CREATE
    ```
 3. **Time Duration:** 10 minutes. **Scope Description:** anything (e.g. `openclaw`). Pick your **portal/org** if prompted.
 4. Click **Create** and copy the code — it looks like `1000.<hex>.<hex>`.
