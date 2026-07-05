@@ -5,6 +5,7 @@ import {
   truncateForLog,
   type CliqLogger,
 } from "./logger.js";
+import type { CliqButton } from "./presentation.js";
 
 const EU_API_BASE = "https://cliq.zoho.eu";
 const EU_OAUTH_BASE = "https://accounts.zoho.eu";
@@ -242,6 +243,21 @@ export interface SendMediaMessageOptions {
   text?: string;
   isDm?: boolean;
   attachment: CliqMediaAttachment;
+}
+
+/**
+ * Options for sending a Cliq bot message with interactive buttons (a Cliq
+ * "card"). Buttons are posted alongside an optional text body to the same
+ * bot-message (DM) / channelsbyname (channel) endpoints as `sendMessage`.
+ * The same scope rules apply: DMs use `ZohoCliq.Webhooks.CREATE`
+ * (`client_credentials`), channel posts use `ZohoCliq.Channels.UPDATE`
+ * (refresh-token grant — see issue #27).
+ */
+export interface SendCardMessageOptions {
+  to: string;
+  text?: string;
+  isDm?: boolean;
+  buttons: CliqButton[];
 }
 
 export interface NormalizedCliqTarget {
@@ -687,6 +703,64 @@ export class CliqClient {
     );
     const data = JSON.parse(res.body || "{}") as { id?: string };
     return { messageId: data.id };
+  }
+
+  /**
+   * Send a Cliq bot message with interactive buttons (a Cliq "card"). Posts
+   * `{ text?, buttons }` to the same DM / channel endpoints as `sendMessage`.
+   * The text (when present) is converted to Cliq-native formatting by the
+   * caller; this method posts it verbatim. The `buttons` array is sent as
+   * the Cliq bot-message `buttons` field. Same scope/retry/logging contract
+   * as `sendMessage`; the log line records the button count (never button
+   * contents).
+   */
+  async sendCard(opts: SendCardMessageOptions): Promise<{ messageId?: string; chatId?: string }> {
+    const isDm = Boolean(opts.isDm);
+    const scope = isDm ? "ZohoCliq.Webhooks.CREATE" : "ZohoCliq.Channels.UPDATE";
+    const needsUserContext = !isDm;
+    const token = await this.resolveOutboundToken(scope, needsUserContext);
+    const targetKind = isDm ? "dm" : "channel";
+    const payload: Record<string, unknown> = {};
+    if (opts.text) payload.text = opts.text;
+    payload.buttons = opts.buttons;
+    let url: string;
+    if (isDm) {
+      url = `${this.apiBase}/api/v2/bots/${encodeURIComponent(this.botId)}/message`;
+      payload.userids = opts.to;
+    } else {
+      url = `${this.apiBase}/api/v2/channelsbyname/${encodeURIComponent(opts.to)}/message?bot_unique_name=${encodeURIComponent(this.botId)}`;
+    }
+    this.logger.info?.(
+      `[cliq] send card: ${targetKind} id=${opts.to} buttons=${opts.buttons.length}${opts.text ? ` textLen=${opts.text.length}` : ""}`,
+    );
+    let attempt = 0;
+    const res = await withSendRetry(
+      async () => {
+        attempt++;
+        const r = await fetch(url, {
+          method: "POST",
+          headers: {
+            Authorization: `Zoho-oauthtoken ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        });
+        const body = await r.text().catch(() => "");
+        if (r.ok) {
+          const ref = parseCliqMessageRef(body);
+          this.logger.info?.(
+            `[cliq] send card ok: status=${r.status} ${targetKind} id=${opts.to} messageId=${ref.messageId ?? "-"} attempt=${attempt}`,
+          );
+        } else {
+          this.logger.warn?.(
+            `[cliq] send card non-2xx: status=${r.status} ${targetKind} id=${opts.to} attempt=${attempt} body=${truncateForLog(body)}`,
+          );
+        }
+        return { status: r.status, body, headers: r.headers };
+      },
+      this.retryOptions,
+    );
+    return parseCliqMessageRef(res.body);
   }
 
   /**

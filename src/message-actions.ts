@@ -35,6 +35,12 @@ import {
 } from "./client.js";
 import { markdownToCliq } from "./markdown.js";
 import { resolveCliqClient } from "./runtime-api.js";
+import {
+  presentationToCliqCard,
+  simpleButtonsToCliqButtons,
+  type CliqButton,
+  type PortablePresentation,
+} from "./presentation.js";
 
 /** Actions Cliq can perform via the shared `message` tool, in priority order. */
 const CLIQ_ACTIONS_ALL: readonly ChannelMessageActionName[] = [
@@ -44,6 +50,19 @@ const CLIQ_ACTIONS_ALL: readonly ChannelMessageActionName[] = [
   "read",
   "react",
 ];
+
+/**
+ * Cliq advertises the portable `presentation` capability on the shared
+ * `message` tool: an agent may attach interactive buttons to a `send` via the
+ * `buttons` param (an array of `{ label, url?, value? }`) or a full portable
+ * `presentation` object. Buttons render natively through the Cliq bot-message
+ * `buttons` field (see `CliqClient.sendCard`). The full outbound
+ * `renderPresentation` path (agent-emitted presentations on a reply) is a
+ * follow-up — today the surface is the explicit `message(action=send,
+ * buttons=[...])` tool call, which is the common case (link/callback buttons
+ * attached to an agent-sent message).
+ */
+const CLIQ_MESSAGE_CAPABILITIES = ["presentation"] as const;
 
 /** Actions that need a user-context refresh token (issue #27). */
 const CLIQ_ACTIONS_NEEDING_REFRESH_TOKEN: ReadonlySet<ChannelMessageActionName> =
@@ -90,7 +109,7 @@ function describeCliqMessageTool(
   if (!account) return null;
   return {
     actions: resolveCliqActions(account),
-    capabilities: [],
+    capabilities: [...CLIQ_MESSAGE_CAPABILITIES],
     schema: null,
   };
 }
@@ -170,6 +189,12 @@ interface CliqClientLike {
     text: string;
     isDm?: boolean;
   }): Promise<{ messageId?: string; chatId?: string }>;
+  sendCard(opts: {
+    to: string;
+    text?: string;
+    isDm?: boolean;
+    buttons: CliqButton[];
+  }): Promise<{ messageId?: string; chatId?: string }>;
   editMessage(opts: {
     chatId: string;
     messageId: string;
@@ -198,6 +223,37 @@ interface CliqClientLike {
   }): Promise<boolean>;
 }
 
+/**
+ * Resolve the Cliq buttons to attach to a `send` from the tool params. Two
+ * shapes are accepted (a non-empty `buttons` array takes precedence over a
+ * `presentation` object):
+ *  - `buttons`: an array of `{ label, url?, value? }` (the simple,
+ *    agent-friendly shape — see `simpleButtonsToCliqButtons`).
+ *  - `presentation`: a portable `MessagePresentation` object
+ *    (`{ title?, blocks: [...] }`) — see `presentationToCliqCard`.
+ * Returns the converted Cliq buttons (possibly empty) plus the body text
+ * derived from the presentation (when a `presentation` carried text/title
+ * blocks that are not part of the `message` param).
+ */
+function resolveSendButtons(params: Record<string, unknown>): {
+  buttons: CliqButton[];
+  presentationText?: string;
+} {
+  const rawButtons = params["buttons"];
+  if (Array.isArray(rawButtons) && rawButtons.length > 0) {
+    return { buttons: simpleButtonsToCliqButtons(rawButtons) };
+  }
+  const rawPresentation = params["presentation"];
+  if (rawPresentation && typeof rawPresentation === "object" && !Array.isArray(rawPresentation)) {
+    const card = presentationToCliqCard(rawPresentation as PortablePresentation);
+    return {
+      buttons: card.buttons ?? [],
+      presentationText: card.text,
+    };
+  }
+  return { buttons: [] };
+}
+
 async function handleSend(
   client: CliqClientLike,
   params: Record<string, unknown>,
@@ -205,28 +261,44 @@ async function handleSend(
   const to = readString(params, "to") ?? readString(params, "channelId");
   const message = readString(params, "message");
   if (!to) return errorResult("`to` (channel target) is required for send.");
-  if (!message) return errorResult("`message` (text) is required for send.");
+  const { buttons, presentationText } = resolveSendButtons(params);
+  // Body text: explicit `message` wins; otherwise fall back to text derived
+  // from a portable `presentation` (title/text/context blocks). A send with
+  // only buttons and no text is allowed (Cliq accepts a buttons-only card).
+  const body = message ?? presentationText;
+  if (!body && buttons.length === 0) {
+    return errorResult("`message` (text) or `buttons` is required for send.");
+  }
   const target = normalizeCliqRouteTarget(to);
-  const rich = markdownToCliq(message);
+  const rich = body ? markdownToCliq(body) : undefined;
   try {
-    const result = await client.sendMessage({
-      to: target.to,
-      isDm: target.isDm,
-      text: rich,
-    });
+    const result = buttons.length > 0
+      ? await client.sendCard({
+          to: target.to,
+          isDm: target.isDm,
+          text: rich,
+          buttons,
+        })
+      : await client.sendMessage({
+          to: target.to,
+          isDm: target.isDm,
+          text: rich ?? "",
+        });
     return okResult(
-      `Sent message to ${to}${result.messageId ? ` (messageId=${result.messageId})` : ""}.`,
+      `Sent message to ${to}${result.messageId ? ` (messageId=${result.messageId})` : ""}${buttons.length > 0 ? ` with ${buttons.length} button(s)` : ""}.`,
       {
         action: "send",
         to,
         messageId: result.messageId ?? null,
         chatId: result.chatId ?? null,
+        buttons: buttons.length,
       },
     );
   } catch (err) {
     return errorResult(`send failed: ${String(err)}`);
   }
 }
+
 
 async function handleEdit(
   client: CliqClientLike,
@@ -423,6 +495,8 @@ export {
   describeCliqMessageTool,
   resolveCliqActions,
   resolveChatIdForAction,
+  resolveSendButtons,
   CLIQ_ACTIONS_ALL,
+  CLIQ_MESSAGE_CAPABILITIES,
   type CliqClientLike,
 };

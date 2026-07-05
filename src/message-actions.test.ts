@@ -5,7 +5,9 @@ import {
   describeCliqMessageTool,
   resolveCliqActions,
   resolveChatIdForAction,
+  resolveSendButtons,
   CLIQ_ACTIONS_ALL,
+  CLIQ_MESSAGE_CAPABILITIES,
   type CliqClientLike,
 } from "./message-actions.js";
 import type { ResolvedCliqAccount } from "./client.js";
@@ -42,12 +44,14 @@ function makeCfg(account: Partial<ResolvedCliqAccount>): OpenClawConfig {
 
 interface FakeClient {
   sends: { to: string; text: string; isDm?: boolean }[];
+  cards: { to: string; text?: string; isDm?: boolean; buttons: unknown[] }[];
   edits: { chatId: string; messageId: string; text: string }[];
   deletes: { chatId: string; messageId: string }[];
   reads: { chatId: string; limit?: number }[];
   reacts: { chatId: string; messageId: string; emoji: string; op: "add" | "remove" }[];
   chatIdResolves: string[];
   sendMessage: CliqClientLike["sendMessage"];
+  sendCard: CliqClientLike["sendCard"];
   editMessage: CliqClientLike["editMessage"];
   deleteMessage: CliqClientLike["deleteMessage"];
   listChatMessages: CliqClientLike["listChatMessages"];
@@ -63,6 +67,7 @@ function makeFakeClient(opts: {
   messages?: { messageId: string; chatId: string; text?: string }[];
 } = {}): FakeClient {
   const sends: FakeClient["sends"] = [];
+  const cards: FakeClient["cards"] = [];
   const edits: FakeClient["edits"] = [];
   const deletes: FakeClient["deletes"] = [];
   const reads: FakeClient["reads"] = [];
@@ -71,6 +76,7 @@ function makeFakeClient(opts: {
   const reactOk = opts.reactOk ?? true;
   return {
     sends,
+    cards,
     edits,
     deletes,
     reads,
@@ -79,6 +85,10 @@ function makeFakeClient(opts: {
     sendMessage: vi.fn(async (o: { to: string; text: string; isDm?: boolean }) => {
       sends.push(o);
       return { messageId: "m-sent", chatId: o.isDm ? "dm-chat" : undefined };
+    }),
+    sendCard: vi.fn(async (o: { to: string; text?: string; isDm?: boolean; buttons: unknown[] }) => {
+      cards.push(o);
+      return { messageId: "m-card", chatId: o.isDm ? "dm-chat" : undefined };
     }),
     editMessage: vi.fn(async (o: { chatId: string; messageId: string; text: string }) => {
       edits.push(o);
@@ -137,6 +147,13 @@ describe("cliqMessageActions.describeMessageTool", () => {
 
   it("resolveExecutionMode is always local", () => {
     expect(cliqMessageActions.resolveExecutionMode!({ action: "send" })).toBe("local");
+  });
+
+  it("advertises the portable `presentation` capability", () => {
+    const cfg = makeCfg(makeAccount({}));
+    const discovery = describeCliqMessageTool({ cfg });
+    expect(discovery!.capabilities).toEqual([...CLIQ_MESSAGE_CAPABILITIES]);
+    expect(discovery!.capabilities).toContain("presentation");
   });
 });
 
@@ -240,6 +257,138 @@ describe("cliqMessageActions.handleAction", () => {
     } finally {
       setCliqClientRegistry(null);
     }
+  });
+
+  it("send with `buttons` param: dispatches a card via sendCard (no plain send)", async () => {
+    const client = makeFakeClient({ chatIdFor: "CT_chan" });
+    const account = makeAccount({});
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!(
+        buildCtx(
+          {
+            to: "cliq:user:u-1",
+            message: "Pick one",
+            buttons: [
+              { label: "Open", url: "https://example.com" },
+              { label: "Confirm", value: "yes" },
+            ],
+          },
+          account,
+        ) as Parameters<NonNullable<typeof cliqMessageActions.handleAction>>[0],
+      );
+      expect(result.details).toMatchObject({
+        action: "send",
+        messageId: "m-card",
+        buttons: 2,
+      });
+      expect(client.cards).toHaveLength(1);
+      expect(client.sends).toHaveLength(0);
+      const card = client.cards[0];
+      expect(card.to).toBe("u-1");
+      expect(card.isDm).toBe(true);
+      // Markdown conversion applies to the body text.
+      expect(card.text).toBe("Pick one");
+      expect(card.buttons).toHaveLength(2);
+      expect(card.buttons[0]).toMatchObject({ action: "openurl", url: "https://example.com" });
+      expect(card.buttons[1]).toMatchObject({ action: "invoke", data: "yes" });
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("send with `buttons` only (no message) is accepted", async () => {
+    const client = makeFakeClient({});
+    const account = makeAccount({});
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!(
+        buildCtx(
+          { to: "cliq:channel:general", buttons: [{ label: "OK", value: "ok" }] },
+          account,
+        ) as Parameters<NonNullable<typeof cliqMessageActions.handleAction>>[0],
+      );
+      expect(result.details).toMatchObject({ action: "send", buttons: 1, messageId: "m-card" });
+      expect(client.cards).toHaveLength(1);
+      expect(client.cards[0].text).toBeUndefined();
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("send with `presentation` object: body text derives from text/title blocks", async () => {
+    const client = makeFakeClient({});
+    const account = makeAccount({});
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!(
+        buildCtx(
+          {
+            to: "cliq:user:u-9",
+            presentation: {
+              title: "Choose",
+              blocks: [
+                { type: "text", text: "An action:" },
+                { type: "buttons", buttons: [{ label: "Run", value: "run" }] },
+              ],
+            },
+          },
+          account,
+        ) as Parameters<NonNullable<typeof cliqMessageActions.handleAction>>[0],
+      );
+      expect(result.details).toMatchObject({ action: "send", buttons: 1 });
+      expect(client.cards).toHaveLength(1);
+      // Title + text block concatenated into the body.
+      expect(client.cards[0].text).toBe("Choose\n\nAn action:");
+      expect(client.cards[0].buttons[0]).toMatchObject({ data: "run" });
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("send with neither message nor buttons is rejected", async () => {
+    const client = makeFakeClient({});
+    const account = makeAccount({});
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!(
+        buildCtx({ to: "cliq:channel:general" }, account) as Parameters<
+          NonNullable<typeof cliqMessageActions.handleAction>
+        >[0],
+      );
+      expect(result.details).toMatchObject({ status: "failed" });
+      expect(client.cards).toHaveLength(0);
+      expect(client.sends).toHaveLength(0);
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("`buttons` param takes precedence over `presentation`", () => {
+    const out = resolveSendButtons({
+      buttons: [{ label: "A", value: "a" }],
+      presentation: {
+        blocks: [{ type: "buttons", buttons: [{ label: "B", value: "b" }] }],
+      },
+    });
+    expect(out.buttons).toHaveLength(1);
+    expect(out.buttons[0]).toMatchObject({ label: "A" });
+  });
+
+  it("resolveSendButtons returns empty for no button params", () => {
+    expect(resolveSendButtons({ message: "hi" }).buttons).toEqual([]);
   });
 
   it("edit: requires chatId resolution + markdown conversion", async () => {

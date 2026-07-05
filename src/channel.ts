@@ -84,6 +84,21 @@ export {
   resolveCliqInboundFormattingHints,
   resolveCliqReactionGuidance,
 } from "./agent-prompt.js";
+export {
+  presentationToCliqCard,
+  cliqButtonFromPortable,
+  cliqButtonFromOption,
+  simpleButtonsToCliqButtons,
+  CLIQ_PRESENTATION_CAPABILITIES,
+  CLIQ_MAX_BUTTONS_PER_MESSAGE,
+  CLIQ_MAX_BUTTON_LABEL_LENGTH,
+  type CliqButton,
+  type CliqPresentationCapabilities,
+  type PortableButton,
+  type PortableOption,
+  type PortablePresentation,
+  type PortableBlock,
+} from "./presentation.js";
 
 const CHANNEL_ID = "cliq" as const;
 

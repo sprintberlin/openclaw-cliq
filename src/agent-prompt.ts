@@ -11,9 +11,12 @@
  * - `messageToolHints` → appended as bullet lines under the shared `message`
  *   tool section (the cross-channel `action=send` / `action=edit` / … tool).
  * - `messageToolCapabilities` → capability strings gating prompt blocks.
- *   Cliq does NOT advertise `inlineButtons` (no Cliq button-sending support
- *   yet) nor `richText` (a Telegram-specific Bot-API rich-text term); we
- *   return an empty list so no misleading prompt block is emitted.
+ *   Cliq does NOT advertise `inlineButtons` (a Telegram-specific Bot-API
+ *   inline-keyboard scope) nor `richText` (a Telegram-specific Bot-API 10.1
+ *   rich-text term); we return an empty list so no misleading prompt block is
+ *   emitted. Interactive buttons are surfaced through the portable
+ *   `presentation` capability on the `message` tool (the `buttons` /
+ *   `presentation` params of `action=send`) — see the message-tool hints.
  * - `inboundFormattingHints` → `response_format` object in the trusted
  *   inbound-metadata block, telling the model what markup inbound uses and
  *   what markup to emit for reply.
@@ -52,6 +55,7 @@ export function resolveCliqMessageToolHints(): string[] {
     "- Cliq message actions: `edit` / `delete` / `read` are available. Channel edits/deletes/reads key off a `chat_id` (`CT_xxx`) — pass `chatId` for channel actions; DM edits/deletes/reads also require `chatId` (Cliq DM chat ids cannot be resolved from a bare user id without a prior send).",
     "- Cliq reactions: `action=react` with `emojiCode` accepts Zomoji shortcodes (`:smile:`) or unicode (`😄`) verbatim. Reactions need a user-context refresh token (channel/message scopes); without one, react will fail with `oauthtoken_scope_invalid`.",
     "- Cliq message limit: 5000 chars per message; long replies are auto-chunked on whitespace boundaries. Keep individual `action=send` payloads under the cap where possible.",
+    "- Cliq interactive buttons (presentation capability): `action=send` accepts a `buttons` param (array of `{ label, url?, value? }`) — up to 10 buttons per message, labels ≤ 30 chars. A `url` button opens the link; a `value` (or `command`) button invokes the bot handler with that string as the inbound message. Use `buttons` for quick-reply choices, link cards, and confirmations. A full portable `presentation` object (`{ title?, blocks: [...] }`) is also accepted.",
   ];
 }
 
