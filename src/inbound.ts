@@ -168,30 +168,6 @@ export interface ParsedCliqInbound {
   handler: string;
 }
 
-const WEBHOOK_SECRET_HEADER = "x-cliq-webhook-secret";
-
-/**
- * Verify the shared webhook secret. Returns true when no secret is configured
- * (optional-but-recommended) or when the header matches.
- */
-export function verifyWebhookSecret(
-  req: Pick<IncomingMessage, "headers">,
-  expectedSecret: string | undefined,
-): boolean {
-  if (!expectedSecret) return true;
-  const provided =
-    req.headers[WEBHOOK_SECRET_HEADER] ??
-    req.headers["x-webhook-secret"] ??
-    req.headers["authorization"];
-  if (provided === undefined || provided === null) return false;
-  const providedStr = Array.isArray(provided) ? provided[0] : String(provided);
-  if (!providedStr) return false;
-  return (
-    providedStr === expectedSecret ||
-    providedStr === `Bearer ${expectedSecret}`
-  );
-}
-
 function extractMessageText(payload: CliqWebhookPayload): {
   text: string;
   messageId: string;

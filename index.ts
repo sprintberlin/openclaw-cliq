@@ -9,11 +9,29 @@ import {
   parseCliqWebhookPayload,
   readJsonBody,
   resolveCliqMentionDecision,
-  verifyWebhookSecret,
   type CliqRuntime,
 } from "./src/inbound.js";
+import {
+  createFailedAuthRateLimiter,
+  rejectUnauthedWebhook,
+  verifyWebhookSecret,
+  type FailedAuthRateLimiter,
+} from "./src/webhook-security.js";
 import { claimCliqMessage, commitCliqMessage, releaseCliqMessage } from "./src/dedupe.js";
 import { isCliqSelfMessage } from "./src/self-message.js";
+
+/**
+ * Per-IP fixed-window limiter for *failed* webhook authentications. Legit
+ * Cliq delivery (which passes the secret check) never touches this — only
+ * the 401 path records a hit — so this cannot throttle real traffic. Reset
+ * only happens on process restart; the window is short (60s) so the bucket
+ * memory is bounded by distinct attacker IPs within one window.
+ */
+let failAuthLimiter: FailedAuthRateLimiter | null = null;
+function getFailAuthLimiter(): FailedAuthRateLimiter {
+  if (!failAuthLimiter) failAuthLimiter = createFailedAuthRateLimiter();
+  return failAuthLimiter;
+}
 
 export default defineChannelPluginEntry({
   id: "cliq",
@@ -62,9 +80,12 @@ export default defineChannelPluginEntry({
         }
 
         if (!verifyWebhookSecret(req, account.webhookSecret)) {
-          api.logger.warn?.("[cliq] webhook rejected: invalid secret");
-          res.statusCode = 401;
-          res.end("unauthorized");
+          rejectUnauthedWebhook({
+            req,
+            res,
+            limiter: getFailAuthLimiter(),
+            logger: api.logger,
+          });
           return true;
         }
 

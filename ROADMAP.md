@@ -29,15 +29,6 @@
 
 ---
 
-## Phase 1 — Correctness & reliability foundations (highest priority)
-
-The difference between a demo and a real channel. Without these, messages get lost, duplicated,
-or the bot talks to itself.
-
-- **Webhook security hardening.** Constant-time secret compare, single-header enforcement,
-  connection close + 401 on failure, and rate-limit only failed-auth attempts (never throttle
-  Cliq's real delivery). See Telegram "Webhook security ordering".
-
 ## Phase 2 — Core UX parity (what users immediately notice)
 
 - **Typing indicator** (`heartbeat.sendTyping`). Show the bot "typing…" while the agent works.

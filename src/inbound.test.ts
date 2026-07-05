@@ -6,10 +6,10 @@ import {
   readJsonBody,
   resolveCliqMentionDecision,
   resolveCliqMentionFacts,
-  verifyWebhookSecret,
   type CliqWebhookPayload,
   type ParsedCliqInbound,
 } from "./inbound.js";
+import { verifyWebhookSecret } from "./webhook-security.js";
 import type { ResolvedCliqAccount } from "./client.js";
 
 function account(overrides: Partial<ResolvedCliqAccount> = {}): ResolvedCliqAccount {
@@ -79,11 +79,37 @@ describe("verifyWebhookSecret", () => {
     ).toBe(true);
   });
 
-  it("matches bearer-shaped authorization header", () => {
+  it("rejects non-canonical headers (single-header enforcement)", () => {
+    // Only `x-cliq-webhook-secret` is honored; Authorization / x-webhook-secret
+    // must NOT bypass the secret check even when they carry the right value.
     expect(
       verifyWebhookSecret(
-        reqWithHeaders({ authorization: "Bearer s3cr3t" }),
+        reqWithHeaders({ authorization: `Bearer s3cr3t` }),
         "s3cr3t",
+      ),
+    ).toBe(false);
+    expect(
+      verifyWebhookSecret(
+        reqWithHeaders({ "x-webhook-secret": "s3cr3t" }),
+        "s3cr3t",
+      ),
+    ).toBe(false);
+  });
+
+  it("uses constant-time comparison (does not short-circuit on length)", () => {
+    // A mismatched-length secret should still be rejected, and a matching
+    // secret accepted. The exact timing is not asserted here (that would be
+    // flaky in CI), only correctness.
+    expect(
+      verifyWebhookSecret(
+        reqWithHeaders({ "x-cliq-webhook-secret": "s3cr" }),
+        "s3cr3t-longer",
+      ),
+    ).toBe(false);
+    expect(
+      verifyWebhookSecret(
+        reqWithHeaders({ "x-cliq-webhook-secret": "s3cr3t-longer" }),
+        "s3cr3t-longer",
       ),
     ).toBe(true);
   });

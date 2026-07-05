@@ -217,6 +217,12 @@ Hard-won knowledge from previous iterations. Add to this section (deduped) whene
 - **`resolveInboundMentionDecision`** accepts a flat params object or a nested `{ facts, policy }`; the nested form is preferred. For DMs force `wasMentioned: true`; for groups require an explicit mention.
 - **DM admission:** reuse the SDK's `isNormalizedSenderAllowed` from `openclaw/plugin-sdk/allow-from` so wildcard (`*`), case-insensitive and empty-list semantics match every other channel.
 
+### Webhook security
+
+- **Webhook secret verification must be constant-time + single-header.** `crypto.timingSafeEqual` requires equal-length buffers; on a length mismatch run a dummy `timingSafeEqual(b, b)` so the wall-clock cost stays roughly constant (avoids an early-return timing signal). Accept ONLY `x-cliq-webhook-secret` — honoring `Authorization`/`x-webhook-secret` as fallbacks widens the attack surface (a misconfigured proxy forwarding one of them bypasses the check). The Deluge handler is documented to send exactly `x-cliq-webhook-secret`.
+- **Failed-auth rate limiting must be scoped to the 401 path only.** A per-IP fixed window that is consulted (and `hit()`) only when verification fails can never throttle legitimate Cliq delivery, even under a flood of valid webhooks. Process-local is fine for single-gateway deployments; multi-replica would need a shared store (Redis), out of scope.
+- **Every denied request carries `Connection: close`.** This tears down the keep-alive socket after the response so a denied attacker cannot reuse the connection for rapid retries. Set the header on both 401 and 429 paths.
+
 ### Gateway smoke / real-loader verification
 
 - **The plugin loads on a real gateway (verified against openclaw@2026.6.11).** `plugins inspect cliq --json --runtime` reports `status: "loaded"`, `shape: "plain-capability"`, and a `capabilities: [{ kind: "channel", channelIds: [...] }]` entry; `plugins doctor` reports "No plugin issues detected". The loader resolves the entry from `package.json` `main` → `dist/index.js` (NOT the manifest `openclaw.extensions` `./index.ts`), so **`dist/` must be built before install** — the smoke builds first.
