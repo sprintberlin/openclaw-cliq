@@ -170,7 +170,7 @@ This project is developed **iteratively** by an autonomous coding agent (OpenCod
 
 **No file records the past.** The repo's tracked files describe only the future (ROADMAP) and the timeless (AGENTS.md). History — what was done, when, why — lives entirely in git: `git log`, closed issues, and the verify-bot's issue comments. Never write a changelog, "State", "Done", or per-run log into any tracked file.
 
-**The ROADMAP's one hard rule: finishing an item means DELETING its line.** Never mark `[x]`, never strike through, never add a "Done"/"History" section. git remembers what was removed (`git log -p ROADMAP.md`).
+**The ROADMAP's one hard rule: every line describes only FUTURE work.** Finishing an item means removing the finished work: delete the line if you finished it entirely; if you finished only part, either delete it and add a fresh item for the remainder, or rewrite the line down to just the remaining work. Editing a line to narrow its scope is fine — but never leave a "X now works"/"implemented"/"done" status clause, never `[x]`, never strike through, never a "Done"/"History"/"State" section. git remembers what was removed (`git log -p ROADMAP.md`).
 
 ### How to work an issue
 
@@ -179,7 +179,7 @@ This project is developed **iteratively** by an autonomous coding agent (OpenCod
    - If it names a concrete task or bug → do exactly that.
    - If it is empty or just says "iterate" / "next step" → take the **top open item of the highest open phase** in ROADMAP.md.
 3. Implement one coherent increment, with tests where applicable.
-4. **Update ROADMAP.md by editing open work only:** delete the line(s) you completed, add any newly discovered work to the right phase, reorder if priorities shifted. Do NOT record what you did anywhere in the file.
+4. **Update ROADMAP.md, keeping every line future-tense:** delete the line(s) you finished; for a partially-finished item, either delete it and add a fresh item for what remains, or rewrite it down to just the remaining work (no "X now works" status clause). Add newly discovered work to the right phase. Do NOT record what you did anywhere in the file.
 5. Record any lasting *technical* insight (SDK quirks, gotchas) in the **Learnings** section of this file (AGENTS.md) — again, facts about the world, not "what I did".
 6. Run `npx tsc --noEmit`, `npm test`, and `npm run smoke:gateway` and make them all pass — a CI **hard gate** blocks the push if any fails.
 7. Commit the code + the ROADMAP edit with a conventional-commit message ending in `Closes #N`. **Do NOT push** — the workflow pushes after the hard gate re-runs typecheck + tests + smoke, and the issue closes automatically via `Closes #N`. That commit, plus the verify-bot's comment, is the history record.

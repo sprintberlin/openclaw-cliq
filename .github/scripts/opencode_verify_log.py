@@ -72,7 +72,7 @@ CHECK CAREFULLY: You know the actual requirements from the original issue. Check
 
 Important note: OpenCode acts as an autonomous developer at the terminal. If it executes commands like 'git add', 'git commit' or 'git push' in the log and signals that it's done (e.g. "All tasks completed"), that's a strong indicator of success, EVEN IF it crashes at the end of the log.
 
-ALSO CHECK: Did the agent maintain ROADMAP.md correctly? If it completed a roadmap item it must have DELETED that line (not marked it [x] or added a "Done"/"History"/changelog section — the repo keeps NO history in tracked files; history lives in git and issue comments). Newly discovered work should be added as open items. If the agent wrote a changelog/history/"what I did" section into ROADMAP.md (or any tracked file), or ticked items instead of deleting them, flag the run as incomplete.
+ALSO CHECK: Did the agent maintain ROADMAP.md correctly? Every line must describe only FUTURE work. Completing an item means removing the finished work: deleting the line if fully done, OR — for a partially-finished item — rewriting the line down to only the remaining work (or deleting it and adding a fresh item for the remainder). Editing a line to narrow its scope is FINE and should NOT be flagged. Only flag the run as incomplete if the agent: left a completed item untouched, marked it [x] or struck it through, added a "Done"/"History"/"Changelog"/"State" section, or left a "X now works"/"implemented"/"done" status clause in the file (the repo keeps NO history/status in tracked files — that lives in git and issue comments).
 
 ## Original Issue (requirements):
 ```

@@ -5,11 +5,15 @@
 >
 > ## The one hard rule
 >
-> **This file contains ONLY open work.** Finishing an item means **deleting its line** — never
-> mark it `[x]`, never strike it through, never add a "Done" / "Changelog" / "History" section.
-> The past lives in git (`git log`, closed issues, the verify-bot's issue comments), never here.
-> Newly discovered work is added to the right phase. So this file only ever shrinks toward done
-> and grows with new discoveries — it always describes the future, never the past.
+> **This file contains ONLY open work, described in the future tense.** Finishing an item means
+> removing the finished work from the file: if you finished it entirely, **delete the line**; if
+> you finished only part of it, either delete the line and add a fresh item for what remains, or
+> **rewrite the line to describe only the remaining work**. Either way is fine — the test is that
+> every line still describes *future* work. Never leave a "X now works" / "done" / "implemented"
+> status clause, never mark `[x]`, never strike through, never add a "Done" / "Changelog" /
+> "History" / "State" section. The past lives in git (`git log`, closed issues, the verify-bot's
+> comments), never here. So this file only ever shrinks toward done and grows with new
+> discoveries — it always describes the future, never the past.
 >
 > **Scope note.** Literal parity is not the goal (Telegram is ~205 source files, Discord ~344;
 > this plugin is a handful). We are after *functional* parity — correctness, reliability, and the
@@ -31,15 +35,12 @@
 
 ## Phase 3 — Rich messaging & agent-facing features
 
-- **Live-edit streaming for group/channel posts.** DM live-edit works
-  (the bot-message send response returns `message_details[<userId>].chat_id`
-  for edits). Group/channel posts return only a top-level `{ id }` (no
-  chatId); `createLiveEditDeliver` falls back to the addressed `chatid`, but
-  the edit API's `PUT /api/v2/chats/{chatId}/messages/{messageId}` may
-  reject a channel unique name as `{chatId}`. When the edit fails we degrade
-  to a new message, so content is never lost, but group posts won't get the
-  growing-draft UX until the chatId is resolved via
-  `GET /api/v2/chats/{chatId}/messages` (the bernesto reference pattern).
+- **Live-edit streaming for group/channel posts.** Resolve the real `chatId` for a
+  group/channel bot post (its send response returns only a top-level `{ id }`, no chatId),
+  so the edit API `PUT /api/v2/chats/{chatId}/messages/{messageId}` targets a valid chat
+  instead of a channel unique name — via `GET /api/v2/chats/{chatId}/messages` (the bernesto
+  reference pattern). Until then group posts fall back to a new message per chunk rather than
+  the growing-draft UX.
 - **Message actions for agents** (`actions` / `ChannelMessageActionAdapter`). Let the agent
   edit/delete its messages and react. See `channel-actions.ts`.
 - **Reactions** (inbound reaction notifications + outbound ack reactions).

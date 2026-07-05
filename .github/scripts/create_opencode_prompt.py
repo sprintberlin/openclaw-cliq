@@ -68,8 +68,9 @@ HOW TO WORK:
    - If the issue names a concrete task or bug  -> do exactly that.
    - If the issue is empty or just says "iterate"/"next step" -> take the TOP open item of the highest open phase in ROADMAP.md.
 3. Implement ONE coherent increment, with tests where applicable.
-4. Update ROADMAP.md by editing OPEN WORK ONLY:
-   - DELETE the line(s) you completed. Never mark [x], never strike through, never add a "Done"/"History"/"State" section.
+4. Update ROADMAP.md, keeping every line FUTURE-TENSE:
+   - If you finished an item entirely, DELETE its line. If you finished only PART of it, either delete it and add a fresh item for the remainder, OR rewrite the line down to just the remaining work. Editing a line to narrow its scope is fine.
+   - Never leave a "X now works"/"implemented"/"done" status clause, never mark [x], never strike through, never add a "Done"/"History"/"State" section.
    - Add any newly discovered work to the right phase; reorder if priorities shifted.
    - No file records the past -- history lives in git and the issue comments, never in a tracked file.
 5. Record any lasting TECHNICAL insight (SDK quirks, gotchas -- facts about the world, not "what I did") in the Learnings section of AGENTS.md.
