@@ -26,6 +26,21 @@
 #        credentials) -- those failures are expected and are themselves the
 #        evidence the dispatch path ran end-to-end.
 #
+#   Stage 4b (full agent round-trip with a stub model + mocked outbound):
+#     9.  Starts a local mock HTTP server standing in for accounts.zoho.eu
+#         (OAuth), cliq.zoho.eu (bot-message send), and an OpenAI-compatible
+#         stub chat model. The mock records bot-message sends to a log file.
+#     10. Reconfigures channels.cliq with apiBase/oauthBase pointing at the
+#         mock, and registers a stub model provider + agents.defaults.model
+#         so the agent turn produces a deterministic echo reply. Restarts the
+#         gateway with the new config.
+#     11. POSTs a Deluge DM payload, waits for the agent reply to be
+#         delivered, and asserts the mock's bot-send log recorded a send
+#         whose text contains the stub model's reply marker -- i.e. the reply
+#         actually landed end-to-end (inbound -> agent -> outbound -> Cliq
+#         send), not just that the inbound was dispatched.
+#     12. Tears down the mock + gateway.
+#
 # Headless: no daemon, no Zoho, no real secrets, no real model. Run via:
 #   npm run smoke:gateway
 #
@@ -58,7 +73,9 @@ export OPENCLAW_STATE_DIR="$SMOKE_HOME/state"
 export OPENCLAW_CONFIG_PATH="$SMOKE_HOME/state/openclaw.json"
 PROFILE="ci-smoke"
 GATEWAY_PID=""
+MOCK_PID=""
 cleanup() {
+  if [ -n "$MOCK_PID" ]; then kill "$MOCK_PID" 2>/dev/null || true; wait "$MOCK_PID" 2>/dev/null || true; fi
   if [ -n "$GATEWAY_PID" ]; then kill "$GATEWAY_PID" 2>/dev/null || true; wait "$GATEWAY_PID" 2>/dev/null || true; fi
   rm -rf "$SMOKE_HOME"
 }
@@ -66,13 +83,13 @@ trap cleanup EXIT
 
 run_oc() { "${OC[@]}" --profile "$PROFILE" --log-level warn "$@" < /dev/null; }
 
-echo "==> [1/8] Building plugin (dist/)"
+echo "==> [1/12] Building plugin (dist/)"
 npm run build --silent
 
-echo "==> [2/8] Linking plugin into isolated profile '$PROFILE'"
+echo "==> [2/12] Linking plugin into isolated profile '$PROFILE'"
 run_oc plugins install . --link
 
-echo "==> [3/8] Loading plugin runtime and asserting it registered"
+echo "==> [3/12] Loading plugin runtime and asserting it registered"
 INSPECT_FILE="$SMOKE_HOME/inspect.json"
 run_oc plugins inspect cliq --json --runtime > "$INSPECT_FILE"
 head -c 500 "$INSPECT_FILE"; echo
@@ -99,7 +116,7 @@ node -e '
   console.log(`OK: plugin loaded, registered cliq channel capability, no diagnostics (status=${plugin.status})`);
 ' "$INSPECT_FILE"
 
-echo "==> [4/8] plugins doctor"
+echo "==> [4/12] plugins doctor"
 DOCTOR_OUT="$(run_oc plugins doctor)"
 echo "$DOCTOR_OUT"
 if echo "$DOCTOR_OUT" | grep -qi "cliq"; then
@@ -118,7 +135,7 @@ fi
 # async dispatch reaches the agent lane (proven by the log) and then fails at
 # the outbound OAuth hop, which is exactly the evidence we assert on.
 # ---------------------------------------------------------------------------
-echo "==> [5/8] Writing channels.cliq config for full-mode gateway load"
+echo "==> [5/12] Writing channels.cliq config for full-mode gateway load"
 node -e '
   const fs = require("fs");
   const p = process.env.OPENCLAW_CONFIG_PATH;
@@ -139,7 +156,7 @@ run_oc config validate
 
 # Pick a free loopback port for the gateway HTTP/WS server.
 PORT="$(node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')"
-echo "==> [6/8] Starting foreground gateway on 127.0.0.1:$PORT"
+echo "==> [6/12] Starting foreground gateway on 127.0.0.1:$PORT"
 GW_LOG="$SMOKE_HOME/gateway.log"
 "${OC[@]}" --profile "$PROFILE" --log-level info gateway run \
   --port "$PORT" --auth none --allow-unconfigured \
@@ -171,7 +188,7 @@ if [ "$ready" -ne 1 ]; then
 fi
 echo "OK: gateway ready (route responded)"
 
-echo "==> [7/8] Probing /cliq/webhook with canonical Deluge payloads"
+echo "==> [7/12] Probing /cliq/webhook with canonical Deluge payloads"
 
 assert_status() {
   local label="$1" expected="$2" actual="$3"
@@ -227,7 +244,7 @@ code="$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 -X POST "$WEBHOOK_U
   --data 'not-json-at-all')"
 assert_status "malformed body" 400 "$code"
 
-echo "==> [8/8] Asserting the inbound was dispatched to an agent session"
+echo "==> [8/12] Asserting the inbound was dispatched to an agent session"
 # The agent turn + outbound OAuth fail (no model / no real Zoho credentials),
 # but the inbound MUST have been routed to an agent lane. The gateway logs a
 # diagnostic with `lane=session:agent:main:cliq:` for the dispatched turn.
@@ -248,6 +265,165 @@ if grep -q "\[cliq\] oauth:" "$GW_LOG" 2>/dev/null; then
   echo "OK: outbound dispatch attempted (oauth path exercised)"
 fi
 
+# ---------------------------------------------------------------------------
+# Stage 4b: full agent round-trip with a stub model + mocked outbound.
+#
+# Stage 4 proves the inbound was dispatched to an agent lane and the outbound
+# OAuth hop was attempted (and failed at accounts.zoho.eu because the fake
+# credentials are not real). Stage 4b goes further: it points the Cliq OAuth +
+# REST endpoints at a LOCAL mock, registers a stub OpenAI-compatible model
+# that echoes the user message, and asserts the agent reply actually lands at
+# the mock's bot-message send endpoint. This is the end-to-end round-trip:
+#   inbound webhook -> agent turn (stub model) -> outbound OAuth (mock) ->
+#   Cliq bot-message send (mock records it).
+# A passing Stage 4b means the entire inbound->reply pipeline works against
+# realistic (mocked) upstreams, not just that the inbound was accepted.
+# ---------------------------------------------------------------------------
+
+# Stop the Stage-4 gateway -- Stage 4b reconfigures the profile and restarts.
+if [ -n "$GATEWAY_PID" ]; then
+  kill "$GATEWAY_PID" 2>/dev/null || true
+  wait "$GATEWAY_PID" 2>/dev/null || true
+  GATEWAY_PID=""
+fi
+
+echo "==> [9/12] Starting the Stage-4b mock (OAuth + Cliq send + stub model)"
+MOCK_PORT="$(node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')"
+MOCK_LOG="$SMOKE_HOME/mock.log"
+SENDS_LOG="$SMOKE_HOME/sends.jsonl"
+node "$ROOT/scripts/stage4b-mock.mjs" "$MOCK_PORT" "$SENDS_LOG" < /dev/null > "$MOCK_LOG" 2>&1 &
+MOCK_PID=$!
+# Poll the mock for readiness (a GET hits the 404 path, proving it's up).
+mock_ready=0
+for _ in $(seq 1 40); do
+  if ! kill -0 "$MOCK_PID" 2>/dev/null; then
+    echo "FAIL: mock exited before becoming ready. Log:" >&2
+    cat "$MOCK_LOG" >&2
+    exit 1
+  fi
+  code="$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 -X GET "http://127.0.0.1:$MOCK_PORT/" 2>/dev/null || true)"
+  if [ "$code" = "404" ]; then mock_ready=1; break; fi
+  sleep 0.25
+done
+if [ "$mock_ready" -ne 1 ]; then
+  echo "FAIL: mock did not become ready. Log:" >&2
+  cat "$MOCK_LOG" >&2
+  exit 1
+fi
+echo "OK: mock ready on 127.0.0.1:$MOCK_PORT"
+
+echo "==> [10/12] Reconfiguring channels.cliq + stub model and restarting gateway"
+MOCK_BASE="http://127.0.0.1:$MOCK_PORT"
+export MOCK_BASE
+node -e '
+  const fs = require("fs");
+  const p = process.env.OPENCLAW_CONFIG_PATH;
+  const c = JSON.parse(fs.readFileSync(p, "utf8"));
+  c.channels = c.channels || {};
+  c.channels.cliq = {
+    clientId: "smoke-client-id",
+    clientSecret: "smoke-client-secret",
+    botId: "openclaw-bot",
+    botName: "openclaw-bot",
+    webhookSecret: "smoke-webhook-secret",
+    dmPolicy: "open",
+    allowFrom: ["*"],
+    apiBase: process.env.MOCK_BASE,
+    oauthBase: process.env.MOCK_BASE
+  };
+  c.models = c.models || {};
+  c.models.providers = c.models.providers || {};
+  c.models.providers.stub = {
+    baseUrl: process.env.MOCK_BASE + "/v1",
+    apiKey: "stub-key",
+    models: [
+      { id: "echo", name: "Echo Stub", api: "openai-completions" }
+    ]
+  };
+  c.agents = c.agents || {};
+  c.agents.defaults = c.agents.defaults || {};
+  c.agents.defaults.model = "stub/echo";
+  fs.writeFileSync(p, JSON.stringify(c, null, 2));
+'
+run_oc config validate
+
+GW_LOG="$SMOKE_HOME/gateway-4b.log"
+"${OC[@]}" --profile "$PROFILE" --log-level info gateway run \
+  --port "$PORT" --auth none --allow-unconfigured \
+  < /dev/null > "$GW_LOG" 2>&1 &
+GATEWAY_PID=$!
+
+# Poll for readiness again (the config changed, so the gateway must reload).
+ready=0
+for _ in $(seq 1 60); do
+  if ! kill -0 "$GATEWAY_PID" 2>/dev/null; then
+    echo "FAIL: gateway-4b exited before becoming ready. Log:" >&2
+    cat "$GW_LOG" >&2
+    exit 1
+  fi
+  code="$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 -X GET "$WEBHOOK_URL" 2>/dev/null || true)"
+  if [ "$code" = "405" ]; then ready=1; break; fi
+  sleep 0.5
+done
+if [ "$ready" -ne 1 ]; then
+  echo "FAIL: gateway-4b did not become ready within 30s. Log:" >&2
+  cat "$GW_LOG" >&2
+  exit 1
+fi
+echo "OK: gateway-4b ready (route responded)"
+
+echo "==> [11/12] POSTing a DM and asserting the agent reply lands at the mock"
+# A unique inbound text so we can match the round-trip in the mock's send log.
+ROUNDTRIP_MARKER="stage4b-roundtrip-$$"
+DM_PAYLOAD_4B='{"message":{"text":"'"$ROUNDTRIP_MARKER"'","id":"dm-4b"},"user":{"id":"user-alice","name":"Alice"}}'
+resp="$(curl -s -w "\n%{http_code}" --max-time 60 -X POST "$WEBHOOK_URL" \
+  -H "x-cliq-webhook-secret: smoke-webhook-secret" \
+  -H "content-type: application/json" \
+  --data "$DM_PAYLOAD_4B")"
+code="$(printf "%s" "$resp" | tail -n1)"
+if [ "$code" != "200" ]; then
+  echo "FAIL: stage-4b DM POST -> HTTP $code, expected 200" >&2
+  echo "--- gateway-4b log ---" >&2
+  cat "$GW_LOG" >&2
+  echo "--- mock log ---" >&2
+  cat "$MOCK_LOG" >&2
+  exit 1
+fi
+echo "OK: stage-4b DM POST accepted (HTTP 200)"
+
+# The agent turn + outbound send are async relative to the HTTP 200 (the
+# default ackPolicy awaits dispatch, but the outbound delivery happens after
+# the agent reply resolves). Poll the mock's sends log for a send whose text
+# contains the stub model's "stub-reply:" marker AND the round-trip marker
+# (the stub echoes the user text, so the reply contains both).
+delivered=0
+for _ in $(seq 1 80); do
+  if [ -f "$SENDS_LOG" ] && grep -q "stub-reply:" "$SENDS_LOG" 2>/dev/null; then
+    if grep -q "$ROUNDTRIP_MARKER" "$SENDS_LOG" 2>/dev/null; then
+      delivered=1
+      break
+    fi
+  fi
+  sleep 0.5
+done
+if [ "$delivered" -ne 1 ]; then
+  echo "FAIL: agent reply was not delivered to the mock bot-send endpoint." >&2
+  echo "--- mock log ---" >&2
+  cat "$MOCK_LOG" >&2
+  echo "--- mock sends log ---" >&2
+  cat "$SENDS_LOG" 2>/dev/null >&2
+  echo "--- gateway-4b log (tail) ---" >&2
+  tail -n 60 "$GW_LOG" >&2
+  exit 1
+fi
+echo "OK: agent reply delivered end-to-end (mock bot-send recorded the echo)"
+
+echo "==> [12/12] Tearing down mock + gateway"
+if [ -n "$MOCK_PID" ]; then kill "$MOCK_PID" 2>/dev/null || true; wait "$MOCK_PID" 2>/dev/null || true; fi
+if [ -n "$GATEWAY_PID" ]; then kill "$GATEWAY_PID" 2>/dev/null || true; wait "$GATEWAY_PID" 2>/dev/null || true; fi
+GATEWAY_PID=""
+
 echo ""
-echo "SMOKE PASSED: plugin loads, registers the cliq channel, and a real gateway"
-echo "              dispatches an inbound webhook POST through the agent pipeline."
+echo "SMOKE PASSED: plugin loads, registers the cliq channel, a real gateway"
+echo "              dispatches an inbound webhook POST through the agent pipeline,"
+echo "              and a full inbound->agent->outbound round-trip lands the reply"

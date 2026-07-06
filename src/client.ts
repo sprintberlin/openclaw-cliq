@@ -93,6 +93,18 @@ export interface CliqChannelConfig {
    * prompt section entirely.
    */
   reactions?: CliqReactionGuidanceConfig;
+  /**
+   * Override the hard-coded EU REST API base (`https://cliq.zoho.eu`).
+   * Intended for self-hosted / alternate Zoho data centers and for
+   * hermetic testing (pointing at a local mock). When unset the EU
+   * endpoint is used.
+   */
+  apiBase?: string;
+  /**
+   * Override the hard-coded EU OAuth base (`https://accounts.zoho.eu`).
+   * Same use case as `apiBase`. When unset the EU endpoint is used.
+   */
+  oauthBase?: string;
 }
 
 /** Per-account reaction-guidance config (under `channels.cliq.reactions`). */
@@ -120,6 +132,10 @@ export interface ResolvedCliqAccount {
    * `client_credentials` (which only works for bot DMs).
    */
   refreshToken?: string;
+  /** Resolved REST API base (EU default unless overridden in config). */
+  apiBase?: string;
+  /** Resolved OAuth base (EU default unless overridden in config). */
+  oauthBase?: string;
 }
 
 export function resolveCliqConfig(
@@ -168,6 +184,8 @@ export function resolveCliqConfig(
     selfSenderIds: section?.selfSenderIds ?? [],
     blockStreaming,
     refreshToken: refreshToken || undefined,
+    apiBase: section?.apiBase || undefined,
+    oauthBase: section?.oauthBase || undefined,
   };
 }
 

@@ -35,14 +35,6 @@
 
 ## Phase 5 — Verification ladder (prove it, don't guess)
 
-- **Stage-4b: full agent round-trip with a stub model + mocked outbound.** Wire
-  a headless stub/echo model provider (or a local fake model endpoint) and
-  intercept the outbound Cliq OAuth + send calls (point `cliq.zoho.eu` /
-  `accounts.zoho.eu` at a local mock), so the smoke can assert the agent reply
-  is actually delivered end-to-end (not just that the inbound was dispatched).
-  Today's Stage-4 smoke proves dispatch reached the agent lane + the outbound
-  OAuth hop; the reply itself cannot be asserted without a real model + real
-  Zoho credentials.
 - **Contract/test API** (`test-api.ts`). Adopt the SDK's channel test contract so the plugin is
   exercised the same way the bundled channels are.
 

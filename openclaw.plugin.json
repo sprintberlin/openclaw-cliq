@@ -100,7 +100,9 @@
             "default": "minimal"
           }
         }
-      }
+      },
+      "apiBase": { "type": "string" },
+      "oauthBase": { "type": "string" }
     }
   },
   "channelConfigs": {
@@ -201,7 +203,9 @@
                 "default": "minimal"
               }
             }
-          }
+          },
+          "apiBase": { "type": "string" },
+          "oauthBase": { "type": "string" }
         },
         "required": ["clientId", "clientSecret", "botId"]
       },

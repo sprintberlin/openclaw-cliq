@@ -123,6 +123,19 @@ describe("inspectCliqAccount", () => {
     expect(r.scopes).toContain("ZohoCliq.Messages.UPDATE");
   });
 
+  it("reports overridden apiBase/oauthBase when set in config", () => {
+    const cfg = cfgWith({
+      clientId: "id",
+      clientSecret: "s",
+      botId: "b",
+      apiBase: "http://127.0.0.1:9999",
+      oauthBase: "http://127.0.0.1:9998",
+    });
+    const r = inspectCliqAccount({ cfg });
+    expect(r.apiBase).toBe("http://127.0.0.1:9999");
+    expect(r.oauthBase).toBe("http://127.0.0.1:9998");
+  });
+
   it("reports streamingPreview=on when opted in", () => {
     const r = inspectCliqAccount({
       cfg: cfgWith({
