@@ -23,17 +23,26 @@ concurrency:
 jobs:
   opencode-runner:
     # Trigger logic:
-    # - workflow_dispatch: always run
-    # - labeled event with 'follow-up' label: re-trigger (agent removes it at start, verification may set it again)
-    # - opened/edited/reopened: run unless blocked by on-hold or needs-human
+    # - workflow_dispatch: always run (GitHub already restricts this to users with write access)
+    # - issue events: ONLY for issues authored by a trusted maintainer
+    #   (OWNER/MEMBER/COLLABORATOR). This is the public-repo safety gate: a
+    #   stranger opening an issue must NOT auto-run the coding agent (which holds
+    #   write access + an LLM key). author_association reflects the issue AUTHOR,
+    #   so a follow-up re-label on a maintainer's issue still qualifies, while a
+    #   non-maintainer's issue never triggers (initial or re-trigger).
+    # - labeled event with 'follow-up' label: re-trigger; other labels gate it out.
     if: |
       github.event_name == 'workflow_dispatch'
-      || (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'follow-up')
-      || (github.event_name == 'issues' && github.event.action != 'labeled'
-          && !contains(github.event.issue.labels.*.name, 'aider')
-          && !contains(github.event.issue.labels.*.name, 'follow-up')
-          && !contains(github.event.issue.labels.*.name, 'needs-human')
-          && !contains(github.event.issue.labels.*.name, 'on-hold'))
+      || (github.event_name == 'issues'
+          && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association)
+          && (
+            (github.event.action == 'labeled' && github.event.label.name == 'follow-up')
+            || (github.event.action != 'labeled'
+                && !contains(github.event.issue.labels.*.name, 'aider')
+                && !contains(github.event.issue.labels.*.name, 'follow-up')
+                && !contains(github.event.issue.labels.*.name, 'needs-human')
+                && !contains(github.event.issue.labels.*.name, 'on-hold'))
+          ))
     runs-on: ubuntu-latest
     timeout-minutes: 30
 

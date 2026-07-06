@@ -2,15 +2,29 @@
 
 Zoho Cliq channel plugin for [OpenClaw](https://github.com/openclaw/openclaw).
 
-> **Status:** Early development. Not yet functional.
+> **Status:** Working. Verified live on a real gateway — DMs and channel @mentions both round-trip end to end.
 
 ## What this is
 
-A native OpenClaw channel plugin that connects OpenClaw agents to [Zoho Cliq](https://www.zoho.com/cliq/). Once installed, OpenClaw agents can receive messages (mentions + DMs) and respond as bots in Cliq channels and direct messages.
+A native OpenClaw channel plugin that connects OpenClaw agents to [Zoho Cliq](https://www.zoho.com/cliq/). Once installed, OpenClaw agents receive messages (channel @mentions + DMs) via a webhook and respond as the bot in Cliq channels and direct messages — the same way the bundled Telegram/Discord channels work.
+
+## Features
+
+- **DMs and channel @mentions** — inbound via a Deluge webhook, outbound as the bot (DMs via `userids`, channel posts via `channelsbyname`).
+- **OAuth 2.0** — `client_credentials` for DMs; a user-context **refresh token** for channel posts / message edits (EU endpoints).
+- **Reliability** — durable-before-ack ingest, de-dup on redelivery, bot-loop / self-message protection, outbound retry with error classification, hardened webhook auth (constant-time secret compare, single-header, failed-auth rate limiting).
+- **Rich messaging** — Markdown→Cliq formatting, live-edit streaming previews, message actions (edit/delete/react), interactive buttons & cards, slash-style commands, reply threading.
+- **DM security** — allowlist / pairing / open / disabled policies with an approval flow.
+- **Agent-facing** — typing indicator, per-group mention & tool policy, message-tool hints.
+- **Operations** — `openclaw status` / `channels` health probe, `openclaw directory` peer/channel lookup, plugin doctor diagnostics, interactive setup wizard, SecretRef-backed credentials, security audit, session binding, multi-account, lifecycle hooks.
+
+See the [setup guide](#setup-guide--zoho-cliq-bot-with-openclaw) below to connect it to your Cliq workspace.
+
+> **Known limitation:** the bot can *send* reactions, but *inbound* reaction notifications (being told when a user reacts) are not yet possible — the OpenClaw plugin SDK exposes no inbound non-message event hook for external channel plugins. Tracked upstream: [openclaw/openclaw#100447](https://github.com/openclaw/openclaw/issues/100447).
 
 ## Development
 
-This plugin is developed iteratively by an autonomous coding agent (OpenCode via GitHub Actions). See `AGENTS.md` for project context and conventions, and `ROADMAP.md` for the open worklist / feature-parity target.
+This plugin is developed iteratively by an autonomous coding agent (OpenCode via GitHub Actions). See `AGENTS.md` for project context and conventions, and `ROADMAP.md` for the open worklist / feature-parity target. **The coding-agent workflow only runs for issues opened by repo maintainers** (owner / member / collaborator) — a public issue will not trigger it.
 
 ---
 
