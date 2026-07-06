@@ -33,12 +33,6 @@
 
 ---
 
-## Phase 5 — Verification ladder (prove it, don't guess)
-
-*(no open items)*
-
----
-
 ## Blocked on upstream (not actionable until resolved)
 
 Open work we *want*, gated on an external dependency. Do not pick these in an iterate run —
