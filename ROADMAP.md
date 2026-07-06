@@ -71,16 +71,23 @@ verified-live core.
     operations at all. The v2 edit + list-chat-messages paths therefore stay v2 indefinitely
     (a v3 dead end — no swap available). The message-delete family was migrated in its own
     increment (v3 bulk-delete with a 1-element `message_ids` list, scope `Messages.DELETE`).
-  - **Reactions** (`/api/v2/chats/{chatId}/messages/{messageId}/reactions`) — check the v3
-    spec for a reactions equivalent (not visible in the v3 sidebar; may be v2-only).
+  - **Reactions** (`/api/v2/chats/{chatId}/messages/{messageId}/reactions`) —
+    confirmed v2-only: the v3 REST API has no reactions endpoint anywhere
+    (not under Messages, Chats, or Threads — v3 exposes only Stars + Pin
+    Messages as reaction-adjacent surfaces). The add/remove paths stay on
+    `/api/v2/...` indefinitely regardless of `apiVersion` (locked by a
+    regression test in `src/reactions.test.ts`).
   - **Directory** (`/api/v2/users`, `/api/v2/channels`) — v3 has no org-user / channel
     directory; `GET /api/v3/chats?type=dm|channel` returns chats (a semantic change: only
     users / channels the bot already has a conversation with), so this is a behavior decision,
     not a clean swap.
-  - **File download** (`/api/v2/files/{fileId}`) — check the v3 spec for a files equivalent.
-  - **Channel-chat-id resolution** (`GET /api/v2/channelsbyname/{name}`) — v3 has
-    `GET /api/v3/chats/{chatId}` (by chat id, not by unique name); the channelsbyname lookup
-    may be v2-only.
+  - **File download** (`/api/v2/files/{fileId}`) — confirmed v2-only: v3 has no
+    Files API (FILE_ID appears in the v3 glossary but no Files endpoint exists
+    in the v3 sidebar / OpenAPI).
+  - **Channel-chat-id resolution** (`GET /api/v2/channelsbyname/{name}`) —
+    confirmed v2-only: v3 chat retrieval is `GET /api/v3/chats/{chatId}` (by
+    chat id, not by unique name); the channelsbyname lookup has no v3
+    equivalent.
   Ref: v3 Introduction <https://www.zoho.com/cliq/help/restapi/v3/introduction/>,
   v3 Messages <https://www.zoho.com/cliq/help/restapi/v3/messages/>,
   v3 Chats <https://www.zoho.com/cliq/help/restapi/v3/chats/>.

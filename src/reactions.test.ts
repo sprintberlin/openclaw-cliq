@@ -142,4 +142,42 @@ describe("CliqClient reactions API (issue #30)", () => {
     expect(ccCall).toBeDefined();
     expect(ccCall!.url).toContain("scope=ZohoCliq.messageactions.CREATE");
   });
+
+  /**
+   * v3 dead-end guard (issue #57). The v3 REST API has NO reactions
+   * equivalent — confirmed against the v3 Messages, Chats, and Threads
+   * OpenAPI / REST docs (v3 Messages has only delete-multiple, post,
+   * forward, search; v3 Chats has no message operations; the v3 sidebar
+   * exposes Stars + Pin Messages but no Reactions). The add/remove
+   * reactions paths therefore stay on `/api/v2/...` REGARDLESS of the
+   * `apiVersion` opt-in, indefinitely. This test locks that invariant so a
+   * future contributor does not accidentally wire reactions to a v3 path
+   * that does not exist.
+   */
+  it("reactions stay on /api/v2 even when apiVersion==='v3' (v3 has no reactions endpoint)", async () => {
+    const { fetchCalls } = mockFetch({});
+    // 9th constructor param is `apiVersion`. v3 opts the channel-text,
+    // bot-DM, and message-delete families into their v3 endpoints — but
+    // reactions have no v3 equivalent and must remain v2.
+    const client = new CliqClient(
+      "id",
+      "secret",
+      "bot",
+      undefined,
+      undefined,
+      { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1, sleep: async () => {}, random: () => 0 },
+      undefined,
+      "rt-secret",
+      "v3",
+    );
+    await client.addMessageReaction({ chatId: "CT_c", messageId: "m", emoji: ":smile:" });
+    await client.removeMessageReaction({ chatId: "CT_c", messageId: "m", emoji: ":smile:" });
+
+    const reactionCalls = fetchCalls.filter((c) => c.url.includes("/reactions"));
+    expect(reactionCalls.length).toBe(2);
+    for (const c of reactionCalls) {
+      expect(c.url).toContain("/api/v2/chats/CT_c/messages/m/reactions");
+      expect(c.url).not.toContain("/api/v3/");
+    }
+  });
 });

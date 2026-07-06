@@ -38,10 +38,17 @@ export type CliqApiVersion = "v2" | "v3";
  *    delete endpoint, only the bulk one — a 1-element delete-multiple call.
  *  - channel **card/button** posts, channel **media** posts,
  *    message edit / list, reactions, directory, file download,
- *    channel-chat-id resolution → v2 only (v3 has no equivalent, or the v3
- *    shape differs and is migrated in a later increment). v3 Messages has no
- *    single-message edit or get endpoint (only delete-multiple, post,
- *    forward, search); v3 Chats has no message operations at all.
+ *    channel-chat-id resolution → v2 only. Confirmed against the v3 REST
+ *    docs: v3 Messages has only delete-multiple, post, forward, search (no
+ *    single-message edit or get); v3 Chats has no message operations at
+ *    all; v3 has no reactions endpoint anywhere (not under Messages,
+ *    Chats, or Threads — only Stars + Pin Messages exist as
+ *    reaction-adjacent surfaces); v3 has no Files API and no
+ *    channelsbyname lookup (v3 chat retrieval is by CHAT_ID, not unique
+ *    name). These families therefore stay v2 indefinitely (v3 dead ends —
+ *    no swap available). The message-delete family was migrated in its own
+ *    increment (v3 bulk-delete with a 1-element `message_ids` list, scope
+ *    `Messages.DELETE`).
  *
  * v3 channel text post: `POST /api/v3/channelsbyname/{name}/messages` with
  * body `{ text, reply_to?, sync_message? }` and the
@@ -180,11 +187,12 @@ export interface CliqChannelConfig {
    * id for live-edit. The v3 delete path is a 1-element delete-multiple call
    * (v3 has no single-message delete endpoint) and parses the per-message
    * `message.delete_result` response. Other families (cards, media, edits,
-   * list, reactions, directory) stay on v2 until their v3 migration
-   * increment — v3 Messages has no single-message edit or get endpoint
-   * (only delete-multiple, post, forward, search), so edit/list stay v2
-   * indefinitely. Migrating is incremental and per-family so the core never
-   * regresses in one change.
+   * list, reactions, directory, file download, channel-chat-id resolution)
+   * stay on v2 — confirmed against the v3 REST docs these are v3 dead ends
+   * with no swap available (v3 Messages has no single-message edit or get
+   * endpoint; v3 has no reactions endpoint anywhere; v3 has no Files API;
+   * v3 chat retrieval is by CHAT_ID, not by unique name). Migrating is
+   * incremental and per-family so the core never regresses in one change.
    */
   apiVersion?: CliqApiVersion;
 }
