@@ -11,6 +11,8 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-06
+
 ### Added
 
 - Multi-data-center auto-detection so non-EU Zoho installs work out of the box
@@ -87,6 +89,7 @@ publish workflow extracts the matching section as the release notes (see
   lookup, plugin doctor, interactive setup wizard, SecretRef-backed credentials,
   security audit collector, session binding, multi-account, lifecycle hooks.
 
-[Unreleased]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/sprintberlin/openclaw-cliq/releases/tag/v0.1.0
