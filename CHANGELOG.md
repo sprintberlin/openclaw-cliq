@@ -13,6 +13,26 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
+- Welcome message on subscribe (issue #52): the Cliq bot **Welcome Handler**
+  fires when a user subscribes (or re-subscribes) to the bot, but the plugin
+  ignored it. A new `welcome` config (`{ enabled, text, textRejoin }`, default
+  `enabled: false`, schema-validated in both the top-level and
+  `channelConfigs.cliq` schemas with `uiHints`) opts the channel into posting a
+  configurable greeting DM to the subscriber when the Deluge Welcome Handler
+  forwards the event to `/cliq/webhook` with `handler: "welcome"` (or
+  `"subscribe"`) and Cliq's `newuser` boolean. `text` is used for first-time
+  subscribers and `textRejoin` for returning ones; both default to a friendly
+  greeting and support `{{firstName}}` / `{{lastName}}` / `{{name}}` / `{{id}}`
+  / `{{email}}` placeholders resolved from the forwarded `user` object. The DM
+  admission policy (`dmPolicy` / `allowFrom`) is honored — a denied sender is
+  never greeted, and under the `pairing` policy an un-paired subscriber is
+  skipped (the pairing flow owns their first contact). A redelivered subscribe
+  event is deduped by subscriber id so the user is never greeted twice. A
+  failed greeting send is swallowed + logged and never breaks or delays the
+  webhook ack. No new OAuth scope required (greeting DMs use the same
+  `ZohoCliq.Webhooks.CREATE` scope as any bot DM, obtained via the existing
+  `client_credentials` grant). See README §5a for the Deluge Welcome Handler
+  script.
 - Stop / abort the running turn (issue #51): sending a stop intent (`stop`,
   `/stop`, `esc`, plus common localized equivalents such as `halt`, `arrête`,
   `停止`, `стop`, …) now interrupts the in-flight agent run for that chat

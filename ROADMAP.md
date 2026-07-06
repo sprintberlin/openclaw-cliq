@@ -51,11 +51,6 @@
 Small, safe, high-visibility. None of these need the v3 migration, so they ship on the current
 base. (The instant-ack placeholder is already in flight — see the open issue.)
 
-- **Welcome message on subscribe.** Consume the bot's **Welcome Handler** so a first-time
-  subscriber receives a configurable greeting; respect `dmPolicy` (never greet a denied sender).
-  The Deluge Welcome Handler already exists in the bot editor but the plugin ignores it today.
-  Ref: Cliq Bot Handlers <https://www.zoho.com/cliq/help/platform/bothandlers.html>.
-
 ## Phase 2 — REST API v3 foundation
 
 The base everything rich builds on. Do this **incrementally**, not as a big-bang rewrite of the

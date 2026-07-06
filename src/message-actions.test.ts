@@ -26,6 +26,7 @@ function makeAccount(
     selfSenderIds: [],
     blockStreaming: false,
     thinking: { mode: "off", text: "💭 …" },
+    welcome: { enabled: false, text: "", textRejoin: "" },
     ...overrides,
   };
 }

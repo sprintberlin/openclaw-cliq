@@ -19,6 +19,7 @@ function account(over: Partial<ResolvedCliqAccount> = {}): ResolvedCliqAccount {
     selfSenderIds: [],
     blockStreaming: false,
     thinking: { mode: "off", text: "💭 …" },
+    welcome: { enabled: false, text: "", textRejoin: "" },
     ...over,
   };
 }

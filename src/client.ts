@@ -109,6 +109,13 @@ export interface CliqChannelConfig {
    */
   thinking?: CliqThinkingConfig;
   /**
+   * Welcome-message-on-subscribe config. When the Deluge Welcome Handler
+   * forwards a subscribe event and `welcome.enabled === true`, the bot posts
+   * a greeting DM to the subscriber (honoring `dmPolicy` / `allowFrom`). See
+   * {@link CliqWelcomeConfig} for the field shape.
+   */
+  welcome?: CliqWelcomeConfig;
+  /**
    * Override the hard-coded EU REST API base (`https://cliq.zoho.eu`).
    * Intended for self-hosted / alternate Zoho data centers and for
    * hermetic testing (pointing at a local mock). When unset the EU
@@ -135,6 +142,30 @@ export type CliqThinkingConfig = {
 
 /** Default placeholder text posted when `thinking.mode === "placeholder"`. */
 export const DEFAULT_CLIQ_THINKING_TEXT = "💭 …";
+
+/**
+ * Welcome-message-on-subscribe config (under `channels.cliq.welcome`). The
+ * Cliq bot **Welcome Handler** fires when a user subscribes (or re-subscribes)
+ * to the bot; when the Deluge handler forwards that event to our webhook and
+ * `welcome.enabled === true`, the bot posts a configurable greeting DM to the
+ * subscriber. `text` is used for first-time subscribers, `textRejoin` for
+ * users who unsubscribed and came back. Both support `{{firstName}}` /
+ * `{{lastName}}` / `{{name}}` / `{{id}}` / `{{email}}` placeholders resolved
+ * from the forwarded `user` object. The DM admission policy (`dmPolicy` /
+ * `allowFrom`) is honored — a denied sender is never greeted.
+ */
+export type CliqWelcomeConfig = {
+  enabled?: boolean;
+  text?: string;
+  textRejoin?: string;
+};
+
+/** Default greeting for a first-time subscriber. */
+export const DEFAULT_CLIQ_WELCOME_TEXT =
+  "👋 Hi {{firstName}}! Thanks for subscribing. Send me a message to get started.";
+/** Default greeting for a returning (re-subscribing) user. */
+export const DEFAULT_CLIQ_WELCOME_REJOIN_TEXT =
+  "👋 Welcome back, {{firstName}}!";
 
 export interface ResolvedCliqAccount {
   accountId: string | null;
@@ -168,6 +199,13 @@ export interface ResolvedCliqAccount {
    * path already shows progress otherwise).
    */
   thinking: { mode: "off" | "placeholder"; text: string };
+  /**
+   * Resolved welcome-on-subscribe config. `enabled` defaults to `false`
+   * (opt-in — no setup gets a surprise greeting DM). `text` / `textRejoin`
+   * default to {@link DEFAULT_CLIQ_WELCOME_TEXT} /
+   * {@link DEFAULT_CLIQ_WELCOME_REJOIN_TEXT} when `enabled === true`.
+   */
+  welcome: { enabled: boolean; text: string; textRejoin: string };
 }
 
 export function resolveCliqConfig(
@@ -221,6 +259,11 @@ export function resolveCliqConfig(
     thinking: {
       mode: section?.thinking?.mode === "placeholder" ? "placeholder" : "off",
       text: section?.thinking?.text || DEFAULT_CLIQ_THINKING_TEXT,
+    },
+    welcome: {
+      enabled: section?.welcome?.enabled === true,
+      text: section?.welcome?.text || DEFAULT_CLIQ_WELCOME_TEXT,
+      textRejoin: section?.welcome?.textRejoin || DEFAULT_CLIQ_WELCOME_REJOIN_TEXT,
     },
   };
 }

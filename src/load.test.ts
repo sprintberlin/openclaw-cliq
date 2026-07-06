@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import cliqEntry from "../index.js";
 import { cliqPlugin } from "./channel.js";
 import { resetCliqDedupeForTest } from "./dedupe.js";
+import { setCliqClientRegistry } from "./runtime-api.js";
 import {
   createCliqTestConfig,
   createMockIncomingRequest,
@@ -213,8 +214,253 @@ describe("durable-before-ack ingest (issue #12)", () => {
   });
 });
 
-describe("build configuration (issue #7: npm run build)", () => {
-  it("package.json exposes a build script invoking tsc -p tsconfig.build.json", () => {
+describe("welcome-on-subscribe webhook routing (issue #52)", () => {
+  beforeEach(() => {
+    resetCliqDedupeForTest();
+    setCliqClientRegistry(null);
+  });
+
+  function buildWelcomeRegistration(opts: {
+    welcome?: { enabled: boolean; text?: string; textRejoin?: string };
+    dmPolicy?: string;
+    allowFrom?: string[];
+  } = {}) {
+    const section: Record<string, unknown> = {
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+      botName: "openclaw-bot",
+      webhookSecret: "s3cr3t",
+      apiBase: "https://cliq.test",
+      oauthBase: "https://accounts.test",
+    };
+    if (opts.welcome) section.welcome = opts.welcome;
+    if (opts.dmPolicy) section.dmPolicy = opts.dmPolicy;
+    if (opts.allowFrom) section.allowFrom = opts.allowFrom;
+    return registerCliqPluginForTest({
+      config: createCliqTestConfig(section),
+      runtime: createTestRuntimeChannel(async () => undefined),
+    });
+  }
+
+  function mockFetchSends(): {
+    sends: { url: string; body: string }[];
+    install: () => () => void;
+  } {
+    const sends: { url: string; body: string }[] = [];
+    const install = () => {
+      const original = globalThis.fetch;
+      globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+        const urlStr = typeof url === "string" ? url : url.toString();
+        if (urlStr.includes("/oauth/v2/token")) {
+          return new Response(
+            JSON.stringify({ access_token: "tok", expires_in: 3600 }),
+            { status: 200 },
+          );
+        }
+        if (init?.method === "POST") {
+          sends.push({ url: urlStr, body: init.body as string });
+          return new Response(JSON.stringify({ id: "msg-1" }), {
+            status: 200,
+          });
+        }
+        return new Response("", { status: 404 });
+      }) as typeof fetch;
+      return () => {
+        globalThis.fetch = original;
+      };
+    };
+    return { sends, install };
+  }
+
+  it("routes a welcome event to a greeting DM when welcome.enabled is true", async () => {
+    const { webhook } = buildWelcomeRegistration({
+      welcome: { enabled: true, text: "Hi {{firstName}}!", textRejoin: "Hi!" },
+      dmPolicy: "open",
+    });
+    const { sends, install } = mockFetchSends();
+    const restore = install();
+    try {
+      const res = createMockServerResponse();
+      await webhook.handler(
+        createMockIncomingRequest(
+          "POST",
+          {
+            handler: "welcome",
+            user: { id: "u1", first_name: "Jane" },
+            newuser: true,
+          },
+          { "x-cliq-webhook-secret": "s3cr3t" },
+        ),
+        res as unknown as any,
+      );
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toBe("ok");
+      // Exactly one POST: the greeting DM (no inbound dispatch).
+      expect(sends).toHaveLength(1);
+      const parsed = JSON.parse(sends[0].body) as { text: string; userids: string };
+      expect(parsed.text).toBe("Hi Jane!");
+      expect(parsed.userids).toBe("u1");
+      // Greeting DMs go through the bot-message endpoint.
+      expect(sends[0].url).toContain("/bots/bot/message");
+    } finally {
+      restore();
+    }
+  });
+
+  it("acks a welcome event with no send when welcome is disabled (default)", async () => {
+    const { webhook } = buildWelcomeRegistration({ dmPolicy: "open" });
+    const { sends, install } = mockFetchSends();
+    const restore = install();
+    try {
+      const res = createMockServerResponse();
+      await webhook.handler(
+        createMockIncomingRequest(
+          "POST",
+          {
+            handler: "welcome",
+            user: { id: "u1", name: "Jane" },
+            newuser: true,
+          },
+          { "x-cliq-webhook-secret": "s3cr3t" },
+        ),
+        res as unknown as any,
+      );
+      expect(res.statusCode).toBe(200);
+      expect(sends).toHaveLength(0);
+    } finally {
+      restore();
+    }
+  });
+
+  it("acks a welcome event with no send when the sender is denied by dmPolicy", async () => {
+    const { webhook } = buildWelcomeRegistration({
+      welcome: { enabled: true, text: "Hi", textRejoin: "Hi" },
+      dmPolicy: "allowlist",
+      allowFrom: ["someone-else"],
+    });
+    const { sends, install } = mockFetchSends();
+    const restore = install();
+    try {
+      const res = createMockServerResponse();
+      await webhook.handler(
+        createMockIncomingRequest(
+          "POST",
+          {
+            handler: "welcome",
+            user: { id: "stranger", name: "Stranger" },
+            newuser: true,
+          },
+          { "x-cliq-webhook-secret": "s3cr3t" },
+        ),
+        res as unknown as any,
+      );
+      expect(res.statusCode).toBe(200);
+      expect(sends).toHaveLength(0);
+    } finally {
+      restore();
+    }
+  });
+
+  it("dedupes a redelivered welcome event (no double greeting)", async () => {
+    const { webhook } = buildWelcomeRegistration({
+      welcome: { enabled: true, text: "Hi", textRejoin: "Hi" },
+      dmPolicy: "open",
+    });
+    const { sends, install } = mockFetchSends();
+    const restore = install();
+    try {
+      const payload = {
+        handler: "welcome",
+        user: { id: "u1", name: "Jane" },
+        newuser: true,
+      };
+      const res1 = createMockServerResponse();
+      await webhook.handler(
+        createMockIncomingRequest("POST", payload, {
+          "x-cliq-webhook-secret": "s3cr3t",
+        }),
+        res1 as unknown as any,
+      );
+      const res2 = createMockServerResponse();
+      await webhook.handler(
+        createMockIncomingRequest("POST", payload, {
+          "x-cliq-webhook-secret": "s3cr3t",
+        }),
+        res2 as unknown as any,
+      );
+      // First: greeted (1 send). Second: deduped (still 1 send total).
+      expect(sends).toHaveLength(1);
+      expect(res1.statusCode).toBe(200);
+      expect(res2.statusCode).toBe(200);
+    } finally {
+      restore();
+    }
+  });
+
+  it("rejects a welcome payload with no subscriber id as 400", async () => {
+    const { webhook } = buildWelcomeRegistration({
+      welcome: { enabled: true, text: "Hi", textRejoin: "Hi" },
+      dmPolicy: "open",
+    });
+    const { sends, install } = mockFetchSends();
+    const restore = install();
+    try {
+      const res = createMockServerResponse();
+      await webhook.handler(
+        createMockIncomingRequest(
+          "POST",
+          { handler: "welcome", user: { name: "NoId" } },
+          { "x-cliq-webhook-secret": "s3cr3t" },
+        ),
+        res as unknown as any,
+      );
+      expect(res.statusCode).toBe(400);
+      expect(sends).toHaveLength(0);
+    } finally {
+      restore();
+    }
+  });
+
+  it("acks 200 even when the greeting send fails (never breaks the webhook)", async () => {
+    const { webhook } = buildWelcomeRegistration({
+      welcome: { enabled: true, text: "Hi", textRejoin: "Hi" },
+      dmPolicy: "open",
+    });
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(
+          JSON.stringify({ access_token: "tok", expires_in: 3600 }),
+          { status: 200 },
+        );
+      }
+      // Bot-message send fails with a 500.
+      return new Response("boom", { status: 500 });
+    }) as typeof fetch;
+    try {
+      const res = createMockServerResponse();
+      await webhook.handler(
+        createMockIncomingRequest(
+          "POST",
+          {
+            handler: "welcome",
+            user: { id: "u1", name: "Jane" },
+            newuser: true,
+          },
+          { "x-cliq-webhook-secret": "s3cr3t" },
+        ),
+        res as unknown as any,
+      );
+      expect(res.statusCode).toBe(200);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});
+
+describe("build configuration (issue #7: npm run build)", () => {  it("package.json exposes a build script invoking tsc -p tsconfig.build.json", () => {
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
     expect(typeof pkg.scripts.build).toBe("string");
     expect(pkg.scripts.build).toMatch(/tsc/);

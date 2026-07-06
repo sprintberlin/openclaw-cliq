@@ -232,6 +232,7 @@ function applyAccountConfig(params: {
   if (Array.isArray(input.selfSenderIds)) target["selfSenderIds"] = input.selfSenderIds;
   if (input.streaming !== undefined) target["streaming"] = input.streaming;
   if (input.thinking !== undefined) target["thinking"] = input.thinking;
+  if (input.welcome !== undefined) target["welcome"] = input.welcome;
   return next as unknown as OpenClawConfig;
 }
 

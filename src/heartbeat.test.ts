@@ -115,6 +115,7 @@ describe("cliq heartbeat adapter", () => {
         selfSenderIds: [],
         blockStreaming: false,
         thinking: { mode: "off" as const, text: "💭 …" },
+        welcome: { enabled: false, text: "", textRejoin: "" },
       };
       const result = await probeCliqHeartbeat(account);
       expect(result.ok).toBe(true);

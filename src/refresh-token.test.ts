@@ -251,6 +251,7 @@ describe("CliqClient refresh-token grant (issue #27)", () => {
       selfSenderIds: [],
       blockStreaming: false,
       thinking: { mode: "off", text: "💭 …" },
+      welcome: { enabled: false, text: "", textRejoin: "" },
       refreshToken: "from-config-rt",
     };
     const client = resolveCliqClient(account);
@@ -278,6 +279,7 @@ describe("CliqClient refresh-token grant (issue #27)", () => {
       selfSenderIds: [],
       blockStreaming: false,
       thinking: { mode: "off", text: "💭 …" },
+      welcome: { enabled: false, text: "", textRejoin: "" },
       refreshToken: "registry-rt",
     };
     const client = registry.getOrCreate(account);

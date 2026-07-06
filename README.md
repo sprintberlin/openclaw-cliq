@@ -251,6 +251,7 @@ Add the `cliq` channel to your `openclaw.json` (or via `openclaw setup` / the se
 | `groupPolicy` | optional | Group/channel admission policy. `open` lets the bot respond in any channel it's @mentioned in; `allowlist` (the effective default once a `groups` map is present) restricts it to channels listed under `groups`; `disabled` ignores all group messages. |
 | `groups` | optional | Per-channel config keyed by the Cliq **channel unique name**. Each entry supports `requireMention` (boolean — `false` lets the bot respond in that channel without an explicit @mention), `ingest` (boolean), `tools` (`{ allow, alsoAllow, deny }` tool policy for that channel), and `toolsBySender` (per-sender tool policy overrides keyed by `channel:cliq:<senderId>`, `id:<senderId>`, `name:<display>`, `e164:<phone>`, `username:<handle>`, or `*`). A `*` entry applies to any channel not listed explicitly. |
 | `thinking` | optional | Instant acknowledgement / "thinking" placeholder. When `thinking.mode === "placeholder"` and a `refreshToken` is configured and `streaming.preview` is `"off"`, the bot posts a lightweight placeholder message (default `💭 …`, configurable via `thinking.text`) the moment a message is accepted, then edits it in place into the final reply — exactly one message, no duplicate. This is the Cliq-appropriate substitute for a typing indicator (Cliq exposes no bot typing API). Default `"off"` (opt-in, so no setup gets a surprise extra API call per turn). When streaming preview is on, or no `refreshToken` is present, the feature is a no-op (the live-edit path already shows progress / editing needs a user-context token). |
+| `welcome` | optional | Welcome message on subscribe. When the Cliq bot **Welcome Handler** forwards a subscribe event to the webhook (see [§5a](#5a-welcome-handler-optional)) and `welcome.enabled === true`, the bot posts a configurable greeting DM to the subscriber. `welcome.text` is used for first-time subscribers and `welcome.textRejoin` for users who unsubscribed and came back; both default to a friendly greeting and support `{{firstName}}` / `{{lastName}}` / `{{name}}` / `{{id}}` / `{{email}}` placeholders resolved from the forwarded `user` object. The DM admission policy (`dmPolicy` / `allowFrom`) is honored — a denied sender is never greeted, and under the `pairing` policy an un-paired subscriber is skipped (the pairing flow owns their first contact). Default `enabled: false` (opt-in, so no setup gets a surprise greeting). A redelivered subscribe event is deduped so the user is never greeted twice. |
 | `oauthBase` | optional | OAuth base URL for your Zoho **data center**. Defaults to the EU endpoint `https://accounts.zoho.eu`. Set it (together with `apiBase`) when your account is not on EU — see [Data centers](#data-centers). |
 | `apiBase` | optional | Cliq REST API base URL for your Zoho **data center**. Defaults to the EU endpoint `https://cliq.zoho.eu`. Set it (together with `oauthBase`) when your account is not on EU. |
 
@@ -316,6 +317,40 @@ return response;
 > plugin expects — the gateway returns `400 Unexpected token 'h',
 > "handler=me"... is not valid JSON`. Always use `body:` together with
 > the `Content-Type: application/json` header shown above.
+
+#### 5a. Welcome Handler (optional)
+
+The Cliq bot **Welcome Handler** fires when a user subscribes (or re-subscribes) to the bot. To greet new subscribers from OpenClaw config rather than hard-coding the message in Deluge, paste this script into the bot's **Welcome Handler** function (in the Cliq Bot editor → **Edit Handlers** → *Edit Code* on **Welcome Handler**). It forwards the subscribe event to the same `/cliq/webhook` endpoint the Message/Mention handlers use, with `handler: "welcome"` and Cliq's `newuser` boolean:
+
+```deluge
+// === Configuration (set these once — same values as §5) ===
+webhookUrl    = "https://<gateway-host>/cliq/webhook";
+webhookSecret = "<the same secret you set as webhookSecret in openclaw.json>";
+
+payload = Map();
+payload.put("handler", "welcome");
+payload.put("user", user);
+payload.put("newuser", newuser);
+
+headers = Map();
+headers.put("Content-Type", "application/json");
+headers.put("x-cliq-webhook-secret", webhookSecret);
+
+invokeUrl
+[
+    url    : webhookUrl
+    type   : POST
+    body   : payload.toString()
+    headers: headers
+];
+
+// The greeting is delivered by the OpenClaw gateway via the Cliq bot API,
+// so the handler itself returns an empty response.
+response = Map();
+return response;
+```
+
+When `welcome.enabled === true` in the channel config, the gateway posts the configured greeting DM to the subscriber (see the `welcome` row in [§4](#4-openclaw-configuration)). The event is always acknowledged so Cliq does not redeliver it; a redelivery is deduped by subscriber id so the user is never greeted twice. The `dmPolicy` / `allowFrom` gate is honored — a denied sender is never greeted. Without this handler, or with `welcome.enabled === false` (the default), subscribe events are simply not consumed by the plugin.
 
 #### Payload format reference
 

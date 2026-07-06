@@ -21,6 +21,13 @@ import {
 import { claimCliqMessage, commitCliqMessage, releaseCliqMessage } from "./src/dedupe.js";
 import { isCliqSelfMessage } from "./src/self-message.js";
 import { cliqSecurityAuditCollector } from "./src/security-audit.js";
+import {
+  isCliqWelcomePayload,
+  parseCliqWelcomePayload,
+  handleCliqWelcome,
+  buildCliqWelcomeInbound,
+} from "./src/welcome.js";
+import { resolveCliqClient } from "./src/runtime-api.js";
 
 /**
  * Per-IP fixed-window limiter for *failed* webhook authentications. Legit
@@ -107,6 +114,57 @@ export default defineChannelPluginEntry({
         if (!body.ok) {
           res.statusCode = body.error === "payload too large" ? 413 : 400;
           res.end(body.error ?? "invalid payload");
+          return true;
+        }
+
+        // Welcome-on-subscribe (issue #52): the Cliq Welcome Handler forwards a
+        // subscribe event with `handler: "welcome"` (or `"subscribe"`) and no
+        // message body. The regular parser rejects no-text payloads, so we
+        // detect + route the welcome event BEFORE the message path. When
+        // `welcome.enabled` is set, the bot posts a configurable greeting DM
+        // to the subscriber (honoring `dmPolicy` / `allowFrom`); the event is
+        // always acknowledged so Cliq does not redeliver it. A redelivery of
+        // the same subscribe event is deduped by the synthetic
+        // `welcome:<userId>` message id so the user is not greeted twice.
+        if (isCliqWelcomePayload(body.value)) {
+          const welcome = parseCliqWelcomePayload(body.value);
+          if (!welcome) {
+            res.statusCode = 400;
+            res.end("invalid welcome payload");
+            return true;
+          }
+          const claim = await claimCliqMessage(
+            buildCliqWelcomeInbound(welcome),
+            account,
+          );
+          if (claim && claim.kind !== "claimed") {
+            api.logger.debug?.(
+              `[cliq] welcome for ${welcome.senderId} skipped as ${claim.kind}`,
+            );
+            res.statusCode = 200;
+            res.end("ok");
+            return true;
+          }
+          try {
+            await handleCliqWelcome({
+              account,
+              welcome,
+              client: resolveCliqClient(account),
+              onError: (err, info) => {
+                api.logger.error?.(
+                  `[cliq] ${info.kind} failed: ${String(err)}`,
+                );
+              },
+            });
+            void commitCliqMessage(claim?.key ?? null);
+          } catch (err) {
+            releaseCliqMessage(claim?.key ?? null, err);
+            api.logger.error?.(
+              `[cliq] welcome greeting to ${welcome.senderId} failed: ${String(err)}`,
+            );
+          }
+          res.statusCode = 200;
+          res.end("ok");
           return true;
         }
 

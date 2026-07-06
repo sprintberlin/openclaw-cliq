@@ -157,6 +157,7 @@ describe("cliqStatusAdapter", () => {
       selfSenderIds: [],
       blockStreaming: false,
       thinking: { mode: "off" as const, text: "💭 …" },
+      welcome: { enabled: false, text: "", textRejoin: "" },
     };
     const snapshot = cliqStatusAdapter.buildAccountSnapshot!({
       account,

@@ -109,6 +109,15 @@
           "text": { "type": "string", "default": "💭 …" }
         }
       },
+      "welcome": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean", "default": false },
+          "text": { "type": "string" },
+          "textRejoin": { "type": "string" }
+        }
+      },
       "apiBase": { "type": "string" },
       "oauthBase": { "type": "string" }
     }
@@ -220,6 +229,15 @@
               "text": { "type": "string", "default": "💭 …" }
             }
           },
+          "welcome": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": { "type": "boolean", "default": false },
+              "text": { "type": "string" },
+              "textRejoin": { "type": "string" }
+            }
+          },
           "apiBase": { "type": "string" },
           "oauthBase": { "type": "string" }
         },
@@ -243,6 +261,7 @@
         "streaming": { "label": "Streaming preview", "options": ["off", "on"] },
         "reactions": { "label": "Agent reaction guidance", "options": ["minimal", "extensive", "off"] },
         "thinking": { "label": "Instant acknowledgement (thinking placeholder)", "options": ["off", "placeholder"] },
+        "welcome": { "label": "Welcome message on subscribe (greeting DM on first contact)" },
         "oauthBase": { "label": "OAuth base URL (data center — defaults to EU https://accounts.zoho.eu)" },
         "apiBase": { "label": "Cliq API base URL (data center — defaults to EU https://cliq.zoho.eu)" }
       }
