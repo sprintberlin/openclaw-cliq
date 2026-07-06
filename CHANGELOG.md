@@ -13,6 +13,12 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
+- Inbound media attachments (issue #48): images, files, and voice messages a user
+  sends are downloaded via the Cliq Files API (`GET /api/v2/files/{id}`, new scope
+  `ZohoCliq.Attachments.READ`) and handed to the agent as local media; voice is
+  left for the runtime media-understanding pipeline to transcribe. A failed
+  download degrades to "no media" for that attachment and never breaks the turn.
+  DM-only setups without a `refreshToken` simply skip inbound media.
 - Instant acknowledgement / "thinking" placeholder (issue #47): Zoho Cliq
   exposes no bot "typing" REST API, so the bot's progress is invisible until
   the final reply lands (the native "processing" hint is easy to miss). A new

@@ -67,7 +67,7 @@ HOW TO WORK:
 2. Decide the scope from THIS issue:
    - If the issue names a concrete task or bug  -> do exactly that.
    - If the issue is empty or just says "iterate"/"next step" -> take the TOP open item of the highest open phase in ROADMAP.md.
-3. Implement ONE coherent increment, with tests where applicable.
+3. Implement ONE coherent increment, with tests where applicable. For ANY user-facing change (new config field, new behavior, new required OAuth scope, new command, new capability), ALSO update README.md (setup/config/feature docs -- e.g. add a new scope to BOTH the section 3b scope table and the section 3c scope string) AND add a CHANGELOG.md [Unreleased] entry. The ClawHub publish workflow turns that CHANGELOG section into the release notes, so an undocumented user-facing change ships invisibly -- and a new scope silently fails for users who never consented to it.
 4. Update ROADMAP.md, keeping every line FUTURE-TENSE:
    - If you finished an item entirely, DELETE its line. If you finished only PART of it, either delete it and add a fresh item for the remainder, OR rewrite the line down to just the remaining work. Editing a line to narrow its scope is fine.
    - Never leave a "X now works"/"implemented"/"done" status clause, never mark [x], never strike through, never add a "Done"/"History"/"State" section.

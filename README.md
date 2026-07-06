@@ -43,7 +43,7 @@ DM the bot → it answers. To also reply to channel **@mentions** and stream liv
 
 | | Capability |
 | --- | --- |
-| 💬 **Messaging** | DMs + channel @mentions, inbound via a Deluge webhook, outbound as the bot (DMs via `userids`, channel posts via `channelsbyname`). |
+| 💬 **Messaging** | DMs + channel @mentions, inbound via a Deluge webhook, outbound as the bot (DMs via `userids`, channel posts via `channelsbyname`). Inbound image / file / voice attachments are downloaded and handed to the agent. |
 | ✍️ **Rich replies** | Markdown → Cliq formatting, **live-edit streaming previews**, interactive buttons & cards, slash-style commands, reply threading. |
 | ⚡ **Message actions** | Edit / delete / react to sent messages from the agent. |
 | 🔐 **OAuth 2.0** | `client_credentials` for DMs; a user-context **refresh token** for channel posts / message edits. Works on any Zoho [data center](#data-centers). |
@@ -133,7 +133,7 @@ The plugin uses **two** OAuth grant types, because the **`client_credentials`** 
 
 #### 3b. Consent the scopes
 
-When registering / re-consenting the self-client, request **all six** scopes so both the `client_credentials` (DM) and refresh-token (channel/edit) paths work:
+When registering / re-consenting the self-client, request **all seven** scopes so both the `client_credentials` (DM) and refresh-token (channel/edit) paths work:
 
 | Scope | Grant | Purpose |
 | --- | --- | --- |
@@ -143,8 +143,9 @@ When registering / re-consenting the self-client, request **all six** scopes so 
 | `ZohoCliq.Users.READ` | `client_credentials` | Resolve sender user info |
 | `ZohoCliq.Messages.UPDATE` | refresh token | Edit a sent message in place (live-edit streaming previews) |
 | `ZohoCliq.messageactions.CREATE` | refresh token | Add / remove message reactions (the `message(action=react)` tool) |
+| `ZohoCliq.Attachments.READ` | refresh token | Download inbound file / image / voice attachments (`GET /api/v2/files/{id}`) so they reach the agent |
 
-> If you previously consented with only the original three scopes, you must re-consent (generate a fresh self-client token) with `ZohoCliq.Channels.UPDATE` and `ZohoCliq.Messages.UPDATE` added — channel replies will be rejected with `invalid_scope` / 401 until you do. Reactions (`ZohoCliq.messageactions.CREATE`) are optional — skip the scope if you don't need the `react` action, and the plugin will simply not advertise reaction support.
+> If you previously consented with only the original three scopes, you must re-consent (generate a fresh self-client token) with `ZohoCliq.Channels.UPDATE` and `ZohoCliq.Messages.UPDATE` added — channel replies will be rejected with `invalid_scope` / 401 until you do. Reactions (`ZohoCliq.messageactions.CREATE`) are optional — skip the scope if you don't need the `react` action, and the plugin will simply not advertise reaction support. Likewise `ZohoCliq.Attachments.READ` is only needed for **inbound media** (downloading images / files / voice a user sends) — skip it for a text-only bot and the plugin degrades to "no media" for those messages.
 
 #### 3c. Obtain the user-context refresh token (required for channel posts + edits)
 
@@ -164,7 +165,7 @@ exchange for a permanent **refresh token**.
 1. In the **[Zoho API Console](https://api-console.zoho.com)** ([your data center](#data-centers)) → your **Self Client** → tab **Generate Code**.
 2. **Scope** (the Self Client field is comma-separated, no spaces):
    ```
-   ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Messages.UPDATE,ZohoCliq.Channels.READ,ZohoCliq.Users.READ,ZohoCliq.messageactions.CREATE
+   ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Messages.UPDATE,ZohoCliq.Channels.READ,ZohoCliq.Users.READ,ZohoCliq.messageactions.CREATE,ZohoCliq.Attachments.READ
    ```
 3. **Time Duration:** 10 minutes. **Scope Description:** anything (e.g. `openclaw`). Pick your **portal/org** if prompted.
 4. Click **Create** and copy the code — it looks like `1000.<hex>.<hex>`.

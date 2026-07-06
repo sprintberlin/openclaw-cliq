@@ -178,7 +178,7 @@ This project is developed **iteratively** by an autonomous coding agent (OpenCod
 2. Decide the scope **from the issue**:
    - If it names a concrete task or bug → do exactly that.
    - If it is empty or just says "iterate" / "next step" → take the **top open item of the highest open phase** in ROADMAP.md.
-3. Implement one coherent increment, with tests where applicable.
+3. Implement one coherent increment, with tests where applicable. **For any user-facing change** (a new config field, a new behavior, a new required OAuth scope, a new command, a new capability), also update `README.md` (setup / config / feature docs — e.g. add a new scope to BOTH the §3b scope table and the §3c scope string) AND add a `CHANGELOG.md` `[Unreleased]` entry. The ClawHub publish workflow turns that CHANGELOG section into the release notes, so an undocumented user-facing change ships invisibly — and a new scope silently fails for users who never consented to it.
 4. **Update ROADMAP.md, keeping every line future-tense:** delete the line(s) you finished; for a partially-finished item, either delete it and add a fresh item for what remains, or rewrite it down to just the remaining work (no "X now works" status clause). Add newly discovered work to the right phase. Do NOT record what you did anywhere in the file.
 5. Record any lasting *technical* insight (SDK quirks, gotchas) in the **Learnings** section of this file (AGENTS.md) — again, facts about the world, not "what I did".
 6. Run `npx tsc --noEmit`, `npm test`, and `npm run smoke:gateway` and make them all pass — a CI **hard gate** blocks the push if any fails.
