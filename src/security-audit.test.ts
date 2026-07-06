@@ -4,10 +4,7 @@ import {
   cliqSecurityAuditCollector,
 } from "./security-audit.js";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
-
-function cfgWith(section: Record<string, unknown>): OpenClawConfig {
-  return { channels: { cliq: section } } as unknown as OpenClawConfig;
-}
+import { createCliqTestConfig as cfgWith } from "./test-api.js";
 
 const REFINED = {
   clientId: "id",

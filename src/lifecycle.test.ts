@@ -12,10 +12,7 @@ import {
   type CliqAccountIdentity,
 } from "./runtime-api.js";
 import type { ResolvedCliqAccount } from "./client.js";
-
-function cfgWith(section: Record<string, unknown>): OpenClawConfig {
-  return { channels: { cliq: section } } as unknown as OpenClawConfig;
-}
+import { createCliqTestConfig as cfgWith } from "./test-api.js";
 
 function multiCfg(
   top: Record<string, unknown>,

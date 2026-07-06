@@ -1,105 +1,16 @@
 import { describe, expect, it, beforeEach } from "vitest";
-import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import cliqEntry from "../index.js";
 import { cliqPlugin } from "./channel.js";
 import { resetCliqDedupeForTest } from "./dedupe.js";
-
-type CapturedRoute = {
-  path: string;
-  auth: string;
-  handler: (req: any, res: any) => Promise<boolean | void> | boolean | void;
-};
-
-interface IncomingLike {
-  method?: string;
-  headers?: Record<string, string | string[] | undefined>;
-  on(event: "data" | "end" | "error", listener: (...args: any[]) => void): this;
-  removeAllListeners(): this;
-  destroy(): void;
-}
-
-interface ResLike {
-  statusCode?: number;
-  headers: Record<string, string | string[]>;
-  body: string;
-  ended: boolean;
-  setHeader(name: string, value: string | string[]): void;
-  end(chunk?: string): void;
-}
-
-function makeRes(): ResLike {
-  return {
-    headers: {},
-    body: "",
-    ended: false,
-    setHeader(name, value) {
-      this.headers[name] = value;
-    },
-    end(chunk) {
-      if (chunk !== undefined) this.body += chunk;
-      this.ended = true;
-    },
-  };
-}
-
-function makeReq(
-  method: string,
-  body: unknown,
-  headers: Record<string, string | string[] | undefined> = {},
-): IncomingLike {
-  const ee = new EventEmitter() as EventEmitter & IncomingLike & { destroy(): void };
-  ee.method = method;
-  ee.headers = headers;
-  // Keep the native EventEmitter `removeAllListeners` / `on` — readJsonBody
-  // relies on them and overriding them naively causes infinite recursion.
-  ee.destroy = () => {
-    /* no-op */
-  };
-  queueMicrotask(() => {
-    const raw = typeof body === "string" ? body : JSON.stringify(body);
-    ee.emit("data", Buffer.from(raw, "utf8"));
-    ee.emit("end");
-  });
-  return ee as IncomingLike;
-}
-
-function buildMockApi() {
-  const routes: CapturedRoute[] = [];
-  let registeredChannel = false;
-  let cliRegistered = false;
-  const securityAuditCollectors: Array<(ctx: unknown) => unknown> = [];
-  const api = {
-    registrationMode: "full" as const,
-    config: {} as Record<string, unknown>,
-    logger: {
-      warn: () => {},
-      error: () => {},
-      info: () => {},
-      debug: () => {},
-    },
-    runtime: {} as Record<string, unknown>,
-    registerChannel: () => {
-      registeredChannel = true;
-    },
-    registerCli: () => {
-      cliRegistered = true;
-    },
-    registerHttpRoute: (params: CapturedRoute) => {
-      routes.push(params);
-    },
-    registerSecurityAuditCollector: (collector: (ctx: unknown) => unknown) => {
-      securityAuditCollectors.push(collector);
-    },
-  };
-  return {
-    api,
-    routes,
-    isRegistered: () => registeredChannel,
-    cliRegistered: () => cliRegistered,
-    securityAuditCollectors,
-  };
-}
+import {
+  createCliqTestConfig,
+  createMockIncomingRequest,
+  createMockServerResponse,
+  createTestRuntimeChannel,
+  registerCliqPluginForTest,
+  createMentionDelugePayload,
+} from "./test-api.js";
 
 describe("plugin entry load + /cliq/webhook smoke", () => {
   beforeEach(() => {
@@ -116,14 +27,13 @@ describe("plugin entry load + /cliq/webhook smoke", () => {
   });
 
   it("register() wires channel registration, cli metadata, and the /cliq/webhook route", () => {
-    const { api, routes, isRegistered, cliRegistered, securityAuditCollectors } = buildMockApi();
-    cliqEntry.register(api as any);
-    expect(isRegistered()).toBe(true);
+    const { webhook, registeredChannel, cliRegistered, securityAuditCollectors } =
+      registerCliqPluginForTest();
+    expect(registeredChannel()).toBe(true);
     expect(cliRegistered()).toBe(true);
-    const webhook = routes.find((r) => r.path === "/cliq/webhook");
     expect(webhook).toBeTruthy();
-    expect(webhook!.auth).toBe("plugin");
-    expect(typeof webhook!.handler).toBe("function");
+    expect(webhook.auth).toBe("plugin");
+    expect(typeof webhook.handler).toBe("function");
     // The security-audit collector must be registered so `openclaw security
     // audit` surfaces Cliq findings (missing webhook secret, wildcard
     // allowFrom, open DM policy, plaintext secrets).
@@ -132,11 +42,12 @@ describe("plugin entry load + /cliq/webhook smoke", () => {
   });
 
   it("GET /cliq/webhook → 405 Method Not Allowed (Allow: POST)", async () => {
-    const { api, routes } = buildMockApi();
-    cliqEntry.register(api as any);
-    const webhook = routes.find((r) => r.path === "/cliq/webhook")!;
-    const res = makeRes();
-    const result = await webhook.handler(makeReq("GET", ""), res as unknown as any);
+    const { webhook } = registerCliqPluginForTest();
+    const res = createMockServerResponse();
+    const result = await webhook.handler(
+      createMockIncomingRequest("GET", ""),
+      res as unknown as any,
+    );
     expect(result).toBe(true);
     expect(res.statusCode).toBe(405);
     expect(res.headers["Allow"]).toBe("POST");
@@ -145,19 +56,11 @@ describe("plugin entry load + /cliq/webhook smoke", () => {
   });
 
   it("POST /cliq/webhook with dummy Deluge payload but unconfigured channel → 503 (acceptable HTTP response)", async () => {
-    const { api, routes } = buildMockApi();
-    cliqEntry.register(api as any);
-    const webhook = routes.find((r) => r.path === "/cliq/webhook")!;
-    const res = makeRes();
-    const payload = {
-      message: { text: "hello from cliq", id: "m1", time: "2026-07-04T10:00:00Z" },
-      user: { id: "user-123", name: "Alice", email: "alice@example.com" },
-      chat: { id: "chat-1-B", type: "channel" },
-      channel: { unique_name: "general" },
-      handler: "openclaw-bot",
-    };
+    const { webhook } = registerCliqPluginForTest();
+    const res = createMockServerResponse();
+    const payload = createMentionDelugePayload({ handler: "openclaw-bot" });
     const result = await webhook.handler(
-      makeReq("POST", payload),
+      createMockIncomingRequest("POST", payload),
       res as unknown as any,
     );
     expect(result).toBe(true);
@@ -167,52 +70,21 @@ describe("plugin entry load + /cliq/webhook smoke", () => {
   });
 
   it("POST /cliq/webhook with configured account + valid secret + dummy payload → 200 received", async () => {
-    const { api, routes } = buildMockApi();
-    api.config = {
-      channels: {
-        cliq: {
-          clientId: "id",
-          clientSecret: "secret",
-          botId: "bot",
-          botName: "openclaw-bot",
-          webhookSecret: "s3cr3t",
-        },
-      },
-    };
-    api.runtime = {
-      channel: {
-        routing: {
-          resolveAgentRoute: () => ({ agentId: "agent-1", sessionKey: "sess-1" }),
-        },
-        session: {
-          resolveStorePath: () => "/store/agent-1",
-          readSessionUpdatedAt: () => undefined,
-          recordInboundSession: () => undefined,
-        },
-        reply: {
-          resolveEnvelopeFormatOptions: () => ({}),
-          formatAgentEnvelope: () => "envelope text",
-          finalizeInboundContext: () => ({}),
-          dispatchReplyWithBufferedBlockDispatcher: async () => undefined,
-        },
-        inbound: {
-          run: async () => undefined,
-        },
-      },
-    };
-    cliqEntry.register(api as any);
-    const webhook = routes.find((r) => r.path === "/cliq/webhook")!;
-    const res = makeRes();
-    const payload = {
-      message: { text: "@openclaw-bot hello", id: "m1", time: "2026-07-04T10:00:00Z" },
-      user: { id: "user-123", name: "Alice", email: "alice@example.com" },
-      chat: { id: "chat-1-B", type: "channel" },
-      channel: { unique_name: "general" },
-      mentions: [{ id: "bot", type: "bot" }],
-      handler: "mention",
-    };
+    const { webhook, api } = registerCliqPluginForTest();
+    api.config = createCliqTestConfig({
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+      botName: "openclaw-bot",
+      webhookSecret: "s3cr3t",
+    });
+    api.runtime = createTestRuntimeChannel(async () => undefined);
+    const res = createMockServerResponse();
+    const payload = createMentionDelugePayload();
     const result = await webhook.handler(
-      makeReq("POST", payload, { "x-cliq-webhook-secret": "s3cr3t" }),
+      createMockIncomingRequest("POST", payload, {
+        "x-cliq-webhook-secret": "s3cr3t",
+      }),
       res as unknown as any,
     );
     expect(result).toBe(true);
@@ -223,23 +95,19 @@ describe("plugin entry load + /cliq/webhook smoke", () => {
   });
 
   it("POST /cliq/webhook with wrong secret → 401 unauthorized", async () => {
-    const { api, routes } = buildMockApi();
-    api.config = {
-      channels: {
-        cliq: {
-          clientId: "id",
-          clientSecret: "secret",
-          botId: "bot",
-          botName: "openclaw-bot",
-          webhookSecret: "s3cr3t",
-        },
-      },
-    };
-    cliqEntry.register(api as any);
-    const webhook = routes.find((r) => r.path === "/cliq/webhook")!;
-    const res = makeRes();
+    const { webhook, api } = registerCliqPluginForTest();
+    api.config = createCliqTestConfig({
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+      botName: "openclaw-bot",
+      webhookSecret: "s3cr3t",
+    });
+    const res = createMockServerResponse();
     const result = await webhook.handler(
-      makeReq("POST", { message: "x" }, { "x-cliq-webhook-secret": "wrong" }),
+      createMockIncomingRequest("POST", { message: "x" }, {
+        "x-cliq-webhook-secret": "wrong",
+      }),
       res as unknown as any,
     );
     expect(result).toBe(true);
@@ -253,82 +121,39 @@ describe("durable-before-ack ingest (issue #12)", () => {
     resetCliqDedupeForTest();
   });
 
-  function buildDurableMockApi(opts: {
+  function buildDurableRegistration(opts: {
     inboundRun: () => Promise<unknown>;
     ackPolicy?: "after_dispatch" | "immediate";
   }) {
-    const routes: CapturedRoute[] = [];
-    const api = {
-      registrationMode: "full" as const,
-      config: {
-        channels: {
-          cliq: {
-            clientId: "id",
-            clientSecret: "secret",
-            botId: "bot",
-            botName: "openclaw-bot",
-            webhookSecret: "s3cr3t",
-            ...(opts.ackPolicy ? { ackPolicy: opts.ackPolicy } : {}),
-          },
-        },
-      } as Record<string, unknown>,
-      logger: {
-        warn: () => {},
-        error: () => {},
-        info: () => {},
-        debug: () => {},
-      },
-      runtime: {
-        channel: {
-          routing: {
-            resolveAgentRoute: () => ({ agentId: "agent-1", sessionKey: "sess-1" }),
-          },
-          session: {
-            resolveStorePath: () => "/store/agent-1",
-            readSessionUpdatedAt: () => undefined,
-            recordInboundSession: () => undefined,
-          },
-          reply: {
-            resolveEnvelopeFormatOptions: () => ({}),
-            formatAgentEnvelope: () => "envelope text",
-            finalizeInboundContext: () => ({}),
-            dispatchReplyWithBufferedBlockDispatcher: async () => undefined,
-          },
-          inbound: { run: opts.inboundRun },
-        },
-      } as Record<string, unknown>,
-      registerChannel: () => {},
-      registerCli: () => {},
-      registerHttpRoute: (params: CapturedRoute) => {
-        routes.push(params);
-      },
-      registerSecurityAuditCollector: () => {},
+    const section: Record<string, unknown> = {
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+      botName: "openclaw-bot",
+      webhookSecret: "s3cr3t",
     };
-    return { api, routes };
+    if (opts.ackPolicy) section.ackPolicy = opts.ackPolicy;
+    return registerCliqPluginForTest({
+      config: createCliqTestConfig(section),
+      runtime: createTestRuntimeChannel(opts.inboundRun),
+    });
   }
 
-  const mentionPayload = {
-    message: { text: "@openclaw-bot hello", id: "m1", time: "2026-07-04T10:00:00Z" },
-    user: { id: "user-123", name: "Alice" },
-    chat: { id: "chat-1-B", type: "channel" },
-    channel: { unique_name: "general" },
-    mentions: [{ id: "bot", type: "bot" }],
-    handler: "mention",
-  };
+  const mentionPayload = createMentionDelugePayload();
 
   it("default ackPolicy awaits dispatch; on success returns 200", async () => {
     let runCalled = 0;
-    const { api, routes } = buildDurableMockApi({
+    const { webhook } = buildDurableRegistration({
       inboundRun: async () => {
         runCalled++;
         return undefined;
       },
     });
-    cliqEntry.register(api as any);
-    const webhook = routes.find((r) => r.path === "/cliq/webhook")!;
-    const res = makeRes();
+    const res = createMockServerResponse();
     await webhook.handler(
-      makeReq("POST", mentionPayload, { "x-cliq-webhook-secret": "s3cr3t" }),
+      createMockIncomingRequest("POST", mentionPayload, {
+        "x-cliq-webhook-secret": "s3cr3t",
+      }),
       res as unknown as any,
     );
     expect(runCalled).toBe(1);
@@ -338,17 +163,17 @@ describe("durable-before-ack ingest (issue #12)", () => {
 
   it("default ackPolicy awaits dispatch; on failure returns 500 so Cliq redelivers", async () => {
     let runCalled = 0;
-    const { api, routes } = buildDurableMockApi({
+    const { webhook } = buildDurableRegistration({
       inboundRun: async () => {
         runCalled++;
         throw new Error("spool failed");
       },
     });
-    cliqEntry.register(api as any);
-    const webhook = routes.find((r) => r.path === "/cliq/webhook")!;
-    const res = makeRes();
+    const res = createMockServerResponse();
     await webhook.handler(
-      makeReq("POST", mentionPayload, { "x-cliq-webhook-secret": "s3cr3t" }),
+      createMockIncomingRequest("POST", mentionPayload, {
+        "x-cliq-webhook-secret": "s3cr3t",
+      }),
       res as unknown as any,
     );
     expect(runCalled).toBe(1);
@@ -359,7 +184,7 @@ describe("durable-before-ack ingest (issue #12)", () => {
   it("ackPolicy=immediate acks 200 without awaiting dispatch", async () => {
     let runStarted = false;
     let runResolved = false;
-    const { api, routes } = buildDurableMockApi({
+    const { webhook } = buildDurableRegistration({
       ackPolicy: "immediate",
       inboundRun: async () => {
         runStarted = true;
@@ -369,11 +194,11 @@ describe("durable-before-ack ingest (issue #12)", () => {
         runResolved = true;
       },
     });
-    cliqEntry.register(api as any);
-    const webhook = routes.find((r) => r.path === "/cliq/webhook")!;
-    const res = makeRes();
+    const res = createMockServerResponse();
     await webhook.handler(
-      makeReq("POST", mentionPayload, { "x-cliq-webhook-secret": "s3cr3t" }),
+      createMockIncomingRequest("POST", mentionPayload, {
+        "x-cliq-webhook-secret": "s3cr3t",
+      }),
       res as unknown as any,
     );
     expect(runStarted).toBe(true);

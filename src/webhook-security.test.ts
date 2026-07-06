@@ -10,6 +10,7 @@ import {
   verifyWebhookSecret,
   WEBHOOK_SECRET_HEADER,
 } from "./webhook-security.js";
+import { createMockServerResponse } from "./test-api.js";
 
 function reqWithHeaders(
   headers: Record<string, string | string[] | undefined>,
@@ -20,32 +21,7 @@ function reqWithHeaders(
   };
 }
 
-interface ResLike {
-  statusCode: number;
-  headers: Record<string, string | string[]>;
-  body: string;
-  ended: boolean;
-  setHeader(name: string, value: string | string[]): void;
-  end(chunk?: string): void;
-}
-
-function makeRes(): ResLike {
-  return {
-    statusCode: 0,
-    headers: {},
-    body: "",
-    ended: false,
-    setHeader(name, value) {
-      this.headers[name] = value;
-    },
-    end(chunk) {
-      if (chunk !== undefined) this.body += chunk;
-      this.ended = true;
-    },
-  };
-}
-
-function asRes(r: ResLike): RejectRes {
+function asRes(r: ReturnType<typeof createMockServerResponse>): RejectRes {
   return r as unknown as RejectRes;
 }
 
@@ -183,7 +159,7 @@ describe("createFailedAuthRateLimiter", () => {
 describe("rejectUnauthedWebhook", () => {
   it("writes 401 + Connection: close on a normal failed auth", () => {
     const limiter = createFailedAuthRateLimiter({ max: 100, windowMs: 1000 });
-    const res = makeRes();
+    const res = createMockServerResponse();
     const code = rejectUnauthedWebhook({
       req: reqWithHeaders({}, { remoteAddress: "1.2.3.4" }),
       res: asRes(res),
@@ -198,19 +174,19 @@ describe("rejectUnauthedWebhook", () => {
 
   it("writes 429 + Retry-After once the IP exceeds the failed-auth limit", () => {
     const limiter = createFailedAuthRateLimiter({ max: 2, windowMs: 1000 });
-    const res1 = makeRes();
+    const res1 = createMockServerResponse();
     rejectUnauthedWebhook({
       req: reqWithHeaders({}, { remoteAddress: "9.9.9.9" }),
       res: asRes(res1),
       limiter,
     });
-    const res2 = makeRes();
+    const res2 = createMockServerResponse();
     rejectUnauthedWebhook({
       req: reqWithHeaders({}, { remoteAddress: "9.9.9.9" }),
       res: asRes(res2),
       limiter,
     });
-    const res3 = makeRes();
+    const res3 = createMockServerResponse();
     const code = rejectUnauthedWebhook({
       req: reqWithHeaders({}, { remoteAddress: "9.9.9.9" }),
       res: asRes(res3),
@@ -237,7 +213,7 @@ describe("rejectUnauthedWebhook", () => {
       expect(ok).toBe(true);
     }
     // First *failed* auth from the same IP is still under the limit.
-    const res = makeRes();
+    const res = createMockServerResponse();
     const code = rejectUnauthedWebhook({
       req: reqWithHeaders({}, { remoteAddress: "5.5.5.5" }),
       res: asRes(res),

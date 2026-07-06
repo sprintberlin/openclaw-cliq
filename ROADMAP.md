@@ -35,8 +35,7 @@
 
 ## Phase 5 — Verification ladder (prove it, don't guess)
 
-- **Contract/test API** (`test-api.ts`). Adopt the SDK's channel test contract so the plugin is
-  exercised the same way the bundled channels are.
+*(no open items)*
 
 ---
 

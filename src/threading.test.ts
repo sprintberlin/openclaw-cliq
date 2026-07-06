@@ -10,10 +10,7 @@ import {
   resolveCliqReplyTransport,
   resolveCliqCurrentChannelId,
 } from "./threading.js";
-
-function cfgWith(section: Record<string, unknown>): OpenClawConfig {
-  return { channels: { cliq: section } } as unknown as OpenClawConfig;
-}
+import { createCliqTestConfig as cfgWith } from "./test-api.js";
 
 const baseCfg = cfgWith({ clientId: "c", clientSecret: "s", botId: "b" });
 

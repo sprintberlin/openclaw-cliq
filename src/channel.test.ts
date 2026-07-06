@@ -3,10 +3,7 @@ import { cliqPlugin } from "./channel.js";
 import { chunkMessage, normalizeCliqRouteTarget, resolveCliqConfig } from "./client.js";
 import { setCliqClientRegistry } from "./runtime-api.js";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
-
-function cfgWith(section: Record<string, unknown>): OpenClawConfig {
-  return { channels: { cliq: section } } as unknown as OpenClawConfig;
-}
+import { createCliqTestConfig as cfgWith } from "./test-api.js";
 
 describe("cliq plugin", () => {
   it("resolves account from config", () => {

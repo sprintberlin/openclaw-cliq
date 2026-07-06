@@ -6,14 +6,10 @@ import {
   isCliqCardChannelData,
 } from "./outbound-presentation.js";
 import { setCliqClientRegistry } from "./runtime-api.js";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import type { ReplyPayload } from "openclaw/plugin-sdk/core";
 import type { ChannelOutboundPayloadContext } from "openclaw/plugin-sdk/channel-runtime";
 import type { MessagePresentation } from "openclaw/plugin-sdk/interactive-runtime";
-
-function cfgWith(section: Record<string, unknown>): OpenClawConfig {
-  return { channels: { cliq: section } } as unknown as OpenClawConfig;
-}
+import { createCliqTestConfig as cfgWith } from "./test-api.js";
 
 const baseCfg = cfgWith({
   clientId: "id",

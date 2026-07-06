@@ -4,11 +4,7 @@ import {
   stripCliqMentions,
 } from "./mentions.js";
 import { cliqPlugin } from "./channel.js";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
-
-function cfgWith(section: Record<string, unknown>): OpenClawConfig {
-  return { channels: { cliq: section } } as unknown as OpenClawConfig;
-}
+import { createCliqTestConfig as cfgWith } from "./test-api.js";
 
 describe("buildCliqMentionRegexes", () => {
   it("returns no regexes when bot identity is missing", () => {

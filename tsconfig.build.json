@@ -10,5 +10,5 @@
     "noUnusedParameters": false
   },
   "include": ["index.ts", "setup-entry.ts", "src/**/*.ts"],
-  "exclude": ["node_modules", "dist", "src/**/*.test.ts", "scripts", "**/*.test.ts"]
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts", "src/test-api.ts", "scripts", "**/*.test.ts"]
 }

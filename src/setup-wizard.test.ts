@@ -6,12 +6,8 @@ import {
   applyCliqCredentials,
   CLIQ_ENV_VARS,
 } from "./setup-wizard.js";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import type { WizardPrompter } from "openclaw/plugin-sdk/setup";
-
-function cfgWith(section: Record<string, unknown>): OpenClawConfig {
-  return { channels: { cliq: section } } as unknown as OpenClawConfig;
-}
+import { createCliqTestConfig as cfgWith } from "./test-api.js";
 
 interface ScriptedCall {
   method: "text" | "confirm" | "note";
