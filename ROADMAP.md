@@ -24,12 +24,98 @@
 > the triggering issue (what to do now). No separate progress file — that context is reassembled
 > fresh each run.
 >
-> **Reference implementations** (in the cloned monorepo, study before building):
-> - `github_repos/openclaw/extensions/telegram/` — closest analog; `src/channel.ts` is the
->   adapter wiring, `AGENTS.md` documents the reliability invariants.
-> - `github_repos/openclaw/extensions/discord/` — advanced (threads, reactions, actions).
-> - `github_repos/openclaw/docs/channels/` — cross-cutting feature docs (`telegram.md`
->   "Feature reference", `bot-loop-protection.md`, `group-messages.md`, `pairing.md`, …).
+> **Reference implementations.** The coding-agent runner only checks out **this** repo — it cannot
+> read sibling clones on a maintainer's disk. Every reference here is therefore a **fetchable URL**
+> (the runner has `bash`/`curl` + web fetch). Study the behavior spec, not someone else's code.
+> - **Zoho Cliq platform + REST API** — the authoritative behavior/format spec. Platform hub:
+>   <https://www.zoho.com/cliq/help/platform/>. REST API v3: <https://www.zoho.com/cliq/help/restapi/v3/>.
+>   Per-item doc links are attached to the items that need them.
+> - **OpenClaw first-party channels** — same SDK + conventions, and the actual parity target.
+>   Browse `extensions/telegram/` (closest analog; `src/channel.ts` is the adapter wiring),
+>   `extensions/discord/` (threads, reactions, actions), and `docs/channels/` in
+>   <https://github.com/openclaw/openclaw>.
+> - **Prior art** — other Cliq-like channel plugins. **Different projects, their own licenses:
+>   study the *approach* only, do NOT copy code — our implementation stays original and MIT.**
+>   wecom <https://github.com/sunnoy/openclaw-plugin-wecom>,
+>   octo <https://github.com/Mininglamp-OSS/openclaw-channel-octo>,
+>   dingtalk <https://github.com/soimy/openclaw-channel-dingtalk>.
+
+---
+
+## Phase 1 — Inbound parity & everyday UX
+
+The features a user notices in the first five minutes. Each is self-contained and shippable on its own.
+
+- **Inbound media.** When a user sends an image, file, or voice message, download the attachment
+  from the Cliq message payload and hand it to the agent (voice → transcript where available).
+  Today the inbound path extracts text only — `src/inbound.ts` carries a `mediaUrl` stub but never
+  fetches or attaches media. Mirror how the bundled channels attach inbound media.
+  Ref: Cliq Message Object <https://www.zoho.com/cliq/help/platform/cliq-objects/message-object.html>;
+  Telegram/Discord inbound-media handling in the OpenClaw monorepo.
+- **Inbound quote / reply context.** When a user replies to or quotes a message, carry the
+  referenced message's text + id into the agent context. Outbound reply-threading already exists
+  (`src/threading.ts`); the inbound side does not. Ref: Message Object (quote fields), same doc.
+- **Abort / stop the running turn.** Recognize a stop intent (`stop`, `/stop`, `esc`, and common
+  localized equivalents) and interrupt the in-flight agent run for that chat instead of queueing
+  another turn. Ref: OpenClaw runtime cancellation surface — study Telegram/Discord in the monorepo.
+- **Welcome message on subscribe.** Consume the bot's **Welcome Handler** so a first-time
+  subscriber receives a configurable greeting; respect `dmPolicy` (never greet a denied sender).
+  The Deluge Welcome Handler already exists in the bot editor but the plugin ignores it today.
+  Ref: Cliq Bot Handlers <https://www.zoho.com/cliq/help/platform/bothandlers.html>.
+
+## Phase 2 — Per-identity agent isolation
+
+- **Dynamic agents + workspace templates.** Route each DM sender and each channel to its own
+  isolated agent session and workspace, seeded on first contact from a configurable template
+  (`AGENTS.md` and friends). Today all senders share one agent context; per-channel *tool policy*
+  exists (`src/group-policy.ts`) but not per-identity *session/workspace* isolation. Use
+  deterministic routing keys (e.g. `cliq-dm-<senderId>`, `cliq-group-<channelUniqueName>`) and let
+  an explicit OpenClaw `bindings` entry win over dynamic routing. Ref: OpenClaw agent-routing /
+  bindings + Telegram/Discord in the monorepo. (Prior art: wecom.)
+
+## Phase 3 — REST API v3 & rich interactive cards
+
+- **Migrate outbound to REST API v3.** Move the send / edit / react / metadata calls off the
+  hard-coded `/api/v2/` paths in `src/client.ts` to v3, keeping v2 only where v3 lacks parity.
+  Ref: v3 Introduction <https://www.zoho.com/cliq/help/restapi/v3/introduction/>.
+- **Adopt v3 Message Cards.** Render agent output as v3 cards where it improves UX —
+  `modern-inline` (header, field sections, action buttons) and `poll` — rather than the current
+  button/card shape in `src/presentation.ts`. Ref: Message Cards v3
+  <https://www.zoho.com/cliq/help/restapi/v3/messagecards/>.
+- **Interactive status card + confirmation for sensitive actions.** Show a live status card
+  (thinking → generating → done / failed) during a turn, and gate sensitive/tool actions behind an
+  explicit confirm button before executing. Ref: Message Cards v3 + Cliq Bot Handlers (Context
+  Handler) <https://www.zoho.com/cliq/help/platform/bothandlers.html>.
+- **Cliq Forms for structured input.** Use Cliq Forms for approval / collection flows (pairing
+  approval, parameter capture) instead of free-text parsing. Ref: Cliq platform (Form handler)
+  <https://www.zoho.com/cliq/help/platform/>.
+
+## Phase 4 — Access control & operations
+
+- **Command allowlist + admin bypass.** Restrict which slash commands non-admin users may run
+  (e.g. allow `/help`, `/status`; deny `/model` switching), with an admin list that bypasses the
+  gate. cliq enables native commands (`src/commands.ts`) but has no per-user command gate.
+  (Prior art: wecom.)
+- **Runtime quota / rate-limit awareness.** Track Zoho Cliq API usage locally and warn (logs /
+  `openclaw status`) before hitting Zoho's rate limits. Ref: v3 rate limits
+  <https://www.zoho.com/cliq/help/restapi/v3/introduction/>. (Prior art: wecom.)
+- **Egress proxy support.** Route outbound API / OAuth requests through a configured proxy for
+  locked-down enterprise networks. `apiBase` / `oauthBase` are already configurable, but there is
+  no proxy hop. (Prior art: wecom `network.egressProxyUrl`.)
+
+## Phase 5 — Agent-facing Cliq tooling
+
+- **`cliq_management` agent tool.** Expose Cliq operations to the agent as one profile-gated tool:
+  post to a channel, list channels / members, resolve users, etc. Ref: REST API v3
+  <https://www.zoho.com/cliq/help/restapi/v3/>. (Prior art: octo's single management tool.)
+- **`/btw` bypass Q&A.** A side-answer path that bypasses the main session lock so a quick question
+  gets an isolated fast reply without disturbing the running conversation. (Prior art: dingtalk.)
+- **`write-secret` pattern.** Let a user store a secret (e.g. an API key) into a file by alias
+  without ever exposing the plaintext to the model. Build on the existing SecretRef plumbing
+  (`src/secret-*.ts`). (Prior art: octo.)
+- **`<think>` / reasoning normalization + throttle.** Normalize reasoning-tag variants
+  (`<thinking>` / `<thought>` → `<think>`) and throttle streaming-preview edits so live-edit does
+  not hammer the Cliq edit API. Builds on `src/live-edit.ts`. (Prior art: wecom.)
 
 ---
 
@@ -52,5 +138,6 @@ blocker is resolved.
 ## Explicitly out of scope (for now)
 
 Telegram/Discord features with no Cliq analog or no near-term demand: long-polling transport
-(Cliq is webhook-only), forum topics, voice channels, broadcast groups, exec-approval rendering.
+(Cliq is webhook-only), forum topics, voice channels, broadcast groups, exec-approval rendering,
+and Device-Flow QR auth (Zoho uses the self-client OAuth flow this plugin already implements).
 Revisit only if a concrete use case appears.
