@@ -156,6 +156,7 @@ describe("cliqStatusAdapter", () => {
       ackPolicy: "after_dispatch" as const,
       selfSenderIds: [],
       blockStreaming: false,
+      thinking: { mode: "off" as const, text: "💭 …" },
     };
     const snapshot = cliqStatusAdapter.buildAccountSnapshot!({
       account,

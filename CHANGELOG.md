@@ -11,6 +11,23 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Added
+
+- Instant acknowledgement / "thinking" placeholder (issue #47): Zoho Cliq
+  exposes no bot "typing" REST API, so the bot's progress is invisible until
+  the final reply lands (the native "processing" hint is easy to miss). A new
+  `thinking` config (`{ mode: "off" | "placeholder", text }`, default `"off"`,
+  schema-validated in both the top-level and `channelConfigs.cliq` schemas with
+  `uiHints`) opts the channel into posting a lightweight placeholder message
+  (default `💭 …`) the moment an inbound message is accepted, then editing it
+  in place into the final agent reply — exactly one message, no duplicate. The
+  feature is a no-op when `streaming.preview` is on (the live-edit path already
+  shows progress) or when no `refreshToken` is configured (editing a message
+  needs the user-context token). A failed placeholder post or edit is
+  swallowed + logged and never breaks or delays the agent turn; when the
+  placeholder cannot be cleanly turned into the reply it is deleted so no
+  stray `💭 …` lingers. DMs and channel posts both support it.
+
 ## [0.1.2] - 2026-07-06
 
 ### Added

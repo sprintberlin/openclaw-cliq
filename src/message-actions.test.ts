@@ -25,6 +25,7 @@ function makeAccount(
     ackPolicy: "after_dispatch",
     selfSenderIds: [],
     blockStreaming: false,
+    thinking: { mode: "off", text: "💭 …" },
     ...overrides,
   };
 }

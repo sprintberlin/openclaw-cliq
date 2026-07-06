@@ -100,6 +100,15 @@ export interface CliqChannelConfig {
    */
   reactions?: CliqReactionGuidanceConfig;
   /**
+   * Instant acknowledgement / "thinking" placeholder. When `mode === "placeholder"`
+   * and a `refreshToken` is configured and streaming preview is OFF, the
+   * inbound path posts a lightweight placeholder message (e.g. `💭 …`) the
+   * moment a message is accepted, then edits it in place into the final
+   * agent reply — exactly one message, no duplicate. Default `"off"` (opt-in;
+   * avoids a surprise extra API call per turn). See issue #47.
+   */
+  thinking?: CliqThinkingConfig;
+  /**
    * Override the hard-coded EU REST API base (`https://cliq.zoho.eu`).
    * Intended for self-hosted / alternate Zoho data centers and for
    * hermetic testing (pointing at a local mock). When unset the EU
@@ -117,6 +126,15 @@ export interface CliqChannelConfig {
 export type CliqReactionGuidanceConfig = {
   agentGuidance?: "minimal" | "extensive" | "off";
 };
+
+/** Instant-acknowledgement / "thinking" placeholder config (under `channels.cliq.thinking`). */
+export type CliqThinkingConfig = {
+  mode?: "off" | "placeholder";
+  text?: string;
+};
+
+/** Default placeholder text posted when `thinking.mode === "placeholder"`. */
+export const DEFAULT_CLIQ_THINKING_TEXT = "💭 …";
 
 export interface ResolvedCliqAccount {
   accountId: string | null;
@@ -142,6 +160,14 @@ export interface ResolvedCliqAccount {
   apiBase?: string;
   /** Resolved OAuth base (EU default unless overridden in config). */
   oauthBase?: string;
+  /**
+   * Resolved instant-acknowledgement config. `mode` defaults to `"off"`; `text`
+   * defaults to {@link DEFAULT_CLIQ_THINKING_TEXT} when `mode === "placeholder"`.
+   * The inbound path only acts when `mode === "placeholder"` AND a
+   * `refreshToken` is configured AND streaming preview is off (the live-edit
+   * path already shows progress otherwise).
+   */
+  thinking: { mode: "off" | "placeholder"; text: string };
 }
 
 export function resolveCliqConfig(
@@ -192,6 +218,10 @@ export function resolveCliqConfig(
     refreshToken: refreshToken || undefined,
     apiBase: section?.apiBase || undefined,
     oauthBase: section?.oauthBase || undefined,
+    thinking: {
+      mode: section?.thinking?.mode === "placeholder" ? "placeholder" : "off",
+      text: section?.thinking?.text || DEFAULT_CLIQ_THINKING_TEXT,
+    },
   };
 }
 

@@ -245,3 +245,101 @@ describe("cliq replyToMode config schema", () => {
     ).toBeDefined();
   });
 });
+
+describe("cliq thinking config schema (issue #47)", () => {
+  const schema = manifest.channelConfigs.cliq.schema;
+  const baseConfig = {
+    clientId: "id",
+    clientSecret: "sec",
+    botId: "bot",
+  };
+
+  it("accepts thinking.mode with each valid enum value", () => {
+    for (const m of ["off", "placeholder"]) {
+      const errors = validate(schema, {
+        ...baseConfig,
+        thinking: { mode: m, text: "💭 …" },
+      });
+      expect(errors).toEqual([]);
+    }
+  });
+
+  it("rejects an unknown thinking.mode value", () => {
+    const errors = validate(schema, {
+      ...baseConfig,
+      thinking: { mode: "card" },
+    });
+    expect(errors.some((e) => e.includes("not one of"))).toBe(true);
+  });
+
+  it("rejects extra keys inside thinking (additionalProperties:false)", () => {
+    const errors = validate(schema, {
+      ...baseConfig,
+      thinking: { mode: "off", extra: 1 },
+    });
+    expect(
+      errors.some((e) => e.includes('must not have additional properties: "extra"')),
+    ).toBe(true);
+  });
+
+  it("accepts a custom thinking.text", () => {
+    const errors = validate(schema, {
+      ...baseConfig,
+      thinking: { mode: "placeholder", text: "Working on it…" },
+    });
+    expect(errors).toEqual([]);
+  });
+
+  it("the top-level configSchema also declares thinking", () => {
+    expect(manifest.configSchema.properties?.thinking).toBeDefined();
+    expect(manifest.configSchema.properties?.thinking?.properties?.mode?.enum).toEqual([
+      "off",
+      "placeholder",
+    ]);
+  });
+
+  it("uiHints declare the thinking field", () => {
+    const uiHints = (manifest as unknown as {
+      channelConfigs: {
+        cliq: {
+          uiHints?: Record<string, { label?: string; options?: string[] }>;
+        };
+      };
+    }).channelConfigs.cliq.uiHints;
+    expect(uiHints?.thinking).toBeDefined();
+    expect(uiHints?.thinking?.options).toEqual(["off", "placeholder"]);
+  });
+});
+
+describe("cliq resolveCliqConfig reads thinking (issue #47)", () => {
+  it("resolves thinking.mode === 'placeholder' + custom text", () => {
+    const cfg = cfgWith({
+      clientId: "id",
+      clientSecret: "s",
+      botId: "b",
+      thinking: { mode: "placeholder", text: "Thinking…" },
+    });
+    const account = resolveCliqConfig(cfg);
+    expect(account.thinking.mode).toBe("placeholder");
+    expect(account.thinking.text).toBe("Thinking…");
+  });
+
+  it("defaults thinking.mode to 'off' and text to the default placeholder", () => {
+    const cfg = cfgWith({ clientId: "id", clientSecret: "s", botId: "b" });
+    const account = resolveCliqConfig(cfg);
+    expect(account.thinking.mode).toBe("off");
+    expect(account.thinking.text).toBe("💭 …");
+  });
+
+  it("falls back to the default text when only mode is set", () => {
+    const cfg = cfgWith({
+      clientId: "id",
+      clientSecret: "s",
+      botId: "b",
+      thinking: { mode: "placeholder" },
+    });
+    const account = resolveCliqConfig(cfg);
+    expect(account.thinking.mode).toBe("placeholder");
+    expect(account.thinking.text).toBe("💭 …");
+  });
+});

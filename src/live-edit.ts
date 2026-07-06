@@ -31,6 +31,23 @@
  * additionally chunks it against the 5000-char limit (a latent gap — the inbound
  * `deliver` previously did not chunk, so a >5000-char reply would be rejected by
  * the Cliq API).
+ *
+ * ## `initialDraft` — instant-acknowledgement / "thinking" placeholder
+ *
+ * When `initialDraft` is set (issue #47), the FIRST `deliver` call EDITS that
+ * pre-posted placeholder message into the agent reply instead of sending a new
+ * message — so the user sees exactly one message morph from `💭 …` into the
+ * reply, with no stray duplicate. The placeholder ref `{messageId, chatId?}`
+ * comes from a `sendMessage` the inbound path issued right after admission
+ * passed; for group posts the chat id is NOT in the send response, so it is
+ * resolved here via `resolveChannelChatId` on the first edit (cached). When
+ * the edit cannot be performed cleanly (chat id unresolvable, edit API
+ * rejects, …), the placeholder is DELETED and the reply is sent as a fresh
+ * message — the "no stray `💭 …` left behind" contract. The placeholder
+ * flow is only used when `thinking.mode === "placeholder"`, a `refreshToken`
+ * is configured (editing needs a user-context token), and streaming preview
+ * is off (live-edit already shows progress); the inbound path enforces this
+ * gate before passing `initialDraft`.
  */
 import { chunkMessage, type CliqClient } from "./client.js";
 import { markdownToCliq } from "./markdown.js";
@@ -40,7 +57,11 @@ const DEFAULT_CHAR_LIMIT = 5000;
 export interface LiveEditDeliverOptions {
   client: Pick<
     CliqClient,
-    "sendMessage" | "editMessage" | "resolveChannelChatId" | "listChatMessages"
+    | "sendMessage"
+    | "editMessage"
+    | "resolveChannelChatId"
+    | "listChatMessages"
+    | "deleteMessage"
   >;
   /** Raw Cliq id the message is addressed to (user id for DMs, chatid/channel id for groups). */
   to: string;
@@ -50,6 +71,13 @@ export interface LiveEditDeliverOptions {
   enabled: boolean;
   /** Per-message character cap (Cliq enforces 5000). */
   charLimit?: number;
+  /**
+   * When set, the first `deliver` EDITS this existing message into the agent
+   * reply instead of sending a new message (the "thinking" placeholder flow).
+   * `chatId` may be omitted for group posts (the send response does not carry
+   * it); it is resolved lazily via `resolveChannelChatId` on the first edit.
+   */
+  initialDraft?: { messageId: string; chatId?: string };
 }
 
 export interface LiveEditDeliverStats {
@@ -84,24 +112,41 @@ export function createLiveEditDeliver(
     return fn;
   };
 
-  if (!opts.enabled) {
-    // Legacy: each block (or the single final reply) is its own message.
-    // Chunk against the limit so a long single reply isn't rejected by Cliq.
-    return attach(async (payload) => {
-      const text = payload.text;
-      if (!text) return;
-      const rich = markdownToCliq(text);
-      for (const chunk of chunkMessage(rich, limit)) {
-        await client.sendMessage({ to, text: chunk, isDm });
-        stats.sends++;
-      }
-    });
-  }
-
-  // Live-edit state (per dispatch turn).
-  let draftMessageId: string | undefined;
-  let draftChatId: string | undefined;
+  // Live-edit state (per dispatch turn). When `initialDraft` is supplied the
+  // first edit targets the pre-posted placeholder instead of a fresh send.
+  let draftMessageId: string | undefined = opts.initialDraft?.messageId;
+  let draftChatId: string | undefined = opts.initialDraft?.chatId;
+  let draftChatIdResolved = Boolean(draftChatId);
   let accumulated = ""; // plain (pre-markdown-conversion) text
+
+  /** Resolve the chat id for a group draft when missing (cached on the client). */
+  const resolveDraftChatId = async (): Promise<string | undefined> => {
+    if (draftChatId) return draftChatId;
+    if (draftChatIdResolved) return undefined; // already attempted — no chatId
+    if (isDm) {
+      draftChatIdResolved = true;
+      return undefined;
+    }
+    draftChatIdResolved = true;
+    try {
+      draftChatId = (await client.resolveChannelChatId(to)) ?? undefined;
+    } catch {
+      draftChatId = undefined;
+    }
+    return draftChatId;
+  };
+
+  /** Best-effort delete the current draft (placeholder) so it does not linger. */
+  const safeDeleteDraft = async (): Promise<void> => {
+    if (!draftMessageId) return;
+    const chatId = await resolveDraftChatId();
+    if (!chatId) return;
+    try {
+      await client.deleteMessage({ chatId, messageId: draftMessageId });
+    } catch {
+      // Swallow: best-effort cleanup; the turn must not break.
+    }
+  };
 
   /** Send a fresh message and make it the current draft. */
   const sendNew = async (plainText: string): Promise<void> => {
@@ -125,6 +170,7 @@ export function createLiveEditDeliver(
       } else {
         draftChatId = undefined;
       }
+      draftChatIdResolved = true;
       accumulated = plainText;
       return;
     }
@@ -139,6 +185,94 @@ export function createLiveEditDeliver(
     draftChatId = undefined;
     accumulated = "";
   };
+
+  /**
+   * Edit the current draft (`draftMessageId` + `draftChatId`) with `richText`.
+   * On a group-edit failure, attempt a one-shot recovery via
+   * `listChatMessages` (the canonical chat id may differ). Returns `true` on
+   * success, `false` on failure (caller decides whether to fall back to a
+   * new send or delete a stray placeholder).
+   */
+  const editDraft = async (richText: string): Promise<boolean> => {
+    if (!draftMessageId || !draftChatId) return false;
+    try {
+      await client.editMessage({
+        chatId: draftChatId,
+        messageId: draftMessageId,
+        text: richText,
+      });
+      stats.edits++;
+      return true;
+    } catch {
+      if (!isDm && draftChatId) {
+        try {
+          const recent = await client.listChatMessages(draftChatId, { limit: 50 });
+          const match = recent.find((m) => m.messageId === draftMessageId);
+          if (match && match.chatId && match.chatId !== draftChatId) {
+            await client.editMessage({
+              chatId: match.chatId,
+              messageId: draftMessageId,
+              text: richText,
+            });
+            draftChatId = match.chatId;
+            stats.edits++;
+            return true;
+          }
+        } catch {
+          // recovery failed — fall through
+        }
+      }
+      return false;
+    }
+  };
+
+  if (!opts.enabled) {
+    // Legacy: each block (or the single final reply) is its own message.
+    // Chunk against the limit so a long single reply isn't rejected by Cliq.
+    // When `initialDraft` is set, the FIRST deliver edits the placeholder
+    // into the final reply instead of sending a new message (no stray
+    // placeholder); subsequent delivers (rare in legacy mode) send fresh.
+    let firstDeliverDone = false;
+    return attach(async (payload) => {
+      const text = payload.text;
+      if (!text) return;
+      const rich = markdownToCliq(text);
+      const chunks = chunkMessage(rich, limit);
+
+      if (opts.initialDraft && draftMessageId && !firstDeliverDone) {
+        firstDeliverDone = true;
+        const chatId = await resolveDraftChatId();
+        if (chatId) {
+          if (await editDraft(chunks[0])) {
+            // Send overflow chunks as fresh messages; the draft now holds
+            // the first chunk and is sealed (no further edits this turn).
+            for (let i = 1; i < chunks.length; i++) {
+              await client.sendMessage({ to, text: chunks[i], isDm });
+              stats.sends++;
+            }
+            // Mark the draft as consumed so a hypothetical second deliver
+            // sends fresh (does not try to re-edit the now-final message).
+            draftMessageId = undefined;
+            draftChatId = undefined;
+            accumulated = "";
+            return;
+          }
+          // Edit failed — fall through to delete + fresh send.
+        }
+        // Could not edit cleanly (no chatId, or edit rejected). Delete the
+        // stray placeholder and send the reply as fresh message(s).
+        stats.editFailures++;
+        await safeDeleteDraft();
+        draftMessageId = undefined;
+        draftChatId = undefined;
+      }
+
+      for (const chunk of chunks) {
+        await client.sendMessage({ to, text: chunk, isDm });
+        stats.sends++;
+      }
+    });
+  }
 
   const returned = async (payload: {
     text?: string;
@@ -157,64 +291,78 @@ export function createLiveEditDeliver(
     const richCandidate = markdownToCliq(candidate);
 
     if (richCandidate.length > limit) {
-      // Accumulated text would overflow the current draft's cap. Seal it and
-      // start a fresh message with just this block.
+      // Accumulated text would overflow the current draft's cap.
+      if (opts.initialDraft && !accumulated) {
+        // The placeholder is still the draft (nothing accumulated yet) and
+        // the FIRST block alone overflows: edit the placeholder with the
+        // first chunk and send the rest as fresh messages, then seal.
+        const chunks = chunkMessage(richCandidate, limit);
+        const chatId = await resolveDraftChatId();
+        if (chatId && (await editDraft(chunks[0]))) {
+          for (let i = 1; i < chunks.length; i++) {
+            await client.sendMessage({ to, text: chunks[i], isDm });
+            stats.sends++;
+          }
+          // Seal: no further edits to this draft.
+          draftMessageId = undefined;
+          draftChatId = undefined;
+          accumulated = "";
+          return;
+        }
+        // Could not edit cleanly — delete the stray placeholder and send the
+        // block chunked as fresh message(s) (no draft retained).
+        stats.editFailures++;
+        await safeDeleteDraft();
+        draftMessageId = undefined;
+        draftChatId = undefined;
+        for (const chunk of chunks) {
+          await client.sendMessage({ to, text: chunk, isDm });
+          stats.sends++;
+        }
+        return;
+      }
+      // Normal overflow: seal the current draft and start a fresh message
+      // with just this block.
       await sendNew(text);
       return;
     }
 
     if (!draftChatId) {
-      // No chatId to edit with (e.g. a DM send that didn't return one). Fall
+      // No chatId to edit with. When an `initialDraft` is present we resolve
+      // it lazily; if still missing, delete the placeholder and send fresh
+      // (no stray `💭 …`). Otherwise (a DM send that didn't return one) fall
       // back to sending the accumulated text as a new message.
-      await sendNew(candidate);
-      return;
-    }
-
-    try {
-      await client.editMessage({
-        chatId: draftChatId,
-        messageId: draftMessageId,
-        text: richCandidate,
-      });
-      stats.edits++;
-      accumulated = candidate;
-    } catch {
-      // Edit failed. For group/channel posts the chat id we resolved may
-      // not be the canonical one the edit API expects (the bot-message send
-      // `id` is not always the chat-message `message_id`), so attempt a
-      // one-shot recovery: list recent chat messages and look up the
-      // editable ref matching our draft message id. If found, retry the
-      // edit with the recovered chat id; the recovered id is cached as the
-      // draft chat id for subsequent edits this turn. DMs skip this — the
-      // DM send response already carries the authoritative chat id.
-      let recovered = false;
-      if (!isDm && draftChatId) {
-        try {
-          const recent = await client.listChatMessages(draftChatId, { limit: 50 });
-          const match = recent.find((m) => m.messageId === draftMessageId);
-          if (match && match.chatId && match.chatId !== draftChatId) {
-            await client.editMessage({
-              chatId: match.chatId,
-              messageId: draftMessageId,
-              text: richCandidate,
-            });
-            draftChatId = match.chatId;
-            stats.edits++;
-            recovered = true;
-          }
-        } catch {
-          // recovery failed — fall through to the new-message fallback
+      if (opts.initialDraft) {
+        const chatId = await resolveDraftChatId();
+        if (!chatId) {
+          stats.editFailures++;
+          await safeDeleteDraft();
+          draftMessageId = undefined;
+          draftChatId = undefined;
+          await sendNew(candidate);
+          return;
         }
-      }
-      if (recovered) {
-        accumulated = candidate;
+      } else {
+        await sendNew(candidate);
         return;
       }
-      // Degrade to a new message carrying the accumulated text so no content
-      // is lost; that new message becomes the editable draft going forward.
-      stats.editFailures++;
-      await sendNew(candidate);
     }
+
+    if (await editDraft(richCandidate)) {
+      accumulated = candidate;
+      return;
+    }
+    // Edit failed (and recovery failed). Degrade to a new message carrying
+    // the accumulated text so no content is lost; that new message becomes
+    // the editable draft going forward. When an `initialDraft` was the
+    // target of the failed edit, delete it so it is not left stray.
+    stats.editFailures++;
+    if (opts.initialDraft && !accumulated) {
+      await safeDeleteDraft();
+    }
+    draftMessageId = undefined;
+    draftChatId = undefined;
+    await sendNew(candidate);
   };
 
   return attach(returned);

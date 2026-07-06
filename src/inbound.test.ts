@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import type { IncomingMessage } from "node:http";
 import {
@@ -27,6 +27,7 @@ function account(overrides: Partial<ResolvedCliqAccount> = {}): ResolvedCliqAcco
     ackPolicy: "after_dispatch",
     selfSenderIds: [],
     blockStreaming: false,
+    thinking: { mode: "off", text: "💭 …" },
     ...overrides,
   };
 }
@@ -523,5 +524,230 @@ describe("dispatchCliqInbound context fields", () => {
       parsed: parsed!,
     });
     expect(capture.ctxPayload?.From).toBe("cliq:group:CT_channel_chat");
+  });
+});
+
+describe("dispatchCliqInbound — thinking placeholder (issue #47)", () => {
+  function mockRuntimeWithDeliver(replyText: string): CliqRuntime {
+    return {
+      channel: {
+        routing: {
+          resolveAgentRoute: () => ({
+            agentId: "agent-1",
+            sessionKey: "sess-1",
+            accountId: "default",
+          }),
+        },
+        session: {
+          resolveStorePath: () => "/tmp/store",
+          readSessionUpdatedAt: () => undefined,
+          recordInboundSession: () => undefined,
+        },
+        reply: {
+          resolveEnvelopeFormatOptions: () => ({}),
+          formatAgentEnvelope: (p: Record<string, unknown>) => String(p.body ?? ""),
+          finalizeInboundContext: (fields: Record<string, unknown>) => fields,
+          dispatchReplyWithBufferedBlockDispatcher: async () => undefined,
+        },
+        inbound: {
+          // Drive the delivery ourselves: resolve the turn, then invoke its
+          // `delivery.deliver` with the canned reply text — simulating the
+          // buffered block dispatcher flushing a single final reply.
+          run: async (params) => {
+            const adapter = (params as unknown as {
+              adapter: {
+                resolveTurn: (...args: unknown[]) => unknown;
+              };
+            }).adapter;
+            const turn = adapter.resolveTurn({}, {}, {}) as unknown as {
+              delivery: {
+                deliver: (payload: { text?: string }) => Promise<void>;
+                onError: (err: unknown, info: { kind: string }) => void;
+              };
+            };
+            // Mirror the buffered block dispatcher: route a deliver throw to
+            // `delivery.onError` so the turn never propagates an uncaught
+            // rejection (production wraps the deliver call the same way).
+            try {
+              await turn.delivery.deliver({ text: replyText });
+            } catch (err) {
+              turn.delivery.onError(err, { kind: "deliver" });
+            }
+          },
+        },
+        pairing: {
+          buildPairingReply: () => "",
+          upsertPairingRequest: async () => ({ code: "CODE", created: true }),
+        },
+      },
+    };
+  }
+
+  function makeMockClient(opts: {
+    placeholderChatId?: string;
+    sendFails?: boolean;
+    editFails?: boolean;
+    channelChatId?: string;
+  } = {}) {
+    const sends: { to: string; text: string; isDm?: boolean }[] = [];
+    const edits: { chatId: string; messageId: string; text: string }[] = [];
+    const deletes: { chatId: string; messageId: string }[] = [];
+    const client = {
+      sends,
+      edits,
+      deletes,
+      sendMessage: vi.fn(async (o: { to: string; text: string; isDm?: boolean }) => {
+        if (opts.sendFails) throw new Error("send rejected");
+        sends.push(o);
+        // First send is the placeholder; return a placeholder ref.
+        return o.isDm
+          ? { messageId: "ph-1", chatId: opts.placeholderChatId ?? `chat-${o.to}` }
+          : { messageId: "ph-1" };
+      }),
+      editMessage: vi.fn(async (o: { chatId: string; messageId: string; text: string }) => {
+        edits.push(o);
+        if (opts.editFails) throw new Error("edit rejected");
+        return { messageId: o.messageId, chatId: o.chatId };
+      }),
+      resolveChannelChatId: vi.fn(async () => opts.channelChatId ?? undefined),
+      listChatMessages: vi.fn(async () => []),
+      deleteMessage: vi.fn(async (o: { chatId: string; messageId: string }) => {
+        deletes.push(o);
+        return true;
+      }),
+    };
+    return client;
+  }
+
+  it("posts a placeholder and edits it into the final reply (DM, streaming off, refreshToken set)", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    await dispatchCliqInbound({
+      runtime: mockRuntimeWithDeliver("the final reply"),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "💭 …" },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    // One placeholder post + one edit replacing it. No fresh reply send.
+    expect(client.sends).toHaveLength(1);
+    expect(client.sends[0].text).toBe("💭 …");
+    expect(client.sends[0].isDm).toBe(true);
+    expect(client.edits).toHaveLength(1);
+    expect(client.edits[0].messageId).toBe("ph-1");
+    expect(client.edits[0].chatId).toBe("chat-u1");
+    expect(client.edits[0].text).toBe("the final reply");
+    expect(client.deletes).toHaveLength(0);
+  });
+
+  it("is a no-op when streaming preview is on (live-edit already shows progress)", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    await dispatchCliqInbound({
+      runtime: mockRuntimeWithDeliver("reply"),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "💭 …" },
+        refreshToken: "rt",
+        blockStreaming: true,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    // No placeholder posted; the live-edit path sends the reply itself.
+    expect(client.sends.every((s) => s.text !== "💭 …")).toBe(true);
+    expect(client.edits).toHaveLength(0);
+  });
+
+  it("is a no-op when no refreshToken is configured (cannot edit cleanly)", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    await dispatchCliqInbound({
+      runtime: mockRuntimeWithDeliver("reply"),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "💭 …" },
+        refreshToken: undefined,
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    // No placeholder posted; reply sent as a fresh message.
+    expect(client.sends.every((s) => s.text !== "💭 …")).toBe(true);
+    expect(client.edits).toHaveLength(0);
+  });
+
+  it("is a no-op when thinking.mode is off (default)", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    await dispatchCliqInbound({
+      runtime: mockRuntimeWithDeliver("reply"),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "off", text: "💭 …" },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    expect(client.sends.every((s) => s.text !== "💭 …")).toBe(true);
+    expect(client.edits).toHaveLength(0);
+  });
+
+  it("swallows a failed placeholder post and never breaks the turn", async () => {
+    const client = makeMockClient({ sendFails: true, placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    let reportedError = false;
+    await dispatchCliqInbound({
+      runtime: mockRuntimeWithDeliver("reply"),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "💭 …" },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+      onError: () => {
+        reportedError = true;
+      },
+    });
+    // Placeholder post threw → swallowed + reported. The deliver still ran
+    // (no initialDraft) → would send the reply as a fresh message, but
+    // sendMessage throws on every call so the send also fails (swallowed
+    // by the live-edit onError in production). The turn must not throw.
+    expect(reportedError).toBe(true);
+    expect(client.edits).toHaveLength(0);
+  });
+
+  it("supports group/channel placeholder (chat id resolved lazily on edit)", async () => {
+    const client = makeMockClient({ channelChatId: "CT_dev_team" });
+    const parsed = parseCliqWebhookPayload(groupPayload());
+    await dispatchCliqInbound({
+      runtime: mockRuntimeWithDeliver("reply"),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "💭 …" },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    // Placeholder posted to the channel (no chatId in the send response);
+    // the edit resolves the channel chat id lazily.
+    expect(client.sends).toHaveLength(1);
+    expect(client.sends[0].text).toBe("💭 …");
+    expect(client.sends[0].isDm).toBe(false);
+    expect(client.edits).toHaveLength(1);
+    expect(client.edits[0].chatId).toBe("CT_dev_team");
+    expect(client.edits[0].messageId).toBe("ph-1");
+    expect(client.edits[0].text).toBe("reply");
   });
 });

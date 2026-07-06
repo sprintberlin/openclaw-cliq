@@ -9,6 +9,7 @@ import type { CliqClient } from "./client.js";
 interface FakeClient {
   sends: { to: string; text: string; isDm?: boolean }[];
   edits: { chatId: string; messageId: string; text: string }[];
+  deletes: { chatId: string; messageId: string }[];
   chatIdResolves: { name: string; chatId: string | undefined }[];
   messageListCalls: { chatId: string; limit?: number }[];
   sendMessage: (opts: { to: string; text: string; isDm?: boolean }) => Promise<{
@@ -25,6 +26,7 @@ interface FakeClient {
     chatId: string,
     opts?: { limit?: number },
   ) => Promise<{ messageId: string; chatId: string; text?: string }[]>;
+  deleteMessage: (opts: { chatId: string; messageId: string }) => Promise<boolean>;
 }
 
 function makeFakeClient(opts: {
@@ -33,20 +35,25 @@ function makeFakeClient(opts: {
   channelChatId?: string | undefined;
   recentMessages?: { messageId: string; chatId: string; text?: string }[];
   channelResolveFails?: boolean;
+  deleteFails?: boolean;
+  dmSendFails?: boolean;
 } = {}): FakeClient & Pick<
   CliqClient,
-  "sendMessage" | "editMessage" | "resolveChannelChatId" | "listChatMessages"
+  "sendMessage" | "editMessage" | "resolveChannelChatId" | "listChatMessages" | "deleteMessage"
 > {
   const sends: { to: string; text: string; isDm?: boolean }[] = [];
   const edits: { chatId: string; messageId: string; text: string }[] = [];
+  const deletes: { chatId: string; messageId: string }[] = [];
   const chatIdResolves: { name: string; chatId: string | undefined }[] = [];
   const messageListCalls: { chatId: string; limit?: number }[] = [];
   const fake: FakeClient = {
     sends,
     edits,
+    deletes,
     chatIdResolves,
     messageListCalls,
     sendMessage: vi.fn(async (o: { to: string; text: string; isDm?: boolean }) => {
+      if (opts.dmSendFails) throw new Error("send rejected");
       sends.push(o);
       // DM send: respond with message_details-style ref (chatId present).
       // Group send: respond with only a top-level id (no chatId).
@@ -67,6 +74,11 @@ function makeFakeClient(opts: {
     listChatMessages: vi.fn(async (chatId: string, callOpts?: { limit?: number }) => {
       messageListCalls.push({ chatId, limit: callOpts?.limit });
       return opts.recentMessages ?? [];
+    }),
+    deleteMessage: vi.fn(async (o: { chatId: string; messageId: string }) => {
+      deletes.push(o);
+      if (opts.deleteFails) throw new Error("delete rejected");
+      return true;
     }),
   };
   return fake;
@@ -350,5 +362,188 @@ describe("createLiveEditDeliver — enabled (live-edit)", () => {
     expect(stats!.sends).toBe(1);
     expect(stats!.edits).toBe(2);
     expect(stats!.editFailures).toBe(0);
+  });
+});
+
+describe("createLiveEditDeliver — initialDraft (thinking placeholder)", () => {
+  it("legacy mode: edits the placeholder into the final reply (DM, single chunk)", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: false,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+    });
+    await deliver({ text: "the final reply" });
+    // No fresh send — the placeholder was edited in place.
+    expect(fake.sends).toHaveLength(0);
+    expect(fake.edits).toHaveLength(1);
+    expect(fake.edits[0].messageId).toBe("ph-1");
+    expect(fake.edits[0].chatId).toBe("chat-u1");
+    expect(fake.edits[0].text).toBe("the final reply");
+    expect(fake.deletes).toHaveLength(0);
+  });
+
+  it("legacy mode: edits placeholder with first chunk, sends overflow chunks (DM)", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const long = "a".repeat(6000);
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: false,
+      charLimit: 5000,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+    });
+    await deliver({ text: long });
+    // First chunk edits the placeholder; the second is a fresh send.
+    expect(fake.edits).toHaveLength(1);
+    expect(fake.edits[0].messageId).toBe("ph-1");
+    expect(fake.edits[0].text.length).toBeLessThanOrEqual(5000);
+    expect(fake.sends).toHaveLength(1);
+    expect(fake.sends[0].text.length).toBeLessThanOrEqual(5000);
+    expect(fake.deletes).toHaveLength(0);
+  });
+
+  it("legacy mode: deletes the placeholder + sends fresh when edit fails", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1", editFails: true });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: false,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+    });
+    await deliver({ text: "reply" });
+    // Edit rejected → placeholder deleted, reply sent as a fresh message.
+    expect(fake.edits).toHaveLength(1);
+    expect(fake.deletes).toHaveLength(1);
+    expect(fake.deletes[0].messageId).toBe("ph-1");
+    expect(fake.sends).toHaveLength(1);
+    expect(fake.sends[0].text).toBe("reply");
+    const stats = getLiveEditDeliverStats(deliver);
+    expect(stats?.editFailures).toBe(1);
+  });
+
+  it("legacy mode: group placeholder resolves chat id lazily before editing", async () => {
+    const fake = makeFakeClient({ channelChatId: "CT_dev_team" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "dev-team",
+      isDm: false,
+      enabled: false,
+      // Group send response has no chatId — must be resolved on first edit.
+      initialDraft: { messageId: "ph-1" },
+    });
+    await deliver({ text: "reply" });
+    expect(fake.chatIdResolves).toHaveLength(1);
+    expect(fake.chatIdResolves[0].name).toBe("dev-team");
+    expect(fake.edits).toHaveLength(1);
+    expect(fake.edits[0].chatId).toBe("CT_dev_team");
+    expect(fake.edits[0].messageId).toBe("ph-1");
+    expect(fake.sends).toHaveLength(0);
+  });
+
+  it("legacy mode: deletes placeholder + sends fresh when group chat id unresolvable", async () => {
+    const fake = makeFakeClient({ channelChatId: undefined });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "dev-team",
+      isDm: false,
+      enabled: false,
+      initialDraft: { messageId: "ph-1" },
+    });
+    await deliver({ text: "reply" });
+    expect(fake.chatIdResolves).toHaveLength(1);
+    expect(fake.deletes).toHaveLength(0); // no chatId → cannot delete
+    expect(fake.edits).toHaveLength(0);
+    expect(fake.sends).toHaveLength(1);
+    expect(fake.sends[0].text).toBe("reply");
+    const stats = getLiveEditDeliverStats(deliver);
+    expect(stats?.editFailures).toBe(1);
+  });
+
+  it("live-edit mode: edits the placeholder for the first block (DM)", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+    });
+    await deliver({ text: "first" });
+    await deliver({ text: "second" });
+    await deliver({ text: "third" });
+    // Placeholder edited in place across all blocks — no fresh sends.
+    expect(fake.sends).toHaveLength(0);
+    expect(fake.edits).toHaveLength(3);
+    expect(fake.edits[0].text).toBe("first");
+    expect(fake.edits[1].text).toBe("first\n\nsecond");
+    expect(fake.edits[2].text).toBe("first\n\nsecond\n\nthird");
+    expect(fake.edits[0].messageId).toBe("ph-1");
+    expect(fake.edits[0].chatId).toBe("chat-u1");
+  });
+
+  it("live-edit mode: group placeholder resolves chat id on first edit", async () => {
+    const fake = makeFakeClient({ channelChatId: "CT_dev_team" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "dev-team",
+      isDm: false,
+      enabled: true,
+      initialDraft: { messageId: "ph-1" },
+    });
+    await deliver({ text: "first" });
+    await deliver({ text: "second" });
+    expect(fake.chatIdResolves).toHaveLength(1);
+    expect(fake.edits).toHaveLength(2);
+    expect(fake.edits[0].chatId).toBe("CT_dev_team");
+    expect(fake.edits[0].messageId).toBe("ph-1");
+    expect(fake.sends).toHaveLength(0);
+  });
+
+  it("live-edit mode: first block overflow edits placeholder with chunk[0], sends rest fresh", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      charLimit: 30,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+    });
+    // A single block that itself exceeds the cap.
+    await deliver({ text: "x".repeat(60) });
+    expect(fake.edits).toHaveLength(1);
+    expect(fake.edits[0].messageId).toBe("ph-1");
+    expect(fake.edits[0].text.length).toBeLessThanOrEqual(30);
+    expect(fake.sends).toHaveLength(1);
+    expect(fake.deletes).toHaveLength(0);
+    // Draft is sealed — a follow-up block sends a fresh message (no edit).
+    await deliver({ text: "tail" });
+    expect(fake.sends).toHaveLength(2);
+    expect(fake.edits).toHaveLength(1);
+  });
+
+  it("live-edit mode: edit failure on placeholder deletes it + sends fresh", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1", editFails: true });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+    });
+    await deliver({ text: "first" });
+    // Edit failed → placeholder deleted, first block sent fresh.
+    expect(fake.edits).toHaveLength(1);
+    expect(fake.deletes).toHaveLength(1);
+    expect(fake.deletes[0].messageId).toBe("ph-1");
+    expect(fake.sends).toHaveLength(1);
+    expect(fake.sends[0].text).toBe("first");
+    const stats = getLiveEditDeliverStats(deliver);
+    expect(stats?.editFailures).toBe(1);
   });
 });

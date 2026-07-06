@@ -101,6 +101,14 @@
           }
         }
       },
+      "thinking": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "mode": { "type": "string", "enum": ["off", "placeholder"], "default": "off" },
+          "text": { "type": "string", "default": "💭 …" }
+        }
+      },
       "apiBase": { "type": "string" },
       "oauthBase": { "type": "string" }
     }
@@ -204,6 +212,14 @@
               }
             }
           },
+          "thinking": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "mode": { "type": "string", "enum": ["off", "placeholder"], "default": "off" },
+              "text": { "type": "string", "default": "💭 …" }
+            }
+          },
           "apiBase": { "type": "string" },
           "oauthBase": { "type": "string" }
         },
@@ -226,6 +242,7 @@
         "groups": { "label": "Per-group config (keyed by channel unique name)" },
         "streaming": { "label": "Streaming preview", "options": ["off", "on"] },
         "reactions": { "label": "Agent reaction guidance", "options": ["minimal", "extensive", "off"] },
+        "thinking": { "label": "Instant acknowledgement (thinking placeholder)", "options": ["off", "placeholder"] },
         "oauthBase": { "label": "OAuth base URL (data center — defaults to EU https://accounts.zoho.eu)" },
         "apiBase": { "label": "Cliq API base URL (data center — defaults to EU https://cliq.zoho.eu)" }
       }

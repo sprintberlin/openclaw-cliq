@@ -18,6 +18,7 @@ function account(over: Partial<ResolvedCliqAccount> = {}): ResolvedCliqAccount {
     ackPolicy: "after_dispatch",
     selfSenderIds: [],
     blockStreaming: false,
+    thinking: { mode: "off", text: "💭 …" },
     ...over,
   };
 }

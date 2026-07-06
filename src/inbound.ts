@@ -6,7 +6,7 @@ import type {
 } from "openclaw/plugin-sdk/channel-mention-gating";
 import type { IncomingMessage } from "node:http";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
-import type { ResolvedCliqAccount } from "./client.js";
+import type { CliqClient, ResolvedCliqAccount } from "./client.js";
 import { stripCliqMentions } from "./mentions.js";
 import { resolveCliqClient } from "./runtime-api.js";
 import { createLiveEditDeliver } from "./live-edit.js";
@@ -468,6 +468,19 @@ export async function dispatchCliqInbound(params: {
   account: ResolvedCliqAccount;
   parsed: ParsedCliqInbound;
   onError?: (err: unknown, info: { kind: string }) => void;
+  /**
+   * Optional client override (tests). Production callers resolve the client
+   * through {@link resolveCliqClient} from the shared registry so the OAuth
+   * token cache is reused across requests.
+   */
+  client?: Pick<
+    CliqClient,
+    | "sendMessage"
+    | "editMessage"
+    | "resolveChannelChatId"
+    | "listChatMessages"
+    | "deleteMessage"
+  >;
 }): Promise<void> {
   const { runtime, cfg, account, parsed, onError } = params;
   const peerKind = parsed.isGroup ? "group" : "dm";
@@ -565,22 +578,58 @@ export async function dispatchCliqInbound(params: {
     OriginatingTo: `cliq:${responseTarget}`,
   });
 
-  const client = resolveCliqClient(account);
+  const client = params.client ?? resolveCliqClient(account);
   const deliverTo = parsed.isGroup
     ? (parsed.channelUniqueName ?? parsed.chatId)
     : parsed.senderId;
+  // Instant acknowledgement / "thinking" placeholder (issue #47): when
+  // opted in (`thinking.mode === "placeholder"`), streaming preview is OFF
+  // (live-edit already shows progress otherwise), and a `refreshToken` is
+  // configured (editing a message needs the user-context token), post a
+  // lightweight placeholder message immediately so the user sees the bot is
+  // working, then have the deliver callback edit that placeholder into the
+  // final reply (no duplicate message). The placeholder post is swallowed
+  // on failure so a rejected post never breaks or delays the agent turn
+  // (the deliver then just sends a fresh message as usual). DMs and
+  // channel posts both support this; the group case carries no chatId in
+  // the send response, so `createLiveEditDeliver` resolves it lazily on
+  // the first edit (cached per account).
+  let initialDraft: { messageId: string; chatId?: string } | undefined;
+  if (
+    account.thinking?.mode === "placeholder" &&
+    !account.blockStreaming &&
+    account.refreshToken
+  ) {
+    try {
+      const placeholderText = account.thinking?.text || "💭 …";
+      const ref = await client.sendMessage({
+        to: deliverTo,
+        text: placeholderText,
+        isDm: !parsed.isGroup,
+      });
+      if (ref.messageId) {
+        initialDraft = { messageId: ref.messageId, chatId: ref.chatId };
+      }
+    } catch (err) {
+      // Swallow + log: a failed placeholder post must never break the turn.
+      onError?.(err, { kind: "thinking-placeholder" });
+    }
+  }
   // Live-edit-in-place: when block streaming is opted in for the account,
   // the buffered block dispatcher delivers the agent's reply as progressive
   // blocks. Instead of sending each block as a separate message, edit a
   // single draft message in place as the reply grows (overflowing to a new
   // message at the 5000-char cap). When block streaming is off (default),
   // the single final reply is chunked and sent (the live-edit loop's
-  // disabled path). See `live-edit.ts` for chatId-resolution caveats.
+  // disabled path). When `initialDraft` is set (thinking placeholder), the
+  // first deliver EDITS that placeholder into the reply instead of sending
+  // a new message. See `live-edit.ts` for chatId-resolution caveats.
   const deliver = createLiveEditDeliver({
     client,
     to: deliverTo,
     isDm: !parsed.isGroup,
     enabled: account.blockStreaming,
+    initialDraft,
   });
   const handleOnError =
     onError ??
