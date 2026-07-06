@@ -24,6 +24,10 @@
 > the triggering issue (what to do now). No separate progress file — that context is reassembled
 > fresh each run.
 >
+> **Phase dependencies.** Phase 1 is v3-independent and ships on the current base. **Phase 2 is the
+> v3 foundation**; Phases 3 and 4 build on it (each of their items is tagged *(needs Phase 2)*).
+> Phase 5 is mostly v3-independent and can be pulled forward on demand.
+>
 > **Reference implementations.** The coding-agent runner only checks out **this** repo — it cannot
 > read sibling clones on a maintainer's disk. Every reference here is therefore a **fetchable URL**
 > (the runner has `bash`/`curl` + web fetch). Study the behavior spec, not someone else's code.
@@ -42,9 +46,10 @@
 
 ---
 
-## Phase 1 — Inbound parity & everyday UX
+## Phase 1 — v3-independent UX wins
 
-The features a user notices in the first five minutes. Each is self-contained and shippable on its own.
+Small, safe, high-visibility. None of these need the v3 migration, so they ship on the current
+base. (The instant-ack placeholder is already in flight — see the open issue.)
 
 - **Instant acknowledgement / "thinking" placeholder.** Post a lightweight placeholder message
   immediately on inbound (e.g. `💭 …`) so the user sees the bot is working. Cliq exposes **no bot
@@ -72,24 +77,25 @@ The features a user notices in the first five minutes. Each is self-contained an
   The Deluge Welcome Handler already exists in the bot editor but the plugin ignores it today.
   Ref: Cliq Bot Handlers <https://www.zoho.com/cliq/help/platform/bothandlers.html>.
 
-## Phase 2 — Per-identity agent isolation
+## Phase 2 — REST API v3 foundation
 
-- **Dynamic agents + workspace templates.** Route each DM sender and each channel to its own
-  isolated agent session and workspace, seeded on first contact from a configurable template
-  (`AGENTS.md` and friends). Today all senders share one agent context; per-channel *tool policy*
-  exists (`src/group-policy.ts`) but not per-identity *session/workspace* isolation. Use
-  deterministic routing keys (e.g. `cliq-dm-<senderId>`, `cliq-group-<channelUniqueName>`) and let
-  an explicit OpenClaw `bindings` entry win over dynamic routing. Ref: OpenClaw agent-routing /
-  bindings + Telegram/Discord in the monorepo. (Prior art: wecom.)
+The base everything rich builds on. Do this **incrementally**, not as a big-bang rewrite of the
+verified-live core.
 
-## Phase 3 — REST API v3 & rich interactive cards
+- **Migrate outbound calls to v3.** Move the send / edit / react / metadata calls off the
+  hard-coded `/api/v2/` paths in `src/client.ts` to v3 **one endpoint family per change, keeping
+  v2 as a fallback** so the core never regresses in a single large refactor. Ref: v3 Introduction
+  <https://www.zoho.com/cliq/help/restapi/v3/introduction/>.
+- **Adopt the v3 conventions the rest of the roadmap depends on:** `PATCH` partial updates (cleaner
+  message edits for `src/live-edit.ts`), pagination (`page` / `per_page`) on list calls, and the
+  consistent v3 error shape (feeds better error classification, incl. the existing data-center
+  hint). Ref: v3 Introduction (same URL).
 
-- **Migrate outbound to REST API v3.** Move the send / edit / react / metadata calls off the
-  hard-coded `/api/v2/` paths in `src/client.ts` to v3, keeping v2 only where v3 lacks parity.
-  Ref: v3 Introduction <https://www.zoho.com/cliq/help/restapi/v3/introduction/>.
-- **Adopt v3 Message Cards.** Render agent output as v3 cards where it improves UX —
-  `modern-inline` (header, field sections, action buttons) and `poll` — rather than the current
-  button/card shape in `src/presentation.ts`. Ref: Message Cards v3
+## Phase 3 — Rich messaging *(needs Phase 2)*
+
+- **Adopt v3 Message Cards.** Render agent output as v3 cards where it improves UX — `modern-inline`
+  (header, field sections, action buttons) and `poll` — rather than the current button/card shape
+  in `src/presentation.ts`. Ref: Message Cards v3
   <https://www.zoho.com/cliq/help/restapi/v3/messagecards/>.
 - **Interactive status card + confirmation for sensitive actions.** Show a live status card
   (thinking → generating → done / failed) during a turn, and gate sensitive/tool actions behind an
@@ -99,24 +105,41 @@ The features a user notices in the first five minutes. Each is self-contained an
   approval, parameter capture) instead of free-text parsing. Ref: Cliq platform (Form handler)
   <https://www.zoho.com/cliq/help/platform/>.
 
-## Phase 4 — Access control & operations
+## Phase 4 — Programmatic Cliq via v3 CRUD *(needs Phase 2)*
 
+v3 adds CRUD endpoints v2 never had (bots, slash commands, message actions, widgets, schedulers).
+
+- **`cliq_management` agent tool.** Expose Cliq operations to the agent as one profile-gated tool:
+  post to a channel, list channels / members (paginated GET), resolve users, etc. Ref: REST API v3
+  <https://www.zoho.com/cliq/help/restapi/v3/>. (Prior art: octo's single management tool.)
+- **Schedulers / proactive messages.** Use the v3 scheduler CRUD to let the agent schedule or
+  cancel proactive messages. Ref: REST API v3 (schedulers).
+- **Setup-wizard auto-provisioning.** Register the bot, slash-commands, and message-actions via v3
+  CRUD from `openclaw setup` instead of the manual Deluge / console steps in today's guide.
+  Ref: REST API v3.
+
+## Phase 5 — Scaling & operations
+
+Mostly v3-independent; **dynamic agents** in particular is high-value and can be pulled forward.
+
+- **Dynamic agents + workspace templates.** Route each DM sender and each channel to its own
+  isolated agent session and workspace, seeded on first contact from a configurable template
+  (`AGENTS.md` and friends). Today all senders share one agent context; per-channel *tool policy*
+  exists (`src/group-policy.ts`) but not per-identity *session/workspace* isolation. Use
+  deterministic routing keys (e.g. `cliq-dm-<senderId>`, `cliq-group-<channelUniqueName>`) and let
+  an explicit OpenClaw `bindings` entry win over dynamic routing. Ref: OpenClaw agent-routing /
+  bindings + Telegram/Discord in the monorepo. (Prior art: wecom.)
 - **Command allowlist + admin bypass.** Restrict which slash commands non-admin users may run
   (e.g. allow `/help`, `/status`; deny `/model` switching), with an admin list that bypasses the
   gate. cliq enables native commands (`src/commands.ts`) but has no per-user command gate.
   (Prior art: wecom.)
 - **Runtime quota / rate-limit awareness.** Track Zoho Cliq API usage locally and warn (logs /
-  `openclaw status`) before hitting Zoho's rate limits. Ref: v3 rate limits
+  `openclaw status`) before hitting Zoho's rate limits; pairs naturally with the v3 consistent
+  errors from Phase 2. Ref: v3 rate limits
   <https://www.zoho.com/cliq/help/restapi/v3/introduction/>. (Prior art: wecom.)
 - **Egress proxy support.** Route outbound API / OAuth requests through a configured proxy for
   locked-down enterprise networks. `apiBase` / `oauthBase` are already configurable, but there is
   no proxy hop. (Prior art: wecom `network.egressProxyUrl`.)
-
-## Phase 5 — Agent-facing Cliq tooling
-
-- **`cliq_management` agent tool.** Expose Cliq operations to the agent as one profile-gated tool:
-  post to a channel, list channels / members, resolve users, etc. Ref: REST API v3
-  <https://www.zoho.com/cliq/help/restapi/v3/>. (Prior art: octo's single management tool.)
 - **`/btw` bypass Q&A.** A side-answer path that bypasses the main session lock so a quick question
   gets an isolated fast reply without disturbing the running conversation. (Prior art: dingtalk.)
 - **`write-secret` pattern.** Let a user store a secret (e.g. an API key) into a file by alias
