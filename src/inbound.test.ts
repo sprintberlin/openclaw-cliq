@@ -654,6 +654,139 @@ describe("dispatchCliqInbound context fields", () => {
   });
 });
 
+describe("dispatchCliqInbound — stop / abort intent (issue #51)", () => {
+  function mockRuntime(capture: {
+    ctxPayload?: Record<string, unknown>;
+    dispatchInput?: unknown;
+  }): CliqRuntime {
+    return {
+      channel: {
+        routing: {
+          resolveAgentRoute: () => ({
+            agentId: "agent-1",
+            sessionKey: "sess-1",
+            accountId: "default",
+          }),
+        },
+        session: {
+          resolveStorePath: () => "/tmp/store",
+          readSessionUpdatedAt: () => undefined,
+          recordInboundSession: () => undefined,
+        },
+        reply: {
+          resolveEnvelopeFormatOptions: () => ({}),
+          formatAgentEnvelope: (p: Record<string, unknown>) => String(p.body ?? ""),
+          finalizeInboundContext: (fields: Record<string, unknown>) => {
+            capture.ctxPayload = fields;
+            return fields;
+          },
+          dispatchReplyWithBufferedBlockDispatcher: async (params) => {
+            capture.dispatchInput = params;
+            return undefined;
+          },
+        },
+        inbound: {
+          run: async () => undefined,
+        },
+        pairing: {
+          buildPairingReply: () => "",
+          upsertPairingRequest: async () => ({ code: "CODE", created: true }),
+        },
+      },
+    };
+  }
+
+  function makeClient() {
+    return {
+      sendMessage: vi.fn(async () => ({ messageId: "out-1" })),
+      editMessage: vi.fn(async (o: { chatId: string; messageId: string; text: string }) => ({
+        messageId: o.messageId,
+        chatId: o.chatId,
+      })),
+      resolveChannelChatId: vi.fn(async () => undefined),
+      listChatMessages: vi.fn(async () => []),
+      deleteMessage: vi.fn(async () => true),
+      downloadAttachment: vi.fn(async () => {
+        throw new Error("not mocked");
+      }),
+    };
+  }
+
+  it("marks a DM `stop` turn as an authorized text command so the SDK aborts the run", async () => {
+    const capture: { ctxPayload?: Record<string, unknown>; dispatchInput?: unknown } = {};
+    const parsed = parseCliqWebhookPayload(dmPayload({ message: "stop" }))!;
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account(),
+      parsed,
+      client: makeClient(),
+    });
+    expect(capture.ctxPayload?.CommandSource).toBe("text");
+    expect(capture.ctxPayload?.CommandAuthorized).toBe(true);
+  });
+
+  it("marks a DM `/stop` turn as an authorized text command", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload(dmPayload({ message: "/stop" }))!;
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account(),
+      parsed,
+      client: makeClient(),
+    });
+    expect(capture.ctxPayload?.CommandSource).toBe("text");
+    expect(capture.ctxPayload?.CommandAuthorized).toBe(true);
+  });
+
+  it("marks a group `@bot stop` mention turn as an authorized text command", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload(
+      groupPayload({ message: "@bot stop" }),
+    )!;
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account(),
+      parsed,
+      client: makeClient(),
+    });
+    expect(capture.ctxPayload?.CommandSource).toBe("text");
+    expect(capture.ctxPayload?.CommandAuthorized).toBe(true);
+  });
+
+  it("does NOT mark a normal conversational DM as a command", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload(dmPayload({ message: "hello bot" }))!;
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account(),
+      parsed,
+      client: makeClient(),
+    });
+    expect(capture.ctxPayload?.CommandSource).toBeUndefined();
+    expect(capture.ctxPayload?.CommandAuthorized).toBeUndefined();
+  });
+
+  it("does not post a thinking placeholder for an abort intent", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const client = makeClient();
+    const parsed = parseCliqWebhookPayload(dmPayload({ message: "stop" }))!;
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({ refreshToken: "rt", thinking: { mode: "placeholder", text: "💭 …" } }),
+      parsed,
+      client,
+    });
+    // A stop intent must not post a "thinking" placeholder — the SDK's abort
+    // path posts the "Stopped." reply directly via the deliver callback.
+    expect(client.sendMessage).not.toHaveBeenCalled();
+  });
+});
+
 describe("dispatchCliqInbound — inbound quote / reply context (issue #49)", () => {
   function mockRuntime(capture: {
     ctxPayload?: Record<string, unknown>;

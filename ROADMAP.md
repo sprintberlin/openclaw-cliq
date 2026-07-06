@@ -51,9 +51,6 @@
 Small, safe, high-visibility. None of these need the v3 migration, so they ship on the current
 base. (The instant-ack placeholder is already in flight — see the open issue.)
 
-- **Abort / stop the running turn.** Recognize a stop intent (`stop`, `/stop`, `esc`, and common
-  localized equivalents) and interrupt the in-flight agent run for that chat instead of queueing
-  another turn. Ref: OpenClaw runtime cancellation surface — study Telegram/Discord in the monorepo.
 - **Welcome message on subscribe.** Consume the bot's **Welcome Handler** so a first-time
   subscriber receives a configurable greeting; respect `dmPolicy` (never greet a denied sender).
   The Deluge Welcome Handler already exists in the bot editor but the plugin ignores it today.

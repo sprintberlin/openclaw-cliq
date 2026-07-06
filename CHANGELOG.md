@@ -13,6 +13,19 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
+- Stop / abort the running turn (issue #51): sending a stop intent (`stop`,
+  `/stop`, `esc`, plus common localized equivalents such as `halt`, `arrête`,
+  `停止`, `стop`, …) now interrupts the in-flight agent run for that chat
+  instead of queueing another turn behind it. The plugin delegates to the
+  OpenClaw runtime's shared fast-abort path (`tryFastAbortFromMessage`), which
+  cancels the active session run (`cancelSession` + run-target abort), clears
+  queued follow-ups, stops spawned sub-agents, and replies with the canonical
+  acknowledgement (`⚙️ Agent was aborted.`) in the same chat. The trigger set
+  is the shared one every OpenClaw channel uses — no per-channel trigger list
+  to drift out of sync. In a DM any stop intent aborts; in a channel the user
+  must `@mention` the bot (`@bot stop`) so the abort is admitted under the
+  same mention gate as a normal reply. No new config, OAuth scope, or Deluge
+  wiring required.
 - Inbound quote / reply context (issue #49): when a user replies to or quotes a
   message in Cliq, the referenced message's id + text + sender are now carried
   into the agent context. The parser reads `message.reply_to` (the documented

@@ -15,6 +15,10 @@ import { stripCliqMentions } from "./mentions.js";
 import { resolveCliqClient } from "./runtime-api.js";
 import { createLiveEditDeliver } from "./live-edit.js";
 import {
+  isCliqAbortIntent,
+  cliqAbortCtxFields,
+} from "./abort.js";
+import {
   prepareInboundMedia,
   type CliqInboundAttachment,
   type CliqInboundMediaFacts,
@@ -677,6 +681,15 @@ export async function dispatchCliqInbound(params: {
   // Strip the bot @handle from the text the agent sees so the agent doesn't
   // echo it back and so command detection operates on the clean instruction.
   const cleanText = stripCliqMentions(parsed.text, account);
+  // Stop / abort intent (issue #51): recognize `stop` / `/stop` / `esc` +
+  // common localized equivalents and let the SDK's fast-abort dispatch path
+  // cancel the in-flight run for this session + send the "Stopped." reply,
+  // instead of queueing another agent turn. We mark the turn as an authorized
+  // text command (`CommandSource: "text"` + `CommandAuthorized: true`) so the
+  // SDK's abort authorization gate (`resolveCommandSenderAuthorization`)
+  // honors it; the SDK re-detects the abort via the shared
+  // `isAbortRequestText` and does the actual run cancellation + reply.
+  const isAbort = isCliqAbortIntent(cleanText, account.botName);
 
   // The inbound `From` is the originating conversation id: the sender for
   // DMs, the group for group/channel messages. Setting `From` to
@@ -808,6 +821,9 @@ export async function dispatchCliqInbound(params: {
     OriginatingChannel: "cliq",
     OriginatingTo: `cliq:${responseTarget}`,
     ...mediaFields,
+    // Mark a stop-intent turn as an authorized text command so the SDK's
+    // fast-abort path cancels the in-flight run + sends the "Stopped." reply.
+    ...(isAbort ? cliqAbortCtxFields() : {}),
   });
   // Instant acknowledgement / "thinking" placeholder (issue #47): when
   // opted in (`thinking.mode === "placeholder"`), streaming preview is OFF
@@ -825,7 +841,8 @@ export async function dispatchCliqInbound(params: {
   if (
     account.thinking?.mode === "placeholder" &&
     !account.blockStreaming &&
-    account.refreshToken
+    account.refreshToken &&
+    !isAbort
   ) {
     try {
       const placeholderText = account.thinking?.text || "💭 …";
