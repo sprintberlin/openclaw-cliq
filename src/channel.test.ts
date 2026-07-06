@@ -786,6 +786,127 @@ describe("CliqClient.sendMessage v3 channel post (apiVersion==='v3')", () => {
   });
 });
 
+describe("CliqClient.sendMessage v3 bot DM post (apiVersion==='v3')", () => {
+  it("POSTs to /api/v3/bots/{botId}/messages with user_ids + sync_message, Webhooks.CREATE scope (no refresh token)", async () => {
+    setCliqClientRegistry(null);
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, undefined, undefined, undefined, "v3");
+    const seen: { url: string; method?: string; body?: string; scope?: string | null }[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        const scope = new URL(urlStr).searchParams.get("scope");
+        seen.push({ url: "oauth", scope });
+        return new Response(JSON.stringify({ access_token: "v3-dm-tok", expires_in: 3600 }), { status: 200 });
+      }
+      seen.push({ url: urlStr, method: init?.method, body: init?.body as string });
+      // v3 bot DM with sync_message:true returns { data: { message_id, chat_id } }.
+      return new Response(
+        JSON.stringify({ data: { message_id: "v3-dm-msg", chat_id: "CT_dm" } }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+    let result;
+    try {
+      result = await client.sendMessage({ to: "20098819618", isDm: true, text: "hi v3 dm" });
+    } finally {
+      globalThis.fetch = original;
+    }
+    // OAuth must use the Webhooks.CREATE scope (client_credentials) — NOT a refresh-token grant.
+    const oauth = seen.find((s) => s.url === "oauth");
+    expect(oauth?.scope).toBe("ZohoCliq.Webhooks.CREATE");
+    // The send must hit the v3 bot-message endpoint (bot id in the path → posts AS the bot).
+    const post = seen.find((s) => s.method === "POST" && s.url.includes("/bots/bot/messages"));
+    expect(post).toBeDefined();
+    expect(post!.url).toContain("/api/v3/bots/bot/messages");
+    // The body is the v3 shape: { text, user_ids, sync_message: true } (NOT v2's `userids`).
+    expect(JSON.parse(post!.body!)).toEqual({ text: "hi v3 dm", user_ids: "20098819618", sync_message: true });
+    // The v3 sync_message response (wrapped under `data`) is parsed into a message ref.
+    expect(result).toEqual({ messageId: "v3-dm-msg", chatId: "CT_dm" });
+  });
+
+  it("defaults to v2 bot DM when apiVersion is unset (v2 userids + /api/v2/bots/{botId}/message)", async () => {
+    setCliqClientRegistry(null);
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient("id", "secret", "bot");
+    const seen: { url: string; method?: string; body?: string; scope?: string | null }[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        seen.push({ url: "oauth", scope: new URL(urlStr).searchParams.get("scope") });
+        return new Response(JSON.stringify({ access_token: "t", expires_in: 3600 }), { status: 200 });
+      }
+      seen.push({ url: urlStr, method: init?.method, body: init?.body as string });
+      // v2 DM response: { message_details: { <userId>: { chat_id, message_id } } }.
+      return new Response(
+        JSON.stringify({ message_details: { "20098819618": { chat_id: "CT_dm", message_id: "v2-msg" } } }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+    let result;
+    try {
+      result = await client.sendMessage({ to: "20098819618", isDm: true, text: "hi" });
+    } finally {
+      globalThis.fetch = original;
+    }
+    const post = seen.find((s) => s.method === "POST" && s.url.includes("/bots/bot/message"));
+    expect(post).toBeDefined();
+    expect(post!.url).toContain("/api/v2/bots/bot/message");
+    expect(JSON.parse(post!.body!)).toEqual({ text: "hi", userids: "20098819618" });
+    expect(result).toEqual({ messageId: "v2-msg", chatId: "CT_dm" });
+  });
+
+  it("v3 bot DM still uses client_credentials Webhooks.CREATE even when a refresh token is configured", async () => {
+    setCliqClientRegistry(null);
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, undefined, undefined, "rt-token", "v3");
+    const seen: { url: string; scope?: string | null; grantType?: string | null }[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        const u = new URL(urlStr);
+        seen.push({ url: "oauth", scope: u.searchParams.get("scope"), grantType: u.searchParams.get("grant_type") });
+        return new Response(JSON.stringify({ access_token: "v3-dm-tok", expires_in: 3600 }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ data: { message_id: "m", chat_id: "c" } }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      await client.sendMessage({ to: "u1", isDm: true, text: "hi" });
+    } finally {
+      globalThis.fetch = original;
+    }
+    // v3 DM must NOT use the refresh-token grant even when one is configured.
+    const oauth = seen.find((s) => s.url === "oauth");
+    expect(oauth?.grantType).toBe("client_credentials");
+    expect(oauth?.scope).toBe("ZohoCliq.Webhooks.CREATE");
+  });
+
+  it("v3 bot DM tolerates a 204 No response (no message id) — live-edit degrades to block-streaming", async () => {
+    setCliqClientRegistry(null);
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, undefined, undefined, undefined, "v3");
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(JSON.stringify({ access_token: "t", expires_in: 3600 }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ "Response Code": "204 No response" }), { status: 200 });
+    }) as typeof fetch;
+    let result;
+    try {
+      result = await client.sendMessage({ to: "u1", isDm: true, text: "hi" });
+    } finally {
+      globalThis.fetch = original;
+    }
+    // No message id / chat id in a 204 response → undefined ref (no throw).
+    expect(result).toEqual({});
+  });
+});
+
 describe("normalizeCliqRouteTarget (issue #11)", () => {
   it("routes cliq:user:<id> to a DM user target", () => {
     expect(normalizeCliqRouteTarget("cliq:user:20098819618")).toEqual({

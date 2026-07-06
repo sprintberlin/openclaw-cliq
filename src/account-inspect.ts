@@ -60,7 +60,7 @@ export interface InspectedCliqAccountConfig {
   ackPolicy: "after_dispatch" | "immediate";
   /** Whether progressive (block-streaming) reply delivery is opted-in. */
   streamingPreview: "on" | "off";
-  /** Resolved REST API generation for the endpoint families with a v3 equivalent. */
+  /** Resolved REST API generation for the endpoint families with a v3 equivalent (channel text posts + bot DMs). */
   apiVersion: "v2" | "v3";
 }
 

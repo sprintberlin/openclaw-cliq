@@ -156,15 +156,19 @@ user-context token from a **refresh token**, obtained once via the Self Client's
 authorization-code flow. This is a **two-step** process — a short-lived **code** that you
 exchange for a permanent **refresh token**.
 
-> **v3 opt-in can skip this for channel *text* posts.** Setting `apiVersion: "v3"` (see
-> [§4](#4-openclaw-configuration)) routes channel **text** posts through the v3 endpoint
-> `POST /api/v3/channelsbyname/{name}/messages`, which uses the
-> `ZohoCliq.Webhooks.CREATE` scope — obtainable via `client_credentials` — so a
-> refresh token is **not** required for plain channel text posts. Channel card/button posts,
-> media posts, and message edits still require the refresh token (they stay on v2 until a
-> later increment). The default is `"v2"` (no behavior change). If you only need channel
-> text posts and never edits/cards-in-channels, `apiVersion: "v3"` lets you skip this step
-> entirely. Verify your Zoho org accepts the v3 endpoint before relying on it.
+> **v3 opt-in can skip this for channel *text* posts and bot *DM* posts.** Setting
+> `apiVersion: "v3"` (see [§4](#4-openclaw-configuration)) routes channel **text**
+> posts through `POST /api/v3/channelsbyname/{name}/messages` **and** bot **DM**
+> posts through `POST /api/v3/bots/{botId}/messages` — both of which use the
+> `ZohoCliq.Webhooks.CREATE` scope obtainable via `client_credentials`, so a
+> refresh token is **not** required for either. The v3 DM endpoint posts *as the
+> bot* (sender identity preserved — the bot unique name is in the URL path) and
+> uses `user_ids` + `sync_message` so the response carries the message id + chat
+> id for live-edit. Channel card/button posts, media posts, and message edits
+> still require the refresh token (they stay on v2 until a later increment). The
+> default is `"v2"` (no behavior change). If you only need channel text posts and
+> DMs and never edits/cards-in-channels, `apiVersion: "v3"` lets you skip this
+> step entirely. Verify your Zoho org accepts the v3 endpoints before relying on it.
 
 > **Why only once:** only the *code* is short-lived (10 minutes, single-use). The
 > **refresh token you get from it does not expire** — it survives gateway restarts and any
@@ -264,7 +268,7 @@ Add the `cliq` channel to your `openclaw.json` (or via `openclaw setup` / the se
 | `welcome` | optional | Welcome message on subscribe. When the Cliq bot **Welcome Handler** forwards a subscribe event to the webhook (see [§5a](#5a-welcome-handler-optional)) and `welcome.enabled === true`, the bot posts a configurable greeting DM to the subscriber. `welcome.text` is used for first-time subscribers and `welcome.textRejoin` for users who unsubscribed and came back; both default to a friendly greeting and support `{{firstName}}` / `{{lastName}}` / `{{name}}` / `{{id}}` / `{{email}}` placeholders resolved from the forwarded `user` object. The DM admission policy (`dmPolicy` / `allowFrom`) is honored — a denied sender is never greeted, and under the `pairing` policy an un-paired subscriber is skipped (the pairing flow owns their first contact). Default `enabled: false` (opt-in, so no setup gets a surprise greeting). A redelivered subscribe event is deduped so the user is never greeted twice. |
 | `oauthBase` | optional | OAuth base URL for your Zoho **data center**. Defaults to the EU endpoint `https://accounts.zoho.eu`. Set it (together with `apiBase`) when your account is not on EU — see [Data centers](#data-centers). |
 | `apiBase` | optional | Cliq REST API base URL for your Zoho **data center**. Defaults to the EU endpoint `https://cliq.zoho.eu`. Set it (together with `oauthBase`) when your account is not on EU. |
-| `apiVersion` | optional | REST API generation for channel **text** posts. `"v2"` (default) uses the verified-live v2 channel endpoint (requires `refreshToken` + `ZohoCliq.Channels.UPDATE`). `"v3"` opts channel text posts into the v3 endpoint `POST /api/v3/channelsbyname/{name}/messages`, which uses the `ZohoCliq.Webhooks.CREATE` scope (obtainable via `client_credentials`, so **no refresh token needed** for channel text posts — see [§3c](#3c-obtain-the-user-context-refresh-token-required-for-channel-posts--edits)). Other families (DMs, cards, media, edits, reactions, directory) stay on v2 regardless. v3 channel posts return no message id, so live-edit streaming for channel posts degrades to block-streaming (still correct, just less granular). Per-account overrides supported (one account can pilot v3 while others stay on v2). |
+| `apiVersion` | optional | REST API generation for the channel **text** post and bot **DM** post families. `"v2"` (default) uses the verified-live v2 endpoints (channel posts require `refreshToken` + `ZohoCliq.Channels.UPDATE`; DMs use `ZohoCliq.Webhooks.CREATE` via `client_credentials`). `"v3"` opts channel text posts into `POST /api/v3/channelsbyname/{name}/messages` AND bot DMs into `POST /api/v3/bots/{botId}/messages` — both of which use the `ZohoCliq.Webhooks.CREATE` scope (obtainable via `client_credentials`, so **no refresh token needed** for either — see [§3c](#3c-obtain-the-user-context-refresh-token-required-for-channel-posts--edits)). The v3 DM endpoint posts *as the bot* (sender identity preserved) and uses `user_ids` + `sync_message` so the response carries the message id + chat id for live-edit. Other families (cards, media, edits, reactions, directory) stay on v2 regardless. v3 channel posts return no message id (live-edit for channel posts degrades to block-streaming); v3 DMs with `sync_message: true` DO return the message id. Per-account overrides supported (one account can pilot v3 while others stay on v2). |
 
 **Group/channel identity:** the inbound path sets the OpenClaw `From` context field to `cliq:group:<channelUniqueName>` for group messages (and fills `GroupChannel`/`GroupSubject` with the display name as a fallback), so the `groups` adapter resolves per-channel `requireMention` and tool policy by channel unique name. Keys are matched case-insensitively.
 

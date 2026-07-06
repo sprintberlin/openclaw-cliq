@@ -274,7 +274,7 @@
         "welcome": { "label": "Welcome message on subscribe (greeting DM on first contact)" },
         "oauthBase": { "label": "OAuth base URL (data center — defaults to EU https://accounts.zoho.eu)" },
         "apiBase": { "label": "Cliq API base URL (data center — defaults to EU https://cliq.zoho.eu)" },
-        "apiVersion": { "label": "REST API generation for channel text posts (v2 default; v3 opt-in uses Webhooks.CREATE scope, no refresh token needed)", "options": ["v2", "v3"] }
+        "apiVersion": { "label": "REST API generation for channel text posts + bot DMs (v2 default; v3 opt-in uses Webhooks.CREATE scope, no refresh token needed)", "options": ["v2", "v3"] }
       }
     }
   }

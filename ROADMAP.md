@@ -59,16 +59,12 @@ verified-live core.
 - **Migrate outbound calls to v3.** Move the send / edit / react / metadata calls off the
   hard-coded `/api/v2/` paths in `src/client.ts` to v3 **one endpoint family per change, keeping
   v2 as a fallback** so the core never regresses in a single large refactor. Channel **text**
-  posts route through the v3 endpoint when `apiVersion: "v3"` (v2 default); the remaining
-  endpoint families to migrate:
+  posts and bot **DM** posts route through their v3 endpoints when `apiVersion: "v3"` (v2
+  default); the remaining endpoint families to migrate:
   - **Channel card / button posts** (`sendCard` non-DM) — v3 has no `buttons` field (moved to
     Message Cards); requires the Phase 3 Message-Card renderer, not a direct swap.
   - **Channel media posts** (`sendMediaMessage` non-DM) — v3 channel post body has no media
     field; needs the v3 attachment / Message-Card image flow.
-  - **Bot DM posts** (`/api/v2/bots/{botId}/message` with `userids`) — v3 posts to a chat by
-    `CHAT_ID` (`POST /api/v3/chats/{chatId}/messages`), so DM send needs the bot→user chat id
-    resolved first (a new `resolveDmChatId` step, or reuse the v3 `POST /chats` create-chat
-    endpoint) before the message POST.
   - **Message edit / delete / list** (`/api/v2/chats/{chatId}/messages…`) — v3 Messages /
     Chats have **no** single-message edit / get / delete endpoints; the v2 paths may stay
     indefinitely (confirm against the v3 OpenAPI spec before declaring this a dead end).

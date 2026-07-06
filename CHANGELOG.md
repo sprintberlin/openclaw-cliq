@@ -13,6 +13,35 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
+- REST API v3 opt-in for bot DM posts (issue #55): extending the existing
+  `apiVersion` config (`"v2"` (default) | `"v3"`) to also cover the bot **DM**
+  send family. When set to `"v3"`, bot DMs route through the v3 "Send a bot
+  message" endpoint `POST /api/v3/bots/{botId}/messages` instead of the v2
+  `POST /api/v2/bots/{botId}/message` endpoint. The v3 endpoint posts **as the
+  bot** (sender identity preserved — the bot unique name is in the URL path,
+  unlike `POST /api/v3/chats/{chatId}/messages` which posts as the
+  authenticated user), uses the `ZohoCliq.Webhooks.CREATE` scope obtainable
+  via `client_credentials` (so **no user-context refresh token is required**
+  — same as v2 DMs and v3 channel text posts), and uses the v3 body shape
+  (`user_ids` comma-separated string instead of v2's `userids`, plus
+  `sync_message: true`). With `sync_message: true` the v3 response carries
+  `{ data: { message_id, chat_id } }` (unwrapped by the shared
+  `parseCliqMessageRef`, which now also handles the v3 `data` wrapper) —
+  giving live-edit streaming for DMs the message id without the nested
+  `message_details` parse the v2 path needed; a `204 No response` (no ids) is
+  tolerated and degrades to block-streaming. The v3 docs list the endpoint's
+  OAuth scope as `ZohoCliq.Webhooks.CREATE,ZohoCliq.BotMessages.CREATE`; the
+  plugin requests only `ZohoCliq.Webhooks.CREATE` (the one `client_credentials`
+  can obtain and the existing v2 DM path already uses) — if a Zoho org requires
+  the additional `BotMessages.CREATE` scope, keep `apiVersion` at `"v2"`. This
+  is the second increment of the incremental v3 migration (one endpoint family
+  at a time, keeping v2 as the default so the core never regresses): channel
+  card / button posts, channel media posts, message edits / deletes / list,
+  reactions, directory, file download, and channel-chat-id resolution stay on
+  v2 until their own increments. Per-account overrides supported (one account
+  can pilot v3 while others stay on v2). No new OAuth scope required (v3 reuses
+  `ZohoCliq.Webhooks.CREATE`). See README §3c and §4.
+
 - REST API v3 opt-in for channel text posts (issue #54): a new `apiVersion`
   config (`"v2"` (default) | `"v3"`, schema-validated in both the top-level and
   `channelConfigs.cliq` schemas with `uiHints`, surfaced in

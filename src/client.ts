@@ -26,7 +26,11 @@ export type CliqApiVersion = "v2" | "v3";
 /**
  * Outbound endpoint families and their v3 readiness:
  *  - channel **text** posts → v3 available (opt-in via `apiVersion: "v3"`).
- *  - channel **card/button** posts, channel **media** posts, bot **DM** posts,
+ *  - bot **DM** posts → v3 available (opt-in via `apiVersion: "v3"`); routes
+ *    through the v3 "Send a bot message" endpoint
+ *    `POST /api/v3/bots/{botId}/messages` with `user_ids` + `sync_message`
+ *    (scope `ZohoCliq.Webhooks.CREATE` — same as v2 DMs, no refresh token).
+ *  - channel **card/button** posts, channel **media** posts,
  *    message edit / delete / list, reactions, directory, file download,
  *    channel-chat-id resolution → v2 only (v3 has no equivalent, or the v3
  *    shape differs and is migrated in a later increment).
@@ -152,12 +156,18 @@ export interface CliqChannelConfig {
    * REST API generation to use for the outbound endpoint families that have a
    * v3 equivalent. `"v2"` (default) keeps the verified-live v2 paths; `"v3"`
    * opts the channel text-post family into the v3
-   * `POST /api/v3/channelsbyname/{name}/messages` endpoint, which uses the
-   * `ZohoCliq.Webhooks.CREATE` scope (obtainable via `client_credentials`,
-   * removing the refresh-token requirement for channel text posts — see
-   * README §3c). Other families (DM posts, cards, media, edits, reactions,
-   * directory) stay on v2 until their v3 migration increment. Migrating is
-   * incremental and per-family so the core never regresses in one change.
+   * `POST /api/v3/channelsbyname/{name}/messages` endpoint AND the bot DM
+   * family into the v3 `POST /api/v3/bots/{botId}/messages` endpoint — both
+   * of which use the `ZohoCliq.Webhooks.CREATE` scope (obtainable via
+   * `client_credentials`, removing the refresh-token requirement for channel
+   * text posts — see README §3c). The v3 DM endpoint posts AS the bot
+   * (sender identity preserved, unlike `POST /api/v3/chats/{chatId}/messages`
+   * which posts as the authenticated user), uses `user_ids` (comma-separated)
+   * instead of v2's `userids`, and sets `sync_message: true` so the response
+   * carries the message id + chat id for live-edit. Other families (cards,
+   * media, edits, reactions, directory) stay on v2 until their v3 migration
+   * increment. Migrating is incremental and per-family so the core never
+   * regresses in one change.
    */
   apiVersion?: CliqApiVersion;
 }
@@ -226,11 +236,12 @@ export interface ResolvedCliqAccount {
   oauthBase?: string;
   /**
    * Resolved REST API generation for the endpoint families that have a v3
-   * equivalent. Defaults to `"v2"`; per-account overrides apply via the
-   * shallow-merge resolution (so one account can pilot v3 while others stay
-   * on v2). See {@link CliqChannelConfig.apiVersion}. Optional on the
-   * resolved type so test fixtures can omit it; `resolveCliqConfig` always
-   * sets it and `CliqClient` defaults to `"v2"` when undefined.
+   * equivalent (channel text posts + bot DM posts). Defaults to `"v2`;
+   * per-account overrides apply via the shallow-merge resolution (so one
+   * account can pilot v3 while others stay on v2). See
+   * {@link CliqChannelConfig.apiVersion}. Optional on the resolved type so
+   * test fixtures can omit it; `resolveCliqConfig` always sets it and
+   * `CliqClient` defaults to `"v2"` when undefined.
    */
   apiVersion?: CliqApiVersion;
   /**
@@ -655,7 +666,15 @@ function parseCliqMessageRef(body: string): { messageId?: string; chatId?: strin
     return {};
   }
   if (!data || typeof data !== "object") return {};
-  const obj = data as Record<string, unknown>;
+  let obj = data as Record<string, unknown>;
+  // v3 responses may wrap the payload under a top-level `data` object (e.g.
+  // `POST /api/v3/bots/{botId}/messages` with `sync_message: true` returns
+  // `{ data: { message_id, chat_id } }`). Unwrap it so the same parser covers
+  // v2 + v3 shapes.
+  const wrapped = obj.data;
+  if (wrapped && typeof wrapped === "object" && !Array.isArray(wrapped)) {
+    obj = wrapped as Record<string, unknown>;
+  }
   const topId = typeof obj.id === "string" ? obj.id : undefined;
   const topMessageId =
     typeof obj.message_id === "string" ? obj.message_id : undefined;
@@ -893,7 +912,25 @@ export class CliqClient {
     // returns 204 No response (no message id); live-edit recovers via the
     // existing resolveChannelChatId + listChatMessages path. v3 has no
     // buttons field (sendCard stays v2).
+    //
+    // v3 bot DM post (opt-in via apiVersion==="v3"): the v3 "Send a bot
+    // message" endpoint POST /api/v3/bots/{botId}/messages also uses the
+    // ZohoCliq.Webhooks.CREATE scope (the v3 docs list
+    // `ZohoCliq.Webhooks.CREATE,ZohoCliq.BotMessages.CREATE`; we request the
+    // former — the one client_credentials can obtain and the existing v2 DM
+    // path already uses — and the endpoint accepts it; if a Zoho org requires
+    // the additional BotMessages.CREATE scope, keep apiVersion at "v2"). Like
+    // v2 DMs it posts AS the bot (sender identity preserved — the bot unique
+    // name is in the URL path, NOT a /chats/{chatId}/messages user post). The
+    // v3 body uses `user_ids` (comma-separated string) instead of v2's
+    // `userids`, and sets `sync_message: true` so the response carries
+    // `{ data: { message_id, chat_id } }` (unwrapped by parseCliqMessageRef)
+    // — giving live-edit streaming for DMs the message id without the nested
+    // `message_details` parse the v2 path needed. The scope/needsUserContext
+    // calc below already routes DMs (v2 or v3) to Webhooks.CREATE +
+    // client_credentials, so only the URL + payload differ for v3 DMs.
     const useV3Channel = !isDm && this.apiVersion === "v3";
+    const useV3Dm = isDm && this.apiVersion === "v3";
     const scope = (isDm || useV3Channel)
       ? "ZohoCliq.Webhooks.CREATE"
       : "ZohoCliq.Channels.UPDATE";
@@ -902,9 +939,16 @@ export class CliqClient {
     const needsUserContext = !isDm && !useV3Channel;
     const token = await this.resolveOutboundToken(scope, needsUserContext);
     const targetKind = isDm ? "dm" : "channel";
+    const apiTag = useV3Channel || useV3Dm ? " api=v3" : "";
     let url: string;
     const payload: Record<string, unknown> = { text: opts.text };
-    if (isDm) {
+    if (isDm && useV3Dm) {
+      url = `${this.apiBase}/api/v3/bots/${encodeURIComponent(this.botId)}/messages`;
+      // v3 bot-message body: user_ids (comma-separated string) + sync_message
+      // so the response includes { data: { message_id, chat_id } }.
+      payload.user_ids = opts.to;
+      payload.sync_message = true;
+    } else if (isDm) {
       url = `${this.apiBase}/api/v2/bots/${encodeURIComponent(this.botId)}/message`;
       payload.userids = opts.to;
     } else if (useV3Channel) {
@@ -914,7 +958,7 @@ export class CliqClient {
       url = `${this.apiBase}/api/v2/channelsbyname/${encodeURIComponent(opts.to)}/message?bot_unique_name=${encodeURIComponent(this.botId)}`;
     }
     this.logger.info?.(
-      `[cliq] send: ${targetKind} id=${opts.to} textLen=${opts.text.length}${useV3Channel ? " api=v3" : ""}`,
+      `[cliq] send: ${targetKind} id=${opts.to} textLen=${opts.text.length}${apiTag}`,
     );
     let attempt = 0;
     const res = await withSendRetry(
