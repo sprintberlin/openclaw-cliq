@@ -13,6 +13,27 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
+- REST API v3 opt-in for channel text posts (issue #54): a new `apiVersion`
+  config (`"v2"` (default) | `"v3"`, schema-validated in both the top-level and
+  `channelConfigs.cliq` schemas with `uiHints`, surfaced in
+  `openclaw channels inspect`) routes channel **text** posts through the v3
+  endpoint `POST /api/v3/channelsbyname/{name}/messages` when set to `"v3"`. The
+  v3 endpoint uses the `ZohoCliq.Webhooks.CREATE` scope — obtainable via
+  `client_credentials` — so **no user-context refresh token is required for
+  channel text posts** in v3 mode (the v2 channel endpoint requires
+  `ZohoCliq.Channels.UPDATE`, which `client_credentials` cannot obtain). This is
+  the first increment of the incremental v3 migration (one endpoint family at a
+  time, keeping v2 as the default so the core never regresses): DM posts, card
+  / button posts, media posts, message edits / deletes / list, reactions,
+  directory, and file download stay on v2 until their own increments. v3
+  channel posts return `204 No response` (no message id), so live-edit
+  streaming for channel posts degrades to block-streaming (still correct, just
+  less granular); v3 has no `buttons` field, so `sendCard` stays on v2
+  regardless of `apiVersion`. Per-account overrides supported (one account can
+  pilot v3 while others stay on v2). No new OAuth scope required (v3 reuses
+  `ZohoCliq.Webhooks.CREATE`, which the existing DM path already requests). See
+  README §3c and §4.
+
 - Welcome message on subscribe (issue #52): the Cliq bot **Welcome Handler**
   fires when a user subscribes (or re-subscribes) to the bot, but the plugin
   ignored it. A new `welcome` config (`{ enabled, text, textRejoin }`, default

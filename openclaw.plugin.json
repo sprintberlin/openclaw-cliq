@@ -119,7 +119,12 @@
         }
       },
       "apiBase": { "type": "string" },
-      "oauthBase": { "type": "string" }
+      "oauthBase": { "type": "string" },
+      "apiVersion": {
+        "type": "string",
+        "enum": ["v2", "v3"],
+        "default": "v2"
+      }
     }
   },
   "channelConfigs": {
@@ -239,7 +244,12 @@
             }
           },
           "apiBase": { "type": "string" },
-          "oauthBase": { "type": "string" }
+          "oauthBase": { "type": "string" },
+          "apiVersion": {
+            "type": "string",
+            "enum": ["v2", "v3"],
+            "default": "v2"
+          }
         },
         "required": ["clientId", "clientSecret", "botId"]
       },
@@ -263,7 +273,8 @@
         "thinking": { "label": "Instant acknowledgement (thinking placeholder)", "options": ["off", "placeholder"] },
         "welcome": { "label": "Welcome message on subscribe (greeting DM on first contact)" },
         "oauthBase": { "label": "OAuth base URL (data center — defaults to EU https://accounts.zoho.eu)" },
-        "apiBase": { "label": "Cliq API base URL (data center — defaults to EU https://cliq.zoho.eu)" }
+        "apiBase": { "label": "Cliq API base URL (data center — defaults to EU https://cliq.zoho.eu)" },
+        "apiVersion": { "label": "REST API generation for channel text posts (v2 default; v3 opt-in uses Webhooks.CREATE scope, no refresh token needed)", "options": ["v2", "v3"] }
       }
     }
   }

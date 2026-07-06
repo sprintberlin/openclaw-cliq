@@ -60,6 +60,8 @@ export interface InspectedCliqAccountConfig {
   ackPolicy: "after_dispatch" | "immediate";
   /** Whether progressive (block-streaming) reply delivery is opted-in. */
   streamingPreview: "on" | "off";
+  /** Resolved REST API generation for the endpoint families with a v3 equivalent. */
+  apiVersion: "v2" | "v3";
 }
 
 export interface InspectedCliqAccount {
@@ -179,6 +181,7 @@ export function inspectCliqAccount(params: {
       ackPolicy: resolved?.ackPolicy ?? "after_dispatch",
       streamingPreview:
         (section?.streaming?.preview === "on" ? "on" : "off"),
+      apiVersion: resolved?.apiVersion ?? "v2",
     },
   };
 }

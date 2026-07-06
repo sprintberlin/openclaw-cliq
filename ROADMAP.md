@@ -58,8 +58,33 @@ verified-live core.
 
 - **Migrate outbound calls to v3.** Move the send / edit / react / metadata calls off the
   hard-coded `/api/v2/` paths in `src/client.ts` to v3 **one endpoint family per change, keeping
-  v2 as a fallback** so the core never regresses in a single large refactor. Ref: v3 Introduction
-  <https://www.zoho.com/cliq/help/restapi/v3/introduction/>.
+  v2 as a fallback** so the core never regresses in a single large refactor. Channel **text**
+  posts route through the v3 endpoint when `apiVersion: "v3"` (v2 default); the remaining
+  endpoint families to migrate:
+  - **Channel card / button posts** (`sendCard` non-DM) — v3 has no `buttons` field (moved to
+    Message Cards); requires the Phase 3 Message-Card renderer, not a direct swap.
+  - **Channel media posts** (`sendMediaMessage` non-DM) — v3 channel post body has no media
+    field; needs the v3 attachment / Message-Card image flow.
+  - **Bot DM posts** (`/api/v2/bots/{botId}/message` with `userids`) — v3 posts to a chat by
+    `CHAT_ID` (`POST /api/v3/chats/{chatId}/messages`), so DM send needs the bot→user chat id
+    resolved first (a new `resolveDmChatId` step, or reuse the v3 `POST /chats` create-chat
+    endpoint) before the message POST.
+  - **Message edit / delete / list** (`/api/v2/chats/{chatId}/messages…`) — v3 Messages /
+    Chats have **no** single-message edit / get / delete endpoints; the v2 paths may stay
+    indefinitely (confirm against the v3 OpenAPI spec before declaring this a dead end).
+  - **Reactions** (`/api/v2/chats/{chatId}/messages/{messageId}/reactions`) — check the v3
+    spec for a reactions equivalent (not visible in the v3 sidebar; may be v2-only).
+  - **Directory** (`/api/v2/users`, `/api/v2/channels`) — v3 has no org-user / channel
+    directory; `GET /api/v3/chats?type=dm|channel` returns chats (a semantic change: only
+    users / channels the bot already has a conversation with), so this is a behavior decision,
+    not a clean swap.
+  - **File download** (`/api/v2/files/{fileId}`) — check the v3 spec for a files equivalent.
+  - **Channel-chat-id resolution** (`GET /api/v2/channelsbyname/{name}`) — v3 has
+    `GET /api/v3/chats/{chatId}` (by chat id, not by unique name); the channelsbyname lookup
+    may be v2-only.
+  Ref: v3 Introduction <https://www.zoho.com/cliq/help/restapi/v3/introduction/>,
+  v3 Messages <https://www.zoho.com/cliq/help/restapi/v3/messages/>,
+  v3 Chats <https://www.zoho.com/cliq/help/restapi/v3/chats/>.
 - **Adopt the v3 conventions the rest of the roadmap depends on:** `PATCH` partial updates (cleaner
   message edits for `src/live-edit.ts`), pagination (`page` / `per_page`) on list calls, and the
   consistent v3 error shape (feeds better error classification, incl. the existing data-center

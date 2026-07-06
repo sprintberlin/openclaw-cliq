@@ -58,6 +58,7 @@ export class CliqClientRegistry {
         undefined,
         this.logger,
         account.refreshToken,
+        account.apiVersion ?? "v2",
       );
       this.clients.set(key, client);
     }

@@ -165,6 +165,55 @@ describe("resolveCliqConfig — per-account resolution", () => {
     expect(account.allowFrom).toEqual(["u1"]);
   });
 
+  it("defaults apiVersion to v2 when unset (single-account)", () => {
+    const cfg = {
+      channels: {
+        cliq: { clientId: "id", clientSecret: "secret", botId: "bot" },
+      },
+    } as unknown as OpenClawConfig;
+    expect(resolveCliqConfig(cfg).apiVersion).toBe("v2");
+  });
+
+  it("reads a top-level apiVersion=v3 (single-account opt-in)", () => {
+    const cfg = {
+      channels: {
+        cliq: {
+          clientId: "id", clientSecret: "secret", botId: "bot",
+          apiVersion: "v3",
+        },
+      },
+    } as unknown as OpenClawConfig;
+    expect(resolveCliqConfig(cfg).apiVersion).toBe("v3");
+  });
+
+  it("applies a per-account apiVersion override (one account pilots v3)", () => {
+    const cfg = {
+      channels: {
+        cliq: {
+          webhookSecret: "wh",
+          accounts: {
+            alpha: { clientId: "id-a", clientSecret: "s", botId: "bot-a", apiVersion: "v3" },
+            beta: { clientId: "id-b", clientSecret: "s", botId: "bot-b" },
+          },
+        },
+      },
+    } as unknown as OpenClawConfig;
+    expect(resolveCliqConfig(cfg, "alpha").apiVersion).toBe("v3");
+    expect(resolveCliqConfig(cfg, "beta").apiVersion).toBe("v2");
+  });
+
+  it("rejects an unknown apiVersion value (falls back to v2)", () => {
+    const cfg = {
+      channels: {
+        cliq: {
+          clientId: "id", clientSecret: "secret", botId: "bot",
+          apiVersion: "v4" as unknown as string,
+        },
+      },
+    } as unknown as OpenClawConfig;
+    expect(resolveCliqConfig(cfg).apiVersion).toBe("v2");
+  });
+
   it("throws on a per-account section missing required credentials", () => {
     const cfg = {
       channels: {

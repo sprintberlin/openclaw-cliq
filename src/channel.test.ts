@@ -692,6 +692,100 @@ describe("CliqClient.sendMessage message-ref parsing", () => {
   });
 });
 
+describe("CliqClient.sendMessage v3 channel post (apiVersion==='v3')", () => {
+  it("POSTs to /api/v3/channelsbyname/{name}/messages with the Webhooks.CREATE scope (no refresh token)", async () => {
+    setCliqClientRegistry(null);
+    const { CliqClient } = await import("./client.js");
+    // v3 channel post opts in via the 9th constructor param.
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, undefined, undefined, undefined, "v3");
+    const seen: { url: string; method?: string; body?: string; scope?: string | null }[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        const scope = new URL(urlStr).searchParams.get("scope");
+        seen.push({ url: "oauth", scope });
+        return new Response(JSON.stringify({ access_token: "v3-tok", expires_in: 3600 }), { status: 200 });
+      }
+      seen.push({
+        url: urlStr,
+        method: init?.method,
+        body: init?.body as string,
+      });
+      // v3 channel post returns 204 No response (no message id).
+      return new Response(JSON.stringify({ "Response Code": "204 No response" }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const result = await client.sendMessage({ to: "dev-team", isDm: false, text: "hello v3" });
+      expect(result.messageId).toBeUndefined();
+      expect(result.chatId).toBeUndefined();
+    } finally {
+      globalThis.fetch = original;
+    }
+    // OAuth must use the Webhooks.CREATE scope (client_credentials) — NOT Channels.UPDATE.
+    const oauth = seen.find((s) => s.url === "oauth");
+    expect(oauth?.scope).toBe("ZohoCliq.Webhooks.CREATE");
+    // The send must hit the v3 channelsbyname messages endpoint.
+    const post = seen.find((s) => s.method === "POST" && s.url.includes("/channelsbyname/"));
+    expect(post).toBeDefined();
+    expect(post!.url).toContain("/api/v3/channelsbyname/dev-team/messages");
+    expect(post!.url).toContain("bot_unique_name=bot");
+    // The body is the v3 shape: { text } (no userids, no chatid).
+    expect(JSON.parse(post!.body!)).toEqual({ text: "hello v3" });
+  });
+
+  it("defaults to v2 channel post when apiVersion is unset (no v3 path)", async () => {
+    setCliqClientRegistry(null);
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient("id", "secret", "bot");
+    const seen: { url: string; scope?: string | null }[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        const scope = new URL(urlStr).searchParams.get("scope");
+        seen.push({ url: "oauth", scope });
+        return new Response(JSON.stringify({ access_token: "t", expires_in: 3600 }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ id: "msg-v2" }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      await client.sendMessage({ to: "dev-team", isDm: false, text: "hi" });
+    } finally {
+      globalThis.fetch = original;
+    }
+    // Default v2 channel post requests Channels.UPDATE scope.
+    const oauth = seen.find((s) => s.url === "oauth");
+    expect(oauth?.scope).toBe("ZohoCliq.Channels.UPDATE");
+  });
+
+  it("v3 channel post still uses client_credentials Webhooks.CREATE even when a refresh token is configured", async () => {
+    setCliqClientRegistry(null);
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, undefined, undefined, "rt-token", "v3");
+    const seen: { url: string; scope?: string | null; grantType?: string | null }[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        const u = new URL(urlStr);
+        seen.push({ url: "oauth", scope: u.searchParams.get("scope"), grantType: u.searchParams.get("grant_type") });
+        return new Response(JSON.stringify({ access_token: "v3-tok", expires_in: 3600 }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ "Response Code": "204 No response" }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      await client.sendMessage({ to: "dev-team", isDm: false, text: "hi" });
+    } finally {
+      globalThis.fetch = original;
+    }
+    // v3 channel post must NOT use the refresh-token grant even when one is configured.
+    const oauth = seen.find((s) => s.url === "oauth");
+    expect(oauth?.grantType).toBe("client_credentials");
+    expect(oauth?.scope).toBe("ZohoCliq.Webhooks.CREATE");
+  });
+});
+
 describe("normalizeCliqRouteTarget (issue #11)", () => {
   it("routes cliq:user:<id> to a DM user target", () => {
     expect(normalizeCliqRouteTarget("cliq:user:20098819618")).toEqual({

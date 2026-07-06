@@ -20,6 +20,27 @@ const EU_OAUTH_BASE = "https://accounts.zoho.eu";
 const MESSAGE_CHAR_LIMIT = 5000;
 
 
+/** REST API generation used for outbound calls that have a v3 equivalent. */
+export type CliqApiVersion = "v2" | "v3";
+
+/**
+ * Outbound endpoint families and their v3 readiness:
+ *  - channel **text** posts → v3 available (opt-in via `apiVersion: "v3"`).
+ *  - channel **card/button** posts, channel **media** posts, bot **DM** posts,
+ *    message edit / delete / list, reactions, directory, file download,
+ *    channel-chat-id resolution → v2 only (v3 has no equivalent, or the v3
+ *    shape differs and is migrated in a later increment).
+ *
+ * v3 channel text post: `POST /api/v3/channelsbyname/{name}/messages` with
+ * body `{ text, reply_to?, sync_message? }` and the
+ * `ZohoCliq.Webhooks.CREATE` scope (obtainable via `client_credentials` —
+ * unlike the v2 channel endpoint, which requires `ZohoCliq.Channels.UPDATE`
+ * and therefore a user-context refresh token). v3 returns `204 No response`
+ * with no message id (live-edit recovers via the existing
+ * `resolveChannelChatId` + `listChatMessages` path). v3 does NOT support a
+ * `buttons` field (buttons moved to Message Cards in v3), so `sendCard`
+ * stays on v2 regardless of `apiVersion`.
+ */
 export interface CliqChannelConfig {
   clientId?: string;
   /**
@@ -127,6 +148,18 @@ export interface CliqChannelConfig {
    * Same use case as `apiBase`. When unset the EU endpoint is used.
    */
   oauthBase?: string;
+  /**
+   * REST API generation to use for the outbound endpoint families that have a
+   * v3 equivalent. `"v2"` (default) keeps the verified-live v2 paths; `"v3"`
+   * opts the channel text-post family into the v3
+   * `POST /api/v3/channelsbyname/{name}/messages` endpoint, which uses the
+   * `ZohoCliq.Webhooks.CREATE` scope (obtainable via `client_credentials`,
+   * removing the refresh-token requirement for channel text posts — see
+   * README §3c). Other families (DM posts, cards, media, edits, reactions,
+   * directory) stay on v2 until their v3 migration increment. Migrating is
+   * incremental and per-family so the core never regresses in one change.
+   */
+  apiVersion?: CliqApiVersion;
 }
 
 /** Per-account reaction-guidance config (under `channels.cliq.reactions`). */
@@ -192,6 +225,15 @@ export interface ResolvedCliqAccount {
   /** Resolved OAuth base (EU default unless overridden in config). */
   oauthBase?: string;
   /**
+   * Resolved REST API generation for the endpoint families that have a v3
+   * equivalent. Defaults to `"v2"`; per-account overrides apply via the
+   * shallow-merge resolution (so one account can pilot v3 while others stay
+   * on v2). See {@link CliqChannelConfig.apiVersion}. Optional on the
+   * resolved type so test fixtures can omit it; `resolveCliqConfig` always
+   * sets it and `CliqClient` defaults to `"v2"` when undefined.
+   */
+  apiVersion?: CliqApiVersion;
+  /**
    * Resolved instant-acknowledgement config. `mode` defaults to `"off"`; `text`
    * defaults to {@link DEFAULT_CLIQ_THINKING_TEXT} when `mode === "placeholder"`.
    * The inbound path only acts when `mode === "placeholder"` AND a
@@ -256,6 +298,7 @@ export function resolveCliqConfig(
     refreshToken: refreshToken || undefined,
     apiBase: section?.apiBase || undefined,
     oauthBase: section?.oauthBase || undefined,
+    apiVersion: section?.apiVersion === "v3" ? "v3" : "v2",
     thinking: {
       mode: section?.thinking?.mode === "placeholder" ? "placeholder" : "off",
       text: section?.thinking?.text || DEFAULT_CLIQ_THINKING_TEXT,
@@ -667,6 +710,7 @@ export class CliqClient {
     retryOptions?: RetryOptions,
     logger?: CliqLogger,
     private readonly refreshToken?: string,
+    private readonly apiVersion: CliqApiVersion = "v2",
   ) {
     const base = retryOptions ?? {};
     this.retryOptions = {
@@ -841,8 +885,21 @@ export class CliqClient {
     // for channel posts. See issue #27. When no refreshToken is configured,
     // the channel path falls back to client_credentials (which will fail at
     // the API — i.e. DM-only setups keep working unchanged).
-    const scope = isDm ? "ZohoCliq.Webhooks.CREATE" : "ZohoCliq.Channels.UPDATE";
-    const needsUserContext = !isDm;
+    //
+    // v3 channel text post (opt-in via apiVersion==="v3"): the v3 endpoint
+    // POST /api/v3/channelsbyname/{name}/messages uses the
+    // ZohoCliq.Webhooks.CREATE scope — which client_credentials CAN obtain
+    // — so a v3 channel text post does NOT require a refresh token. v3
+    // returns 204 No response (no message id); live-edit recovers via the
+    // existing resolveChannelChatId + listChatMessages path. v3 has no
+    // buttons field (sendCard stays v2).
+    const useV3Channel = !isDm && this.apiVersion === "v3";
+    const scope = (isDm || useV3Channel)
+      ? "ZohoCliq.Webhooks.CREATE"
+      : "ZohoCliq.Channels.UPDATE";
+    // v2 channel posts need the user-context refresh token; DMs and v3
+    // channel posts work with client_credentials (Webhooks.CREATE).
+    const needsUserContext = !isDm && !useV3Channel;
     const token = await this.resolveOutboundToken(scope, needsUserContext);
     const targetKind = isDm ? "dm" : "channel";
     let url: string;
@@ -850,11 +907,14 @@ export class CliqClient {
     if (isDm) {
       url = `${this.apiBase}/api/v2/bots/${encodeURIComponent(this.botId)}/message`;
       payload.userids = opts.to;
+    } else if (useV3Channel) {
+      url = `${this.apiBase}/api/v3/channelsbyname/${encodeURIComponent(opts.to)}/messages?bot_unique_name=${encodeURIComponent(this.botId)}`;
+      // v3 body is { text, reply_to?, sync_message? } — no buttons (Message Cards).
     } else {
       url = `${this.apiBase}/api/v2/channelsbyname/${encodeURIComponent(opts.to)}/message?bot_unique_name=${encodeURIComponent(this.botId)}`;
     }
     this.logger.info?.(
-      `[cliq] send: ${targetKind} id=${opts.to} textLen=${opts.text.length}`,
+      `[cliq] send: ${targetKind} id=${opts.to} textLen=${opts.text.length}${useV3Channel ? " api=v3" : ""}`,
     );
     let attempt = 0;
     const res = await withSendRetry(
