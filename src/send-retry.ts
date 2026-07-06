@@ -17,6 +17,8 @@
  *    touching the network.
  */
 
+import { appendCliqDataCenterHint } from "./region.js";
+
 export type CliqSendErrorKind =
   | "transient"
   | "fatal"
@@ -47,7 +49,11 @@ export class CliqSendError extends Error {
     retryAfterMs?: number,
   ) {
     const retryHint = retryAfterMs !== undefined ? ` (retry-after ${retryAfterMs}ms)` : "";
-    super(`cliq: send failed [${kind}] status=${status}${retryHint}: ${body}`);
+    // Append the data-center hint to fatal auth failures (401/403/4xx auth
+    // errors) so a non-EU account hitting the EU endpoints surfaces a
+    // pointer to the most likely cause alongside the opaque Zoho body.
+    const dcHint = kind === "fatal" ? appendCliqDataCenterHint(body) : "";
+    super(`cliq: send failed [${kind}] status=${status}${retryHint}: ${body}${dcHint}`);
     this.name = "CliqSendError";
     this.kind = kind;
     this.status = status;

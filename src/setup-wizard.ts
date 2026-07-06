@@ -7,6 +7,15 @@ import {
   type WizardPrompter,
 } from "openclaw/plugin-sdk/setup";
 import { hasConfiguredSecretInput } from "openclaw/plugin-sdk/secret-input-runtime";
+import {
+  CLIQ_DATA_CENTERS,
+  CLIQ_DEFAULT_DC_ID,
+  findCliqDataCenterById,
+  findCliqDataCenterByApiBase,
+  findCliqDataCenterByOauthBase,
+  getDefaultCliqDataCenter,
+  type CliqDataCenter,
+} from "./region.js";
 
 const CHANNEL = "cliq" as const;
 const DEFAULT_ACCOUNT_ID = "default";
@@ -312,13 +321,89 @@ export function applyCliqCredentials(
   return patchCliqSection(cfg, patch);
 }
 
+/**
+ * Resolve the currently configured data center from the existing `oauthBase`
+ * (preferred) or `apiBase` field of the `channels.cliq` section. Returns the
+ * DC id when one of the configured bases matches a known region, otherwise
+ * `undefined` (so the prompt defaults to EU — the plugin's historical
+ * default, preserving backward compatibility for existing EU installs).
+ */
+export function detectConfiguredCliqDataCenter(
+  cfg: OpenClawConfig,
+): string | undefined {
+  const section = readCliqSection(cfg);
+  const oauthBase = asString(section.oauthBase);
+  if (oauthBase) {
+    const dc = findCliqDataCenterByOauthBase(oauthBase);
+    if (dc) return dc.id;
+  }
+  const apiBase = asString(section.apiBase);
+  if (apiBase) {
+    const dc = findCliqDataCenterByApiBase(apiBase);
+    if (dc) return dc.id;
+  }
+  return undefined;
+}
+
+/**
+ * Prompt the operator to select their Zoho data center (region). EU is the
+ * default and the preselected value when no region is detectable from the
+ * existing config; an existing `oauthBase` / `apiBase` is reused so a re-run
+ * over a non-EU account does not silently reset to EU. Returns the selected DC
+ * id (never `undefined` — `select` always resolves to one of the options).
+ */
+export async function promptCliqDataCenter(
+  prompter: WizardPrompter,
+  cfg: OpenClawConfig,
+): Promise<string> {
+  const currentDcId =
+    detectConfiguredCliqDataCenter(cfg) ?? CLIQ_DEFAULT_DC_ID;
+  const selected = await prompter.select<string>({
+    message: "Select your Zoho data center (region). Pick the domain you log into Zoho at.",
+    options: CLIQ_DATA_CENTERS.map((dc) => ({
+      value: dc.id,
+      label: dc.label,
+    })),
+    initialValue: currentDcId,
+  });
+  return selected;
+}
+
+/**
+ * Apply a data-center selection to the channel config: writes `oauthBase` +
+ * `apiBase` together from the region→endpoints map. Falls back to the EU
+ * default when the id is unknown (defensive — `promptCliqDataCenter` only ever
+ * returns a known id).
+ */
+export function applyCliqDataCenter(
+  cfg: OpenClawConfig,
+  dcId: string,
+): OpenClawConfig {
+  const dc = findCliqDataCenterById(dcId) ?? getDefaultCliqDataCenter();
+  return patchCliqSection(cfg, { oauthBase: dc.oauthBase, apiBase: dc.apiBase });
+}
+
+/** Resolve a CliqDataCenter by id with a safe EU fallback (never throws). */
+export function resolveCliqDataCenterOrEu(dcId: string | undefined): CliqDataCenter {
+  return (dcId ? findCliqDataCenterById(dcId) : undefined) ?? getDefaultCliqDataCenter();
+}
+
 const cliqFinalize: NonNullable<ChannelSetupWizard["finalize"]> = async ({
   cfg,
   prompter,
 }) => {
+  // Prompt for the Zoho data center first so the printed setup instructions
+  // reference the chosen region's API Console URL and the credentials are
+  // stored alongside the matching `oauthBase` / `apiBase`. EU remains the
+  // default (the plugin's historical default region) so existing EU installs
+  // re-running the wizard stay on EU. See issue #46.
+  const dcId = await promptCliqDataCenter(prompter, cfg);
+  const dc = resolveCliqDataCenterOrEu(dcId);
+  const cfgWithDc = applyCliqDataCenter(cfg, dc.id);
+
   await prompter.note(
     [
-      "Create a self-client at https://api-console.zoho.eu (EU endpoint) with scopes:",
+      `Create a self-client at ${dc.consoleUrl} (${dc.label}) with scopes:`,
       "  ZohoCliq.Webhooks.CREATE, ZohoCliq.Channels.UPDATE, ZohoCliq.Channels.READ,",
       "  ZohoCliq.Users.READ, ZohoCliq.Messages.UPDATE.",
       "Bot DMs use client_credentials; channel posts + message edits need a",
@@ -330,8 +415,8 @@ const cliqFinalize: NonNullable<ChannelSetupWizard["finalize"]> = async ({
     "Zoho Cliq setup",
   );
 
-  const creds = await promptCliqCredentials(prompter, cfg);
-  const next = applyCliqCredentials(cfg, creds);
+  const creds = await promptCliqCredentials(prompter, cfgWithDc);
+  const next = applyCliqCredentials(cfgWithDc, creds);
   return { cfg: next, accountId: DEFAULT_ACCOUNT_ID };
 };
 
@@ -355,16 +440,20 @@ export const cliqSetupWizard: ChannelSetupWizard = {
       if (botId) lines.push(`bot: ${botId}`);
       const webhookSecret = asString(section.webhookSecret);
       lines.push(`webhook secret: ${webhookSecret ? "set" : "not set"}`);
+      const dcId = detectConfiguredCliqDataCenter(cfg);
+      if (dcId) lines.push(`data center: ${dcId}`);
       return lines;
     },
   }),
   introNote: {
     title: "Zoho Cliq setup",
     lines: [
-      "You'll need a Zoho Cliq bot plus an OAuth self-client (EU endpoint).",
-      "The bot unique name is what you registered in Cliq's bot console; it is",
-      "used in the bot message API URL. The webhook secret is a shared string",
-      "your Deluge handler sends in the x-cliq-webhook-secret header.",
+      "You'll need a Zoho Cliq bot plus an OAuth self-client for your Zoho data",
+      "center (region). The wizard prompts for the region first so the printed",
+      "API Console URL and the stored `oauthBase` / `apiBase` match your Zoho",
+      "account. The bot unique name is what you registered in Cliq's bot console;",
+      "it is used in the bot message API URL. The webhook secret is a shared",
+      "string your Deluge handler sends in the x-cliq-webhook-secret header.",
     ],
   },
   credentials: [],

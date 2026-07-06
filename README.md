@@ -392,7 +392,29 @@ URLs throughout the [setup guide](#setup-guide).
 | China | `.com.cn` | `https://accounts.zoho.com.cn` | `https://cliq.zoho.com.cn` |
 
 **Which region am I on?** Check the domain you log into Zoho at (e.g. `cliq.zoho.in`
-→ India), or read the `location` value Zoho returns during the OAuth flow.
+→ India), or read the `api_domain` / `location` value Zoho returns during the
+OAuth flow.
+
+**Auto-detection.** You do not have to get the region right on the first try:
+
+- The **setup wizard** (`openclaw configure`) prompts for your Zoho data center
+  first and writes `oauthBase` + `apiBase` together from the region table above
+  (EU is the default; a re-run reuses your existing region so a non-EU account
+  is never silently reset to EU). The printed API Console URL matches the
+  region you pick.
+- After the first successful OAuth token exchange, the plugin reads the
+  `api_domain` field Zoho returns in the token response and, when it indicates
+  a region that disagrees with the configured `apiBase`, **self-corrects
+  `apiBase`** to the matching `cliq.zoho.<tld>` (the raw `zohoapis` host is
+  mapped back to the Cliq host — never used directly) and logs one warning.
+  `oauthBase` is left unchanged: a wrong `oauthBase` fails *before* any
+  `api_domain` is returned, so it cannot self-heal — set it via the wizard or
+  the config table above.
+- `openclaw doctor` warns when only one of `oauthBase` / `apiBase` is set
+  (the other defaults to EU, splitting OAuth + REST across regions) or when
+  the two point at different regions (a likely copy-paste mistake).
+- A Zoho auth failure (`invalid_client` / `oauthtoken_scope_invalid` / 4xx
+  auth) surfaces a `verify your Zoho data center` hint pointing back here.
 
 **Example — a US-based account** (`.com`). EU accounts can omit both fields:
 

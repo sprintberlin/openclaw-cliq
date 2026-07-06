@@ -11,6 +11,26 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Added
+
+- Multi-data-center auto-detection so non-EU Zoho installs work out of the box
+  (issue #46):
+  - The setup wizard prompts for your Zoho data center (region) first and
+    writes `oauthBase` + `apiBase` together from a region→endpoints map (EU
+    default; existing region reused on re-run). The printed API Console URL
+    matches the chosen region (no more hard-coded `api-console.zoho.eu`).
+  - After the first OAuth token exchange, the plugin reads the `api_domain`
+    Zoho returns in the token response and self-corrects `apiBase` to the
+    matching `cliq.zoho.<tld>` when it disagrees with the configured region
+    (the raw `zohoapis` host is mapped back to the Cliq host, never used
+    directly); `oauthBase` is left unchanged. Applies to both the
+    `client_credentials` and `refresh_token` grants.
+  - `openclaw doctor` warns when only one of `oauthBase` / `apiBase` is set, or
+    when the two point at different regions.
+  - Zoho auth failures (`invalid_client` / `oauthtoken_scope_invalid` / 4xx
+    auth) now surface a `verify your Zoho data center` hint on the thrown
+    error for both the OAuth token path and the outbound send path.
+
 ### Changed
 
 - Documented multi-data-center support: the setup guide now uses `.com` (US)

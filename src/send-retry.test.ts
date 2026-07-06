@@ -211,4 +211,41 @@ describe("CliqSendError", () => {
     expect(err.message).toContain("slow down");
     expect(err.message).toContain("5000ms");
   });
+
+  it("appends the data-center hint to a fatal auth-failure body (issue #46)", () => {
+    const err = new CliqSendError(
+      "fatal",
+      401,
+      '{"error":"invalid_client"}',
+    );
+    expect(err.message).toContain("verify your Zoho data center");
+  });
+
+  it("appends the data-center hint for oauthtoken_scope_invalid", () => {
+    const err = new CliqSendError(
+      "fatal",
+      403,
+      '{"code":"oauthtoken_scope_invalid"}',
+    );
+    expect(err.message).toContain("verify your Zoho data center");
+  });
+
+  it("does not append the hint to a transient / format_rejected error", () => {
+    const transient = new CliqSendError("transient", 429, "slow down");
+    expect(transient.message).not.toContain("verify your Zoho data center");
+    const fmt = new CliqSendError(
+      "format_rejected",
+      400,
+      '{"error":"invalid_client"}',
+    );
+    // Only fatal errors carry the DC hint — format_rejected is recoverable
+    // by retrying plain text, so we don't muddy it with a DC pointer.
+    expect(fmt.message).not.toContain("verify your Zoho data center");
+  });
+
+  it("does not append the hint to a fatal non-auth body", () => {
+    const err = new CliqSendError("fatal", 404, '{"error":"bot not found"}');
+    expect(err.message).not.toContain("verify your Zoho data center");
+  });
 });
+

@@ -182,6 +182,83 @@ describe("collectCliqPreviewWarnings", () => {
   });
 });
 
+describe("collectCliqPreviewWarnings — data-center validation (issue #46)", () => {
+  const base = {
+    clientId: "id",
+    clientSecret: "secret",
+    botId: "bot",
+    webhookSecret: "s",
+    dmPolicy: "open" as const,
+    allowFrom: ["u1"],
+  };
+
+  it("warns when only oauthBase is set (apiBase defaults to EU)", () => {
+    const warnings = collectCliqPreviewWarnings({
+      cfg: cfgWith({ ...base, oauthBase: "https://accounts.zoho.com" }),
+      doctorFixCommand: DOCTOR_FIX,
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/only one of oauthBase \/ apiBase is set/);
+    expect(warnings[0]).toContain("apiBase=—");
+  });
+
+  it("warns when only apiBase is set (oauthBase defaults to EU)", () => {
+    const warnings = collectCliqPreviewWarnings({
+      cfg: cfgWith({ ...base, apiBase: "https://cliq.zoho.com" }),
+      doctorFixCommand: DOCTOR_FIX,
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/only one of oauthBase \/ apiBase is set/);
+  });
+
+  it("warns when oauthBase and apiBase point at different regions", () => {
+    const warnings = collectCliqPreviewWarnings({
+      cfg: cfgWith({
+        ...base,
+        oauthBase: "https://accounts.zoho.com",
+        apiBase: "https://cliq.zoho.in",
+      }),
+      doctorFixCommand: DOCTOR_FIX,
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/point at different Zoho data centers/);
+  });
+
+  it("does not warn when both are set to the same region", () => {
+    const warnings = collectCliqPreviewWarnings({
+      cfg: cfgWith({
+        ...base,
+        oauthBase: "https://accounts.zoho.in",
+        apiBase: "https://cliq.zoho.in",
+      }),
+      doctorFixCommand: DOCTOR_FIX,
+    });
+    expect(warnings).toEqual([]);
+  });
+
+  it("does not warn when neither is set (EU default is consistent)", () => {
+    const warnings = collectCliqPreviewWarnings({
+      cfg: cfgWith({ ...base }),
+      doctorFixCommand: DOCTOR_FIX,
+    });
+    expect(warnings).toEqual([]);
+  });
+
+  it("does not warn for a non-region custom apiBase + oauthBase that match no DC", () => {
+    const warnings = collectCliqPreviewWarnings({
+      cfg: cfgWith({
+        ...base,
+        oauthBase: "https://accounts.example.internal",
+        apiBase: "https://cliq.example.internal",
+      }),
+      doctorFixCommand: DOCTOR_FIX,
+    });
+    // Both set, neither matches a known DC — no region-mismatch warning
+    // (cannot prove they disagree without a known-region mapping).
+    expect(warnings).toEqual([]);
+  });
+});
+
 describe("collectCliqMutableAllowlistWarnings", () => {
   it("returns nothing when there is no section", () => {
     expect(

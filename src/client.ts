@@ -8,11 +8,17 @@ import {
 } from "./logger.js";
 import type { CliqButton } from "./presentation.js";
 import { resolveCliqSecretString } from "./secret-resolve.js";
+import {
+  appendCliqDataCenterHint as appendDcHint,
+  findCliqDataCenterByApiBase,
+  findCliqDataCenterByApiDomain,
+} from "./region.js";
 
 const EU_API_BASE = "https://cliq.zoho.eu";
 const EU_OAUTH_BASE = "https://accounts.zoho.eu";
 
 const MESSAGE_CHAR_LIMIT = 5000;
+
 
 export interface CliqChannelConfig {
   clientId?: string;
@@ -583,7 +589,7 @@ export class CliqClient {
     private readonly clientId: string,
     private readonly clientSecret: string,
     private readonly botId: string,
-    private readonly apiBase = EU_API_BASE,
+    private apiBase = EU_API_BASE,
     private readonly oauthBase = EU_OAUTH_BASE,
     retryOptions?: RetryOptions,
     logger?: CliqLogger,
@@ -601,6 +607,37 @@ export class CliqClient {
     // `api.logger` injected via `setCliqDefaultLogger` at registration). A
     // caller-supplied logger always wins so tests can capture exact calls.
     this.logger = logger ?? getCliqDefaultLogger();
+  }
+
+  /** Current REST API base (may change after a token response `api_domain`
+   *  self-correction — see `maybeCorrectApiBaseFromApiDomain`). */
+  getApiBase(): string {
+    return this.apiBase;
+  }
+
+  /**
+   * Inspect the `api_domain` Zoho returns in a token response and, when it
+   * indicates a different region than the currently configured `apiBase`,
+   * switch `apiBase` to the matching Cliq base (`https://cliq.zoho.<tld>`,
+   * NEVER the raw `zohoapis` host) and log a single warning. `oauthBase` is
+   * left unchanged — the first token is fetched from `oauthBase`, so a wrong
+   * `oauthBase` fails before any `api_domain` is returned and cannot be
+   * self-healed by this method (the setup-wizard DC prompt handles that).
+   *
+   * This is best-effort: when `api_domain` is missing or does not match a
+   * known region, `apiBase` is left untouched.
+   */
+  private maybeCorrectApiBaseFromApiDomain(apiDomain: string | undefined | null): void {
+    if (!apiDomain) return;
+    const detected = findCliqDataCenterByApiDomain(apiDomain);
+    if (!detected) return;
+    const current = findCliqDataCenterByApiBase(this.apiBase);
+    if (current && current.id === detected.id) return;
+    const previous = this.apiBase;
+    this.apiBase = detected.apiBase;
+    this.logger.warn?.(
+      `[cliq] oauth: api_domain (${apiDomain}) indicates region "${detected.id}" — corrected apiBase from ${previous} to ${detected.apiBase}. Set apiBase (and oauthBase) explicitly in config to suppress this.`,
+    );
   }
 
   async getAccessToken(scope = "ZohoCliq.Webhooks.CREATE"): Promise<string> {
@@ -621,13 +658,20 @@ export class CliqClient {
       this.logger.error?.(
         `[cliq] oauth: token request failed status=${res.status} scope=${scope} body=${truncateForLog(body)}`,
       );
-      throw new Error(`cliq: OAuth token request failed (${res.status}): ${body}`);
+      throw new Error(
+        `cliq: OAuth token request failed (${res.status}): ${body}${appendDcHint(body)}`,
+      );
     }
-    const data = (await res.json()) as { access_token?: string; expires_in?: number };
+    const data = (await res.json()) as {
+      access_token?: string;
+      expires_in?: number;
+      api_domain?: string;
+    };
     if (!data.access_token) {
       this.logger.error?.(`[cliq] oauth: response missing access_token (scope=${scope})`);
       throw new Error("cliq: OAuth response did not include access_token");
     }
+    this.maybeCorrectApiBaseFromApiDomain(data.api_domain);
     this.tokens.set(scope, {
       token: data.access_token,
       expiresAt: now + (data.expires_in ?? 3600) * 1000,
@@ -673,13 +717,20 @@ export class CliqClient {
       this.logger.error?.(
         `[cliq] oauth: refresh token request failed status=${res.status} body=${truncateForLog(body)}`,
       );
-      throw new Error(`cliq: OAuth refresh token request failed (${res.status}): ${body}`);
+      throw new Error(
+        `cliq: OAuth refresh token request failed (${res.status}): ${body}${appendDcHint(body)}`,
+      );
     }
-    const data = (await res.json()) as { access_token?: string; expires_in?: number };
+    const data = (await res.json()) as {
+      access_token?: string;
+      expires_in?: number;
+      api_domain?: string;
+    };
     if (!data.access_token) {
       this.logger.error?.(`[cliq] oauth: refresh response missing access_token`);
       throw new Error("cliq: OAuth refresh response did not include access_token");
     }
+    this.maybeCorrectApiBaseFromApiDomain(data.api_domain);
     this.tokens.set(CliqClient.REFRESH_TOKEN_KEY, {
       token: data.access_token,
       expiresAt: now + (data.expires_in ?? 3600) * 1000,

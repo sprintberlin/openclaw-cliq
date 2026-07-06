@@ -4,13 +4,17 @@ import {
   isCliqChannelConfigured,
   promptCliqCredentials,
   applyCliqCredentials,
+  promptCliqDataCenter,
+  applyCliqDataCenter,
+  detectConfiguredCliqDataCenter,
+  resolveCliqDataCenterOrEu,
   CLIQ_ENV_VARS,
 } from "./setup-wizard.js";
 import type { WizardPrompter } from "openclaw/plugin-sdk/setup";
 import { createCliqTestConfig as cfgWith } from "./test-api.js";
 
 interface ScriptedCall {
-  method: "text" | "confirm" | "note";
+  method: "text" | "confirm" | "note" | "select";
   args: Record<string, unknown>;
 }
 
@@ -19,11 +23,15 @@ interface ScriptedCall {
  * pairs and records every call so tests can assert the prompting flow.
  */
 function makeScriptedPrompter(
-  responses: Array<{ method: "text" | "confirm"; value: string | boolean }>,
+  responses: Array<
+    { method: "text"; value: string } | { method: "confirm"; value: boolean } | { method: "select"; value: string }
+  >,
 ): { prompter: WizardPrompter; calls: ScriptedCall[] } {
   const calls: ScriptedCall[] = [];
   const queue = [...responses];
-  const next = (method: "text" | "confirm"): string | boolean => {
+  const next = (
+    method: "text" | "confirm" | "select",
+  ): string | boolean => {
     if (queue.length === 0) {
       throw new Error(
         `prompter.${method}: no more scripted responses (calls so far: ${calls.length})`,
@@ -43,8 +51,9 @@ function makeScriptedPrompter(
     note: async (message: string, title?: string) => {
       calls.push({ method: "note", args: { message, title } });
     },
-    select: async () => {
-      throw new Error("select not scripted");
+    select: async (params) => {
+      calls.push({ method: "select", args: params as Record<string, unknown> });
+      return String(next("select")) as never;
     },
     multiselect: async () => {
       throw new Error("multiselect not scripted");
@@ -318,6 +327,7 @@ describe("cliqSetupWizard", () => {
 
   it("finalize writes the collected credentials into config", async () => {
     const { prompter } = makeScriptedPrompter([
+      { method: "select", value: "eu" },
       { method: "text", value: "CID" },
       { method: "text", value: "SECRET" },
       { method: "text", value: "bot" },
@@ -343,5 +353,157 @@ describe("cliqSetupWizard", () => {
     expect(section.webhookSecret).toBe("WH");
     expect(section.refreshToken).toBe("RT");
     expect(section.enabled).toBe(true);
+    // The DC prompt writes oauthBase + apiBase together (issue #46).
+    expect(section.oauthBase).toBe("https://accounts.zoho.eu");
+    expect(section.apiBase).toBe("https://cliq.zoho.eu");
+  });
+
+  it("finalize writes the chosen region's oauthBase + apiBase and uses its console URL in the note", async () => {
+    const { prompter, calls } = makeScriptedPrompter([
+      { method: "select", value: "us" },
+      { method: "text", value: "CID" },
+      { method: "text", value: "SECRET" },
+      { method: "text", value: "bot" },
+      { method: "text", value: "" },
+      { method: "text", value: "" },
+      { method: "text", value: "" },
+    ]);
+    const result = await cliqSetupWizard.finalize!({
+      cfg: cfgWith({}),
+      accountId: "default",
+      credentialValues: {},
+      runtime: {} as never,
+      prompter,
+      forceAllowFrom: false,
+    });
+    const section = (
+      result!.cfg as unknown as { channels: { cliq: Record<string, unknown> } }
+    ).channels.cliq;
+    expect(section.oauthBase).toBe("https://accounts.zoho.com");
+    expect(section.apiBase).toBe("https://cliq.zoho.com");
+    // The setup note references the chosen region's API Console URL, not the
+    // hard-coded EU one (issue #46).
+    const noteCall = calls.find((c) => c.method === "note");
+    expect(noteCall).toBeDefined();
+    expect(noteCall!.args.message).toContain("https://api-console.zoho.com");
+    expect(noteCall!.args.message).not.toContain("api-console.zoho.eu");
+  });
+});
+
+describe("promptCliqDataCenter — data-center prompt (issue #46)", () => {
+  it("prompts with EU as the default when no region is configured", async () => {
+    const { prompter, calls } = makeScriptedPrompter([
+      { method: "select", value: "eu" },
+    ]);
+    const id = await promptCliqDataCenter(prompter, cfgWith({}));
+    expect(id).toBe("eu");
+    const selectCall = calls.find((c) => c.method === "select");
+    expect(selectCall).toBeDefined();
+    expect(selectCall!.args.initialValue).toBe("eu");
+  });
+
+  it("reuses the existing region on re-run (does not reset to EU)", async () => {
+    const existing = cfgWith({
+      oauthBase: "https://accounts.zoho.com",
+      apiBase: "https://cliq.zoho.com",
+    });
+    const { prompter, calls } = makeScriptedPrompter([
+      { method: "select", value: "us" },
+    ]);
+    const id = await promptCliqDataCenter(prompter, existing);
+    expect(id).toBe("us");
+    const selectCall = calls.find((c) => c.method === "select");
+    expect(selectCall!.args.initialValue).toBe("us");
+  });
+
+  it("falls back to detecting the region from apiBase when oauthBase is absent", async () => {
+    const existing = cfgWith({ apiBase: "https://cliq.zoho.in" });
+    const { prompter, calls } = makeScriptedPrompter([
+      { method: "select", value: "in" },
+    ]);
+    const id = await promptCliqDataCenter(prompter, existing);
+    expect(id).toBe("in");
+    const selectCall = calls.find((c) => c.method === "select");
+    expect(selectCall!.args.initialValue).toBe("in");
+  });
+
+  it("defaults to EU when the configured oauthBase is not a known region", async () => {
+    const existing = cfgWith({
+      oauthBase: "https://accounts.example.internal",
+      apiBase: "https://cliq.example.internal",
+    });
+    const { prompter, calls } = makeScriptedPrompter([
+      { method: "select", value: "eu" },
+    ]);
+    const id = await promptCliqDataCenter(prompter, existing);
+    expect(id).toBe("eu");
+    const selectCall = calls.find((c) => c.method === "select");
+    expect(selectCall!.args.initialValue).toBe("eu");
+  });
+});
+
+describe("applyCliqDataCenter", () => {
+  it("writes oauthBase + apiBase together for a known region", () => {
+    const next = applyCliqDataCenter(cfgWith({}), "us");
+    const section = (next as unknown as { channels: { cliq: Record<string, unknown> } })
+      .channels.cliq;
+    expect(section.oauthBase).toBe("https://accounts.zoho.com");
+    expect(section.apiBase).toBe("https://cliq.zoho.com");
+  });
+
+  it("falls back to EU for an unknown region id", () => {
+    const next = applyCliqDataCenter(cfgWith({}), "zz");
+    const section = (next as unknown as { channels: { cliq: Record<string, unknown> } })
+      .channels.cliq;
+    expect(section.oauthBase).toBe("https://accounts.zoho.eu");
+    expect(section.apiBase).toBe("https://cliq.zoho.eu");
+  });
+
+  it("preserves existing fields not being patched", () => {
+    const next = applyCliqDataCenter(
+      cfgWith({ clientId: "id", botId: "bot" }),
+      "in",
+    );
+    const section = (next as unknown as { channels: { cliq: Record<string, unknown> } })
+      .channels.cliq;
+    expect(section.clientId).toBe("id");
+    expect(section.botId).toBe("bot");
+    expect(section.oauthBase).toBe("https://accounts.zoho.in");
+  });
+});
+
+describe("detectConfiguredCliqDataCenter", () => {
+  it("detects the region from oauthBase", () => {
+    expect(
+      detectConfiguredCliqDataCenter(
+        cfgWith({ oauthBase: "https://accounts.zoho.jp" }),
+      ),
+    ).toBe("jp");
+  });
+
+  it("detects the region from apiBase when oauthBase is absent", () => {
+    expect(
+      detectConfiguredCliqDataCenter(cfgWith({ apiBase: "https://cliq.zoho.com.au" })),
+    ).toBe("au");
+  });
+
+  it("returns undefined when neither matches a known region", () => {
+    expect(detectConfiguredCliqDataCenter(cfgWith({}))).toBeUndefined();
+    expect(
+      detectConfiguredCliqDataCenter(
+        cfgWith({ oauthBase: "https://accounts.example.internal" }),
+      ),
+    ).toBeUndefined();
+  });
+});
+
+describe("resolveCliqDataCenterOrEu", () => {
+  it("resolves a known id", () => {
+    expect(resolveCliqDataCenterOrEu("ca").id).toBe("ca");
+  });
+
+  it("falls back to EU for undefined / unknown", () => {
+    expect(resolveCliqDataCenterOrEu(undefined).id).toBe("eu");
+    expect(resolveCliqDataCenterOrEu("zz").id).toBe("eu");
   });
 });

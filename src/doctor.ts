@@ -8,6 +8,10 @@ import {
   normalizeCliqCompatibilityConfig,
   repairCliqConfig,
 } from "./legacy-state-migrations.js";
+import {
+  findCliqDataCenterByApiBase,
+  findCliqDataCenterByOauthBase,
+} from "./region.js";
 
 /**
  * Read the raw (possibly unconfigured) Cliq channel section from cfg. Returns
@@ -95,6 +99,27 @@ function collectCliqPreviewWarnings(params: {
     warnings.push(
       `- channels.cliq: ackPolicy is "immediate". A crash between ack and dispatch loses the inbound message. Use only when the Deluge invokeUrl timeout is tighter than the agent round-trip.`,
     );
+  }
+  // Data-center validation: warn when only one of `oauthBase` / `apiBase` is
+  // set (the other defaults to EU, so a half-set config silently splits the
+  // OAuth + REST calls across two regions), or when the two point at
+  // different regions (a likely copy-paste mistake). See issue #46.
+  const oauthBaseRaw = typeof section.oauthBase === "string" ? section.oauthBase : undefined;
+  const apiBaseRaw = typeof section.apiBase === "string" ? section.apiBase : undefined;
+  if (oauthBaseRaw || apiBaseRaw) {
+    if (Boolean(oauthBaseRaw) !== Boolean(apiBaseRaw)) {
+      warnings.push(
+        `- channels.cliq: only one of oauthBase / apiBase is set (oauthBase=${oauthBaseRaw ?? "—"}, apiBase=${apiBaseRaw ?? "—"}). Set both together to the same Zoho data center — the unset one defaults to the EU endpoint, splitting OAuth + REST across regions. See README → Data centers.`,
+      );
+    } else if (oauthBaseRaw && apiBaseRaw) {
+      const dcByOauth = findCliqDataCenterByOauthBase(oauthBaseRaw);
+      const dcByApi = findCliqDataCenterByApiBase(apiBaseRaw);
+      if (dcByOauth && dcByApi && dcByOauth.id !== dcByApi.id) {
+        warnings.push(
+          `- channels.cliq: oauthBase (${dcByOauth.label}) and apiBase (${dcByApi.label}) point at different Zoho data centers. Set both to the same region — see README → Data centers.`,
+        );
+      }
+    }
   }
   return warnings;
 }
