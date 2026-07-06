@@ -19,6 +19,12 @@ import {
   type CliqInboundAttachment,
   type CliqInboundMediaFacts,
 } from "./inbound-media.js";
+import {
+  parseCliqReplyToContext,
+  resolveCliqReplyToContext,
+  formatCliqReplyToBlock,
+  type CliqReplyToContext,
+} from "./inbound-quote.js";
 
 /**
  * Minimal slice of `api.runtime` that the inbound dispatch path needs. Kept
@@ -172,6 +178,20 @@ export interface CliqWebhookPayload {
     channel?: { id?: string; name?: string; unique_name?: string };
     chat?: { id?: string };
   };
+  /**
+   * Quote / reply context (issue #49). A reply's parent message id may be
+   * carried on `message.reply_to` (the documented Cliq shape) or as a
+   * sibling parent-message object under `reply_to` / `parent` / `quoted` /
+   * `parent_message` / `quoted_message` / `reply_to_message` when the Deluge
+   * handler enriches the payload. See {@link parseCliqReplyToContext} for the
+   * tolerated variants.
+   */
+  reply_to?: string | Record<string, unknown>;
+  parent?: Record<string, unknown>;
+  parent_message?: Record<string, unknown>;
+  quoted?: Record<string, unknown>;
+  quoted_message?: Record<string, unknown>;
+  reply_to_message?: Record<string, unknown>;
 }
 
 /** Normalized inbound message extracted from a raw Cliq webhook payload. */
@@ -195,6 +215,14 @@ export interface ParsedCliqInbound {
   /** File attachments (images / files / voice) parsed from the message, if any. */
   attachments: CliqInboundAttachment[];
   threadId?: string;
+  /**
+   * Quote / reply context (issue #49): the message a user replied to or
+   * quoted. `messageId` is usually present (Cliq's `reply_to`); `text` /
+   * `senderName` / `senderId` are present only when the Deluge handler
+   * forwards the parent message object or the dispatcher fetched it via the
+   * chat-messages API.
+   */
+  replyTo?: CliqReplyToContext;
   handler: string;
 }
 
@@ -338,6 +366,8 @@ export function parseCliqWebhookPayload(
   const isMention =
     handler.includes("mention") || hasBotMention || (isGroup && false);
 
+  const replyTo = parseCliqReplyToContext(payload);
+
   return {
     text: bodyText,
     messageId: messageId || "",
@@ -354,6 +384,7 @@ export function parseCliqWebhookPayload(
     mentionIds,
     attachments,
     threadId: payload.thread?.id,
+    replyTo,
     handler,
   };
 }
@@ -397,6 +428,31 @@ export interface CliqMentionPolicyInput {
 }
 
 /**
+ * Whether the inbound message is a reply to / quote of a message the bot sent
+ * (the bot's own `botId` / `botName` / `selfSenderIds`). Used to mark the turn
+ * as an implicit `reply_to_bot` / `quoted_bot` mention so a group reply to the
+ * bot is admitted even without a fresh @mention. Returns false when no quote
+ * context was parsed or the quoted sender is not a known bot id.
+ */
+export function isReplyToBot(
+  parsed: ParsedCliqInbound,
+  account: ResolvedCliqAccount,
+): boolean {
+  const senderId = parsed.replyTo?.senderId?.trim();
+  const senderName = parsed.replyTo?.senderName?.trim();
+  if (!senderId && !senderName) return false;
+  const botIds = new Set<string>();
+  if (account.botId) botIds.add(account.botId.toLowerCase());
+  if (account.botName) botIds.add(account.botName.toLowerCase());
+  for (const id of account.selfSenderIds ?? []) {
+    botIds.add(id.toLowerCase());
+  }
+  if (senderId && botIds.has(senderId.toLowerCase())) return true;
+  if (senderName && botIds.has(senderName.toLowerCase())) return true;
+  return false;
+}
+
+/**
  * Evaluate the inbound mention decision using the shared SDK helper. Returns
  * the decision the webhook handler uses to skip or proceed.
  */
@@ -406,8 +462,8 @@ export function resolveCliqMentionDecision(
   policy: CliqMentionPolicyInput = {},
 ): InboundMentionDecision {
   const facts = resolveCliqMentionFacts(parsed, account, {
-    isReplyToBot: false,
-    isQuoteOfBot: false,
+    isReplyToBot: isReplyToBot(parsed, account),
+    isQuoteOfBot: isReplyToBot(parsed, account),
   });
   return resolveInboundMentionDecision({
     facts,
@@ -621,14 +677,6 @@ export async function dispatchCliqInbound(params: {
   // Strip the bot @handle from the text the agent sees so the agent doesn't
   // echo it back and so command detection operates on the clean instruction.
   const cleanText = stripCliqMentions(parsed.text, account);
-  const body = runtime.channel.reply.formatAgentEnvelope({
-    channel: "Cliq",
-    from: fromLabel,
-    timestamp: parsed.timestamp ? Date.parse(parsed.timestamp) : undefined,
-    previousTimestamp,
-    envelope: envelopeOptions,
-    body: cleanText,
-  });
 
   // The inbound `From` is the originating conversation id: the sender for
   // DMs, the group for group/channel messages. Setting `From` to
@@ -651,6 +699,36 @@ export async function dispatchCliqInbound(params: {
   const deliverTo = parsed.isGroup
     ? (parsed.channelUniqueName ?? parsed.chatId)
     : parsed.senderId;
+
+  // Inbound quote / reply context (issue #49): when the message is a reply to
+  // or quote of another message, carry the referenced message's id + text +
+  // sender into the agent context. The parser already extracted whatever the
+  // Deluge handler forwarded (often just the parent message id). When only an
+  // id is present and a user-context refresh token is configured (reading chat
+  // messages needs a user-consented scope the `client_credentials` grant
+  // cannot obtain), best-effort fetch the parent text via the chat-messages
+  // list endpoint. A fetch failure degrades to "no quote text" and never
+  // breaks the turn. The resolved text is then prepended to the agent envelope
+  // body so the agent sees what the user is replying to.
+  const replyTo = await resolveCliqReplyToContext(parsed.replyTo, {
+    client,
+    chatId: parsed.chatId || undefined,
+    canReadChatMessages: Boolean(account.refreshToken),
+    onError: (err, info) => onError?.(err, info),
+  });
+  const quoteBlock =
+    replyTo && (replyTo.text || replyTo.senderName)
+      ? formatCliqReplyToBlock(replyTo)
+      : "";
+  const bodyText = quoteBlock ? `${quoteBlock}\n\n${cleanText}` : cleanText;
+  const body = runtime.channel.reply.formatAgentEnvelope({
+    channel: "Cliq",
+    from: fromLabel,
+    timestamp: parsed.timestamp ? Date.parse(parsed.timestamp) : undefined,
+    previousTimestamp,
+    envelope: envelopeOptions,
+    body: bodyText,
+  });
 
   // Inbound media (issue #48): when the message carries a file attachment
   // (image / file / voice), download each via the Cliq Files API and write it
@@ -721,8 +799,12 @@ export async function dispatchCliqInbound(params: {
     Surface: "cliq",
     MessageSid: parsed.messageId,
     MessageSidFull: parsed.messageId,
-    ReplyToId: parsed.threadId,
-    ReplyToIdFull: parsed.threadId,
+    ReplyToId: replyTo?.messageId ?? parsed.threadId,
+    ReplyToIdFull: replyTo?.messageId ?? parsed.threadId,
+    ReplyToMessageId: replyTo?.messageId,
+    ReplyToText: replyTo?.text,
+    ReplyToSenderId: replyTo?.senderId,
+    ReplyToSenderName: replyTo?.senderName,
     OriginatingChannel: "cliq",
     OriginatingTo: `cliq:${responseTarget}`,
     ...mediaFields,

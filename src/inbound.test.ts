@@ -288,6 +288,54 @@ describe("parseCliqWebhookPayload", () => {
       } as CliqWebhookPayload),
     ).toBeNull();
   });
+
+  it("parses replyTo from message.reply_to (string id)", () => {
+    const parsed = parseCliqWebhookPayload(
+      dmPayload({
+        message: { text: "agreed", id: "m2", time: "" },
+      }),
+    );
+    // No reply_to → undefined.
+    expect(parsed?.replyTo).toBeUndefined();
+    const withReply = parseCliqWebhookPayload(
+      dmPayload({
+        message: { text: "agreed", id: "m2", time: "" },
+      }) as CliqWebhookPayload,
+    );
+    expect(withReply?.replyTo).toBeUndefined();
+    // Now with reply_to string id.
+    const r = parseCliqWebhookPayload(
+      {
+        handler: "message",
+        message: { text: "agreed", id: "m2", reply_to: "m1" },
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm_chat-B1" },
+      } as CliqWebhookPayload,
+    )!;
+    expect(r.replyTo).toEqual({ messageId: "m1" });
+  });
+
+  it("parses replyTo from a root-level parent object", () => {
+    const parsed = parseCliqWebhookPayload(
+      {
+        handler: "message",
+        message: { text: "yes", id: "m2" },
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm_chat-B1" },
+        parent: {
+          id: "m1",
+          text: "the original",
+          sender: { id: "u2", name: "Bob" },
+        },
+      } as CliqWebhookPayload,
+    )!;
+    expect(parsed.replyTo).toEqual({
+      messageId: "m1",
+      text: "the original",
+      senderId: "u2",
+      senderName: "Bob",
+    });
+  });
 });
 
 describe("resolveCliqMentionFacts", () => {
@@ -603,6 +651,219 @@ describe("dispatchCliqInbound context fields", () => {
       parsed: parsed!,
     });
     expect(capture.ctxPayload?.From).toBe("cliq:group:CT_channel_chat");
+  });
+});
+
+describe("dispatchCliqInbound — inbound quote / reply context (issue #49)", () => {
+  function mockRuntime(capture: {
+    ctxPayload?: Record<string, unknown>;
+    body?: string;
+  }): CliqRuntime {
+    return {
+      channel: {
+        routing: {
+          resolveAgentRoute: () => ({
+            agentId: "agent-1",
+            sessionKey: "sess-1",
+            accountId: "default",
+          }),
+        },
+        session: {
+          resolveStorePath: () => "/tmp/store",
+          readSessionUpdatedAt: () => undefined,
+          recordInboundSession: () => undefined,
+        },
+        reply: {
+          resolveEnvelopeFormatOptions: () => ({}),
+          formatAgentEnvelope: (p: Record<string, unknown>) => {
+            const b = String(p.body ?? "");
+            capture.body = b;
+            return b;
+          },
+          finalizeInboundContext: (fields: Record<string, unknown>) => {
+            capture.ctxPayload = fields;
+            return fields;
+          },
+          dispatchReplyWithBufferedBlockDispatcher: async () => undefined,
+        },
+        inbound: {
+          run: async () => undefined,
+        },
+        pairing: {
+          buildPairingReply: () => "",
+          upsertPairingRequest: async () => ({ code: "CODE", created: true }),
+        },
+      },
+    };
+  }
+
+  function makeClient(messages: { messageId: string; chatId: string; text?: string }[] = []) {
+    return {
+      sendMessage: vi.fn(async (_o: { to: string; text: string; isDm?: boolean }) => ({
+        messageId: "out-1",
+      })),
+      editMessage: vi.fn(async (o: { chatId: string; messageId: string; text: string }) => ({
+        messageId: o.messageId,
+        chatId: o.chatId,
+      })),
+      resolveChannelChatId: vi.fn(async () => undefined),
+      listChatMessages: vi.fn(async () => messages),
+      deleteMessage: vi.fn(async () => true),
+      downloadAttachment: vi.fn(async () => {
+        throw new Error("not mocked");
+      }),
+    };
+  }
+
+  it("carries the parent message id + text + sender into the inbound context", async () => {
+    const capture: { ctxPayload?: Record<string, unknown>; body?: string } = {};
+    const parsed = parseCliqWebhookPayload(
+      {
+        handler: "message",
+        message: { text: "agreed", id: "m2", reply_to: "m1" },
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm_chat-B1" },
+        parent: {
+          id: "m1",
+          text: "Let's ship it",
+          sender: { id: "u-bot", name: "Bot" },
+        },
+      } as CliqWebhookPayload,
+    )!;
+    const client = makeClient();
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account(),
+      parsed,
+      client,
+    });
+    // No fetch is attempted (no refresh token) but the parsed parent is used.
+    expect(client.listChatMessages).not.toHaveBeenCalled();
+    expect(capture.ctxPayload?.ReplyToMessageId).toBe("m1");
+    expect(capture.ctxPayload?.ReplyToText).toBe("Let's ship it");
+    expect(capture.ctxPayload?.ReplyToSenderId).toBe("u-bot");
+    expect(capture.ctxPayload?.ReplyToSenderName).toBe("Bot");
+    expect(capture.ctxPayload?.ReplyToId).toBe("m1");
+    // The agent envelope body prepends the quote block.
+    expect(capture.body).toContain("↩ Replying to Bot:");
+    expect(capture.body).toContain("> Let's ship it");
+    expect(capture.body).toContain("agreed");
+  });
+
+  it("fetches the parent text via listChatMessages when only an id is present and a refresh token is configured", async () => {
+    const capture: { ctxPayload?: Record<string, unknown>; body?: string } = {};
+    const parsed = parseCliqWebhookPayload(
+      {
+        handler: "message",
+        message: { text: "agreed", id: "m2", reply_to: "m1" },
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm_chat-B1" },
+      } as CliqWebhookPayload,
+    )!;
+    const client = makeClient([
+      { messageId: "m1", chatId: "CT_dm_chat-B1", text: "the fetched parent text" },
+    ]);
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({ refreshToken: "rt" }),
+      parsed,
+      client,
+    });
+    expect(client.listChatMessages).toHaveBeenCalledWith("CT_dm_chat-B1", { limit: 50 });
+    expect(capture.ctxPayload?.ReplyToText).toBe("the fetched parent text");
+    expect(capture.body).toContain("> the fetched parent text");
+  });
+
+  it("degrades gracefully when the fetch returns no match", async () => {
+    const capture: { ctxPayload?: Record<string, unknown>; body?: string } = {};
+    const parsed = parseCliqWebhookPayload(
+      {
+        handler: "message",
+        message: { text: "agreed", id: "m2", reply_to: "m-missing" },
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm_chat-B1" },
+      } as CliqWebhookPayload,
+    )!;
+    const client = makeClient([{ messageId: "m-other", chatId: "CT_dm_chat-B1", text: "x" }]);
+    const onError = vi.fn();
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({ refreshToken: "rt" }),
+      parsed,
+      client,
+      onError,
+    });
+    // No text resolved → the body has no quote block, just the user message.
+    expect(capture.body).toBe("agreed");
+    expect(capture.ctxPayload?.ReplyToMessageId).toBe("m-missing");
+    expect(capture.ctxPayload?.ReplyToText).toBeUndefined();
+  });
+
+  it("swallows a fetch failure and still dispatches", async () => {
+    const capture: { ctxPayload?: Record<string, unknown>; body?: string } = {};
+    const parsed = parseCliqWebhookPayload(
+      {
+        handler: "message",
+        message: { text: "agreed", id: "m2", reply_to: "m1" },
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm_chat-B1" },
+      } as CliqWebhookPayload,
+    )!;
+    const client = {
+      sendMessage: vi.fn(async () => ({ messageId: "out-1" })),
+      editMessage: vi.fn(async () => ({ messageId: "x", chatId: "y" })),
+      resolveChannelChatId: vi.fn(async () => undefined),
+      listChatMessages: vi.fn(async () => {
+        throw new Error("api down");
+      }),
+      deleteMessage: vi.fn(async () => true),
+      downloadAttachment: vi.fn(async () => {
+        throw new Error("not mocked");
+      }),
+    };
+    const onError = vi.fn();
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({ refreshToken: "rt" }),
+      parsed,
+      client,
+      onError,
+    });
+    expect(capture.body).toBe("agreed");
+    expect(onError).toHaveBeenCalledWith(expect.any(Error), { kind: "reply-to-fetch" });
+  });
+
+  it("a group reply-to-bot is admitted as an implicit mention", async () => {
+    // Group message with NO @mention but a reply_to pointing at the bot.
+    const parsed = parseCliqWebhookPayload(
+      {
+        handler: "message",
+        message: { text: "yes please", id: "m2", reply_to: "m1" },
+        user: { id: "u2", name: "Bob" },
+        chat: {
+          id: "CT_channel_chat",
+          type: "channel",
+          chat_type: "channel",
+          channel_unique_name: "dev-team",
+          title: "#dev-team",
+        },
+        parent: {
+          id: "m1",
+          text: "what should I do?",
+          sender: { id: "bot", name: "Bot" },
+        },
+      } as CliqWebhookPayload,
+    )!;
+    expect(parsed.isGroup).toBe(true);
+    expect(parsed.isMention).toBe(false);
+    expect(parsed.replyTo?.senderId).toBe("bot");
+    // The decision should NOT skip (reply-to-bot counts as implicit mention).
+    const decision = resolveCliqMentionDecision(parsed, account({ botId: "bot", botName: "Bot" }));
+    expect(decision.shouldSkip).toBe(false);
   });
 });
 

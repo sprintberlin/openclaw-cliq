@@ -13,6 +13,19 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
+- Inbound quote / reply context (issue #49): when a user replies to or quotes a
+  message in Cliq, the referenced message's id + text + sender are now carried
+  into the agent context. The parser reads `message.reply_to` (the documented
+  Cliq message id) and tolerates a sibling parent-message object forwarded by
+  the Deluge handler under `parent` / `quoted` / `parent_message` /
+  `quoted_message` / `reply_to_message`. When only the parent id is present
+  and a user-context `refreshToken` is configured, the plugin best-effort
+  fetches the parent text via `GET /api/v2/chats/{chatId}/messages` and
+  prepends it to the agent envelope as a quoted block (`↩ Replying to <name>:`
+  + indented text). A failed or empty fetch degrades to "no quote text" and
+  never breaks the turn. A reply to the bot in a group is now also admitted as
+  an implicit mention (`reply_to_bot` / `quoted_bot`), so the user no longer
+  needs to re-@mention the bot when replying to one of its messages.
 - Inbound media attachments (issue #48): images, files, and voice messages a user
   sends are downloaded via the Cliq Files API (`GET /api/v2/files/{id}`, new scope
   `ZohoCliq.Attachments.READ`) and handed to the agent as local media; voice is

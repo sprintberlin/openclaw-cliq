@@ -339,6 +339,28 @@ Notes (the parser is tolerant):
 - Group vs DM detection: `chat.type === "channel"` (or the presence of `channel.*` fields) marks a group; otherwise the message is treated as a DM.
 - The `x-cliq-webhook-secret` header is checked against the configured `webhookSecret`. The plugin also accepts `x-webhook-secret` or `Authorization: Bearer <secret>` for convenience.
 
+##### Inbound quote / reply context
+
+When a user replies to or quotes a message in Cliq, the Deluge message handler receives the **new** message — Cliq does not automatically attach the quoted message's text to the bot. The plugin surfaces the referenced message to the agent from whatever the handler forwards:
+
+- **`message.reply_to`** (string message id) — the documented Cliq shape. The plugin carries the parent message id into the inbound context.
+- **`parent` / `quoted` / `parent_message` / `quoted_message` / `reply_to_message`** (object at the payload root, or under `message`) — the full parent message `{ id, text, sender: { id, name } }`. When the handler forwards this, the agent sees the quoted text + sender directly.
+
+When only the parent **id** is present (the default `message.reply_to` shape) and a user-context `refreshToken` is configured, the plugin best-effort fetches the parent message text via `GET /api/v2/chats/{chatId}/messages` and prepends it to the agent envelope as:
+
+```
+↩ Replying to <senderName>:
+> <quoted text>
+
+<the user's message>
+```
+
+A failed or empty fetch degrades to "no quote text" and never breaks the turn.
+
+A reply to the bot in a group is also admitted as an implicit mention (the `reply_to_bot` / `quoted_bot` gating kinds) — the user does not need to re-@mention the bot when replying to one of its messages.
+
+> Forwarding the parent object is **optional**. Without it the plugin still carries the parent message id; it only cannot show the quoted text unless a `refreshToken` is configured (so the plugin can fetch it). If your Deluge handler can resolve the parent message (e.g. via the Cliq REST `GET /chats/{CHAT_ID}/messages/{MESSAGE_ID}` endpoint), add it under `parent` (or `quoted`) so the agent sees the quote even in DM-only setups with no `refreshToken`.
+
 ### Verification
 
 After the steps above, send a test message:

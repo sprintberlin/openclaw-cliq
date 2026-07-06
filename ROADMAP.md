@@ -51,9 +51,6 @@
 Small, safe, high-visibility. None of these need the v3 migration, so they ship on the current
 base. (The instant-ack placeholder is already in flight — see the open issue.)
 
-- **Inbound quote / reply context.** When a user replies to or quotes a message, carry the
-  referenced message's text + id into the agent context. Outbound reply-threading already exists
-  (`src/threading.ts`); the inbound side does not. Ref: Message Object (quote fields), same doc.
 - **Abort / stop the running turn.** Recognize a stop intent (`stop`, `/stop`, `esc`, and common
   localized equivalents) and interrupt the in-flight agent run for that chat instead of queueing
   another turn. Ref: OpenClaw runtime cancellation surface — study Telegram/Discord in the monorepo.
