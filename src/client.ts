@@ -30,10 +30,18 @@ export type CliqApiVersion = "v2" | "v3";
  *    through the v3 "Send a bot message" endpoint
  *    `POST /api/v3/bots/{botId}/messages` with `user_ids` + `sync_message`
  *    (scope `ZohoCliq.Webhooks.CREATE` — same as v2 DMs, no refresh token).
+ *  - message **delete** → v3 available (opt-in via `apiVersion: "v3"`); uses
+ *    the v3 "Delete multiple messages" endpoint
+ *    `DELETE /api/v3/chats/{chatId}/messagess?message_ids=<id>` with a single
+ *    id (scope `ZohoCliq.Messages.DELETE` — user-context, refresh-token
+ *    grant, same constraint as `Messages.UPDATE`). v3 has NO single-message
+ *    delete endpoint, only the bulk one — a 1-element delete-multiple call.
  *  - channel **card/button** posts, channel **media** posts,
- *    message edit / delete / list, reactions, directory, file download,
+ *    message edit / list, reactions, directory, file download,
  *    channel-chat-id resolution → v2 only (v3 has no equivalent, or the v3
- *    shape differs and is migrated in a later increment).
+ *    shape differs and is migrated in a later increment). v3 Messages has no
+ *    single-message edit or get endpoint (only delete-multiple, post,
+ *    forward, search); v3 Chats has no message operations at all.
  *
  * v3 channel text post: `POST /api/v3/channelsbyname/{name}/messages` with
  * body `{ text, reply_to?, sync_message? }` and the
@@ -156,17 +164,26 @@ export interface CliqChannelConfig {
    * REST API generation to use for the outbound endpoint families that have a
    * v3 equivalent. `"v2"` (default) keeps the verified-live v2 paths; `"v3"`
    * opts the channel text-post family into the v3
-   * `POST /api/v3/channelsbyname/{name}/messages` endpoint AND the bot DM
-   * family into the v3 `POST /api/v3/bots/{botId}/messages` endpoint — both
-   * of which use the `ZohoCliq.Webhooks.CREATE` scope (obtainable via
-   * `client_credentials`, removing the refresh-token requirement for channel
-   * text posts — see README §3c). The v3 DM endpoint posts AS the bot
-   * (sender identity preserved, unlike `POST /api/v3/chats/{chatId}/messages`
-   * which posts as the authenticated user), uses `user_ids` (comma-separated)
-   * instead of v2's `userids`, and sets `sync_message: true` so the response
-   * carries the message id + chat id for live-edit. Other families (cards,
-   * media, edits, reactions, directory) stay on v2 until their v3 migration
-   * increment. Migrating is incremental and per-family so the core never
+   * `POST /api/v3/channelsbyname/{name}/messages` endpoint, the bot DM
+   * family into the v3 `POST /api/v3/bots/{botId}/messages` endpoint, AND
+   * the message-delete family into the v3
+   * `DELETE /api/v3/chats/{chatId}/messagess?message_ids=<id>` endpoint —
+   * the text + DM paths both use the `ZohoCliq.Webhooks.CREATE` scope
+   * (obtainable via `client_credentials`, removing the refresh-token
+   * requirement for channel text posts — see README §3c); the delete path
+   * uses the `ZohoCliq.Messages.DELETE` scope (user-context, refresh-token
+   * grant — same constraint as the v2 `Messages.UPDATE` delete path). The
+   * v3 DM endpoint posts AS the bot (sender identity preserved, unlike
+   * `POST /api/v3/chats/{chatId}/messages` which posts as the authenticated
+   * user), uses `user_ids` (comma-separated) instead of v2's `userids`, and
+   * sets `sync_message: true` so the response carries the message id + chat
+   * id for live-edit. The v3 delete path is a 1-element delete-multiple call
+   * (v3 has no single-message delete endpoint) and parses the per-message
+   * `message.delete_result` response. Other families (cards, media, edits,
+   * list, reactions, directory) stay on v2 until their v3 migration
+   * increment — v3 Messages has no single-message edit or get endpoint
+   * (only delete-multiple, post, forward, search), so edit/list stay v2
+   * indefinitely. Migrating is incremental and per-family so the core never
    * regresses in one change.
    */
   apiVersion?: CliqApiVersion;
@@ -236,9 +253,9 @@ export interface ResolvedCliqAccount {
   oauthBase?: string;
   /**
    * Resolved REST API generation for the endpoint families that have a v3
-   * equivalent (channel text posts + bot DM posts). Defaults to `"v2`;
-   * per-account overrides apply via the shallow-merge resolution (so one
-   * account can pilot v3 while others stay on v2). See
+   * equivalent (channel text posts + bot DM posts + message delete). Defaults
+   * to `"v2`; per-account overrides apply via the shallow-merge resolution (so
+   * one account can pilot v3 while others stay on v2). See
    * {@link CliqChannelConfig.apiVersion}. Optional on the resolved type so
    * test fixtures can omit it; `resolveCliqConfig` always sets it and
    * `CliqClient` defaults to `"v2"` when undefined.
@@ -696,6 +713,39 @@ function parseCliqMessageRef(body: string): { messageId?: string; chatId?: strin
     messageId: topMessageId ?? nestedMessageId ?? topId,
     chatId: nestedChatId ?? topChatId,
   };
+}
+
+/**
+ * Parse a v3 "Delete multiple messages" 2xx response body into a boolean
+ * success for a single-message delete. The v3 response shape is
+ * `{ type: "message.delete_result", data: [{ id, status, error? }] }` where
+ * `status` is `"success"` or `"failed"`. For a 1-id delete the response
+ * carries exactly one entry; success is `data[0].status === "success"`. A
+ * 2xx with no/empty/unmatched data is treated as a logical failure (returns
+ * `false`) so the caller degrades gracefully. Never throws on a malformed
+ * body — `withSendRetry` already handled the non-2xx classification path.
+ */
+function parseCliqDeleteResult(body: string): boolean {
+  if (!body) return false;
+  let data: unknown;
+  try {
+    data = JSON.parse(body);
+  } catch {
+    return false;
+  }
+  if (!data || typeof data !== "object") return false;
+  const obj = data as Record<string, unknown>;
+  const arr = obj.data;
+  if (!Array.isArray(arr) || arr.length === 0) return false;
+  // For a single-message delete the response carries exactly one entry.
+  // Accept success when the first (and presumably only) entry reports it;
+  // do not scan for an arbitrary success (we sent exactly one id, so there
+  // is exactly one result — a "failed" entry means OUR delete failed).
+  const first = arr[0];
+  if (first && typeof first === "object") {
+    return (first as Record<string, unknown>).status === "success";
+  }
+  return false;
 }
 
 export class CliqClient {
@@ -1181,6 +1231,9 @@ export class CliqClient {
     chatId: string;
     messageId: string;
   }): Promise<boolean> {
+    if (this.apiVersion === "v3") {
+      return this.deleteMessageV3(opts);
+    }
     const token = await this.resolveOutboundToken(
       "ZohoCliq.Messages.UPDATE",
       true,
@@ -1212,6 +1265,69 @@ export class CliqClient {
       this.retryOptions,
     );
     return res.status >= 200 && res.status < 300;
+  }
+
+  /**
+   * v3 message delete — the third v3 migration family. v3 Messages has NO
+   * single-message delete endpoint; it only ships a bulk "Delete multiple
+   * messages" endpoint `DELETE /api/v3/chats/{chatId}/messagess?message_ids=<csv>`
+   * (the path's triple-s `messagess` is the published v3 path — see the v3
+   * Messages docs — not a typo in this code). A single-message delete is a
+   * 1-element delete-multiple call.
+   *
+   * Scope `ZohoCliq.Messages.DELETE` — a user-context scope the
+   * `client_credentials` grant cannot obtain a usable token for (same
+   * constraint as `Messages.UPDATE`, `Channels.UPDATE`, `messageactions.CREATE`
+   * — see issue #27), so the path routes through the refresh-token grant and
+   * throws when no `refreshToken` is configured (same as the v2 delete path).
+   *
+   * The 2xx response is a per-message result list
+   * `{ type: "message.delete_result", data: [{ id, status, error? }] }`
+   * where `status` is `"success"` or `"failed"`. For a single-id delete the
+   * response carries exactly one entry; success is `data[0].status ===
+   * "success"`. A 2xx with no/empty/unmatched data is treated as a logical
+   * failure (returns `false`) — the caller (live-edit best-effort cleanup,
+   * message-action `delete`) degrades gracefully. A non-2xx is classified +
+   * retried by `withSendRetry` (transient 429/5xx retried with backoff;
+   * 4xx fatal → throws `CliqSendError`), matching the v2 delete contract.
+   *
+   * Ref: <https://www.zoho.com/cliq/help/restapi/v3/messages/#delete-multiple-messages>.
+   */
+  private async deleteMessageV3(opts: {
+    chatId: string;
+    messageId: string;
+  }): Promise<boolean> {
+    const token = await this.resolveOutboundToken(
+      "ZohoCliq.Messages.DELETE",
+      true,
+    );
+    const url = `${this.apiBase}/api/v3/chats/${encodeURIComponent(opts.chatId)}/messagess?message_ids=${encodeURIComponent(opts.messageId)}`;
+    this.logger.info?.(
+      `[cliq] delete: chatId=${opts.chatId} messageId=${opts.messageId} api=v3`,
+    );
+    let attempt = 0;
+    const res = await withSendRetry(
+      async () => {
+        attempt++;
+        const r = await fetch(url, {
+          method: "DELETE",
+          headers: { Authorization: `Zoho-oauthtoken ${token}` },
+        });
+        const body = await r.text().catch(() => "");
+        if (r.ok) {
+          this.logger.info?.(
+            `[cliq] delete ok: status=${r.status} chatId=${opts.chatId} messageId=${opts.messageId} attempt=${attempt} api=v3`,
+          );
+        } else {
+          this.logger.warn?.(
+            `[cliq] delete non-2xx: status=${r.status} chatId=${opts.chatId} messageId=${opts.messageId} attempt=${attempt} body=${truncateForLog(body)} api=v3`,
+          );
+        }
+        return { status: r.status, body, headers: r.headers };
+      },
+      this.retryOptions,
+    );
+    return parseCliqDeleteResult(res.body);
   }
 
   /**

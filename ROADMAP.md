@@ -59,15 +59,18 @@ verified-live core.
 - **Migrate outbound calls to v3.** Move the send / edit / react / metadata calls off the
   hard-coded `/api/v2/` paths in `src/client.ts` to v3 **one endpoint family per change, keeping
   v2 as a fallback** so the core never regresses in a single large refactor. Channel **text**
-  posts and bot **DM** posts route through their v3 endpoints when `apiVersion: "v3"` (v2
-  default); the remaining endpoint families to migrate:
+  posts, bot **DM** posts, and message **delete** route through their v3 endpoints when
+  `apiVersion: "v3"` (v2 default); the remaining endpoint families to migrate:
   - **Channel card / button posts** (`sendCard` non-DM) — v3 has no `buttons` field (moved to
     Message Cards); requires the Phase 3 Message-Card renderer, not a direct swap.
   - **Channel media posts** (`sendMediaMessage` non-DM) — v3 channel post body has no media
     field; needs the v3 attachment / Message-Card image flow.
-  - **Message edit / delete / list** (`/api/v2/chats/{chatId}/messages…`) — v3 Messages /
-    Chats have **no** single-message edit / get / delete endpoints; the v2 paths may stay
-    indefinitely (confirm against the v3 OpenAPI spec before declaring this a dead end).
+  - **Message edit / list-by-chat** (`/api/v2/chats/{chatId}/messages…`) — confirmed against the
+    v3 OpenAPI / REST docs: v3 Messages has **no** single-message edit or get/list-by-chat
+    endpoint (only delete-multiple, post, forward, search), and v3 Chats has no message
+    operations at all. The v2 edit + list-chat-messages paths therefore stay v2 indefinitely
+    (a v3 dead end — no swap available). The message-delete family was migrated in its own
+    increment (v3 bulk-delete with a 1-element `message_ids` list, scope `Messages.DELETE`).
   - **Reactions** (`/api/v2/chats/{chatId}/messages/{messageId}/reactions`) — check the v3
     spec for a reactions equivalent (not visible in the v3 sidebar; may be v2-only).
   - **Directory** (`/api/v2/users`, `/api/v2/channels`) — v3 has no org-user / channel

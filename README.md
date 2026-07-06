@@ -133,7 +133,7 @@ The plugin uses **two** OAuth grant types, because the **`client_credentials`** 
 
 #### 3b. Consent the scopes
 
-When registering / re-consenting the self-client, request **all seven** scopes so both the `client_credentials` (DM) and refresh-token (channel/edit) paths work:
+When registering / re-consenting the self-client, request **all eight** scopes so both the `client_credentials` (DM) and refresh-token (channel/edit/delete) paths work:
 
 | Scope | Grant | Purpose |
 | --- | --- | --- |
@@ -142,10 +142,11 @@ When registering / re-consenting the self-client, request **all seven** scopes s
 | `ZohoCliq.Channels.READ` | `client_credentials` | Read channel / chat metadata |
 | `ZohoCliq.Users.READ` | `client_credentials` | Resolve sender user info |
 | `ZohoCliq.Messages.UPDATE` | refresh token | Edit a sent message in place (live-edit streaming previews) |
+| `ZohoCliq.Messages.DELETE` | refresh token | Delete a sent message via the v3 bulk-delete endpoint (only used when `apiVersion: "v3"` — the v2 single-message delete reuses `Messages.UPDATE`; opt-in, see [§4](#4-openclaw-configuration)) |
 | `ZohoCliq.messageactions.CREATE` | refresh token | Add / remove message reactions (the `message(action=react)` tool) |
 | `ZohoCliq.Attachments.READ` | refresh token | Download inbound file / image / voice attachments (`GET /api/v2/files/{id}`) so they reach the agent |
 
-> If you previously consented with only the original three scopes, you must re-consent (generate a fresh self-client token) with `ZohoCliq.Channels.UPDATE` and `ZohoCliq.Messages.UPDATE` added — channel replies will be rejected with `invalid_scope` / 401 until you do. Reactions (`ZohoCliq.messageactions.CREATE`) are optional — skip the scope if you don't need the `react` action, and the plugin will simply not advertise reaction support. Likewise `ZohoCliq.Attachments.READ` is only needed for **inbound media** (downloading images / files / voice a user sends) — skip it for a text-only bot and the plugin degrades to "no media" for those messages.
+> If you previously consented with only the original three scopes, you must re-consent (generate a fresh self-client token) with `ZohoCliq.Channels.UPDATE` and `ZohoCliq.Messages.UPDATE` added — channel replies will be rejected with `invalid_scope` / 401 until you do. `ZohoCliq.Messages.DELETE` is only needed when you opt into `apiVersion: "v3"` (the v3 delete path); the v2 delete path reuses `Messages.UPDATE`, so if you stay on the `"v2"` default you can skip it. Reactions (`ZohoCliq.messageactions.CREATE`) are optional — skip the scope if you don't need the `react` action, and the plugin will simply not advertise reaction support. Likewise `ZohoCliq.Attachments.READ` is only needed for **inbound media** (downloading images / files / voice a user sends) — skip it for a text-only bot and the plugin degrades to "no media" for those messages.
 
 #### 3c. Obtain the user-context refresh token (required for channel posts + edits)
 
@@ -164,11 +165,18 @@ exchange for a permanent **refresh token**.
 > refresh token is **not** required for either. The v3 DM endpoint posts *as the
 > bot* (sender identity preserved — the bot unique name is in the URL path) and
 > uses `user_ids` + `sync_message` so the response carries the message id + chat
-> id for live-edit. Channel card/button posts, media posts, and message edits
-> still require the refresh token (they stay on v2 until a later increment). The
+> id for live-edit. The v3 path also routes the message **delete** family through
+> the v3 bulk-delete endpoint `DELETE /api/v3/chats/{chatId}/messagess?message_ids=<id>`
+> (a 1-element delete-multiple call) with the `ZohoCliq.Messages.DELETE` scope —
+> that scope still needs a user-context refresh token (same constraint as
+> `Messages.UPDATE`), so the refresh token is still required for deletes even in
+> v3 mode. Channel card/button posts, media posts, and message edits
+> still require the refresh token (they stay on v2 until a later increment — v3
+> Messages has no single-message edit endpoint). The
 > default is `"v2"` (no behavior change). If you only need channel text posts and
 > DMs and never edits/cards-in-channels, `apiVersion: "v3"` lets you skip this
-> step entirely. Verify your Zoho org accepts the v3 endpoints before relying on it.
+> step entirely (deletes also work in v3 mode once the refresh token is set, but
+> skip `Messages.DELETE` from the scope if you don't use deletes). Verify your Zoho org accepts the v3 endpoints before relying on it.
 
 > **Why only once:** only the *code* is short-lived (10 minutes, single-use). The
 > **refresh token you get from it does not expire** — it survives gateway restarts and any
@@ -179,7 +187,7 @@ exchange for a permanent **refresh token**.
 1. In the **[Zoho API Console](https://api-console.zoho.com)** ([your data center](#data-centers)) → your **Self Client** → tab **Generate Code**.
 2. **Scope** (the Self Client field is comma-separated, no spaces):
    ```
-   ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Messages.UPDATE,ZohoCliq.Channels.READ,ZohoCliq.Users.READ,ZohoCliq.messageactions.CREATE,ZohoCliq.Attachments.READ
+   ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Messages.UPDATE,ZohoCliq.Messages.DELETE,ZohoCliq.Channels.READ,ZohoCliq.Users.READ,ZohoCliq.messageactions.CREATE,ZohoCliq.Attachments.READ
    ```
 3. **Time Duration:** 10 minutes. **Scope Description:** anything (e.g. `openclaw`). Pick your **portal/org** if prompted.
 4. Click **Create** and copy the code — it looks like `1000.<hex>.<hex>`.
@@ -268,7 +276,7 @@ Add the `cliq` channel to your `openclaw.json` (or via `openclaw setup` / the se
 | `welcome` | optional | Welcome message on subscribe. When the Cliq bot **Welcome Handler** forwards a subscribe event to the webhook (see [§5a](#5a-welcome-handler-optional)) and `welcome.enabled === true`, the bot posts a configurable greeting DM to the subscriber. `welcome.text` is used for first-time subscribers and `welcome.textRejoin` for users who unsubscribed and came back; both default to a friendly greeting and support `{{firstName}}` / `{{lastName}}` / `{{name}}` / `{{id}}` / `{{email}}` placeholders resolved from the forwarded `user` object. The DM admission policy (`dmPolicy` / `allowFrom`) is honored — a denied sender is never greeted, and under the `pairing` policy an un-paired subscriber is skipped (the pairing flow owns their first contact). Default `enabled: false` (opt-in, so no setup gets a surprise greeting). A redelivered subscribe event is deduped so the user is never greeted twice. |
 | `oauthBase` | optional | OAuth base URL for your Zoho **data center**. Defaults to the EU endpoint `https://accounts.zoho.eu`. Set it (together with `apiBase`) when your account is not on EU — see [Data centers](#data-centers). |
 | `apiBase` | optional | Cliq REST API base URL for your Zoho **data center**. Defaults to the EU endpoint `https://cliq.zoho.eu`. Set it (together with `oauthBase`) when your account is not on EU. |
-| `apiVersion` | optional | REST API generation for the channel **text** post and bot **DM** post families. `"v2"` (default) uses the verified-live v2 endpoints (channel posts require `refreshToken` + `ZohoCliq.Channels.UPDATE`; DMs use `ZohoCliq.Webhooks.CREATE` via `client_credentials`). `"v3"` opts channel text posts into `POST /api/v3/channelsbyname/{name}/messages` AND bot DMs into `POST /api/v3/bots/{botId}/messages` — both of which use the `ZohoCliq.Webhooks.CREATE` scope (obtainable via `client_credentials`, so **no refresh token needed** for either — see [§3c](#3c-obtain-the-user-context-refresh-token-required-for-channel-posts--edits)). The v3 DM endpoint posts *as the bot* (sender identity preserved) and uses `user_ids` + `sync_message` so the response carries the message id + chat id for live-edit. Other families (cards, media, edits, reactions, directory) stay on v2 regardless. v3 channel posts return no message id (live-edit for channel posts degrades to block-streaming); v3 DMs with `sync_message: true` DO return the message id. Per-account overrides supported (one account can pilot v3 while others stay on v2). |
+| `apiVersion` | optional | REST API generation for the channel **text** post, bot **DM** post, and message **delete** families. `"v2"` (default) uses the verified-live v2 endpoints (channel posts require `refreshToken` + `ZohoCliq.Channels.UPDATE`; DMs use `ZohoCliq.Webhooks.CREATE` via `client_credentials`; deletes use `ZohoCliq.Messages.UPDATE` via the refresh-token grant). `"v3"` opts channel text posts into `POST /api/v3/channelsbyname/{name}/messages`, bot DMs into `POST /api/v3/bots/{botId}/messages` — both of which use the `ZohoCliq.Webhooks.CREATE` scope (obtainable via `client_credentials`, so **no refresh token needed** for either — see [§3c](#3c-obtain-the-user-context-refresh-token-required-for-channel-posts--edits)) — AND deletes into the v3 bulk-delete endpoint `DELETE /api/v3/chats/{chatId}/messagess?message_ids=<id>` (a 1-element delete-multiple call) which uses the `ZohoCliq.Messages.DELETE` scope (user-context, refresh-token grant — so deletes still need `refreshToken` even in v3 mode). The v3 DM endpoint posts *as the bot* (sender identity preserved) and uses `user_ids` + `sync_message` so the response carries the message id + chat id for live-edit. The v3 delete response is a per-message `message.delete_result` list parsed into a boolean. Other families (cards, media, edits, list, reactions, directory) stay on v2 regardless — v3 Messages has no single-message edit or get endpoint (only delete-multiple, post, forward, search), so edit/list stay v2 indefinitely. v3 channel posts return no message id (live-edit for channel posts degrades to block-streaming); v3 DMs with `sync_message: true` DO return the message id. Per-account overrides supported (one account can pilot v3 while others stay on v2). |
 
 **Group/channel identity:** the inbound path sets the OpenClaw `From` context field to `cliq:group:<channelUniqueName>` for group messages (and fills `GroupChannel`/`GroupSubject` with the display name as a fallback), so the `groups` adapter resolves per-channel `requireMention` and tool policy by channel unique name. Keys are matched case-insensitively.
 

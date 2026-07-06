@@ -13,6 +13,42 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
+- REST API v3 opt-in for message delete (issue #56): extending the existing
+  `apiVersion` config (`"v2"` (default) | `"v3"`) to also cover the message
+  **delete** family. When set to `"v3"`, message deletes route through the v3
+  "Delete multiple messages" endpoint
+  `DELETE /api/v3/chats/{chatId}/messagess?message_ids=<id>` (the path's
+  triple-s `messagess` is the published v3 path, not a typo) instead of the v2
+  `DELETE /api/v2/chats/{chatId}/messages/{messageId}` endpoint. v3 Messages
+  has NO single-message delete endpoint — only the bulk one — so a single
+  delete is a 1-element delete-multiple call. The v3 endpoint uses the
+  `ZohoCliq.Messages.DELETE` scope, a user-context scope the
+  `client_credentials` grant cannot obtain a usable token for (same
+  constraint as `Messages.UPDATE` — see issue #27), so the path routes through
+  the refresh-token grant and still requires `refreshToken` to be configured
+  (the v2 delete path reuses `Messages.UPDATE`, so the `"v2"` default is
+  unchanged). The v3 2xx response is a per-message result list
+  `{ type: "message.delete_result", data: [{ id, status, error? }] }` where
+  `status` is `"success"` or `"failed"`; for a 1-id delete the response
+  carries exactly one entry, and success is `data[0].status === "success"`.
+  A 2xx with no/empty/unmatched data is treated as a logical failure
+  (returns `false`) — the caller (live-edit best-effort placeholder cleanup,
+  message-action `delete`) degrades gracefully, matching the v2 delete
+  contract; a non-2xx is classified + retried by `withSendRetry` (transient
+  429/5xx retried with backoff, 4xx fatal → throws `CliqSendError`). This is
+  the third increment of the incremental v3 migration (one endpoint family
+  at a time, keeping v2 as the default so the core never regresses): channel
+  card / button posts, channel media posts, message edits / list, reactions,
+  directory, file download, and channel-chat-id resolution stay on v2 until
+  their own increments. Confirmed against the v3 OpenAPI / REST docs that v3
+  Messages has no single-message edit or get endpoint (only delete-multiple,
+  post, forward, search) and v3 Chats has no message operations at all, so
+  the v2 edit + list-by-chat paths stay v2 indefinitely (dead end for v3).
+  Per-account overrides supported (one account can pilot v3 while others
+  stay on v2). New OAuth scope `ZohoCliq.Messages.DELETE` added to README §3b
+  (scope table) and §3c (scope string) — only needed when `apiVersion: "v3"`
+  is set; consent it alongside the existing scopes. See README §3c and §4.
+
 - REST API v3 opt-in for bot DM posts (issue #55): extending the existing
   `apiVersion` config (`"v2"` (default) | `"v3"`) to also cover the bot **DM**
   send family. When set to `"v3"`, bot DMs route through the v3 "Send a bot

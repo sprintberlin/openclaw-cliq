@@ -12,7 +12,9 @@ import {
  * (DM) surface needs `ZohoCliq.Webhooks.CREATE`; channel posts go through
  * the channelsbyname endpoint and need `ZohoCliq.Channels.UPDATE`; the
  * directory adapter reads `ZohoCliq.Users.READ` + `ZohoCliq.Channels.READ`;
- * live-edit / message-edit uses `ZohoCliq.Messages.UPDATE`. Exposed on the
+ * live-edit / message-edit uses `ZohoCliq.Messages.UPDATE`; the v3 message
+ * delete path (opt-in via `apiVersion: "v3"`) uses `ZohoCliq.Messages.DELETE`
+ * (a user-context scope, same grant as `Messages.UPDATE`). Exposed on the
  * inspected account so `openclaw channels inspect` can render what scopes
  * the plugin will mint tokens for (useful when filing the Zoho OAuth client
  * grant — all listed scopes must be consented for the corresponding surface
@@ -24,6 +26,7 @@ export const CLIQ_OAUTH_SCOPES: readonly string[] = [
   "ZohoCliq.Channels.READ",
   "ZohoCliq.Users.READ",
   "ZohoCliq.Messages.UPDATE",
+  "ZohoCliq.Messages.DELETE",
   "ZohoCliq.messageactions.CREATE",
 ] as const;
 
@@ -60,7 +63,7 @@ export interface InspectedCliqAccountConfig {
   ackPolicy: "after_dispatch" | "immediate";
   /** Whether progressive (block-streaming) reply delivery is opted-in. */
   streamingPreview: "on" | "off";
-  /** Resolved REST API generation for the endpoint families with a v3 equivalent (channel text posts + bot DMs). */
+  /** Resolved REST API generation for the endpoint families with a v3 equivalent (channel text posts + bot DMs + message delete). */
   apiVersion: "v2" | "v3";
 }
 

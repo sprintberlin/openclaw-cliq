@@ -907,6 +907,212 @@ describe("CliqClient.sendMessage v3 bot DM post (apiVersion==='v3')", () => {
   });
 });
 
+describe("CliqClient.deleteMessage v3 (apiVersion==='v3')", () => {
+  it("DELETEs to /api/v3/chats/{chatId}/messagess?message_ids=<id> with the Messages.DELETE scope (refresh-token grant)", async () => {
+    setCliqClientRegistry(null);
+    const { CliqClient } = await import("./client.js");
+    // v3 delete opts in via the 9th constructor param (apiVersion). A
+    // refreshToken (8th param) is required because Messages.DELETE is a
+    // user-context scope (same constraint as Messages.UPDATE — issue #27).
+    const client = new CliqClient(
+      "id",
+      "secret",
+      "bot",
+      undefined,
+      undefined,
+      { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1, sleep: async () => {}, random: () => 0 },
+      undefined,
+      "rt-secret",
+      "v3",
+    );
+    const seen: { url: string; method?: string; grantType?: string | null; scope?: string | null }[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        const u = new URL(urlStr);
+        seen.push({
+          url: "oauth",
+          grantType: u.searchParams.get("grant_type"),
+          scope: u.searchParams.get("scope"),
+        });
+        return new Response(JSON.stringify({ access_token: "v3-del-tok", expires_in: 3600 }), { status: 200 });
+      }
+      seen.push({ url: urlStr, method: init?.method });
+      // v3 delete-multiple 2xx response: per-message result list.
+      return new Response(
+        JSON.stringify({
+          type: "message.delete_result",
+          data: [{ id: "msg-1", status: "success" }],
+        }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+    let ok: boolean | undefined;
+    try {
+      ok = await client.deleteMessage({ chatId: "CT_chat", messageId: "msg-1" });
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(ok).toBe(true);
+    // OAuth must use the refresh-token grant (NOT client_credentials) because
+    // Messages.DELETE is a user-context scope.
+    const oauth = seen.find((s) => s.url === "oauth");
+    expect(oauth?.grantType).toBe("refresh_token");
+    // No per-scope param on a refresh-token request (carries consented scopes).
+    expect(oauth?.scope).toBeNull();
+    // The delete must hit the v3 bulk-delete endpoint (path `messagess`, query
+    // `message_ids=<id>`, no body).
+    const del = seen.find((s) => s.method === "DELETE" && s.url.includes("/chats/"));
+    expect(del).toBeDefined();
+    expect(del!.url).toContain("/api/v3/chats/CT_chat/messagess");
+    expect(del!.url).toContain("message_ids=msg-1");
+  });
+
+  it("returns false on a 2xx whose data[0].status === 'failed' (logical failure, no throw)", async () => {
+    setCliqClientRegistry(null);
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient(
+      "id",
+      "secret",
+      "bot",
+      undefined,
+      undefined,
+      { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1, sleep: async () => {}, random: () => 0 },
+      undefined,
+      "rt-secret",
+      "v3",
+    );
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(JSON.stringify({ access_token: "t", expires_in: 3600 }), { status: 200 });
+      }
+      // 2xx but the per-message delete failed (e.g. access_denied).
+      return new Response(
+        JSON.stringify({
+          type: "message.delete_result",
+          data: [{ id: "msg-x", status: "failed", error: { code: "access_denied", message: "no perms" } }],
+        }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+    let ok: boolean | undefined;
+    try {
+      ok = await client.deleteMessage({ chatId: "CT_c", messageId: "msg-x" });
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(ok).toBe(false);
+  });
+
+  it("returns false on a 2xx with no/empty data array (defensive, no throw)", async () => {
+    setCliqClientRegistry(null);
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient(
+      "id",
+      "secret",
+      "bot",
+      undefined,
+      undefined,
+      { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1, sleep: async () => {}, random: () => 0 },
+      undefined,
+      "rt-secret",
+      "v3",
+    );
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(JSON.stringify({ access_token: "t", expires_in: 3600 }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ type: "message.delete_result", data: [] }), { status: 200 });
+    }) as typeof fetch;
+    let ok: boolean | undefined;
+    try {
+      ok = await client.deleteMessage({ chatId: "CT_c", messageId: "msg-y" });
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(ok).toBe(false);
+  });
+
+  it("defaults to v2 single-message delete when apiVersion is unset (Messages.UPDATE scope, refresh-token grant)", async () => {
+    setCliqClientRegistry(null);
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient(
+      "id",
+      "secret",
+      "bot",
+      undefined,
+      undefined,
+      { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1, sleep: async () => {}, random: () => 0 },
+      undefined,
+      "rt-secret",
+    );
+    const seen: { url: string; method?: string; scope?: string | null; grantType?: string | null }[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        const u = new URL(urlStr);
+        seen.push({ url: "oauth", scope: u.searchParams.get("scope"), grantType: u.searchParams.get("grant_type") });
+        return new Response(JSON.stringify({ access_token: "t", expires_in: 3600 }), { status: 200 });
+      }
+      seen.push({ url: urlStr, method: init?.method });
+      // v2 single-message delete returns 204 No Content on success.
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+    let ok: boolean | undefined;
+    try {
+      ok = await client.deleteMessage({ chatId: "CT_c", messageId: "m" });
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(ok).toBe(true);
+    const oauth = seen.find((s) => s.url === "oauth");
+    expect(oauth?.grantType).toBe("refresh_token");
+    // The v2 delete path uses the refresh-token grant (which carries consented
+    // scopes — no per-scope param), routing through Messages.UPDATE.
+    expect(oauth?.scope).toBeNull();
+    const del = seen.find((s) => s.method === "DELETE" && s.url.includes("/chats/"));
+    expect(del).toBeDefined();
+    expect(del!.url).toContain("/api/v2/chats/CT_c/messages/m");
+  });
+
+  it("throws on a fatal 4xx (no retry, no fallback) — matches v2 delete behavior", async () => {
+    setCliqClientRegistry(null);
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient(
+      "id",
+      "secret",
+      "bot",
+      undefined,
+      undefined,
+      { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1, sleep: async () => {}, random: () => 0 },
+      undefined,
+      "rt-secret",
+      "v3",
+    );
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(JSON.stringify({ access_token: "t", expires_in: 3600 }), { status: 200 });
+      }
+      return new Response("chat_not_found", { status: 404 });
+    }) as typeof fetch;
+    try {
+      await expect(
+        client.deleteMessage({ chatId: "CT_missing", messageId: "m" }),
+      ).rejects.toMatchObject({ kind: "fatal", status: 404 });
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});
+
 describe("normalizeCliqRouteTarget (issue #11)", () => {
   it("routes cliq:user:<id> to a DM user target", () => {
     expect(normalizeCliqRouteTarget("cliq:user:20098819618")).toEqual({
