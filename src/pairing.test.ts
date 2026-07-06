@@ -39,6 +39,7 @@ function dmParsed(overrides: Partial<ParsedCliqInbound> = {}): ParsedCliqInbound
     isGroup: false,
     isMention: false,
     mentionIds: [],
+    attachments: [],
     handler: "message",
     ...overrides,
   };

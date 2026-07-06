@@ -5,11 +5,20 @@ import type {
   InboundImplicitMentionKind,
 } from "openclaw/plugin-sdk/channel-mention-gating";
 import type { IncomingMessage } from "node:http";
+import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import type { CliqClient, ResolvedCliqAccount } from "./client.js";
 import { stripCliqMentions } from "./mentions.js";
 import { resolveCliqClient } from "./runtime-api.js";
 import { createLiveEditDeliver } from "./live-edit.js";
+import {
+  prepareInboundMedia,
+  type CliqInboundAttachment,
+  type CliqInboundMediaFacts,
+} from "./inbound-media.js";
 
 /**
  * Minimal slice of `api.runtime` that the inbound dispatch path needs. Kept
@@ -138,6 +147,25 @@ export interface CliqWebhookPayload {
     start?: number;
     end?: number;
   }>;
+  /**
+   * Cliq message `content` block — present on `type: "file"` messages. Holds
+   * the file descriptor (`content.file.{id,name,type}`) and an optional
+   * `comment` (the caption a user may attach to a file share). See
+   * <https://www.zoho.com/cliq/help/platform/cliq-objects/message-object.html>.
+   */
+  content?: {
+    file?: { id?: string; name?: string; type?: string };
+    comment?: string;
+    thumbnail?: unknown;
+  };
+  /** Some Deluge handlers forward a bare `file` name string. Parsed best-effort. */
+  file?: string;
+  /**
+   * Defensive: some bot handlers forward an `attachments` array alongside the
+   * message object. Each entry is parsed for an `id` / `name` / `type`. Not
+   * part of the documented Message Object but tolerated when present.
+   */
+  attachments?: Array<{ id?: string; name?: string; type?: string }>;
   params?: {
     message?: { text?: string; id?: string };
     user?: { id?: string; name?: string };
@@ -164,6 +192,8 @@ export interface ParsedCliqInbound {
   isMention: boolean;
   /** Ids of users/bots mentioned in the message (best-effort). */
   mentionIds: string[];
+  /** File attachments (images / files / voice) parsed from the message, if any. */
+  attachments: CliqInboundAttachment[];
   threadId?: string;
   handler: string;
 }
@@ -184,7 +214,50 @@ function extractMessageText(payload: CliqWebhookPayload): {
     time = payload.message.time ?? "";
   }
   if (!text && payload.text) text = payload.text.trim();
+  // A file share may carry the caption in `content.comment` rather than the
+  // message text; surface it so the agent sees what the user said alongside
+  // the attachment.
+  if (!text && payload.content?.comment) {
+    text = payload.content.comment.trim();
+  }
   return { text, messageId, time };
+}
+
+/**
+ * Parse file attachments from a Cliq message payload. A `type: "file"` message
+ * carries a single file under `content.file.{id,name,type}` with an optional
+ * `content.comment` caption. Some Deluge handlers also forward a bare `file`
+ * name string or an `attachments` array; both are tolerated. The `params`
+ * wrapper is unwrapped by the caller before this runs. Returns attachments
+ * with a resolvable `fileId` only — entries missing an id are skipped.
+ */
+function extractMessageAttachments(payload: CliqWebhookPayload): CliqInboundAttachment[] {
+  const out: CliqInboundAttachment[] = [];
+  const caption = payload.content?.comment?.trim() || undefined;
+  const file = payload.content?.file;
+  if (file && typeof file.id === "string" && file.id.trim()) {
+    out.push({
+      fileId: file.id.trim(),
+      fileName: file.name?.trim() || undefined,
+      mimeType: file.type?.trim() || undefined,
+      caption,
+    });
+  } else if (Array.isArray(payload.attachments)) {
+    for (const a of payload.attachments) {
+      if (a && typeof a.id === "string" && a.id.trim()) {
+        out.push({
+          fileId: a.id.trim(),
+          fileName: a.name?.trim() || undefined,
+          mimeType: a.type?.trim() || undefined,
+          caption,
+        });
+      }
+    }
+  }
+  // A bare `file` string is the file name only — no id — so it is not
+  // downloadable by itself. We do not synthesize an attachment for it; the
+  // text path still surfaces it when it is the only payload field.
+  return out;
 }
 
 function buildUserName(user: NonNullable<CliqWebhookPayload["user"]>): string {
@@ -216,8 +289,21 @@ export function parseCliqWebhookPayload(
   }
 
   const { text, messageId, time } = extractMessageText(payload);
+  const attachments = extractMessageAttachments(payload);
   const user = payload.user;
-  if (!text || !user?.id) return null;
+  if (!user?.id) return null;
+  // A pure file message may carry no text at all (or only a comment we already
+  // surfaced as text). When there is still no text but an attachment is
+  // present, synthesize a minimal placeholder so the turn has a body to
+  // dispatch; when there is neither text nor an attachment there is nothing
+  // to hand the agent — drop the event.
+  let bodyText = text;
+  if (!bodyText && attachments.length > 0) {
+    const first = attachments[0];
+    const kind = first.mimeType?.split("/")[0]?.toLowerCase();
+    bodyText = kind ? `<media:${kind}>` : "<media>";
+  }
+  if (!bodyText) return null;
 
   const userName = buildUserName(user);
   const handler = payload.handler ?? "";
@@ -253,7 +339,7 @@ export function parseCliqWebhookPayload(
     handler.includes("mention") || hasBotMention || (isGroup && false);
 
   return {
-    text,
+    text: bodyText,
     messageId: messageId || "",
     timestamp: time || new Date().toISOString(),
     senderId: user.id,
@@ -266,6 +352,7 @@ export function parseCliqWebhookPayload(
     isGroup,
     isMention,
     mentionIds,
+    attachments,
     threadId: payload.thread?.id,
     handler,
   };
@@ -480,7 +567,15 @@ export async function dispatchCliqInbound(params: {
     | "resolveChannelChatId"
     | "listChatMessages"
     | "deleteMessage"
+    | "downloadAttachment"
   >;
+  /**
+   * Directory to write downloaded inbound attachments into. Defaults to a
+   * per-turn subdirectory under the OS temp dir. The runtime media
+   * understanding pipeline reads from the local `MediaPath` we set on the
+   * inbound context.
+   */
+  mediaDir?: string;
 }): Promise<void> {
   const { runtime, cfg, account, parsed, onError } = params;
   const peerKind = parsed.isGroup ? "group" : "dm";
@@ -552,6 +647,60 @@ export async function dispatchCliqInbound(params: {
     ? (parsed.channelName ?? parsed.channelUniqueName ?? parsed.chatId)
     : undefined;
 
+  const client = params.client ?? resolveCliqClient(account);
+  const deliverTo = parsed.isGroup
+    ? (parsed.channelUniqueName ?? parsed.chatId)
+    : parsed.senderId;
+
+  // Inbound media (issue #48): when the message carries a file attachment
+  // (image / file / voice), download each via the Cliq Files API and write it
+  // to a per-turn temp directory, then attach the local paths to the inbound
+  // context as `MediaPath`/`MediaUrl`/`MediaType` (+ the plural arrays) so the
+  // runtime media-understanding pipeline can hand them to the agent (audio is
+  // transcribed by the configured media-understanding provider). A per-file
+  // download failure is swallowed + reported via `onError` so the turn still
+  // dispatches with whatever attachments did download — a failed fetch never
+  // breaks the agent turn. Voice (`audio/*`) entries are marked
+  // `transcribed: false`; the runtime handles transcription.
+  let inboundMedia: CliqInboundMediaFacts[] = [];
+  if (parsed.attachments.length > 0) {
+    const mediaDir =
+      params.mediaDir ?? join(tmpdir(), "openclaw-cliq-media", randomUUID());
+    try {
+      await fs.mkdir(mediaDir, { recursive: true });
+    } catch (err) {
+      onError?.(err, { kind: "inbound-media-mkdir" });
+    }
+    const prepared = await prepareInboundMedia({
+      attachments: parsed.attachments,
+      client,
+      mediaDir,
+      messageId: parsed.messageId || undefined,
+      onError: (err, info) => onError?.(err, { kind: info.kind }),
+    });
+    inboundMedia = prepared.media;
+  }
+  const mediaPaths = inboundMedia
+    .map((m) => m.path)
+    .filter((v): v is string => typeof v === "string" && v.length > 0);
+  const mediaTypes = inboundMedia
+    .map((m) => m.contentType)
+    .filter((v): v is string => typeof v === "string" && v.length > 0);
+  const mediaFields: Record<string, unknown> =
+    mediaPaths.length > 0
+      ? {
+          MediaPath: mediaPaths[0],
+          MediaUrl: mediaPaths[0],
+          MediaType: mediaTypes[0],
+          MediaPaths: mediaPaths,
+          MediaUrls: mediaPaths,
+          MediaTypes:
+            mediaTypes.length === mediaPaths.length
+              ? mediaTypes
+              : mediaPaths.map((_, i) => mediaTypes[i] ?? "application/octet-stream"),
+        }
+      : {};
+
   const ctxPayload = runtime.channel.reply.finalizeInboundContext({
     Body: body,
     RawBody: cleanText,
@@ -576,12 +725,8 @@ export async function dispatchCliqInbound(params: {
     ReplyToIdFull: parsed.threadId,
     OriginatingChannel: "cliq",
     OriginatingTo: `cliq:${responseTarget}`,
+    ...mediaFields,
   });
-
-  const client = params.client ?? resolveCliqClient(account);
-  const deliverTo = parsed.isGroup
-    ? (parsed.channelUniqueName ?? parsed.chatId)
-    : parsed.senderId;
   // Instant acknowledgement / "thinking" placeholder (issue #47): when
   // opted in (`thinking.mode === "placeholder"`), streaming preview is OFF
   // (live-edit already shows progress otherwise), and a `refreshToken` is

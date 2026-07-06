@@ -1,6 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import type { IncomingMessage } from "node:http";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   parseCliqWebhookPayload,
   readJsonBody,
@@ -211,6 +214,80 @@ describe("parseCliqWebhookPayload", () => {
     expect(parseCliqWebhookPayload(null)).toBeNull();
     expect(parseCliqWebhookPayload([1, 2])).toBeNull();
   });
+
+  it("parses a file attachment (type=file) with caption and synthesizes text", () => {
+    const parsed = parseCliqWebhookPayload({
+      handler: "message",
+      user: { id: "u1", name: "Alice" },
+      chat: { id: "CT_dm_chat-B1" },
+      message: { id: "m-file-1", time: "1700000000000" },
+      content: {
+        file: {
+          id: "fileid-abc",
+          name: "report.pdf",
+          type: "application/pdf",
+        },
+        comment: "here is the report",
+      },
+    } as CliqWebhookPayload);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.attachments).toEqual([
+      {
+        fileId: "fileid-abc",
+        fileName: "report.pdf",
+        mimeType: "application/pdf",
+        caption: "here is the report",
+      },
+    ]);
+    // The comment surfaces as text when the message body is empty.
+    expect(parsed!.text).toBe("here is the report");
+    expect(parsed!.messageId).toBe("m-file-1");
+  });
+
+  it("synthesizes a <media> placeholder when a file has no caption or text", () => {
+    const parsed = parseCliqWebhookPayload({
+      handler: "message",
+      user: { id: "u1", name: "Alice" },
+      chat: { id: "CT_dm_chat-B1" },
+      message: { id: "m-file-2" },
+      content: {
+        file: { id: "img-1", name: "photo.png", type: "image/png" },
+      },
+    } as CliqWebhookPayload);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.text).toBe("<media:image>");
+    expect(parsed!.attachments).toHaveLength(1);
+    expect(parsed!.attachments[0].caption).toBeUndefined();
+  });
+
+  it("parses an attachments array fallback", () => {
+    const parsed = parseCliqWebhookPayload({
+      handler: "message",
+      user: { id: "u1", name: "Alice" },
+      chat: { id: "CT_dm_chat-B1" },
+      message: "see this",
+      attachments: [
+        { id: "att-1", name: "slide.png", type: "image/png" },
+        { id: "att-2", name: "voice.mp3", type: "audio/mpeg" },
+      ],
+    } as CliqWebhookPayload);
+    expect(parsed!.attachments).toHaveLength(2);
+    expect(parsed!.attachments[0].fileId).toBe("att-1");
+    expect(parsed!.attachments[1].fileId).toBe("att-2");
+  });
+
+  it("returns null when a file payload carries no resolvable file id", () => {
+    // A bare `file` string is the file NAME only — no id — so it is not
+    // downloadable and there is no text/caption to dispatch → drop the event.
+    expect(
+      parseCliqWebhookPayload({
+        handler: "message",
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm_chat-B1" },
+        file: "some-file.txt",
+      } as CliqWebhookPayload),
+    ).toBeNull();
+  });
 });
 
 describe("resolveCliqMentionFacts", () => {
@@ -225,6 +302,7 @@ describe("resolveCliqMentionFacts", () => {
       isGroup: false,
       isMention: false,
       mentionIds: [],
+      attachments: [],
       handler: "message",
     };
     const facts = resolveCliqMentionFacts(parsed, account());
@@ -243,6 +321,7 @@ describe("resolveCliqMentionFacts", () => {
       isGroup: true,
       isMention: true,
       mentionIds: ["bot"],
+      attachments: [],
       handler: "mention",
     };
     const facts = resolveCliqMentionFacts(parsed, account());
@@ -527,6 +606,203 @@ describe("dispatchCliqInbound context fields", () => {
   });
 });
 
+describe("dispatchCliqInbound — inbound media (issue #48)", () => {
+  function mockRuntime(capture: { ctxPayload?: Record<string, unknown> }): CliqRuntime {
+    return {
+      channel: {
+        routing: {
+          resolveAgentRoute: () => ({
+            agentId: "agent-1",
+            sessionKey: "sess-1",
+            accountId: "default",
+          }),
+        },
+        session: {
+          resolveStorePath: () => "/tmp/store",
+          readSessionUpdatedAt: () => undefined,
+          recordInboundSession: () => undefined,
+        },
+        reply: {
+          resolveEnvelopeFormatOptions: () => ({}),
+          formatAgentEnvelope: (p: Record<string, unknown>) => String(p.body ?? ""),
+          finalizeInboundContext: (fields: Record<string, unknown>) => {
+            capture.ctxPayload = fields;
+            return fields;
+          },
+          dispatchReplyWithBufferedBlockDispatcher: async () => undefined,
+        },
+        inbound: { run: async () => undefined },
+        pairing: {
+          buildPairingReply: () => "",
+          upsertPairingRequest: async () => ({ code: "CODE", created: true }),
+        },
+      },
+    };
+  }
+
+  function makeMediaClient(opts: {
+    bytes?: Uint8Array;
+    contentType?: string;
+    fails?: boolean;
+  } = {}) {
+    const downloads: string[] = [];
+    const client = {
+      downloads,
+      sendMessage: vi.fn(async (o: { to: string; text: string; isDm?: boolean }) => ({
+        messageId: o.isDm ? `mid-${o.to}` : undefined,
+        chatId: o.isDm ? `chat-${o.to}` : undefined,
+      })),
+      editMessage: vi.fn(async () => ({ messageId: "x", chatId: "x" })),
+      resolveChannelChatId: vi.fn(async () => undefined),
+      listChatMessages: vi.fn(async () => []),
+      deleteMessage: vi.fn(async () => true),
+      downloadAttachment: vi.fn(async (fileId: string) => {
+        downloads.push(fileId);
+        if (opts.fails) throw new Error("download rejected");
+        return {
+          bytes: opts.bytes ?? new Uint8Array([1, 2, 3]),
+          contentType: opts.contentType ?? "image/png",
+        };
+      }),
+    };
+    return client;
+  }
+
+  it("downloads an attachment, writes it to disk, and attaches MediaPath/Url/Type to the context", async () => {
+    const mediaDir = await mkdtemp(join(tmpdir(), "cliq-media-"));
+    try {
+      const capture: { ctxPayload?: Record<string, unknown> } = {};
+      const client = makeMediaClient({
+        bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
+        contentType: "image/png",
+      });
+      const parsed = parseCliqWebhookPayload({
+        handler: "message",
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm_chat-B1" },
+        message: { id: "m-file" },
+        content: {
+          file: { id: "fileid-1", name: "photo.png", type: "image/png" },
+          comment: "look here",
+        },
+      } as CliqWebhookPayload);
+      expect(parsed).not.toBeNull();
+      await dispatchCliqInbound({
+        runtime: mockRuntime(capture),
+        cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+        account: account(),
+        parsed: parsed!,
+        client,
+        mediaDir,
+      });
+      expect(client.downloads).toEqual(["fileid-1"]);
+      const paths = capture.ctxPayload?.MediaPaths as string[];
+      expect(Array.isArray(paths)).toBe(true);
+      expect(paths).toHaveLength(1);
+      expect(typeof paths[0]).toBe("string");
+      // The single-item fields mirror the first entry.
+      expect(capture.ctxPayload?.MediaPath).toBe(paths[0]);
+      expect(capture.ctxPayload?.MediaUrl).toBe(paths[0]);
+      expect(capture.ctxPayload?.MediaType).toBe("image/png");
+      expect(capture.ctxPayload?.MediaTypes).toEqual(["image/png"]);
+      // The file was actually written.
+      const { readFile } = await import("node:fs/promises");
+      const onDisk = await readFile(paths[0]);
+      expect(onDisk.length).toBe(4);
+      expect(onDisk[0]).toBe(0x89);
+      // The caption surfaces as the agent body.
+      expect(capture.ctxPayload?.RawBody).toBe("look here");
+    } finally {
+      await rm(mediaDir, { recursive: true, force: true });
+    }
+  });
+
+  it("marks audio attachments as transcribed:false (runtime transcribes via media understanding)", async () => {
+    const mediaDir = await mkdtemp(join(tmpdir(), "cliq-media-"));
+    try {
+      const capture: { ctxPayload?: Record<string, unknown> } = {};
+      const client = makeMediaClient({
+        bytes: new Uint8Array([0, 1, 2]),
+        contentType: "audio/mpeg",
+      });
+      const parsed = parseCliqWebhookPayload({
+        handler: "message",
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm_chat-B1" },
+        message: { id: "m-voice" },
+        content: { file: { id: "voice-1", name: "voice.mp3", type: "audio/mpeg" } },
+      } as CliqWebhookPayload);
+      await dispatchCliqInbound({
+        runtime: mockRuntime(capture),
+        cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+        account: account(),
+        parsed: parsed!,
+        client,
+        mediaDir,
+      });
+      expect(capture.ctxPayload?.MediaType).toBe("audio/mpeg");
+      // Body is the synthesized <media:audio> placeholder.
+      expect(capture.ctxPayload?.RawBody).toBe("<media:audio>");
+    } finally {
+      await rm(mediaDir, { recursive: true, force: true });
+    }
+  });
+
+  it("swallows a failed download and dispatches with no media (turn never breaks)", async () => {
+    const mediaDir = await mkdtemp(join(tmpdir(), "cliq-media-"));
+    try {
+      const capture: { ctxPayload?: Record<string, unknown> } = {};
+      const client = makeMediaClient({ fails: true });
+      let reported = 0;
+      const parsed = parseCliqWebhookPayload({
+        handler: "message",
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm_chat-B1" },
+        message: { id: "m-file" },
+        content: { file: { id: "fileid-bad", name: "x.png", type: "image/png" } },
+      } as CliqWebhookPayload);
+      await dispatchCliqInbound({
+        runtime: mockRuntime(capture),
+        cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+        account: account(),
+        parsed: parsed!,
+        client,
+        mediaDir,
+        onError: () => {
+          reported++;
+        },
+      });
+      expect(client.downloads).toEqual(["fileid-bad"]);
+      expect(reported).toBe(1);
+      // No media fields on the context.
+      expect(capture.ctxPayload?.MediaPaths).toBeUndefined();
+      expect(capture.ctxPayload?.MediaPath).toBeUndefined();
+    } finally {
+      await rm(mediaDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does nothing media-related when the message has no attachments", async () => {
+    const mediaDir = await mkdtemp(join(tmpdir(), "cliq-media-"));
+    try {
+      const capture: { ctxPayload?: Record<string, unknown> } = {};
+      const client = makeMediaClient();
+      await dispatchCliqInbound({
+        runtime: mockRuntime(capture),
+        cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+        account: account(),
+        parsed: parseCliqWebhookPayload(dmPayload())!,
+        client,
+        mediaDir,
+      });
+      expect(client.downloads).toHaveLength(0);
+      expect(capture.ctxPayload?.MediaPath).toBeUndefined();
+    } finally {
+      await rm(mediaDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("dispatchCliqInbound — thinking placeholder (issue #47)", () => {
   function mockRuntimeWithDeliver(replyText: string): CliqRuntime {
     return {
@@ -614,6 +890,9 @@ describe("dispatchCliqInbound — thinking placeholder (issue #47)", () => {
       deleteMessage: vi.fn(async (o: { chatId: string; messageId: string }) => {
         deletes.push(o);
         return true;
+      }),
+      downloadAttachment: vi.fn(async () => {
+        throw new Error("download attachment not mocked");
       }),
     };
     return client;

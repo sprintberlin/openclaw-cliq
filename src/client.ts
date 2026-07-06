@@ -1157,6 +1157,46 @@ export class CliqClient {
   }
 
   /**
+   * Download a file attachment by its Cliq file id via
+   * `GET /api/v2/files/{FILE_ID}` (scope `ZohoCliq.Attachments.READ`).
+   * Used by the inbound path to fetch images / files / voice a user sent so
+   * they can be handed to the agent. Whether `client_credentials` can obtain
+   * a usable token for `Attachments.READ` is not documented; to be safe the
+   * path routes through the refresh-token grant when one is configured (same
+   * pattern as channel posts / edits / reactions) and falls back to
+   * `client_credentials` otherwise (DM-only setups keep working — the
+   * download will fail at the API and the inbound path degrades to no media
+   * for that attachment rather than breaking the turn). Returns the raw
+   * bytes + the response `Content-Type`.
+   */
+  async downloadAttachment(fileId: string): Promise<{ bytes: Uint8Array; contentType?: string }> {
+    const path = `/api/v2/files/${encodeURIComponent(fileId)}`;
+    const token = await this.resolveOutboundToken(
+      "ZohoCliq.Attachments.READ",
+      Boolean(this.refreshToken),
+    );
+    const url = `${this.apiBase}${path}`;
+    this.logger.info?.(`[cliq] download attachment: fileId=${fileId}`);
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { Authorization: `Zoho-oauthtoken ${token}` },
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      this.logger.warn?.(
+        `[cliq] download attachment non-2xx: status=${res.status} fileId=${fileId} body=${truncateForLog(body)}`,
+      );
+      throw new Error(`cliq: download attachment (${fileId}) failed (${res.status}): ${body}`);
+    }
+    const buf = new Uint8Array(await res.arrayBuffer());
+    const ct = res.headers.get("content-type") ?? undefined;
+    this.logger.debug?.(
+      `[cliq] download attachment ok: fileId=${fileId} bytes=${buf.byteLength} ct=${ct ?? "-"}`,
+    );
+    return { bytes: buf, contentType: ct };
+  }
+
+  /**
    * Add a reaction (emoji) to a chat message via the Cliq reactions API:
    * `POST /api/v2/chats/{chatId}/messages/{messageId}/reactions` with body
    * `{ emoji_code }`. Requires the `ZohoCliq.messageactions.CREATE` scope

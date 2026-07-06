@@ -51,12 +51,6 @@
 Small, safe, high-visibility. None of these need the v3 migration, so they ship on the current
 base. (The instant-ack placeholder is already in flight — see the open issue.)
 
-- **Inbound media.** When a user sends an image, file, or voice message, download the attachment
-  from the Cliq message payload and hand it to the agent (voice → transcript where available).
-  Today the inbound path extracts text only — `src/inbound.ts` carries a `mediaUrl` stub but never
-  fetches or attaches media. Mirror how the bundled channels attach inbound media.
-  Ref: Cliq Message Object <https://www.zoho.com/cliq/help/platform/cliq-objects/message-object.html>;
-  Telegram/Discord inbound-media handling in the OpenClaw monorepo.
 - **Inbound quote / reply context.** When a user replies to or quotes a message, carry the
   referenced message's text + id into the agent context. Outbound reply-threading already exists
   (`src/threading.ts`); the inbound side does not. Ref: Message Object (quote fields), same doc.
