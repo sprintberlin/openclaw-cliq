@@ -46,6 +46,15 @@
 
 The features a user notices in the first five minutes. Each is self-contained and shippable on its own.
 
+- **Instant acknowledgement / "thinking" placeholder.** Post a lightweight placeholder message
+  immediately on inbound (e.g. `💭 …`) so the user sees the bot is working. Cliq exposes **no bot
+  typing API** (`src/heartbeat.ts:52` documents this) — the native "processing" hint is the only
+  signal today and is easy to miss. When a user-context token is available, edit the placeholder
+  in place into the final reply (no duplicate messages); when streaming preview is already on the
+  live-edited message already covers this, so the placeholder is a no-op. Configurable (off by
+  default, custom text) and must never break the turn. Ref: Post to Bot
+  <https://www.zoho.com/cliq/help/platform/post-to-bot.html>. (Prior art: wecom
+  `sendThinkingMessage`, dingtalk `<think>` placeholder.)
 - **Inbound media.** When a user sends an image, file, or voice message, download the attachment
   from the Cliq message payload and hand it to the agent (voice → transcript where available).
   Today the inbound path extracts text only — `src/inbound.ts` carries a `mediaUrl` stub but never
