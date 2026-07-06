@@ -30,6 +30,14 @@ publish workflow extracts the matching section as the release notes (see
   - Zoho auth failures (`invalid_client` / `oauthtoken_scope_invalid` / 4xx
     auth) now surface a `verify your Zoho data center` hint on the thrown
     error for both the OAuth token path and the outbound send path.
+- Setup guide screenshots: navigating to **Bots & Tools** (profile → My Cliq),
+  and the **Edit Handlers** page (where the Deluge script goes into Message
+  Handler / Mention Handler).
+
+### Fixed
+
+- Corrected the bot-creation navigation: bots live under **profile picture → My
+  Cliq → Bots & Tools**, not a left-sidebar "Bots" entry.
 
 ### Changed
 

@@ -71,7 +71,13 @@ Everything that must be configured **on the Zoho side** so the `cliq` channel pl
 
 ### 1. Create a Zoho Cliq Bot
 
-1. Open **Zoho Cliq** → left sidebar → **Bots**
+Open the bot builder: click your **profile picture** (top-right in Zoho Cliq) → under **My Cliq** choose **Bots & Tools**.
+
+<p align="center">
+  <img src="assets/cliq-bots-tools-menu.png" alt="Zoho Cliq — profile picture menu → My Cliq → Bots & Tools" width="440">
+</p>
+
+1. In **Bots & Tools**, open the **Bots** section.
 2. Click **Create Bot**.
 3. Fill in:
    - **Bot Name** (display name, e.g. `OpenClaw Agent`) — this is what users see.
@@ -253,6 +259,12 @@ Add the `cliq` channel to your `openclaw.json` (or via `openclaw setup` / the se
 ### 5. Deluge Webhook Handler
 
 The Cliq bot must forward every mention / message event to the OpenClaw webhook. Paste this Deluge script into the bot's **Mention Handler** and **Message Handler** functions in the Cliq Bot editor.
+
+> **Where to find them:** in the Cliq Bot editor open **Edit Handlers**, then click *Edit Code* on **Message Handler** (DMs) and **Mention Handler** (channel @mentions) — the two arrowed below.
+
+<p align="center">
+  <img src="assets/cliq-bot-handlers.png" alt="Zoho Cliq bot Edit Handlers page — Message Handler and Mention Handler highlighted" width="820">
+</p>
 
 ```deluge
 // === Configuration (set these once) ===
