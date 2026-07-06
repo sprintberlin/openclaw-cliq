@@ -11,6 +11,8 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-06
+
 ### Added
 
 - Product-first README landing: Zoho Cliq logo hero, a 4-step Quick start, and a
@@ -48,5 +50,6 @@ publish workflow extracts the matching section as the release notes (see
   lookup, plugin doctor, interactive setup wizard, SecretRef-backed credentials,
   security audit collector, session binding, multi-account, lifecycle hooks.
 
-[Unreleased]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/sprintberlin/openclaw-cliq/releases/tag/v0.1.0
