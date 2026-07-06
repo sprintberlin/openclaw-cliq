@@ -1,0 +1,90 @@
+name: 🐞 Bug report
+description: Something in the Zoho Cliq channel plugin isn't working as expected.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please fill in the details below.
+        **Never paste real secrets** (`clientSecret`, `refreshToken`,
+        `webhookSecret`, OAuth tokens) — redact them.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+      placeholder: When the bot is @mentioned in a channel, it …
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. DM the bot / @mention it in a channel
+        2. …
+        3. See error
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where does it happen?
+      options:
+        - Direct message (DM)
+        - Channel @mention
+        - Both
+        - Setup / install / wizard
+        - CLI / operations (status, channels, directory, doctor)
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      description: "`clawhub package inspect @sprintcx/openclaw-cliq` → Latest, or your installed version."
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: openclaw-version
+    attributes:
+      label: OpenClaw version
+      description: Output of `openclaw --version`.
+      placeholder: 2026.6.11
+    validations:
+      required: true
+  - type: input
+    id: data-center
+    attributes:
+      label: Zoho data center
+      description: EU (`zoho.eu`, default) or US (`zoho.com`)?
+      placeholder: EU
+    validations:
+      required: false
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant config (redacted)
+      description: Your `channels.cliq` config with all secrets removed. Rendered as a code block.
+      render: jsonc
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Gateway logs
+      description: Relevant `[cliq]` log lines (secrets redacted).
+      render: shell
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmations
+      options:
+        - label: I removed all secrets from this report.
+          required: true
+        - label: I searched existing issues and this is not a duplicate.
+          required: true

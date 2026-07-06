@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Questions & discussion
+    url: https://github.com/sprintberlin/openclaw-cliq/discussions
+    about: Setup help and general questions — please use Discussions, not issues.
+  - name: 🔒 Report a security vulnerability
+    url: https://github.com/sprintberlin/openclaw-cliq/security/advisories/new
+    about: Report privately via GitHub Security Advisories. Do not open a public issue.
+  - name: 📖 Setup guide (README)
+    url: https://github.com/sprintberlin/openclaw-cliq#setup-guide
+    about: OAuth, Deluge webhook, and configuration walkthrough.

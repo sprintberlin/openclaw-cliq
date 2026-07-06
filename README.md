@@ -364,6 +364,14 @@ content-type: application/json
 
 ---
 
+## Contributing
+
+Bug reports, feature requests, and pull requests are welcome — see
+[CONTRIBUTING.md](CONTRIBUTING.md) for local development, conventions, and the PR
+flow, and [SECURITY.md](SECURITY.md) for private vulnerability reporting. Release
+and ClawHub-publish steps live in [RELEASING.md](RELEASING.md); the version
+history is in [CHANGELOG.md](CHANGELOG.md).
+
 ## Development
 
 This plugin is developed iteratively by an autonomous coding agent (OpenCode via GitHub Actions). See `AGENTS.md` for project context and conventions, and `ROADMAP.md` for the open worklist / feature-parity target. **The coding-agent workflow only runs for issues opened by repo maintainers** (owner / member / collaborator) — a public issue will not trigger it.
