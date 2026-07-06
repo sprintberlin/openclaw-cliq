@@ -38,7 +38,8 @@ function getFailAuthLimiter(): FailedAuthRateLimiter {
 export default defineChannelPluginEntry({
   id: "cliq",
   name: "Zoho Cliq",
-  description: "Zoho Cliq channel plugin for OpenClaw",
+  description:
+    "Native Zoho Cliq channel for OpenClaw — reply to DMs and channel @mentions as a bot, with streaming previews, cards, and message actions.",
   plugin: cliqPlugin,
   registerCliMetadata(api) {
     api.registerCli(

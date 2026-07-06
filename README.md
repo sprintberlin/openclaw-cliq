@@ -1,36 +1,65 @@
-# openclaw-cliq
+<p align="center">
+  <img src="assets/zoho-cliq-128.png" alt="Zoho Cliq" width="96" height="96">
+</p>
 
-Zoho Cliq channel plugin for [OpenClaw](https://github.com/openclaw/openclaw).
+<h1 align="center">Zoho Cliq Channel for OpenClaw</h1>
 
-> **Status:** Working. Verified live on a real gateway — DMs and channel @mentions both round-trip end to end.
+<p align="center">
+  Connect your OpenClaw agent to <a href="https://www.zoho.com/cliq/"><b>Zoho Cliq</b></a> —
+  reply to DMs and channel @mentions as a native bot, with streaming previews,
+  cards, buttons, and message actions.
+</p>
 
-## What this is
+<p align="center">
+  <code>openclaw plugins install clawhub:@sprintcx/openclaw-cliq</code>
+</p>
 
-A native OpenClaw channel plugin that connects OpenClaw agents to [Zoho Cliq](https://www.zoho.com/cliq/). Once installed, OpenClaw agents receive messages (channel @mentions + DMs) via a webhook and respond as the bot in Cliq channels and direct messages — the same way the bundled Telegram/Discord channels work.
-
-## Features
-
-- **DMs and channel @mentions** — inbound via a Deluge webhook, outbound as the bot (DMs via `userids`, channel posts via `channelsbyname`).
-- **OAuth 2.0** — `client_credentials` for DMs; a user-context **refresh token** for channel posts / message edits (EU endpoints).
-- **Reliability** — durable-before-ack ingest, de-dup on redelivery, bot-loop / self-message protection, outbound retry with error classification, hardened webhook auth (constant-time secret compare, single-header, failed-auth rate limiting).
-- **Rich messaging** — Markdown→Cliq formatting, live-edit streaming previews, message actions (edit/delete/react), interactive buttons & cards, slash-style commands, reply threading.
-- **DM security** — allowlist / pairing / open / disabled policies with an approval flow.
-- **Agent-facing** — typing indicator, per-group mention & tool policy, message-tool hints.
-- **Operations** — `openclaw status` / `channels` health probe, `openclaw directory` peer/channel lookup, plugin doctor diagnostics, interactive setup wizard, SecretRef-backed credentials, security audit, session binding, multi-account, lifecycle hooks.
-
-See the [setup guide](#setup-guide--zoho-cliq-bot-with-openclaw) below to connect it to your Cliq workspace.
-
-> **Known limitation:** the bot can *send* reactions, but *inbound* reaction notifications (being told when a user reacts) are not yet possible — the OpenClaw plugin SDK exposes no inbound non-message event hook for external channel plugins. Tracked upstream: [openclaw/openclaw#100447](https://github.com/openclaw/openclaw/issues/100447).
-
-## Development
-
-This plugin is developed iteratively by an autonomous coding agent (OpenCode via GitHub Actions). See `AGENTS.md` for project context and conventions, and `ROADMAP.md` for the open worklist / feature-parity target. **The coding-agent workflow only runs for issues opened by repo maintainers** (owner / member / collaborator) — a public issue will not trigger it.
+<p align="center">
+  <b>Channel plugin</b> · OAuth 2.0 · EU endpoints · MIT · verified live on a real gateway
+</p>
 
 ---
 
-## Setup Guide — Zoho Cliq Bot with OpenClaw
+## ⚡ Quick start
 
-This guide walks through everything that must be configured **on the Zoho side** so that the `cliq` channel plugin can talk to your OpenClaw gateway.
+Get a bot answering **DMs** in four steps (channel @mention replies add one OAuth step — see [Setup guide](#setup-guide) below):
+
+1. **Create a Cliq bot** — Zoho Cliq → *Bots* → *Create Bot*. Note the **Bot Unique Name** (`botId`) and display name.
+2. **Get OAuth credentials** — [Zoho API Console](https://api-console.zoho.eu) → *Self Client* → note **Client ID** + **Client Secret**.
+3. **Install & configure**
+   ```bash
+   openclaw plugins install clawhub:@sprintcx/openclaw-cliq
+   openclaw setup            # pick "Zoho Cliq" — the wizard writes the account config
+   ```
+4. **Wire the webhook** — paste the [Deluge handler](#5-deluge-webhook-handler) into the bot's Message/Mention handlers, pointing at `https://<your-gateway>/cliq/webhook`.
+
+DM the bot → it answers. To also reply to channel **@mentions** and stream live edits, add the one-time refresh token in [§3c](#3c-obtain-the-user-context-refresh-token-required-for-channel-posts--edits).
+
+> **Verified live.** DMs and channel @mentions both round-trip end to end on a real OpenClaw gateway.
+
+---
+
+## Features
+
+| | Capability |
+| --- | --- |
+| 💬 **Messaging** | DMs + channel @mentions, inbound via a Deluge webhook, outbound as the bot (DMs via `userids`, channel posts via `channelsbyname`). |
+| ✍️ **Rich replies** | Markdown → Cliq formatting, **live-edit streaming previews**, interactive buttons & cards, slash-style commands, reply threading. |
+| ⚡ **Message actions** | Edit / delete / react to sent messages from the agent. |
+| 🔐 **OAuth 2.0** | `client_credentials` for DMs; a user-context **refresh token** for channel posts / message edits (EU endpoints). |
+| 🛡️ **DM security** | `allowlist` / `pairing` / `open` / `disabled` policies with an approval flow. |
+| 🧩 **Per-channel policy** | Group admission + per-channel `requireMention`, tool policy, and per-sender tool overrides. |
+| 🔁 **Reliability** | Durable-before-ack ingest, de-dup on redelivery, bot-loop / self-message protection, outbound retry with error classification. |
+| 🔒 **Hardened webhook** | Constant-time secret compare, single-header auth, failed-auth rate limiting. |
+| 🩺 **Operations** | `openclaw status` / `channels` health probe, `openclaw directory` lookup, plugin doctor, interactive setup wizard, SecretRef credentials, security audit, session binding, multi-account, lifecycle hooks. |
+
+> **Known limitation:** the bot can *send* reactions, but *inbound* reaction notifications (being told when a user reacts) are not yet possible — the OpenClaw plugin SDK exposes no inbound non-message event hook for external channel plugins. Tracked upstream: [openclaw/openclaw#100447](https://github.com/openclaw/openclaw/issues/100447).
+
+---
+
+## Setup guide
+
+Everything that must be configured **on the Zoho side** so the `cliq` channel plugin can talk to your OpenClaw gateway.
 
 > **EU endpoint is used throughout.** Replace `zoho.eu` with `zoho.com` only if your Zoho account lives on the US data center. The plugin hard-codes the EU endpoints (`https://accounts.zoho.eu` for OAuth, `https://cliq.zoho.eu` for the API) — if you need the `.com` data center, file an issue.
 
@@ -40,11 +69,9 @@ This guide walks through everything that must be configured **on the Zoho side**
 - A running OpenClaw gateway reachable from the public internet (so Zoho can call the webhook). A reverse proxy, Cloudflare Tunnel, or `ngrok` all work for development.
 - The bot owner must be able to create a bot in Cliq (admin / developer permission).
 
----
-
 ### 1. Create a Zoho Cliq Bot
 
-1. Open **Zoho Cliq** → left sidebar → **Bots** 
+1. Open **Zoho Cliq** → left sidebar → **Bots**
 2. Click **Create Bot**.
 3. Fill in:
    - **Bot Name** (display name, e.g. `OpenClaw Agent`) — this is what users see.
@@ -57,8 +84,6 @@ This guide walks through everything that must be configured **on the Zoho side**
 6. **Invite the bot into the channel(s)** where it should respond to mentions. In a Cliq channel: ⋯ → **Bots** → add your bot. The bot can always receive DMs without an explicit invite.
 
 > The **Bot Unique Name** you pick here is the `botId` config field. The display name is `botName` (used for @mention stripping in the agent-visible text).
-
----
 
 ### 2. Configure the Webhook
 
@@ -76,8 +101,6 @@ The plugin registers a single HTTP route at **`POST /cliq/webhook`** on your Ope
 3. Make sure the gateway host is reachable from the public internet (Zoho's servers POST to it). For local development use a Cloudflare Tunnel / `ngrok` / reverse proxy.
 
 4. In the Cliq Bot's Deluge editor (see step 5 below), set the webhook URL and the secret header on every `invokeUrl` call.
-
----
 
 ### 3. OAuth / API Credentials
 
@@ -178,8 +201,6 @@ From then on the plugin mints its own short-lived access tokens from it automati
 If you skip 3c entirely, the plugin still works for **bot DMs** (the `client_credentials`
 path); only channel @mention replies and live-edit message edits require the refresh token.
 
----
-
 ### 4. OpenClaw Configuration
 
 Add the `cliq` channel to your `openclaw.json` (or via `openclaw setup` / the setup wizard's `applyAccountConfig` step). The required fields are `clientId`, `clientSecret`, and `botId`; `botName`, `webhookSecret`, and `allowFrom` are recommended.
@@ -221,8 +242,6 @@ Add the `cliq` channel to your `openclaw.json` (or via `openclaw setup` / the se
 **Group/channel identity:** the inbound path sets the OpenClaw `From` context field to `cliq:group:<channelUniqueName>` for group messages (and fills `GroupChannel`/`GroupSubject` with the display name as a fallback), so the `groups` adapter resolves per-channel `requireMention` and tool policy by channel unique name. Keys are matched case-insensitively.
 
 **Gateway reachability:** the host running the OpenClaw gateway must be reachable from the public internet at `https://<gateway-host>/cliq/webhook`. If you run the gateway behind a reverse proxy / Cloudflare Tunnel, make sure TLS termination and the `Host` header are preserved.
-
----
 
 ### 5. Deluge Webhook Handler
 
@@ -299,8 +318,6 @@ Notes (the parser is tolerant):
 - Group vs DM detection: `chat.type === "channel"` (or the presence of `channel.*` fields) marks a group; otherwise the message is treated as a DM.
 - The `x-cliq-webhook-secret` header is checked against the configured `webhookSecret`. The plugin also accepts `x-webhook-secret` or `Authorization: Bearer <secret>` for convenience.
 
----
-
 ### Verification
 
 After the steps above, send a test message:
@@ -346,6 +363,10 @@ content-type: application/json
 - `503 cliq not configured` — the channel account is not configured in `openclaw.json` (see §4).
 
 ---
+
+## Development
+
+This plugin is developed iteratively by an autonomous coding agent (OpenCode via GitHub Actions). See `AGENTS.md` for project context and conventions, and `ROADMAP.md` for the open worklist / feature-parity target. **The coding-agent workflow only runs for issues opened by repo maintainers** (owner / member / collaborator) — a public issue will not trigger it.
 
 ## License
 

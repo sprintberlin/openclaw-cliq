@@ -1,7 +1,7 @@
 {
   "name": "@sprintcx/openclaw-cliq",
   "version": "0.1.0",
-  "description": "Zoho Cliq channel plugin for OpenClaw — receive DMs and channel @mentions and respond as a bot.",
+  "description": "Native Zoho Cliq channel for OpenClaw — reply to DMs and channel @mentions as a bot, with streaming previews, cards, and message actions.",
   "type": "module",
   "license": "MIT",
   "author": "SprintCX",
@@ -37,6 +37,8 @@
     "index.ts",
     "setup-entry.ts",
     "src",
+    "assets",
+    "README.md",
     "openclaw.plugin.json"
   ],
   "scripts": {

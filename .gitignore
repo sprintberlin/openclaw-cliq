@@ -7,6 +7,7 @@ dist/
 opencode.json
 oh-my-tokens.json
 /tmp/
+__pycache__/
 
 # Allow ts source files (override the *.js/*.ts gitignore for tracked source)
 !index.ts
