@@ -11,6 +11,15 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Changed
+
+- Documented multi-data-center support: the setup guide now uses `.com` (US)
+  example URLs with a "pick your data center" callout and anchor, and a new
+  **Data centers** section maps every Zoho region to its `oauthBase` / `apiBase`.
+  Corrected the outdated "hard-coded EU / file an issue" note — the `oauthBase`
+  and `apiBase` config fields (default EU) already select the region. Added
+  wizard labels for both fields.
+
 ## [0.1.1] - 2026-07-06
 
 ### Added

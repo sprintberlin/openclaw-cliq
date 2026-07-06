@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <b>Channel plugin</b> · OAuth 2.0 · EU endpoints · MIT · verified live on a real gateway
+  <b>Channel plugin</b> · OAuth 2.0 · multi-data-center · MIT · verified live on a real gateway
 </p>
 
 ---
@@ -25,7 +25,7 @@
 Get a bot answering **DMs** in four steps (channel @mention replies add one OAuth step — see [Setup guide](#setup-guide) below):
 
 1. **Create a Cliq bot** — Zoho Cliq → *Bots* → *Create Bot*. Note the **Bot Unique Name** (`botId`) and display name.
-2. **Get OAuth credentials** — [Zoho API Console](https://api-console.zoho.eu) → *Self Client* → note **Client ID** + **Client Secret**.
+2. **Get OAuth credentials** — [Zoho API Console](https://api-console.zoho.com) ([use your data center's domain](#data-centers)) → *Self Client* → note **Client ID** + **Client Secret**.
 3. **Install & configure**
    ```bash
    openclaw plugins install clawhub:@sprintcx/openclaw-cliq
@@ -46,7 +46,7 @@ DM the bot → it answers. To also reply to channel **@mentions** and stream liv
 | 💬 **Messaging** | DMs + channel @mentions, inbound via a Deluge webhook, outbound as the bot (DMs via `userids`, channel posts via `channelsbyname`). |
 | ✍️ **Rich replies** | Markdown → Cliq formatting, **live-edit streaming previews**, interactive buttons & cards, slash-style commands, reply threading. |
 | ⚡ **Message actions** | Edit / delete / react to sent messages from the agent. |
-| 🔐 **OAuth 2.0** | `client_credentials` for DMs; a user-context **refresh token** for channel posts / message edits (EU endpoints). |
+| 🔐 **OAuth 2.0** | `client_credentials` for DMs; a user-context **refresh token** for channel posts / message edits. Works on any Zoho [data center](#data-centers). |
 | 🛡️ **DM security** | `allowlist` / `pairing` / `open` / `disabled` policies with an approval flow. |
 | 🧩 **Per-channel policy** | Group admission + per-channel `requireMention`, tool policy, and per-sender tool overrides. |
 | 🔁 **Reliability** | Durable-before-ack ingest, de-dup on redelivery, bot-loop / self-message protection, outbound retry with error classification. |
@@ -61,7 +61,7 @@ DM the bot → it answers. To also reply to channel **@mentions** and stream liv
 
 Everything that must be configured **on the Zoho side** so the `cliq` channel plugin can talk to your OpenClaw gateway.
 
-> **EU endpoint is used throughout.** Replace `zoho.eu` with `zoho.com` only if your Zoho account lives on the US data center. The plugin hard-codes the EU endpoints (`https://accounts.zoho.eu` for OAuth, `https://cliq.zoho.eu` for the API) — if you need the `.com` data center, file an issue.
+> **📍 Pick your Zoho data center first.** Zoho stores each account in one region, and the domain differs per region. **The URLs below use `.com` (US) — replace `.com` with your data center's domain** (`.eu`, `.in`, `.com.au`, `.jp`, `zohocloud.ca`, `.sa`, `.com.cn`). The plugin's OAuth + API calls **default to the EU** endpoints; if your account is **not** on EU, also set `oauthBase` and `apiBase` in the config (see [§4](#4-openclaw-configuration)). Not sure which region you're on? Check the domain you log into Zoho at — e.g. `cliq.zoho.eu` → EU. Full mapping: [**Data centers**](#data-centers).
 
 ### Prerequisites
 
@@ -111,17 +111,17 @@ The plugin uses **two** OAuth grant types, because the **`client_credentials`** 
 
 #### 3a. Create the OAuth client
 
-1. Open the **[Zoho API Console](https://api-console.zoho.eu)** (EU). Choose **Self Client** if you do not already have one for Cliq.
+1. Open the **[Zoho API Console](https://api-console.zoho.com)** — use **your** data center's domain ([Data centers](#data-centers)). Choose **Self Client** if you do not already have one for Cliq.
 2. Create a **Server-based Application** (or Self Client) and note:
    - **Client ID**
    - **Client Secret**
-3. Use the **EU** OAuth token endpoint:
+3. Your data center's OAuth token endpoint (example uses US `.com`):
 
    ```
-   https://accounts.zoho.eu/oauth/v2/token
+   https://accounts.zoho.com/oauth/v2/token
    ```
 
-   (The plugin hard-codes `https://accounts.zoho.eu`. Do **not** use `accounts.zoho.com` unless your Zoho account is on the US data center.)
+   The plugin **defaults to the EU** endpoint (`https://accounts.zoho.eu`). If your account is on another data center, set `oauthBase` (and `apiBase`) in the config ([§4](#4-openclaw-configuration)) to match — see [Data centers](#data-centers).
 
 4. Copy **Client ID** and **Client Secret** — they go into `clientId` / `clientSecret` in the plugin config below.
 
@@ -155,7 +155,7 @@ exchange for a permanent **refresh token**.
 
 **Step 1 — generate the code (valid 10 minutes):**
 
-1. In the **[Zoho API Console](https://api-console.zoho.eu)** → your **Self Client** → tab **Generate Code**.
+1. In the **[Zoho API Console](https://api-console.zoho.com)** ([your data center](#data-centers)) → your **Self Client** → tab **Generate Code**.
 2. **Scope** (the Self Client field is comma-separated, no spaces):
    ```
    ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Messages.UPDATE,ZohoCliq.Channels.READ,ZohoCliq.Users.READ,ZohoCliq.messageactions.CREATE
@@ -165,11 +165,12 @@ exchange for a permanent **refresh token**.
 
 **Step 2 — exchange the code for a refresh token (do this within the 10 minutes):**
 
-The Self Client console gives you a *code*, not the token. Exchange it against the EU token
-endpoint (no `redirect_uri` is needed for the self-client flow):
+The Self Client console gives you a *code*, not the token. Exchange it against **your data
+center's** token endpoint (the example uses US `.com` — see [Data centers](#data-centers);
+no `redirect_uri` is needed for the self-client flow):
 
 ```bash
-curl -X POST "https://accounts.zoho.eu/oauth/v2/token" \
+curl -X POST "https://accounts.zoho.com/oauth/v2/token" \
   -d "grant_type=authorization_code" \
   -d "client_id=<clientId>" \
   -d "client_secret=<clientSecret>" \
@@ -218,7 +219,11 @@ Add the `cliq` channel to your `openclaw.json` (or via `openclaw setup` / the se
           "webhookSecret": "<secret from step 2>",
           "refreshToken": "<refresh token from step 3c — required for channel posts / edits>",
           "allowFrom": ["<zoho user id of each allowed DM sender>"],
-          "dmPolicy": "allowlist"         // "open" | "allowlist" | "pairing" | "disabled"
+          "dmPolicy": "allowlist",        // "open" | "allowlist" | "pairing" | "disabled"
+          // Data center: omit both for EU (default). For any other region set both
+          // to your data center's endpoints — see "Data centers" below.
+          "oauthBase": "https://accounts.zoho.com",
+          "apiBase": "https://cliq.zoho.com"
         }
       }
     }
@@ -238,6 +243,8 @@ Add the `cliq` channel to your `openclaw.json` (or via `openclaw setup` / the se
 | `dmPolicy` | optional | DM admission policy. Default is `allowlist` (deny by default). `pairing` starts the OpenClaw pairing approval flow for unknown senders. Accepted values: `open`, `allowlist`, `pairing`, `disabled` (schema-validated — unknown field names like `dmSecurity` are rejected). |
 | `groupPolicy` | optional | Group/channel admission policy. `open` lets the bot respond in any channel it's @mentioned in; `allowlist` (the effective default once a `groups` map is present) restricts it to channels listed under `groups`; `disabled` ignores all group messages. |
 | `groups` | optional | Per-channel config keyed by the Cliq **channel unique name**. Each entry supports `requireMention` (boolean — `false` lets the bot respond in that channel without an explicit @mention), `ingest` (boolean), `tools` (`{ allow, alsoAllow, deny }` tool policy for that channel), and `toolsBySender` (per-sender tool policy overrides keyed by `channel:cliq:<senderId>`, `id:<senderId>`, `name:<display>`, `e164:<phone>`, `username:<handle>`, or `*`). A `*` entry applies to any channel not listed explicitly. |
+| `oauthBase` | optional | OAuth base URL for your Zoho **data center**. Defaults to the EU endpoint `https://accounts.zoho.eu`. Set it (together with `apiBase`) when your account is not on EU — see [Data centers](#data-centers). |
+| `apiBase` | optional | Cliq REST API base URL for your Zoho **data center**. Defaults to the EU endpoint `https://cliq.zoho.eu`. Set it (together with `oauthBase`) when your account is not on EU. |
 
 **Group/channel identity:** the inbound path sets the OpenClaw `From` context field to `cliq:group:<channelUniqueName>` for group messages (and fills `GroupChannel`/`GroupSubject` with the display name as a fallback), so the `groups` adapter resolves per-channel `requireMention` and tool policy by channel unique name. Keys are matched case-insensitively.
 
@@ -330,7 +337,7 @@ Both should trigger a `POST /cliq/webhook` on your gateway (visible in the gatew
 - The bot is **active/published** in Cliq.
 - The Deluge handler is saved and the webhook URL / secret are correct.
 - The gateway host is reachable from the public internet (curl `https://<gateway-host>/cliq/webhook` from an external host — a `405 Method Not Allowed` on GET means the route is live).
-- The OAuth client has all the scopes from step 3b (including `ZohoCliq.Channels.UPDATE` for channel replies) and the EU endpoint is in use. For channel @mention replies and message edits, `refreshToken` from step 3c must be set — otherwise those paths fail with `oauthtoken_scope_invalid`.
+- The OAuth client has all the scopes from step 3b (including `ZohoCliq.Channels.UPDATE` for channel replies), and `oauthBase` / `apiBase` match your data center (the plugin defaults to EU — see [Data centers](#data-centers)). For channel @mention replies and message edits, `refreshToken` from step 3c must be set — otherwise those paths fail with `oauthtoken_scope_invalid`.
 
 #### Smoke testing with curl
 
@@ -363,6 +370,49 @@ content-type: application/json
 - `503 cliq not configured` — the channel account is not configured in `openclaw.json` (see §4).
 
 ---
+
+## Data centers
+
+Zoho stores each account in a single regional data center, and the API / OAuth
+domain differs per region (accounts are DC-exclusive — a `.eu` account cannot
+authenticate against `.com`). The plugin **defaults to the EU** endpoints; for any
+other region, set `oauthBase` and `apiBase` in the config ([§4](#4-openclaw-configuration))
+to the values below, and use the matching domain for the API Console and token
+URLs throughout the [setup guide](#setup-guide).
+
+| Region | Domain | `oauthBase` | `apiBase` |
+| --- | --- | --- | --- |
+| **Europe** (plugin default) | `.eu` | `https://accounts.zoho.eu` | `https://cliq.zoho.eu` |
+| United States | `.com` | `https://accounts.zoho.com` | `https://cliq.zoho.com` |
+| India | `.in` | `https://accounts.zoho.in` | `https://cliq.zoho.in` |
+| Australia | `.com.au` | `https://accounts.zoho.com.au` | `https://cliq.zoho.com.au` |
+| Japan | `.jp` | `https://accounts.zoho.jp` | `https://cliq.zoho.jp` |
+| Canada | `zohocloud.ca` | `https://accounts.zohocloud.ca` | `https://cliq.zohocloud.ca` |
+| Saudi Arabia | `.sa` | `https://accounts.zoho.sa` | `https://cliq.zoho.sa` |
+| China | `.com.cn` | `https://accounts.zoho.com.cn` | `https://cliq.zoho.com.cn` |
+
+**Which region am I on?** Check the domain you log into Zoho at (e.g. `cliq.zoho.in`
+→ India), or read the `location` value Zoho returns during the OAuth flow.
+
+**Example — a US-based account** (`.com`). EU accounts can omit both fields:
+
+```jsonc
+{
+  "channels": {
+    "cliq": {
+      "accounts": {
+        "default": {
+          "clientId": "<from the .com API Console>",
+          "clientSecret": "<from the .com API Console>",
+          "botId": "openclaw_agent",
+          "oauthBase": "https://accounts.zoho.com",
+          "apiBase": "https://cliq.zoho.com"
+        }
+      }
+    }
+  }
+}
+```
 
 ## Contributing
 

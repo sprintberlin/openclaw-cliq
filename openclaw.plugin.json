@@ -225,7 +225,9 @@
         "groupPolicy": { "label": "Group admission policy", "options": ["open", "allowlist", "disabled"] },
         "groups": { "label": "Per-group config (keyed by channel unique name)" },
         "streaming": { "label": "Streaming preview", "options": ["off", "on"] },
-        "reactions": { "label": "Agent reaction guidance", "options": ["minimal", "extensive", "off"] }
+        "reactions": { "label": "Agent reaction guidance", "options": ["minimal", "extensive", "off"] },
+        "oauthBase": { "label": "OAuth base URL (data center — defaults to EU https://accounts.zoho.eu)" },
+        "apiBase": { "label": "Cliq API base URL (data center — defaults to EU https://cliq.zoho.eu)" }
       }
     }
   }
