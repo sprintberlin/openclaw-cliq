@@ -75,7 +75,6 @@ jobs:
           TIER_COLORS["tier-2"]="2563EB"
           TIER_COLORS["tier-3"]="4285F4"
           TIER_COLORS["tier-4"]="93C5FD"
-          TIER_COLORS["tier-5"]="DBEAFE"
 
           # Read dynamic setup from config
           for tl in $TIER_LABELS; do

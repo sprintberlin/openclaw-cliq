@@ -15,6 +15,9 @@ tiers:
   tier-4:
     model: mimo-pro
     reasoning: high
+  tier-5:
+    model: deepseek-flash
+    reasoning: high
 models:
   gpt-5.5:
     id: openai/gpt-5.5
@@ -94,3 +97,11 @@ models:
     cost_output_1M_usd: 50.0
     description: Mythos-class model from Anthropic, built for autonomous knowledge work and coding. Supports text, image,
       and file inputs. Suited for long-running, complex, and asynchronous tasks with self-correcting verification loops.
+  deepseek-flash:
+    id: deepseek/deepseek-v4-flash
+    name: DeepSeek V4 Flash
+    context_length: 1048576
+    cost_input_1M_usd: 0.09
+    cost_output_1M_usd: 0.18
+    description: Efficiency-optimized MoE model (284B params, 13B activated). 1M context window, hybrid attention. Fast inference
+      with strong reasoning and coding. Cheapest tier for high-throughput workloads.
