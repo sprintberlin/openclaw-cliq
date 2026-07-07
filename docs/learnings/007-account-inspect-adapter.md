@@ -1,0 +1,7 @@
+---
+title: Account inspect adapter
+category: OpenClaw Plugin SDK
+files: [src/account-inspect.ts]
+source: migrated from AGENTS.md
+---
+- **Account inspect adapter** (`config.inspectAccount`, paired with the bundled `account-inspect-api.ts` surface). The bundled Telegram/Discord `inspectAccount` returns `{ accountId, enabled, name?, token, tokenSource, tokenStatus, configured, config }`. Cliq has no single bot token (it uses `client_credentials` OAuth with `clientId`+`clientSecret`), so the inspect output reports `tokenStatus` for the **`clientSecret`** (the grant secret) and adds the OAuth `scopes`, the hard-coded EU `apiBase`/`oauthBase`, and bot identity (`botId`/`name`). **Never expose secret values** in `inspectAccount` output — `clientSecret`/`webhookSecret` must be presence-only booleans (or omitted); the inspect output is consumed by `openclaw channels inspect` / `openclaw configure` which render it to operators, so a leaked secret in the snapshot is a real exposure. `accountId` should be normalized to `"default"` (not `null`) to match the status adapter's `DEFAULT_ACCOUNT_ID` convention. `inspectAccount` must never throw — a partially-configured account reports `configured: false` with per-field presence flags, not an error (the bundled `inspectTelegramAccount` resolves defensively and returns `{ configured: false }` for missing token files). The inspect module lives at `src/account-inspect.ts` (mirroring the SDK's `account-inspect-api.ts` bundle name).

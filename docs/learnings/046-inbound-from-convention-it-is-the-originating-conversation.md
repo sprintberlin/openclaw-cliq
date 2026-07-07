@@ -1,0 +1,6 @@
+---
+title: Inbound `From` convention: it is the originating CONVERSATION id, not the sender
+category: Gateway smoke / real-loader verification
+source: migrated from AGENTS.md
+---
+- **Inbound `From` convention: it is the originating CONVERSATION id, not the sender.** For group messages the bundled channels (Zalo `zalouser:group:<chatId>`, Telegram, etc.) set `From: <channel>:group:<groupId>`; for DMs `From: <channel>:<senderId>`. The sender goes in `SenderId`/`SenderName`. `extractExplicitGroupId("cliq:group:dev-team")` returns `"dev-team"` (the `channel:group:<id>` / `group:<id>` / `channel:<id>` shapes are recognized by `extractSimpleExplicitGroupId`). `shouldUseFromAsSenderFallback` returns `false` for any non-`direct` `ChatType`, so using a group id in `From` for group messages is safe — the DM-allowlist sender fallback only applies when `ChatType === "direct"` (or unset), so group allowlist matching keeps using `SenderId`. A plugin channel that leaves `From: <channel>:<senderId>` for group messages will have its `groups` adapter called with the *sender* id as `groupId`, breaking per-group config lookup — always set `From` to the group id for group turns and also fill `GroupChannel`/`GroupSubject` for Deluge payloads that omit a stable id.

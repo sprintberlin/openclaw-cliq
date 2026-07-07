@@ -1,0 +1,6 @@
+---
+title: Durable-before-ack for webhook channels is NOT exposed via `createChatChannelPlugin`
+category: OpenClaw Plugin SDK
+source: migrated from AGENTS.md
+---
+- **Durable-before-ack for webhook channels is NOT exposed via `createChatChannelPlugin`.** The `ChannelMessageReceiveAdapterShape` (`receive.defaultAckPolicy` / `supportedAckPolicies`, values `"after_receive_record" | "after_agent_dispatch" | "after_durable_send" | "manual"`) lives on a separate `ChannelMessageAdapterShape.receive` facet that `createChannelPluginBase` does NOT forward (it has a fixed field list: `id, meta, setupWizard, capabilities, commands, doctor, agentPrompt, streaming, reload, gatewayMethods, gatewayMethodDescriptors, configSchema, config, security, groups, setup`). That `receive` adapter is only wired by the bundled channels (Telegram/LINE/…) via their own `createChannelMessageAdapterFromOutbound` path. So a plugin-channel webhook handler must implement ack timing itself: `await runtime.channel.inbound.run(...)` before writing the HTTP 200, and return 5xx on dispatch failure so the platform redelivers. Telegram's own `defaultAckPolicy: "after_agent_dispatch"` confirms awaiting full dispatch is the intended durable semantics.

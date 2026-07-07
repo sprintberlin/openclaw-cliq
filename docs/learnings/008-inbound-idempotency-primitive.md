@@ -1,0 +1,6 @@
+---
+title: Inbound idempotency primitive
+category: OpenClaw Plugin SDK
+source: migrated from AGENTS.md
+---
+- **Inbound idempotency primitive:** `createClaimableDedupe` is exported from `openclaw/plugin-sdk/persistent-dedupe` (NOT from `channel-core`). It exposes `claim/commit/release/hasRecent/forget/clearMemory/memorySize` with claim/commit/release (in-flight ownership) semantics — the same primitive the bundled Zalo (`monitor.webhook`) and Nextcloud Talk channels use for webhook replay protection. Pass ONLY `{ ttlMs, memoryMaxSize }` (no `pluginId`/`stateMaxEntries`/`resolveFilePath`) for **memory-only** mode; passing any of those opts into the SQLite-backed plugin-state store, which needs `OPENCLAW_STATE_DIR`. `claim(key)` → `{kind:"claimed"|"duplicate"|"inflight", pending?}`: it records an in-flight entry on `"claimed"` that is only cleared by a matching `commit`/`release`. **`clearMemory()` does NOT clear the in-flight `Map`** — only `commit`/`release`/`forget` per-key do — so a test reset must recreate the guard (null the singleton), not just call `clearMemory()`. There is also a simpler `createDedupeCache`/`resolveGlobalDedupeCache` exported from `openclaw/plugin-sdk/core` for TTL/LRU `check(key)`-only dedupe (no in-flight ownership).

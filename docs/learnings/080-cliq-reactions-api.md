@@ -1,0 +1,7 @@
+---
+title: Cliq reactions API
+category: Zoho Cliq specifics
+apis: [/api/v2/chats/{chatId}/messages/{messageId}/reactions, ZohoCliq.messageactions.CREATE, ZohoCliq.messageactions.READ]
+source: migrated from AGENTS.md
+---
+- **Cliq reactions API** (`/api/v2/chats/{chatId}/messages/{messageId}/reactions`): POST body `{ emoji_code }` adds, DELETE body `{ emoji_code }` removes, GET lists. The scope prefix is **lowercase `messageactions`** — `ZohoCliq.messageactions.CREATE` (add + delete share the CREATE scope) and `ZohoCliq.messageactions.READ` (list). This lowercase prefix is unusual vs the other Cliq scopes (`Webhooks`/`Channels`/`Messages`) but is what the REST docs publish and what the API expects verbatim. Like `Channels.UPDATE`/`Messages.UPDATE`, `messageactions.CREATE` is a user-context scope the `client_credentials` grant cannot obtain a usable token for, so the reaction path routes through the refresh-token grant (same as channel posts + edits). The `emoji_code` accepts both Zomoji shortcodes (`:smile:`) and unicode chars (`😄`) verbatim — no normalization needed. Plugin-channel reaction *notifications* (inbound) require the SDK's `ChannelMessagingAdapter`/`InboundEventKind` surface, which `createChatChannelPlugin` does NOT forward (only `base/security/pairing/threading/outbound`), so inbound reaction events are not achievable from a plugin channel today; only outbound agent-driven reactions (the `react` message-action) are.

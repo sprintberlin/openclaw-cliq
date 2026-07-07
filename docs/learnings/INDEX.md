@@ -1,0 +1,96 @@
+# Learnings index
+
+One line per durable learning; full fact + tags in the linked file. `rg` this folder for the modules/APIs you touch before implementing.
+
+- [Stop / abort intent: the SDK already cancels the in-flight run — a plugin channel only has to authorize the turn](001-stop-abort-intent-the-sdk-already-cancels-the.md)
+- [Setup wizard (`setupWizard` adapter)](002-setup-wizard-setupwizard-adapter.md)
+- [`ChannelSetupInput` has a FIXED key set](003-channelsetupinput-has-a-fixed-key-set.md)
+- [`createTopLevelChannelDmPolicy`](004-createtoplevelchanneldmpolicy.md)
+- [`directory` adapter](005-directory-adapter.md)
+- [Channel status adapter](006-channel-status-adapter.md)
+- [Account inspect adapter](007-account-inspect-adapter.md)  — files: src/account-inspect.ts
+- [Inbound idempotency primitive](008-inbound-idempotency-primitive.md)
+- [Message-action adapter](009-message-action-adapter.md)
+- [`createChatChannelPlugin` only accepts `{ base, security, pairing, threading, outbound }`](010-createchatchannelplugin-only-accepts-base-security-pairing-t.md)
+- [Outbound `renderPresentation` + `sendPayload` delivery path](011-outbound-renderpresentation-sendpayload-delivery-path.md)
+- [Plugin channels cannot receive inbound *non-message* events](012-plugin-channels-cannot-receive-inbound-non-message-events.md)
+- [`agentPrompt` adapter](013-agentprompt-adapter.md)
+- [Durable-before-ack for webhook channels is NOT exposed via `createChatChannelPlugin`](014-durable-before-ack-for-webhook-channels-is-not.md)
+- [`createChatChannelPlugin` converts inline option forms into adapters](015-createchatchannelplugin-converts-inline-option-forms-into-ad.md)
+- [`pairing` option](016-pairing-option.md)
+- [`ChannelOutboundContext` has only `cfg`, `to`, `text`, `accountId`](017-channeloutboundcontext-has-only-cfg-to-text-accountid.md)
+- [Threading adapter (`ChannelThreadingAdapter`, type exported from `openclaw/plugin-sdk/channel-runtime`; `ReplyToMode` from `…/config-runtime`)](018-threading-adapter-channelthreadingadapter-type-exported-from.md)
+- [Outbound DM-vs-channel routing (issue #11)](019-outbound-dm-vs-channel-routing-issue-11.md)
+- [`runtime.channel` surface](020-runtime-channel-surface.md)
+- [Pairing runtime](021-pairing-runtime.md)
+- [Mention stripping](022-mention-stripping.md)
+- [`resolveInboundMentionDecision`](023-resolveinboundmentiondecision.md)
+- [DM admission](024-dm-admission.md)
+- [`messaging` adapter (`ChannelMessagingAdapter`)](025-messaging-adapter-channelmessagingadapter.md)
+- [Portable message presentation (interactive buttons/cards)](026-portable-message-presentation-interactive-buttons-cards.md)
+- [Security-audit collector](027-security-audit-collector.md)
+- [Channel doctor adapter](028-channel-doctor-adapter.md)
+- [Legacy config migration surface (`legacyConfigRules` + `normalizeCompatibilityConfig` + `repairConfig`)](029-legacy-config-migration-surface-legacyconfigrules-normalizec.md)
+- [Lifecycle `detectLegacyStateMigrations` adapter](030-lifecycle-detectlegacystatemigrations-adapter.md)
+- [Lifecycle `runStartupMaintenance` / `onAccountConfigChanged` / `onAccountRemoved` hooks](031-lifecycle-runstartupmaintenance-onaccountconfigchanged-onacc.md)
+- [Programmatic webhook registration is NOT possible for Zoho Cliq](032-programmatic-webhook-registration-is-not-possible-for-zoho.md)
+- [Webhook secret verification must be constant-time + single-header](033-webhook-secret-verification-must-be-constant-time-single.md)
+- [Failed-auth rate limiting must be scoped to the 401 path only](034-failed-auth-rate-limiting-must-be-scoped-to.md)
+- [Every denied request carries `Connection: close`](035-every-denied-request-carries-connection-close.md)
+- [Stage-4b round-trip: stub model + mocked outbound via `apiBase`/`oauthBase` config overrides](036-stage-4b-round-trip-stub-model-mocked-outbound.md)  — apis: /api/v2/bots/{botId}/message
+- [Channel plugin HTTP routes are only registered when the channel is CONFIGURED](037-channel-plugin-http-routes-are-only-registered-when.md)
+- [Stage-4 dispatch evidence: `lane=session:agent:main:cliq:`](038-stage-4-dispatch-evidence-lane-session-agent-main.md)
+- [The plugin loads on a real gateway (verified against openclaw@2026.6.11)](039-the-plugin-loads-on-a-real-gateway-verified.md)  — files: index.ts
+- [Outbound send logging has no direct runtime access from `CliqClient`](040-outbound-send-logging-has-no-direct-runtime-access.md)
+- [CLI commands that matter](041-cli-commands-that-matter.md)
+- [State isolation is mandatory when running against a box that has a real `~/.openclaw`](042-state-isolation-is-mandatory-when-running-against-a.md)
+- [`openclaw` is BOTH a `peerDependency` (runtime: the gateway provides it) AND a `devDependency` (so `npm ci` installs the CLI + SDK types for typecheck/tests/smoke)](043-openclaw-is-both-a-peerdependency-runtime-the-gateway.md)
+- [`openclaw/plugin-sdk/compat` is DEPRECATED](044-openclaw-plugin-sdk-compat-is-deprecated.md)
+- [`groups` adapter (`ChannelGroupAdapter`) wiring](045-groups-adapter-channelgroupadapter-wiring.md)
+- [Inbound `From` convention: it is the originating CONVERSATION id, not the sender](046-inbound-from-convention-it-is-the-originating-conversation.md)
+- [TS2742 on declaration emit](047-ts2742-on-declaration-emit.md)  — files: index.ts
+- [`.gitignore` ignores `*.js`](048-gitignore-ignores-js.md)
+- [The installed SDK differs from the docs](049-the-installed-sdk-differs-from-the-docs.md)
+- [Secret contract for plugin channels lives on `base.secrets` (`ChannelSecretsAdapter`),](050-secret-contract-for-plugin-channels-lives-on-base.md)
+- [`secretTargetRegistryEntries` declare which config paths `openclaw secrets` recognizes](051-secrettargetregistryentries-declare-which-config-paths-openc.md)
+- [`collectRuntimeConfigAssignments` collects EXISTING SecretRef assignments for resolution, NOT plaintext](052-collectruntimeconfigassignments-collects-existing-secretref-.md)
+- [The gateway does NOT auto-resolve registered channel secret paths before handing config to a plugin channel](053-the-gateway-does-not-auto-resolve-registered-channel.md)
+- [Sync runtime resolution only handles plaintext + env-backed refs](054-sync-runtime-resolution-only-handles-plaintext-env-backed.md)
+- [`resolveDefaultSecretProviderAlias` is NOT in the light secret subpaths](055-resolvedefaultsecretprovideralias-is-not-in-the-light-secret.md)
+- [`hasConfiguredSecretInput(value, defaults?)` (sync, `openclaw/plugin-sdk/secret-input-runtime`) is the right presence check for a secret field](056-hasconfiguredsecretinputvalue-defaults-sync-openclaw-plugin-.md)
+- [REST API v3 channel text post (the first v3 migration family)](057-rest-api-v3-channel-text-post-the-first.md)  — apis: /api/v3/channelsbyname/{CHANNEL_UNIQUE_NAME}/messages,ZohoCliq.Channels.UPDATE,ZohoCliq.Webhooks.CREATE
+- [REST API v3 Message Cards (the fourth v3 migration family — `modern-inline` channel cards, issue #59)](058-rest-api-v3-message-cards-the-fourth-v3.md)  — files: src/v3-card.ts · apis: /api/v3/bots/{BOT_UNIQUE_NAME}/messages,/api/v3/channels/{CHANNEL_UNIQUE_NAME}/message,/api/v3/chats/{CHAT_ID}/messages
+- [REST API v3 `prompt` Message Card theme (issue #63)](059-rest-api-v3-prompt-message-card-theme-issue.md)  — files: src/commands.ts
+- [REST API v3 `poll` Message Card theme (issue #64)](060-rest-api-v3-poll-message-card-theme-issue.md)
+- [REST API v3 message delete (the third v3 migration family)](061-rest-api-v3-message-delete-the-third-v3.md)  — apis: /api/v2/chats/{chatId}/messages,/api/v2/chats/{chatId}/messages/{messageId},/api/v3/chats/{CHAT_ID}/messagess
+- [REST API v3 bot DM post (the second v3 migration family)](062-rest-api-v3-bot-dm-post-the-second.md)  — files: src/v3-card.ts · apis: /api/v2/bots/{botId}/message,/api/v3/bots/{BOT_UNIQUE_NAME}/messages,/api/v3/channelsbyname/{name}/messages
+- [REST API v3 reactions / file-download / channel-chat-id-resolution are v3 DEAD ENDS (confirmed against the v3 OpenAPI / REST docs)](063-rest-api-v3-reactions-file-download-channel-chat.md)  — files: src/reactions.test.ts · apis: /api/v2/...,/api/v2/channelsbyname/{name},/api/v2/chats/{chatId}/messages/{messageId}/reactions
+- [Multi-account config resolution (`readEffectiveCliqSection` + `resolveCliqConfig`)](064-multi-account-config-resolution-readeffectivecliqsection-res.md)
+- [`CliqClient.getAccessToken` caches per-scope](065-cliqclient-getaccesstoken-caches-per-scope.md)  — apis: ZohoCliq.Users.READ,ZohoCliq.Webhooks.CREATE
+- [Cliq directory endpoints](066-cliq-directory-endpoints.md)  — apis: /api/v2/channels,/api/v2/users,ZohoCliq.Channels.READ
+- [Cliq Welcome Handler is a separate bot handler with its OWN scope attribute](067-cliq-welcome-handler-is-a-separate-bot-handler.md)  — apis: ZohoCliq.Webhooks.CREATE
+- [Cliq message edit API](068-cliq-message-edit-api.md)  — apis: /api/v2/chats/{chatId}/messages,/api/v2/chats/{chat_id}/messages/{message_id},ZohoCliq.Messages.UPDATE
+- [Cliq bot→channel send uses the channelsbyname endpoint, NOT the bot-message endpoint (issue #26)](069-cliq-bot-channel-send-uses-the-channelsbyname-endpoint.md)  — files: src/api.ts · apis: /api/v2/bots/{botId}/message,/api/v2/channelsbyname/{channel_unique_name}/message,ZohoCliq.Channels.UPDATE
+- [`client_credentials` CANNOT obtain a usable token for `ZohoCliq.Channels.UPDATE` or `ZohoCliq.Messages.UPDATE`](070-client-credentials-cannot-obtain-a-usable-token-for.md)  — apis: /api/v2/channelsbyname/{name}/message,/api/v2/chats/{chatId}/messages/{messageId},ZohoCliq.Channels.UPDATE
+- [Plugin-channel streaming previews are block-streaming, not live-edit-in-place](071-plugin-channel-streaming-previews-are-block-streaming-not.md)
+- [Inbound `deliver` must chunk against the 5000-char cap](072-inbound-deliver-must-chunk-against-the-5000-char.md)
+- [Inbound media → agent context wiring](073-inbound-media-agent-context-wiring.md)  — apis: /api/v2/files/{FILE_ID},ZohoCliq.Attachments.READ
+- [Cliq has NO bot "typing" REST API](074-cliq-has-no-bot-typing-rest-api.md)
+- [Instant acknowledgement / "thinking" placeholder (issue #47)](075-instant-acknowledgement-thinking-placeholder-issue-47.md)  — apis: ZohoCliq.Messages.UPDATE
+- [Cliq does not expose a reliable `is_bot` flag on the webhook sender](076-cliq-does-not-expose-a-reliable-is-bot.md)
+- [Cliq Markdown delimiters](077-cliq-markdown-delimiters.md)
+- [Cliq bot-message buttons payload](078-cliq-bot-message-buttons-payload.md)  — apis: /api/v2/bots/{botId}/message,/api/v2/channelsbyname/{name}/message,ZohoCliq.Channels.UPDATE
+- [Bold-before-italic pitfall](079-bold-before-italic-pitfall.md)
+- [Cliq reactions API](080-cliq-reactions-api.md)  — apis: /api/v2/chats/{chatId}/messages/{messageId}/reactions,ZohoCliq.messageactions.CREATE,ZohoCliq.messageactions.READ
+- [Group/channel chat-id resolution for live-edit (issue #28)](081-group-channel-chat-id-resolution-for-live-edit.md)  — apis: /api/v2/channelsbyname/{name},/api/v2/channelsbyname/{name}/message,/api/v2/chats/dev-team/messages/...
+- [Deluge payload is inconsistent](082-deluge-payload-is-inconsistent.md)
+- [Deluge webhook must POST raw JSON with `body: payload.toString()` + `Content-Type: application/json`](083-deluge-webhook-must-post-raw-json-with-body.md)
+- [Multi-data-center + `api_domain` self-correction (issue #46)](084-multi-data-center-api-domain-self-correction-issue.md)  — files: src/region.ts
+- [EU endpoints are the default but no longer hard-coded](085-eu-endpoints-are-the-default-but-no-longer.md)  — files: src/region.ts
+- [Cliq bot-message API error envelope is not formally documented](086-cliq-bot-message-api-error-envelope-is-not.md)  — files: src/send-retry.ts
+- [`Retry-After` must be honored verbatim](087-retry-after-must-be-honored-verbatim.md)
+- [`commands` adapter (`ChannelCommandAdapter`)](088-commands-adapter-channelcommandadapter.md)
+- [Inbound quote / reply context is a plugin-owned concern](089-inbound-quote-reply-context-is-a-plugin-owned.md)  — apis: /api/v2/chats/{chatId}/messages,ZohoCliq.Messages.READ
+- [Node `Buffer` pool + `Blob`](090-node-buffer-pool-blob.md)
+- [`g`-flagged `RegExp` is stateful](091-g-flagged-regexp-is-stateful.md)
+- [The SDK's channel/plugin test-contract helpers are NOT published for third-party plugins](092-the-sdks-channel-plugin-test-contract-helpers-are.md)  — files: src/test-api.ts

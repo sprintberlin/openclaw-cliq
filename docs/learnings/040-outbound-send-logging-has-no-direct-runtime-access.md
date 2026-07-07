@@ -1,0 +1,6 @@
+---
+title: Outbound send logging has no direct runtime access from `CliqClient`
+category: Gateway smoke / real-loader verification
+source: migrated from AGENTS.md
+---
+- **Outbound send logging has no direct runtime access from `CliqClient`.** The gateway exposes `api.logger` (`PluginLogger`: `debug?`, `info`, `warn`, `error` — all `(message: string) => void`) only to `registerFull`/`registerCliMetadata`. The outbound `sendText` adapter and the inbound `deliver`/live-edit paths resolve their `CliqClient` through `CliqClientRegistry` (`resolveCliqClient`), so the bridge is: `registerFull` calls `getCliqClientRegistry().setLogger(api.logger)` once at startup; the registry threads that logger into every lazily-created `CliqClient`. `CliqClient` itself takes an optional `logger` constructor arg (last, after `retryOptions`) and falls back to a console-backed default (`setCliqDefaultLogger`/`getCliqDefaultLogger`) so a directly-constructed client (tests, CLI tooling) is never invisible. Never log the OAuth access token, `clientSecret`, or webhook secret — only target kind (`dm`/`channel`) + resolved id + text *length* (never the text), HTTP status, message id, and on error the response body truncated via `truncateForLog`.

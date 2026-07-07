@@ -1,0 +1,6 @@
+---
+title: Sync runtime resolution only handles plaintext + env-backed refs
+category: Secrets (`openclaw secrets audit/apply/reload`)
+source: migrated from AGENTS.md
+---
+- **Sync runtime resolution only handles plaintext + env-backed refs.** `resolveSecretInputString({ value, path, defaults, mode:"inspect" })` (sync, `openclaw/plugin-sdk/secret-input-runtime`) returns `{status:"available"|"configured_unavailable"|"missing", value?, ref?}`. For `status==="available"` return the literal; for `"missing"` return `""`; for `"configured_unavailable"` with `ref.source==="env"` read `process.env[ref.id]` (validate the named provider is an env source + allowlist, mirroring Telegram's `resolveEnvSecretRefValue` in `token-CsMBhjqx.js`); file/exec refs cannot be resolved synchronously and degrade to `""`. The bundled Telegram channel accepts this exact limitation (`resolveRuntimeTokenValue` returns `configured_unavailable`→`token:""` for file/exec). The async `resolveConfiguredSecretInputString` would fully resolve file/exec but the channel `resolveAccount` path is synchronous everywhere (outbound `sendText`, inbound dispatch, status, directory), so sync-only is the pragmatic choice. `normalizeSecretInputString` (trim a literal) + `coerceSecretRef`/`isSecretRef` are the other useful exports from that subpath.

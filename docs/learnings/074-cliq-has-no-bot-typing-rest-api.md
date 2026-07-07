@@ -1,0 +1,6 @@
+---
+title: Cliq has NO bot "typing" REST API
+category: Zoho Cliq specifics
+source: migrated from AGENTS.md
+---
+- **Cliq has NO bot "typing" REST API.** Bots can only post messages; unlike Telegram (`sendChatAction`) there is no `typing` chat-action endpoint. So a channel plugin's `heartbeat.sendTyping` cannot produce a real "typing…" cue. Two consequences: (1) with the default `ackPolicy: "after_dispatch"`, Cliq's OWN native "bot is processing" indicator already covers the UX while the agent works, because the Deluge handler is still awaiting our HTTP response — so the visible typing cue comes for free from the un-acked request, not from `sendTyping`; (2) `heartbeat.sendTyping` is best implemented as a token pre-warm (call `CliqClient.getAccessToken`, which is cached) so the first real reply after an idle gap doesn't pay the OAuth round-trip, with failures swallowed (typing must never break an agent turn). The `heartbeat` adapter (`checkReady` + `sendTyping` + `clearTyping`) lives on `base` and is spread onto the plugin by `createChatChannelPlugin` (it does `{ ...params.base, ... }`, so *every* base field — `heartbeat`, `mentions`, etc. — is forwarded, not just the fixed list `createChannelPluginBase` picks). The heartbeat runner reads `plugin.heartbeat?.sendTyping` / `?.checkReady` directly (`heartbeat-runner-*.js`).
