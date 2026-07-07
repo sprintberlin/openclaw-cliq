@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   prepareInboundMedia,
+  resolveInboundAttachmentFileIds,
   mediaKindFromMime,
   sanitizeFileName,
   type CliqInboundAttachment,
@@ -119,5 +120,143 @@ describe("prepareInboundMedia", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  it("skips a name-only attachment (no fileId) without a download attempt", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "cliq-media-unit-"));
+    try {
+      const downloadAttachment = vi.fn(async () => ({
+        bytes: new Uint8Array([0]),
+        contentType: "image/png",
+      }));
+      const reported: { kind: string; fileId: string }[] = [];
+      const { media, paths } = await prepareInboundMedia({
+        attachments: [{ fileName: "2020_03.png" }],
+        client: { downloadAttachment },
+        mediaDir: dir,
+        onError: (err, info) => {
+          reported.push(info);
+          expect(String(err)).toMatch(/no resolvable file id/);
+        },
+      });
+      expect(downloadAttachment).not.toHaveBeenCalled();
+      expect(media).toHaveLength(0);
+      expect(paths).toHaveLength(0);
+      expect(reported).toEqual([{ kind: "inbound-media-no-fileid", fileId: "" }]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("resolveInboundAttachmentFileIds (issue #84)", () => {
+  it("resolves a name-only attachment's fileId by matching the file name", async () => {
+    const listChatMessages = vi.fn(async () => [
+      {
+        messageId: "m-text",
+        chatId: "CT_dm",
+        text: "hi",
+      },
+      {
+        messageId: "m-file",
+        chatId: "CT_dm",
+        file: { id: "fileid-1", name: "2020_03.png", type: "image/png" },
+      },
+    ]);
+    const out = await resolveInboundAttachmentFileIds({
+      attachments: [{ fileName: "2020_03.png" }],
+      client: { listChatMessages },
+      chatId: "CT_dm",
+      canReadChatMessages: true,
+    });
+    expect(listChatMessages).toHaveBeenCalledWith("CT_dm", { limit: 50 });
+    expect(out).toEqual([
+      {
+        fileName: "2020_03.png",
+        fileId: "fileid-1",
+        mimeType: "image/png",
+      },
+    ]);
+  });
+
+  it("falls back to the most recent file message when no name matches", async () => {
+    const listChatMessages = vi.fn(async () => [
+      { messageId: "m", chatId: "CT_dm", file: { id: "latest-id", name: "other.png" } },
+    ]);
+    const out = await resolveInboundAttachmentFileIds({
+      attachments: [{ fileName: "mystery.png" }],
+      client: { listChatMessages },
+      chatId: "CT_dm",
+      canReadChatMessages: true,
+    });
+    expect(out[0].fileId).toBe("latest-id");
+  });
+
+  it("is a no-op when all attachments already have a fileId (no API call)", async () => {
+    const listChatMessages = vi.fn(async () => []);
+    const out = await resolveInboundAttachmentFileIds({
+      attachments: [{ fileId: "f1", fileName: "a.png" }],
+      client: { listChatMessages },
+      chatId: "CT_dm",
+      canReadChatMessages: true,
+    });
+    expect(listChatMessages).not.toHaveBeenCalled();
+    expect(out[0].fileId).toBe("f1");
+  });
+
+  it("is a no-op without a refresh token (canReadChatMessages false)", async () => {
+    const listChatMessages = vi.fn(async () => []);
+    const out = await resolveInboundAttachmentFileIds({
+      attachments: [{ fileName: "a.png" }],
+      client: { listChatMessages },
+      chatId: "CT_dm",
+      canReadChatMessages: false,
+    });
+    expect(listChatMessages).not.toHaveBeenCalled();
+    expect(out[0].fileId).toBeUndefined();
+  });
+
+  it("is a no-op without a chatId", async () => {
+    const listChatMessages = vi.fn(async () => []);
+    const out = await resolveInboundAttachmentFileIds({
+      attachments: [{ fileName: "a.png" }],
+      client: { listChatMessages },
+      chatId: undefined,
+      canReadChatMessages: true,
+    });
+    expect(listChatMessages).not.toHaveBeenCalled();
+    expect(out[0].fileId).toBeUndefined();
+  });
+
+  it("degrades to name-only when the fetch throws (never breaks)", async () => {
+    const listChatMessages = vi.fn(async () => {
+      throw new Error("api down");
+    });
+    const reported: { kind: string }[] = [];
+    const out = await resolveInboundAttachmentFileIds({
+      attachments: [{ fileName: "a.png" }],
+      client: { listChatMessages },
+      chatId: "CT_dm",
+      canReadChatMessages: true,
+      onError: (err, info) => {
+        reported.push(info);
+        expect(String(err)).toMatch(/api down/);
+      },
+    });
+    expect(out[0].fileId).toBeUndefined();
+    expect(reported).toEqual([{ kind: "inbound-media-fileid-fetch" }]);
+  });
+
+  it("degrades to name-only when no file message is found", async () => {
+    const listChatMessages = vi.fn(async () => [
+      { messageId: "m", chatId: "CT_dm", text: "just text" },
+    ]);
+    const out = await resolveInboundAttachmentFileIds({
+      attachments: [{ fileName: "a.png" }],
+      client: { listChatMessages },
+      chatId: "CT_dm",
+      canReadChatMessages: true,
+    });
+    expect(out[0].fileId).toBeUndefined();
   });
 });

@@ -11,6 +11,50 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Fixed
+
+- **Inbound file / image messages sent to the bot no longer fail (issue #84).**
+  A Zoho Cliq bot **Message handler** delivers `attachments` as an array of bare
+  file-name strings (no file id, no MIME) — unlike the rich *message object*
+  the inbound-media path was built against. A caption-less image was rejected
+  as `400 invalid payload` (no text, no resolvable attachment); an image with a
+  caption dispatched but the file never reached the agent, and a redelivery
+  during session init tripped a `reply session initialization conflicted`
+  retry storm. Two independent fixes:
+
+  - **Robustness.** The parser now recognizes name-only `attachments` (string
+    entries and object entries without an `id`); a caption-less file
+    dispatches with a useful body (`<file: <name>>`, or `<file: <name>>` + the
+    caption when present) instead of `400 invalid payload`. The dedupe key
+    incorporates the attachment names when `messageId` is empty, so Cliq's
+    ~20 s retries of the same upload are deduped as `duplicate`/`inflight`
+    (acked `200`) instead of re-dispatched. A `reply session initialization
+    conflicted` dispatch error is acked `200` so Cliq stops retrying instead of
+    looping the conflict.
+  - **File-id resolution.** A name-only attachment is enriched with a real file
+    id (best-effort) via `GET /api/v2/chats/{chatId}/messages` — the uploaded
+    file exists as a `type:"file"` message with `content.file.{id,name,type}`,
+    which `downloadAttachment` then fetches. Only attempted when an attachment
+    is name-only, a `chatId` is present, and a `refreshToken` is configured; a
+    failed resolution degrades to "no media for that attachment" (the name
+    still surfaces in the body). Never breaks the turn.
+
+### Added
+
+- **`ZohoCliq.Messages.READ` scope** (refresh-token grant). Required to resolve
+  an inbound attachment's file id from the chat-messages list (and to fetch the
+  quote/reply parent text). Added to the §3b scope list and the §3c scope
+  string; skip it for a text-only bot and inbound images degrade to name-only.
+
+### Changed
+
+- **The §5 Deluge Message/Mention handler now forwards the `attachments`
+  argument.** Existing installs that don't update the handler keep working
+  exactly as before (text messages unaffected); updating is required for
+  inbound image / file messages to dispatch (without it, a caption-less image
+  is still `400 invalid payload` and an image with a caption still drops the
+  file). The forward guards against a null `attachments` (text-only messages).
+
 ## [0.1.6] - 2026-07-07
 
 ### Changed

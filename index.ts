@@ -10,6 +10,7 @@ import {
 } from "./src/pairing.js";
 import {
   dispatchCliqInbound,
+  isCliqSessionConflictError,
   parseCliqWebhookPayload,
   readJsonBody,
   resolveCliqMentionDecision,
@@ -343,6 +344,20 @@ export default defineChannelPluginEntry({
           res.setHeader("Content-Type", "application/json");
           res.end(JSON.stringify({ status: "received" }));
         } catch (err) {
+          // A "reply session initialization conflicted" error is transient
+          // (a Cliq redelivery racing the first dispatch's session init).
+          // Ack 200 so Cliq stops retrying instead of 5xx → retry → same
+          // conflict storm. The dedupe layer already serialized the
+          // redeliveries; a genuine concurrent-turn conflict is rare and
+          // best left to the SDK's own queue (issue #84).
+          if (isCliqSessionConflictError(err)) {
+            api.logger.warn?.(
+              `[cliq] inbound dispatch conflicted (session init) — acking to stop retry: ${String(err)}`,
+            );
+            res.statusCode = 200;
+            res.end("ok");
+            return true;
+          }
           api.logger.error?.(
             `[cliq] inbound dispatch failed: ${String(err)}`,
           );

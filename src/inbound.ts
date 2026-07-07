@@ -27,6 +27,7 @@ import {
 } from "./abort.js";
 import {
   prepareInboundMedia,
+  resolveInboundAttachmentFileIds,
   type CliqInboundAttachment,
   type CliqInboundMediaFacts,
 } from "./inbound-media.js";
@@ -185,10 +186,14 @@ export interface CliqWebhookPayload {
   file?: string;
   /**
    * Defensive: some bot handlers forward an `attachments` array alongside the
-   * message object. Each entry is parsed for an `id` / `name` / `type`. Not
-   * part of the documented Message Object but tolerated when present.
+   * message object. A Cliq **bot Message handler** delivers `attachments` as
+   * an array of bare file-name strings (no id, no MIME) — see issue #84. Each
+   * string entry is surfaced as a name-only attachment (`fileName` set, no
+   * `fileId`); the file id is recovered best-effort via the chat-messages
+   * list endpoint in the dispatch path. Object entries (`{ id, name, type }`)
+   * are also tolerated when present.
    */
-  attachments?: Array<{ id?: string; name?: string; type?: string }>;
+  attachments?: Array<string | { id?: string; name?: string; type?: string }>;
   /**
    * Cliq platform **Form** submission (Phase 3). When the bot's Form Handler
    * Deluge script forwards a submission to our webhook, the payload carries
@@ -320,8 +325,14 @@ function extractMessageText(payload: CliqWebhookPayload): {
  * carries a single file under `content.file.{id,name,type}` with an optional
  * `content.comment` caption. Some Deluge handlers also forward a bare `file`
  * name string or an `attachments` array; both are tolerated. The `params`
- * wrapper is unwrapped by the caller before this runs. Returns attachments
- * with a resolvable `fileId` only — entries missing an id are skipped.
+ * wrapper is unwrapped by the caller before this runs.
+ *
+ * A Cliq **bot Message handler** delivers `attachments` as an array of bare
+ * file-name strings (no id, no MIME) — see issue #84. Such entries are surfaced
+ * with `fileId` unset and `fileName` only; the file id is recovered
+ * best-effort via the chat-messages list endpoint in the dispatch path
+ * (`resolveInboundAttachmentFileIds`). A name-only entry that cannot be
+ * resolved still surfaces its name to the agent so the turn is useful.
  */
 function extractMessageAttachments(payload: CliqWebhookPayload): CliqInboundAttachment[] {
   const out: CliqInboundAttachment[] = [];
@@ -336,13 +347,25 @@ function extractMessageAttachments(payload: CliqWebhookPayload): CliqInboundAtta
     });
   } else if (Array.isArray(payload.attachments)) {
     for (const a of payload.attachments) {
-      if (a && typeof a.id === "string" && a.id.trim()) {
-        out.push({
-          fileId: a.id.trim(),
-          fileName: a.name?.trim() || undefined,
-          mimeType: a.type?.trim() || undefined,
-          caption,
-        });
+      if (typeof a === "string") {
+        const name = a.trim();
+        if (name) {
+          out.push({ fileName: name, caption });
+        }
+      } else if (a && typeof a === "object") {
+        const id = typeof a.id === "string" ? a.id.trim() : undefined;
+        const name = typeof a.name === "string" ? a.name.trim() : undefined;
+        if (id) {
+          out.push({
+            fileId: id,
+            fileName: name || undefined,
+            mimeType: a.type?.trim() || undefined,
+            caption,
+          });
+        } else if (name) {
+          // Name-only object entry (no id) — same degradation as a string.
+          out.push({ fileName: name, mimeType: a.type?.trim() || undefined, caption });
+        }
       }
     }
   }
@@ -412,8 +435,33 @@ export function parseCliqWebhookPayload(
   }
   if (!bodyText && attachments.length > 0) {
     const first = attachments[0];
-    const kind = first.mimeType?.split("/")[0]?.toLowerCase();
-    bodyText = kind ? `<media:${kind}>` : "<media>";
+    if (first.fileId) {
+      const kind = first.mimeType?.split("/")[0]?.toLowerCase();
+      bodyText = kind ? `<media:${kind}>` : "<media>";
+    } else {
+      // Name-only attachment (bot Message handler `attachments` string — issue
+      // #84): no downloadable id yet, so surface the file name to the agent.
+      // The kind cannot be derived reliably from a bare name, so prefer
+      // `<file: <name>>`; fall back to `<file>` when no name either.
+      const name = first.fileName?.trim();
+      bodyText = name ? `<file: ${name}>` : "<file>";
+    }
+  }
+  // When the message carries a caption AND a name-only attachment (no file
+  // id), surface the file name alongside the caption so the agent sees that
+  // the turn is about a file even before the id is resolved (issue #84).
+  // Guards on the original caption `text` so a caption-less file (whose body
+  // is already `<file: name>`) is not double-prefixed.
+  if (
+    text &&
+    !formResponse.matched &&
+    !formSubmission &&
+    attachments.some((a) => !a.fileId)
+  ) {
+    const name = attachments.find((a) => !a.fileId && a.fileName?.trim())?.fileName?.trim();
+    if (name) {
+      bodyText = `<file: ${name}>\n${bodyText}`;
+    }
   }
   if (!bodyText) return null;
 
@@ -714,6 +762,24 @@ function tryParseJson(value: string): unknown | undefined {
 }
 
 /**
+ * Detect a Cliq / SDK "reply session initialization conflicted" error. This
+ * is thrown when an inbound message arrives while a previous turn for the
+ * same session is still initializing (a Cliq redelivery during the
+ * initialization window — the dedupe claim races the first dispatch). A
+ * genuine concurrent-turn conflict is transient; surfacing it to Cliq as a
+ * 5xx triggers an immediate retry which trips the same conflict again → a
+ * retry storm. The webhook acks these with 200 so Cliq stops retrying (the
+ * dedupe layer already serialized the redeliveries).
+ */
+export function isCliqSessionConflictError(err: unknown): boolean {
+  const msg =
+    typeof err === "object" && err && "message" in err
+      ? String((err as { message?: unknown }).message ?? "")
+      : String(err);
+  return /reply session initialization conflicted/i.test(msg);
+}
+
+/**
  * Dispatch a parsed inbound Cliq message into the OpenClaw inbound pipeline
  * via `runtime.channel.inbound.run`. Builds the normalized turn context from
  * the legacy `runtime.channel.reply.*` + `runtime.channel.routing.*` helpers
@@ -918,6 +984,13 @@ export async function dispatchCliqInbound(params: {
   // dispatches with whatever attachments did download — a failed fetch never
   // breaks the agent turn. Voice (`audio/*`) entries are marked
   // `transcribed: false`; the runtime handles transcription.
+  //
+  // Issue #84: a Cliq bot Message handler delivers `attachments` as bare
+  // file-name strings (no file id). Before downloading, best-effort resolve
+  // the file id via the chat-messages list endpoint (scope `Messages.READ`,
+  // refresh-token grant — same constraint as the quote/reply fetch). A failed
+  // or no-op resolution degrades to "no media for that attachment" and never
+  // breaks the turn; the file name still surfaces in the body.
   let inboundMedia: CliqInboundMediaFacts[] = [];
   if (parsed.attachments.length > 0) {
     const mediaDir =
@@ -927,8 +1000,15 @@ export async function dispatchCliqInbound(params: {
     } catch (err) {
       onError?.(err, { kind: "inbound-media-mkdir" });
     }
-    const prepared = await prepareInboundMedia({
+    const resolvedAttachments = await resolveInboundAttachmentFileIds({
       attachments: parsed.attachments,
+      client,
+      chatId: parsed.chatId || undefined,
+      canReadChatMessages: Boolean(account.refreshToken),
+      onError: (err, info) => onError?.(err, { kind: info.kind }),
+    });
+    const prepared = await prepareInboundMedia({
+      attachments: resolvedAttachments,
       client,
       mediaDir,
       messageId: parsed.messageId || undefined,

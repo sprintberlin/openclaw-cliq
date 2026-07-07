@@ -131,7 +131,7 @@ The plugin uses **two** OAuth grant types, because the **`client_credentials`** 
 
 #### 3b. Consent the scopes
 
-When registering / re-consenting the self-client, request **all nine** scopes so both the `client_credentials` (DM) and refresh-token (channel/edit/delete/card) paths work:
+When registering / re-consenting the self-client, request **all ten** scopes so both the `client_credentials` (DM) and refresh-token (channel/edit/delete/card/media) paths work:
 
 Each scope's grant is shown in parentheses — *client_credentials* is fetched automatically; *refresh token* requires the one-time [§3c](#3c-obtain-the-user-context-refresh-token-required-for-channel-posts--edits) token.
 
@@ -141,11 +141,12 @@ Each scope's grant is shown in parentheses — *client_credentials* is fetched a
 - **`ZohoCliq.Channels.READ`** *(client_credentials)* — Read channel / chat metadata.
 - **`ZohoCliq.Users.READ`** *(client_credentials)* — Resolve sender user info.
 - **`ZohoCliq.Messages.UPDATE`** *(refresh token)* — Edit a sent message in place (live-edit streaming previews).
+- **`ZohoCliq.Messages.READ`** *(refresh token)* — Read recent chat messages to resolve an inbound file attachment's file id (a Cliq bot Message handler delivers `attachments` as bare file-name strings — the plugin fetches the file message via `GET /api/v2/chats/{chatId}/messages` to recover the downloadable id). Skip it for a text-only bot and inbound images degrade to name-only (no bytes reach the agent); the quote/reply parent-text fetch also uses this scope.
 - **`ZohoCliq.Messages.DELETE`** *(refresh token)* — Delete a sent message via the v3 bulk-delete endpoint (only when `apiVersion: "v3"` — the v2 single-message delete reuses `Messages.UPDATE`; opt-in, see [§4](#4-openclaw-configuration)).
 - **`ZohoCliq.messageactions.CREATE`** *(refresh token)* — Add / remove message reactions (the `message(action=react)` tool).
 - **`ZohoCliq.Attachments.READ`** *(refresh token)* — Download inbound file / image / voice attachments (`GET /api/v2/files/{id}`) so they reach the agent.
 
-> If you previously consented with only the original three scopes, you must re-consent (generate a fresh self-client token) with `ZohoCliq.Channels.UPDATE` and `ZohoCliq.Messages.UPDATE` added — channel replies will be rejected with `invalid_scope` / 401 until you do. `ZohoCliq.Messages.DELETE` and `ZohoCliq.Channels.CREATE` are only needed when you opt into `apiVersion: "v3"` (the v3 delete / v3 Message Card paths); the v2 paths reuse `Messages.UPDATE` / `Channels.UPDATE` respectively, so if you stay on the `"v2"` default you can skip them. Reactions (`ZohoCliq.messageactions.CREATE`) are optional — skip the scope if you don't need the `react` action, and the plugin will simply not advertise reaction support. Likewise `ZohoCliq.Attachments.READ` is only needed for **inbound media** (downloading images / files / voice a user sends) — skip it for a text-only bot and the plugin degrades to "no media" for those messages.
+> If you previously consented with only the original three scopes, you must re-consent (generate a fresh self-client token) with `ZohoCliq.Channels.UPDATE` and `ZohoCliq.Messages.UPDATE` added — channel replies will be rejected with `invalid_scope` / 401 until you do. `ZohoCliq.Messages.DELETE` and `ZohoCliq.Channels.CREATE` are only needed when you opt into `apiVersion: "v3"` (the v3 delete / v3 Message Card paths); the v2 paths reuse `Messages.UPDATE` / `Channels.UPDATE` respectively, so if you stay on the `"v2"` default you can skip them. Reactions (`ZohoCliq.messageactions.CREATE`) are optional — skip the scope if you don't need the `react` action, and the plugin will simply not advertise reaction support. `ZohoCliq.Messages.READ` is only needed for **inbound image / file attachments** (resolving a bot-handler file name to a downloadable id) and the quote/reply parent-text fetch — skip it for a text-only bot and those features degrade gracefully. Likewise `ZohoCliq.Attachments.READ` is only needed for **inbound media** (downloading the resolved images / files / voice a user sends) — skip it for a text-only bot and the plugin degrades to "no media" for those messages.
 
 #### 3c. Obtain the user-context refresh token (required for channel posts + edits)
 
@@ -198,7 +199,7 @@ exchange for a permanent **refresh token**.
 1. In the **[Zoho API Console](https://api-console.zoho.com)** ([your data center](#data-centers)) → your **Self Client** → tab **Generate Code**.
 2. **Scope** (the Self Client field is comma-separated, no spaces):
    ```
-   ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Channels.CREATE,ZohoCliq.Messages.UPDATE,ZohoCliq.Messages.DELETE,ZohoCliq.Channels.READ,ZohoCliq.Users.READ,ZohoCliq.messageactions.CREATE,ZohoCliq.Attachments.READ
+   ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Channels.CREATE,ZohoCliq.Messages.UPDATE,ZohoCliq.Messages.READ,ZohoCliq.Messages.DELETE,ZohoCliq.Channels.READ,ZohoCliq.Users.READ,ZohoCliq.messageactions.CREATE,ZohoCliq.Attachments.READ
    ```
 3. **Time Duration:** 10 minutes. **Scope Description:** anything (e.g. `openclaw`). Pick your **portal/org** if prompted.
 4. Click **Create** and copy the code — it looks like `1000.<hex>.<hex>`.
@@ -314,11 +315,21 @@ webhookSecret = "<the same secret you set as webhookSecret in openclaw.json>";
 // Cliq provides `message`, `user`, and `chat` in the Message/Mention handler
 // scope. The plugin's parser accepts these Cliq objects as-is (it tolerates the
 // different chat/channel key variants), so just forward them directly.
+// Forward `attachments` too (issue #84): a Cliq bot Message handler receives
+// the file names a user attached as a separate `attachments` argument (bare
+// file-name strings — no id / MIME); without forwarding them, a caption-less
+// image is rejected as `invalid payload` and an image with a caption dispatches
+// but the file never reaches the agent. The plugin resolves the file id from
+// the chat-messages list when a `refreshToken` is configured (§3c). The
+// argument is absent for text-only messages (Deluge passes null), so guard it.
 payload = Map();
 payload.put("handler", "message");   // <-- use "mention" in the Mention Handler
 payload.put("message", message);
 payload.put("user", user);
 payload.put("chat", chat);
+if (attachments != null) {
+    payload.put("attachments", attachments);
+}
 
 // Auth + content type. The secret header is REQUIRED when webhookSecret is set
 // in openclaw.json; Content-Type MUST be application/json.

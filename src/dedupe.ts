@@ -58,8 +58,16 @@ function getCliqDedupe(): ClaimableDedupe {
  * Prefers the Cliq `messageId` (stable across redeliveries). When absent,
  * falls back to a `sender:chat:text` composite so the same payload replayed
  * by Cliq is still caught. Returns `null` only when there is nothing stable
- * to key on (no message id AND no sender/chat/text), in which case dedupe is
- * skipped for that message.
+ * to key on (no message id AND no sender/chat AND no text AND no attachment
+ * names), in which case dedupe is skipped for that message.
+ *
+ * A caption-less file message (bot Message handler delivers `attachments` as
+ * bare file-name strings — issue #84) has an empty `messageId` and empty
+ * text, so the text composite would be `null`. We extend the fallback to
+ * incorporate the attachment names (`sender:chat:file:<names>`) so Cliq's
+ * ~20 s retries of the same upload are deduped as `duplicate`/`inflight`
+ * rather than re-dispatched (which would otherwise trip a
+ * "reply session initialization conflicted" loop).
  */
 export function buildCliqDedupeKey(
   parsed: ParsedCliqInbound,
@@ -69,9 +77,15 @@ export function buildCliqDedupeKey(
   if (parsed.messageId) return `cliq:${ns}:mid:${parsed.messageId}`;
   const sender = parsed.senderId || "";
   const chat = parsed.chatId || "";
+  if (!sender || !chat) return null;
   const text = parsed.text || "";
-  if (!sender || !chat || !text) return null;
-  return `cliq:${ns}:cmp:${sender}:${chat}:${text}`;
+  if (text) return `cliq:${ns}:cmp:${sender}:${chat}:${text}`;
+  const names = parsed.attachments
+    .map((a) => a.fileName?.trim())
+    .filter((v): v is string => Boolean(v))
+    .join(",");
+  if (names) return `cliq:${ns}:cmp:${sender}:${chat}:file:${names}`;
+  return null;
 }
 
 export type CliqDedupeClaimKind = "claimed" | "duplicate" | "inflight";

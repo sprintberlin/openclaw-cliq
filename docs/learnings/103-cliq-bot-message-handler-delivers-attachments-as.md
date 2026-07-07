@@ -1,0 +1,7 @@
+---
+title: Cliq bot Message handler delivers `attachments` as bare file-name strings (no file id)
+category: Zoho Cliq specifics
+apis: [/api/v2/chats/{chatId}/messages, /api/v2/files/{FILE_ID}, ZohoCliq.Messages.READ, ZohoCliq.Attachments.READ]
+source: issue #84
+---
+- **Cliq bot Message handler delivers `attachments` as bare file-name strings (no file id).** The bot Message/Mention handler Deluge scope passes `message` as a plain **string** (not the rich *message object* documented separately at the cliq-objects page), and `attachments` as a **separate argument** that is an array of bare file-name strings — no `id`, no MIME. So a Deluge handler that does NOT forward `attachments` makes a caption-less image a `400 invalid payload` (no text, no resolvable attachment). The file id is recoverable best-effort: the uploaded file exists as a `type:"file"` message in the chat, so `GET /api/v2/chats/{chatId}/messages` (scope `ZohoCliq.Messages.READ`, user-context refresh-token grant) returns it with `content.file.{id,name,type}`, which `downloadAttachment` (`GET /api/v2/files/{FILE_ID}`, scope `Attachments.READ`) then fetches. Match by file name (fallback: most recent `type:"file"` message). A failed resolution degrades to "no media, name only in the body" and never breaks the turn. The message-object docs at <https://www.zoho.com/cliq/help/platform/cliq-objects/message-object.html> describe a *different* shape — do NOT reason from them for the bot-handler inbound path.

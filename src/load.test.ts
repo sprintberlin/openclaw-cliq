@@ -182,6 +182,106 @@ describe("durable-before-ack ingest (issue #12)", () => {
     expect(res.body).toBe("dispatch failed");
   });
 
+  it("acks 200 on a 'reply session initialization conflicted' dispatch error (issue #84)", async () => {
+    let runCalled = 0;
+    const { webhook } = buildDurableRegistration({
+      inboundRun: async () => {
+        runCalled++;
+        throw new Error(
+          "reply session initialization conflicted for agent:martin:cliq:direct:dm:20098819618",
+        );
+      },
+    });
+    const res = createMockServerResponse();
+    await webhook.handler(
+      createMockIncomingRequest("POST", mentionPayload, {
+        "x-cliq-webhook-secret": "s3cr3t",
+      }),
+      res as unknown as any,
+    );
+    expect(runCalled).toBe(1);
+    // Acked 200 (not 500) so Cliq stops retrying instead of storming the conflict.
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toBe("ok");
+  });
+
+  it("dedupes a redelivered caption-less file message — second POST acks 200 without a second dispatch (issue #84)", async () => {
+    let runCalled = 0;
+    const { webhook } = buildDurableRegistration({
+      inboundRun: async () => {
+        runCalled++;
+        return undefined;
+      },
+    });
+    // Group mention with a name-only attachment so admission allows it and
+    // the dedupe key falls back to sender:chat:file:<names> (no messageId).
+    const filePayload = {
+      handler: "mention",
+      message: "",
+      user: { id: "u1", name: "Alice" },
+      chat: {
+        id: "CT_channel",
+        type: "channel",
+        chat_type: "channel",
+        channel_unique_name: "dev-team",
+        title: "#dev-team",
+      },
+      mentions: [{ id: "bot", name: "openclaw-bot", type: "bot" }],
+      attachments: ["2020_03.png"],
+    };
+    const res1 = createMockServerResponse();
+    await webhook.handler(
+      createMockIncomingRequest("POST", filePayload, {
+        "x-cliq-webhook-secret": "s3cr3t",
+      }),
+      res1 as unknown as any,
+    );
+    expect(res1.statusCode).toBe(200);
+    expect(runCalled).toBe(1);
+    // Cliq redelivers the same upload ~20s later.
+    const res2 = createMockServerResponse();
+    await webhook.handler(
+      createMockIncomingRequest("POST", filePayload, {
+        "x-cliq-webhook-secret": "s3cr3t",
+      }),
+      res2 as unknown as any,
+    );
+    expect(res2.statusCode).toBe(200);
+    // No second dispatch — deduped as duplicate/inflight.
+    expect(runCalled).toBe(1);
+  });
+
+  it("acks 200 (not 400) for a caption-less image with attachments forwarded (issue #84)", async () => {
+    const { webhook } = buildDurableRegistration({
+      inboundRun: async () => undefined,
+    });
+    const res = createMockServerResponse();
+    await webhook.handler(
+      createMockIncomingRequest(
+        "POST",
+        {
+          handler: "mention",
+          message: "",
+          user: { id: "u1", name: "Alice" },
+          chat: {
+            id: "CT_channel",
+            type: "channel",
+            chat_type: "channel",
+            channel_unique_name: "dev-team",
+            title: "#dev-team",
+          },
+          mentions: [{ id: "bot", name: "openclaw-bot", type: "bot" }],
+          attachments: ["2020_03.png"],
+        },
+        { "x-cliq-webhook-secret": "s3cr3t" },
+      ),
+      res as unknown as any,
+    );
+    // Previously this was 400 invalid payload; now it dispatches with a
+    // synthesized <file: name> body.
+    expect(res.statusCode).toBe(200);
+  });
+
   it("ackPolicy=immediate acks 200 without awaiting dispatch", async () => {
     let runStarted = false;
     let runResolved = false;

@@ -129,4 +129,46 @@ describe("claimCliqMessage / commit / release", () => {
     const c2 = await claimCliqMessage(p, account);
     expect(c2!.kind).toBe("duplicate");
   });
+
+  it("keys a caption-less file message by sender:chat:file:<names> (issue #84)", () => {
+    const p = parsed({
+      messageId: "",
+      text: "",
+      attachments: [{ fileName: "2020_03.png" }],
+    });
+    expect(buildCliqDedupeKey(p, account)).toBe(
+      "cliq:default:cmp:u1:CT_dm_chat-B1:file:2020_03.png",
+    );
+  });
+
+  it("keys a caption-less file message with multiple names by joined names", () => {
+    const p = parsed({
+      messageId: "",
+      text: "",
+      attachments: [{ fileName: "a.png" }, { fileName: "b.png" }],
+    });
+    expect(buildCliqDedupeKey(p, account)).toBe(
+      "cliq:default:cmp:u1:CT_dm_chat-B1:file:a.png,b.png",
+    );
+  });
+
+  it("dedupes a redelivered caption-less file message (issue #84)", async () => {
+    const p = parsed({
+      messageId: "",
+      text: "",
+      attachments: [{ fileName: "2020_03.png" }],
+    });
+    const c1 = await claimCliqMessage(p, account);
+    expect(c1!.kind).toBe("claimed");
+    expect(c1!.key).toBe("cliq:default:cmp:u1:CT_dm_chat-B1:file:2020_03.png");
+    await commitCliqMessage(c1!.key);
+    // Cliq redelivers the same upload ~20s later → deduped.
+    const c2 = await claimCliqMessage(p, account);
+    expect(c2!.kind).toBe("duplicate");
+  });
+
+  it("returns null for a caption-less file with no attachment names", () => {
+    const p = parsed({ messageId: "", text: "", attachments: [{ fileName: "" }] });
+    expect(buildCliqDedupeKey(p, account)).toBeNull();
+  });
 });

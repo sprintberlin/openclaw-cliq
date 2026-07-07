@@ -10,6 +10,7 @@ import {
   resolveCliqMentionDecision,
   resolveCliqMentionFacts,
   dispatchCliqInbound,
+  isCliqSessionConflictError,
   type CliqWebhookPayload,
   type ParsedCliqInbound,
   type CliqRuntime,
@@ -485,6 +486,59 @@ describe("parseCliqWebhookPayload", () => {
         file: "some-file.txt",
       } as CliqWebhookPayload),
     ).toBeNull();
+  });
+
+  it("parses a name-only attachments array (bot Message handler strings, issue #84)", () => {
+    const parsed = parseCliqWebhookPayload({
+      handler: "message",
+      message: "was siehst du?",
+      user: { id: "20098819618", name: "Alice" },
+      chat: { id: "CT_dm-B2", type: "bot" },
+      attachments: ["2020_03.png"],
+    } as CliqWebhookPayload);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.attachments).toEqual([{ fileName: "2020_03.png" }]);
+    // No fileId — the body prepends the file name alongside the caption.
+    expect(parsed!.text).toBe("<file: 2020_03.png>\nwas siehst du?");
+  });
+
+  it("synthesizes a <file: name> body for a caption-less name-only attachment (issue #84)", () => {
+    const parsed = parseCliqWebhookPayload({
+      handler: "message",
+      message: "",
+      user: { id: "20098819618", name: "Alice" },
+      chat: { id: "CT_dm-B2", type: "bot" },
+      attachments: ["2020_03.png"],
+    } as CliqWebhookPayload);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.attachments).toHaveLength(1);
+    expect(parsed!.attachments[0].fileId).toBeUndefined();
+    expect(parsed!.text).toBe("<file: 2020_03.png>");
+  });
+
+  it("synthesizes a <file> body for a name-only attachment with no file name", () => {
+    const parsed = parseCliqWebhookPayload({
+      handler: "message",
+      message: "",
+      user: { id: "u1", name: "Alice" },
+      chat: { id: "CT_dm" },
+      attachments: [""],
+    } as CliqWebhookPayload);
+    // An empty string entry is skipped (no name); with no text either, the
+    // payload is dropped (no body to dispatch).
+    expect(parsed).toBeNull();
+  });
+
+  it("keeps existing object attachments with id working (no name-only prepend)", () => {
+    const parsed = parseCliqWebhookPayload({
+      handler: "message",
+      message: "see this",
+      user: { id: "u1", name: "Alice" },
+      chat: { id: "CT_dm" },
+      attachments: [{ id: "att-1", name: "slide.png", type: "image/png" }],
+    } as CliqWebhookPayload);
+    expect(parsed!.text).toBe("see this");
+    expect(parsed!.attachments[0].fileId).toBe("att-1");
   });
 
   it("parses replyTo from message.reply_to (string id)", () => {
@@ -1461,6 +1515,107 @@ describe("dispatchCliqInbound — inbound media (issue #48)", () => {
       });
       expect(client.downloads).toHaveLength(0);
       expect(capture.ctxPayload?.MediaPath).toBeUndefined();
+    } finally {
+      await rm(mediaDir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves a name-only attachment's fileId via listChatMessages, then downloads (issue #84)", async () => {
+    const mediaDir = await mkdtemp(join(tmpdir(), "cliq-media-"));
+    try {
+      const capture: { ctxPayload?: Record<string, unknown> } = {};
+      const client = makeMediaClient({
+        bytes: new Uint8Array([0x89, 0x50]),
+        contentType: "image/png",
+      });
+      client.listChatMessages = vi.fn(async () => [
+        {
+          messageId: "m-file",
+          chatId: "CT_dm_chat-B1",
+          file: { id: "resolved-fileid", name: "2020_03.png", type: "image/png" },
+        },
+      ]);
+      const parsed = parseCliqWebhookPayload({
+        handler: "message",
+        message: "was siehst du?",
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm_chat-B1" },
+        attachments: ["2020_03.png"],
+      } as CliqWebhookPayload);
+      await dispatchCliqInbound({
+        runtime: mockRuntime(capture),
+        cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+        account: account({ refreshToken: "rt" }),
+        parsed: parsed!,
+        client,
+        mediaDir,
+      });
+      // Resolved via the chat-messages list, then downloaded by file id.
+      expect(client.listChatMessages).toHaveBeenCalledWith("CT_dm_chat-B1", { limit: 50 });
+      expect(client.downloads).toEqual(["resolved-fileid"]);
+      expect(capture.ctxPayload?.MediaType).toBe("image/png");
+      // stripCliqMentions collapses the newline to a space.
+      expect(capture.ctxPayload?.RawBody).toBe("<file: 2020_03.png> was siehst du?");
+    } finally {
+      await rm(mediaDir, { recursive: true, force: true });
+    }
+  });
+
+  it("degrades to name-only when no refresh token is configured (no listChatMessages call)", async () => {
+    const mediaDir = await mkdtemp(join(tmpdir(), "cliq-media-"));
+    try {
+      const capture: { ctxPayload?: Record<string, unknown> } = {};
+      const client = makeMediaClient();
+      const parsed = parseCliqWebhookPayload({
+        handler: "message",
+        message: "",
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm_chat-B1" },
+        attachments: ["2020_03.png"],
+      } as CliqWebhookPayload);
+      await dispatchCliqInbound({
+        runtime: mockRuntime(capture),
+        cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+        account: account(),
+        parsed: parsed!,
+        client,
+        mediaDir,
+      });
+      expect(client.listChatMessages).not.toHaveBeenCalled();
+      expect(client.downloads).toHaveLength(0);
+      // No media on the context, but the name surfaces in the body.
+      expect(capture.ctxPayload?.MediaPath).toBeUndefined();
+      expect(capture.ctxPayload?.RawBody).toBe("<file: 2020_03.png>");
+    } finally {
+      await rm(mediaDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not call listChatMessages for attachments that already have a fileId", async () => {
+    const mediaDir = await mkdtemp(join(tmpdir(), "cliq-media-"));
+    try {
+      const capture: { ctxPayload?: Record<string, unknown> } = {};
+      const client = makeMediaClient({
+        bytes: new Uint8Array([1]),
+        contentType: "image/png",
+      });
+      const parsed = parseCliqWebhookPayload({
+        handler: "message",
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm_chat-B1" },
+        message: { id: "m-file" },
+        content: { file: { id: "fileid-1", name: "photo.png", type: "image/png" } },
+      } as CliqWebhookPayload);
+      await dispatchCliqInbound({
+        runtime: mockRuntime(capture),
+        cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+        account: account({ refreshToken: "rt" }),
+        parsed: parsed!,
+        client,
+        mediaDir,
+      });
+      expect(client.listChatMessages).not.toHaveBeenCalled();
+      expect(client.downloads).toEqual(["fileid-1"]);
     } finally {
       await rm(mediaDir, { recursive: true, force: true });
     }
@@ -2697,8 +2852,7 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
   });
 });
 
-describe("parseCliqWebhookPayload — pairing approval sentinel (Phase 3, sub-part b)", () => {
-  it("parses an approve sentinel + code into pairingAction", () => {
+describe("parseCliqWebhookPayload — pairing approval sentinel (Phase 3, sub-part b)", () => {  it("parses an approve sentinel + code into pairingAction", () => {
     const parsed = parseCliqWebhookPayload(
       dmPayload({ message: "__cliq_pairing_approve__ ABC123" }),
     )!;
@@ -2728,5 +2882,24 @@ describe("parseCliqWebhookPayload — pairing approval sentinel (Phase 3, sub-pa
     )!;
     expect(parsed.confirmAction).toBeUndefined();
     expect(parsed.pairingAction?.kind).toBe("approve");
+  });
+});
+
+describe("isCliqSessionConflictError (issue #84)", () => {
+  it("matches the SDK reply-session-init-conflict error message", () => {
+    expect(
+      isCliqSessionConflictError(
+        new Error("reply session initialization conflicted for agent:martin:cliq:direct:dm:20098819618"),
+      ),
+    ).toBe(true);
+  });
+
+  it("matches a wrapped error string", () => {
+    expect(isCliqSessionConflictError("Reply session initialization conflicted")).toBe(true);
+  });
+
+  it("does not match an unrelated error", () => {
+    expect(isCliqSessionConflictError(new Error("api down"))).toBe(false);
+    expect(isCliqSessionConflictError("dispatch failed")).toBe(false);
   });
 });

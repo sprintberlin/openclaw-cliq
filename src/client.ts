@@ -884,6 +884,12 @@ export interface CliqChatMessageRef {
   messageId: string;
   chatId: string;
   text?: string;
+  /**
+   * File descriptor parsed from a `type: "file"` message's `content.file`
+   * (`{ id, name, type }`). Present only for file messages. Used by the
+   * inbound-media path to resolve a name-only attachment's file id (issue #84).
+   */
+  file?: { id?: string; name?: string; type?: string };
 }
 
 /**
@@ -891,7 +897,8 @@ export interface CliqChatMessageRef {
  * message refs. The response shape is `{ messages: [...] }` (or a bare
  * array in some API versions); each entry is parsed defensively for
  * `message_id` / `id` and `chat_id`, plus an optional `text` (used to
- * disambiguate when the message id alone does not match). Records missing
+ * disambiguate when the message id alone does not match) and the optional
+ * `content.file` descriptor for `type: "file"` messages. Records missing
  * a resolvable id are skipped, never thrown on.
  */
 function parseCliqChatMessages(data: unknown): CliqChatMessageRef[] {
@@ -913,7 +920,20 @@ function parseCliqChatMessages(data: unknown): CliqChatMessageRef[] {
         : undefined;
     if (!messageId || !chatId) continue;
     const text = typeof rec.text === "string" ? rec.text : undefined;
-    refs.push({ messageId, chatId, text });
+    let file: CliqChatMessageRef["file"];
+    const content =
+      rec.content && typeof rec.content === "object" && !Array.isArray(rec.content)
+        ? (rec.content as Record<string, unknown>)
+        : undefined;
+    const rawFile = content?.file;
+    if (rawFile && typeof rawFile === "object" && !Array.isArray(rawFile)) {
+      const f = rawFile as Record<string, unknown>;
+      const id = typeof f.id === "string" ? f.id.trim() : undefined;
+      const name = typeof f.name === "string" ? f.name.trim() : undefined;
+      const type = typeof f.type === "string" ? f.type.trim() : undefined;
+      if (id || name || type) file = { id, name, type };
+    }
+    refs.push({ messageId, chatId, text, file });
   }
   return refs;
 }
