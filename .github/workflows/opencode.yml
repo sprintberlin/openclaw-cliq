@@ -44,7 +44,7 @@ jobs:
                 && !contains(github.event.issue.labels.*.name, 'on-hold'))
           ))
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
       - name: Remove follow-up label (prevent re-trigger loops)
