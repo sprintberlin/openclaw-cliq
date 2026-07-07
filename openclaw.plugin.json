@@ -106,7 +106,8 @@
         "additionalProperties": false,
         "properties": {
           "mode": { "type": "string", "enum": ["off", "placeholder"], "default": "off" },
-          "text": { "type": "string", "default": "💭 …" }
+          "text": { "type": "string", "default": "💭 …" },
+          "failureText": { "type": "string" }
         }
       },
       "welcome": {
@@ -231,7 +232,8 @@
             "additionalProperties": false,
             "properties": {
               "mode": { "type": "string", "enum": ["off", "placeholder"], "default": "off" },
-              "text": { "type": "string", "default": "💭 …" }
+              "text": { "type": "string", "default": "💭 …" },
+              "failureText": { "type": "string" }
             }
           },
           "welcome": {

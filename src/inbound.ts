@@ -13,7 +13,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import type { CliqClient, ResolvedCliqAccount } from "./client.js";
 import { stripCliqMentions } from "./mentions.js";
 import { resolveCliqClient } from "./runtime-api.js";
-import { createLiveEditDeliver } from "./live-edit.js";
+import { createLiveEditDeliver, getLiveEditPlaceholderConsumed } from "./live-edit.js";
 import {
   isCliqAbortIntent,
   cliqAbortCtxFields,
@@ -882,37 +882,75 @@ export async function dispatchCliqInbound(params: {
       console.error(`[cliq] ${info.kind} reply failed: ${String(err)}`);
     });
 
-  await runtime.channel.inbound.run({
-    channel: "cliq",
-    accountId: account.accountId ?? undefined,
-    raw: parsed,
-    adapter: {
-      ingest: (raw) => ({
-        id: raw.messageId,
-        timestamp: raw.timestamp ? Date.parse(raw.timestamp) : undefined,
-        rawText: raw.text,
-        raw,
-      }),
-      resolveTurn: () => ({
-        cfg,
-        channel: "cliq",
-        accountId: account.accountId ?? undefined,
-        agentId: route.agentId,
-        routeSessionKey: route.sessionKey,
-        storePath,
-        ctxPayload,
-        recordInboundSession: runtime.channel.session.recordInboundSession,
-        dispatchReplyWithBufferedBlockDispatcher:
-          runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher,
-        delivery: {
-          deliver: async (replyPayload: { text?: string }) => {
-            await deliver({ text: replyPayload?.text });
+  // When a thinking placeholder was posted, clean it up if the agent turn
+  // ended WITHOUT touching it (the dispatcher flushed no blocks — e.g. the
+  // turn threw, or the model produced no reply). An untouched placeholder
+  // would otherwise linger as a stray `💭 …`. When `thinking.failureText` is
+  // configured, edit the placeholder into that failure indicator; otherwise
+  // delete it (the "no stray placeholder" contract). The cleanup runs in a
+  // `finally` so a throwing `inbound.run` still cleans up. A failed cleanup
+  // is swallowed + reported — it must never break or delay the turn.
+  const cleanupStrayPlaceholder = async (): Promise<void> => {
+    if (!initialDraft) return;
+    if (getLiveEditPlaceholderConsumed(deliver)) return;
+    const chatId =
+      initialDraft.chatId ??
+      (!parsed.isGroup ? undefined : await client.resolveChannelChatId(deliverTo).catch(() => undefined));
+    if (!chatId) {
+      // No chat id to edit/delete with — best-effort skip. The placeholder
+      // may linger, but we cannot safely address it without a chat id.
+      return;
+    }
+    const failureText = account.thinking?.failureText;
+    try {
+      if (failureText) {
+        const edited = await client
+          .editMessage({ chatId, messageId: initialDraft.messageId, text: failureText })
+          .then(() => true)
+          .catch(() => false);
+        if (edited) return;
+      }
+      await client.deleteMessage({ chatId, messageId: initialDraft.messageId });
+    } catch (err) {
+      onError?.(err, { kind: "thinking-placeholder-cleanup" });
+    }
+  };
+
+  try {
+    await runtime.channel.inbound.run({
+      channel: "cliq",
+      accountId: account.accountId ?? undefined,
+      raw: parsed,
+      adapter: {
+        ingest: (raw) => ({
+          id: raw.messageId,
+          timestamp: raw.timestamp ? Date.parse(raw.timestamp) : undefined,
+          rawText: raw.text,
+          raw,
+        }),
+        resolveTurn: () => ({
+          cfg,
+          channel: "cliq",
+          accountId: account.accountId ?? undefined,
+          agentId: route.agentId,
+          routeSessionKey: route.sessionKey,
+          storePath,
+          ctxPayload,
+          recordInboundSession: runtime.channel.session.recordInboundSession,
+          dispatchReplyWithBufferedBlockDispatcher:
+            runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher,
+          delivery: {
+            deliver: async (replyPayload: { text?: string }) => {
+              await deliver({ text: replyPayload?.text });
+            },
+            onError: handleOnError,
           },
-          onError: handleOnError,
-        },
-        record: { createIfMissing: true },
-        admission: { kind: "dispatch" },
-      }),
-    },
-  });
+          record: { createIfMissing: true },
+          admission: { kind: "dispatch" },
+        }),
+      },
+    });
+  } finally {
+    await cleanupStrayPlaceholder();
+  }
 }

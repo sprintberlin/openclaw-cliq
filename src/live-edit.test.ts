@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import {
   createLiveEditDeliver,
   getLiveEditDeliverStats,
+  getLiveEditPlaceholderConsumed,
 } from "./live-edit.js";
 import type { CliqClient } from "./client.js";
 
@@ -545,5 +546,95 @@ describe("createLiveEditDeliver — initialDraft (thinking placeholder)", () => 
     expect(fake.sends[0].text).toBe("first");
     const stats = getLiveEditDeliverStats(deliver);
     expect(stats?.editFailures).toBe(1);
+  });
+});
+
+describe("getLiveEditPlaceholderConsumed", () => {
+  it("returns true when no initialDraft was supplied (nothing to clean up)", () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: false,
+    });
+    expect(getLiveEditPlaceholderConsumed(deliver)).toBe(true);
+  });
+
+  it("returns false when a placeholder was supplied but no deliver ever ran", () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: false,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+    });
+    expect(getLiveEditPlaceholderConsumed(deliver)).toBe(false);
+  });
+
+  it("returns false when the only deliver carried empty text (no-op)", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: false,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+    });
+    await deliver({ text: "" });
+    expect(getLiveEditPlaceholderConsumed(deliver)).toBe(false);
+  });
+
+  it("returns true after a legacy-mode edit into the reply", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: false,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+    });
+    await deliver({ text: "the reply" });
+    expect(getLiveEditPlaceholderConsumed(deliver)).toBe(true);
+  });
+
+  it("returns true after a legacy-mode delete + fresh send on edit failure", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1", editFails: true });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: false,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+    });
+    await deliver({ text: "the reply" });
+    expect(getLiveEditPlaceholderConsumed(deliver)).toBe(true);
+  });
+
+  it("returns true after a streaming-mode first-block edit of the placeholder", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+    });
+    await deliver({ text: "first" });
+    expect(getLiveEditPlaceholderConsumed(deliver)).toBe(true);
+  });
+
+  it("returns true after a streaming-mode edit-failure delete + fresh send", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1", editFails: true });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+    });
+    await deliver({ text: "first" });
+    expect(getLiveEditPlaceholderConsumed(deliver)).toBe(true);
   });
 });

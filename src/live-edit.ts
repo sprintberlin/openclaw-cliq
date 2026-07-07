@@ -87,6 +87,16 @@ export interface LiveEditDeliverStats {
 }
 
 /**
+ * Whether the `initialDraft` placeholder's fate was resolved by a `deliver`
+ * call — i.e. it was edited into a reply, deleted after a failed edit, or
+ * superseded by a fresh send. `false` means NO deliver touched the
+ * placeholder (the dispatcher flushed no blocks, or only empty-text no-ops):
+ * the placeholder is still sitting untouched as `💭 …` and the caller should
+ * clean it up (edit to a failure message or delete) after the turn ends.
+ */
+export type LiveEditPlaceholderConsumed = boolean;
+
+/**
  * Build a `deliver` callback for the inbound block-dispatch path. The returned
  * function accumulates block text and either edits the current draft message
  * in place (`enabled`) or sends each block as a separate message (`!enabled`).
@@ -104,11 +114,21 @@ export function createLiveEditDeliver(
   const isDm = opts.isDm;
 
   const stats: LiveEditDeliverStats = { sends: 0, edits: 0, editFailures: 0 };
+  /**
+   * Set to `true` the moment a `deliver` call resolves the placeholder's
+   * fate (edited into a reply, deleted after a failed edit, or superseded by
+   * a fresh send). When still `false` after the turn the placeholder is
+   * untouched → the inbound path cleans it up. See
+   * {@link getLiveEditPlaceholderConsumed}.
+   */
+  let placeholderConsumed = !opts.initialDraft;
 
   const attach = <F extends (payload: { text?: string; mediaUrl?: string }) => Promise<void>>(
     fn: F,
   ): F => {
     (fn as unknown as { __stats: LiveEditDeliverStats }).__stats = stats;
+    (fn as unknown as { __placeholderConsumed: () => boolean }).__placeholderConsumed =
+      () => placeholderConsumed;
     return fn;
   };
 
@@ -241,6 +261,9 @@ export function createLiveEditDeliver(
 
       if (opts.initialDraft && draftMessageId && !firstDeliverDone) {
         firstDeliverDone = true;
+        // Entering this branch resolves the placeholder one way or another
+        // (edit into the reply, or delete + fresh send on edit failure).
+        placeholderConsumed = true;
         const chatId = await resolveDraftChatId();
         if (chatId) {
           if (await editDraft(chunks[0])) {
@@ -296,6 +319,7 @@ export function createLiveEditDeliver(
         // The placeholder is still the draft (nothing accumulated yet) and
         // the FIRST block alone overflows: edit the placeholder with the
         // first chunk and send the rest as fresh messages, then seal.
+        placeholderConsumed = true;
         const chunks = chunkMessage(richCandidate, limit);
         const chatId = await resolveDraftChatId();
         if (chatId && (await editDraft(chunks[0]))) {
@@ -336,6 +360,7 @@ export function createLiveEditDeliver(
         const chatId = await resolveDraftChatId();
         if (!chatId) {
           stats.editFailures++;
+          placeholderConsumed = true;
           await safeDeleteDraft();
           draftMessageId = undefined;
           draftChatId = undefined;
@@ -349,6 +374,8 @@ export function createLiveEditDeliver(
     }
 
     if (await editDraft(richCandidate)) {
+      // The placeholder (if any) is now the live draft showing the reply.
+      if (opts.initialDraft && !accumulated) placeholderConsumed = true;
       accumulated = candidate;
       return;
     }
@@ -358,6 +385,7 @@ export function createLiveEditDeliver(
     // target of the failed edit, delete it so it is not left stray.
     stats.editFailures++;
     if (opts.initialDraft && !accumulated) {
+      placeholderConsumed = true;
       await safeDeleteDraft();
     }
     draftMessageId = undefined;
@@ -373,4 +401,19 @@ export function getLiveEditDeliverStats(
   deliver: ReturnType<typeof createLiveEditDeliver>,
 ): LiveEditDeliverStats | undefined {
   return (deliver as unknown as { __stats?: LiveEditDeliverStats }).__stats;
+}
+
+/**
+ * Whether the `initialDraft` placeholder's fate was resolved by a `deliver`
+ * call (`true`), or whether it is still sitting untouched as `💭 …` waiting
+ * for the caller to clean it up (`false`). Returns `true` when no
+ * `initialDraft` was supplied (nothing to clean up).
+ */
+export function getLiveEditPlaceholderConsumed(
+  deliver: ReturnType<typeof createLiveEditDeliver>,
+): boolean {
+  return (
+    (deliver as unknown as { __placeholderConsumed?: () => boolean }).__placeholderConsumed?.() ??
+    true
+  );
 }

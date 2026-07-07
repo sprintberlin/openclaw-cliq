@@ -13,6 +13,26 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
+- Thinking-placeholder cleanup on no-reply turns: when the instant-
+  acknowledgement placeholder (`thinking.mode === "placeholder"`) is enabled
+  and the agent turn ends **without producing a reply** (the turn threw, or
+  the dispatcher flushed no blocks), the untouched `💭 …` placeholder is no
+  longer left stray. New optional `thinking.failureText` (string, under
+  `channels.cliq.thinking`) edits the placeholder into an explicit failure
+  indicator (e.g. `⚠️ No reply generated.`) instead of deleting it; when
+  `failureText` is unset (the default), the placeholder is **deleted** so no
+  stray `💭 …` lingers (consistent with the existing "no stray placeholder"
+  contract on edit failure). The cleanup runs in a `finally` so a throwing
+  `inbound.run` still cleans up; the failure-text edit falls back to a delete
+  if the edit is rejected, and a failed cleanup is swallowed + reported via
+  `onError` (`kind: "thinking-placeholder-cleanup"`) so it never breaks the
+  turn. Group/channel placeholders resolve the chat id lazily before cleanup
+  (the send response carries no chat id). The feature reuses the existing
+  `ZohoCliq.Messages.UPDATE` scope (no new OAuth scope). Exposed
+  `getLiveEditPlaceholderConsumed(deliver)` on the live-edit deliver for the
+  inbound path to detect the untouched-placeholder case. The first increment
+  of the Phase 3 "interactive status card (thinking → generating → done /
+  failed)" item — the "failed" tail.
 - REST API v3 Message Card `modern-inline` `sections` + `thumbnail`
   (issue #73): the remaining v3 Message Card surfaces per
   <https://www.zoho.com/cliq/help/restapi/v3/messagecards/>. Both are

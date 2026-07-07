@@ -67,9 +67,11 @@ verified-live core.
 ## Phase 3 — Rich messaging *(needs Phase 2)*
 
 - **Interactive status card + confirmation for sensitive actions.** Show a live status card
-  (thinking → generating → done / failed) during a turn, and gate sensitive/tool actions behind an
-  explicit confirm button before executing. Ref: Message Cards v3 + Cliq Bot Handlers (Context
-  Handler) <https://www.zoho.com/cliq/help/platform/bothandlers.html>.
+  transitioning through phases (generating → done) during a turn (the "failed" tail is already
+  handled — the thinking placeholder is cleaned up / edited to `thinking.failureText` when the
+  turn produces no reply), and gate sensitive/tool actions behind an explicit confirm button
+  before executing. Ref: Message Cards v3 + Cliq Bot Handlers (Context Handler)
+  <https://www.zoho.com/cliq/help/platform/bothandlers.html>.
 - **Cliq Forms for structured input.** Use Cliq Forms for approval / collection flows (pairing
   approval, parameter capture) instead of free-text parsing. Ref: Cliq platform (Form handler)
   <https://www.zoho.com/cliq/help/platform/>.

@@ -234,6 +234,14 @@ export type CliqReactionGuidanceConfig = {
 export type CliqThinkingConfig = {
   mode?: "off" | "placeholder";
   text?: string;
+  /**
+   * Text the placeholder is edited into when the agent turn ends with no
+   * reply produced (the turn threw, or the dispatcher flushed no blocks).
+   * When unset, the untouched placeholder is DELETED instead so no stray
+   * `💭 …` lingers. Editing needs the same `refreshToken` as the placeholder
+   * itself; when the edit fails the placeholder is deleted as a fallback.
+   */
+  failureText?: string;
 };
 
 /** Default placeholder text posted when `thinking.mode === "placeholder"`. */
@@ -304,7 +312,7 @@ export interface ResolvedCliqAccount {
    * `refreshToken` is configured AND streaming preview is off (the live-edit
    * path already shows progress otherwise).
    */
-  thinking: { mode: "off" | "placeholder"; text: string };
+  thinking: { mode: "off" | "placeholder"; text: string; failureText?: string };
   /**
    * Resolved welcome-on-subscribe config. `enabled` defaults to `false`
    * (opt-in — no setup gets a surprise greeting DM). `text` / `textRejoin`
@@ -366,6 +374,7 @@ export function resolveCliqConfig(
     thinking: {
       mode: section?.thinking?.mode === "placeholder" ? "placeholder" : "off",
       text: section?.thinking?.text || DEFAULT_CLIQ_THINKING_TEXT,
+      failureText: section?.thinking?.failureText || undefined,
     },
     welcome: {
       enabled: section?.welcome?.enabled === true,

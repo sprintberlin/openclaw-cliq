@@ -1425,3 +1425,264 @@ describe("dispatchCliqInbound — thinking placeholder (issue #47)", () => {
     expect(client.edits[0].text).toBe("reply");
   });
 });
+
+describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () => {
+  // A runtime whose `inbound.run` resolves the turn but never calls
+  // `delivery.deliver` — simulating an agent turn that produced no reply
+  // (turn threw upstream, or the dispatcher flushed zero blocks).
+  function mockRuntimeNoReply(): CliqRuntime {
+    return {
+      channel: {
+        routing: {
+          resolveAgentRoute: () => ({
+            agentId: "agent-1",
+            sessionKey: "sess-1",
+            accountId: "default",
+          }),
+        },
+        session: {
+          resolveStorePath: () => "/tmp/store",
+          readSessionUpdatedAt: () => undefined,
+          recordInboundSession: () => undefined,
+        },
+        reply: {
+          resolveEnvelopeFormatOptions: () => ({}),
+          formatAgentEnvelope: (p: Record<string, unknown>) => String(p.body ?? ""),
+          finalizeInboundContext: (fields: Record<string, unknown>) => fields,
+          dispatchReplyWithBufferedBlockDispatcher: async () => undefined,
+        },
+        inbound: {
+          run: async (params) => {
+            const adapter = (params as unknown as {
+              adapter: { resolveTurn: (...args: unknown[]) => unknown };
+            }).adapter;
+            // Resolve the turn (exercises the same path the SDK walks) but
+            // never invoke its `delivery.deliver` → placeholder untouched.
+            adapter.resolveTurn({}, {}, {});
+          },
+        },
+        pairing: {
+          buildPairingReply: () => "",
+          upsertPairingRequest: async () => ({ code: "CODE", created: true }),
+        },
+      },
+    };
+  }
+
+  // A runtime that drives a single canned reply through `delivery.deliver`
+  // (mirrors the buffered block dispatcher flushing one final block).
+  function mockRuntimeWithReply(replyText: string): CliqRuntime {
+    return {
+      channel: {
+        routing: {
+          resolveAgentRoute: () => ({
+            agentId: "agent-1",
+            sessionKey: "sess-1",
+            accountId: "default",
+          }),
+        },
+        session: {
+          resolveStorePath: () => "/tmp/store",
+          readSessionUpdatedAt: () => undefined,
+          recordInboundSession: () => undefined,
+        },
+        reply: {
+          resolveEnvelopeFormatOptions: () => ({}),
+          formatAgentEnvelope: (p: Record<string, unknown>) => String(p.body ?? ""),
+          finalizeInboundContext: (fields: Record<string, unknown>) => fields,
+          dispatchReplyWithBufferedBlockDispatcher: async () => undefined,
+        },
+        inbound: {
+          run: async (params) => {
+            const adapter = (params as unknown as {
+              adapter: { resolveTurn: (...args: unknown[]) => unknown };
+            }).adapter;
+            const turn = adapter.resolveTurn({}, {}, {}) as unknown as {
+              delivery: {
+                deliver: (payload: { text?: string }) => Promise<void>;
+                onError: (err: unknown, info: { kind: string }) => void;
+              };
+            };
+            try {
+              await turn.delivery.deliver({ text: replyText });
+            } catch (err) {
+              turn.delivery.onError(err, { kind: "deliver" });
+            }
+          },
+        },
+        pairing: {
+          buildPairingReply: () => "",
+          upsertPairingRequest: async () => ({ code: "CODE", created: true }),
+        },
+      },
+    };
+  }
+
+  function makeMockClient(opts: {
+    placeholderChatId?: string;
+    editFails?: boolean;
+    channelChatId?: string;
+  } = {}) {
+    const sends: { to: string; text: string; isDm?: boolean }[] = [];
+    const edits: { chatId: string; messageId: string; text: string }[] = [];
+    const deletes: { chatId: string; messageId: string }[] = [];
+    const client = {
+      sends,
+      edits,
+      deletes,
+      sendMessage: vi.fn(async (o: { to: string; text: string; isDm?: boolean }) => {
+        sends.push(o);
+        return o.isDm
+          ? { messageId: "ph-1", chatId: opts.placeholderChatId ?? `chat-${o.to}` }
+          : { messageId: "ph-1" };
+      }),
+      editMessage: vi.fn(async (o: { chatId: string; messageId: string; text: string }) => {
+        edits.push(o);
+        if (opts.editFails) throw new Error("edit rejected");
+        return { messageId: o.messageId, chatId: o.chatId };
+      }),
+      resolveChannelChatId: vi.fn(async () => opts.channelChatId ?? undefined),
+      listChatMessages: vi.fn(async () => []),
+      deleteMessage: vi.fn(async (o: { chatId: string; messageId: string }) => {
+        deletes.push(o);
+        return true;
+      }),
+      downloadAttachment: vi.fn(async () => {
+        throw new Error("download attachment not mocked");
+      }),
+    };
+    return client;
+  }
+
+  it("deletes the untouched placeholder when no reply is produced (default, no failureText)", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    await dispatchCliqInbound({
+      runtime: mockRuntimeNoReply(),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "💭 …" },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    // Placeholder posted, never edited → deleted on turn end.
+    expect(client.sends).toHaveLength(1);
+    expect(client.sends[0].text).toBe("💭 …");
+    expect(client.edits).toHaveLength(0);
+    expect(client.deletes).toHaveLength(1);
+    expect(client.deletes[0].messageId).toBe("ph-1");
+    expect(client.deletes[0].chatId).toBe("chat-u1");
+  });
+
+  it("edits the untouched placeholder to failureText when no reply is produced", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    await dispatchCliqInbound({
+      runtime: mockRuntimeNoReply(),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "💭 …", failureText: "⚠️ No reply generated." },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    // Placeholder posted, never edited into a reply → edited to failureText.
+    expect(client.sends).toHaveLength(1);
+    expect(client.edits).toHaveLength(1);
+    expect(client.edits[0].messageId).toBe("ph-1");
+    expect(client.edits[0].text).toBe("⚠️ No reply generated.");
+    expect(client.deletes).toHaveLength(0);
+  });
+
+  it("falls back to deleting the placeholder when failureText edit fails", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1", editFails: true });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    await dispatchCliqInbound({
+      runtime: mockRuntimeNoReply(),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "💭 …", failureText: "⚠️ No reply generated." },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    // failureText edit rejected → fallback delete so no stray placeholder.
+    expect(client.edits).toHaveLength(1);
+    expect(client.deletes).toHaveLength(1);
+    expect(client.deletes[0].messageId).toBe("ph-1");
+  });
+
+  it("does not clean up when a reply was produced (placeholder consumed)", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    await dispatchCliqInbound({
+      runtime: mockRuntimeWithReply("the reply"),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "💭 …", failureText: "⚠️ No reply generated." },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    // Reply produced → placeholder edited into the reply; no cleanup delete.
+    expect(client.edits).toHaveLength(1);
+    expect(client.edits[0].text).toBe("the reply");
+    expect(client.deletes).toHaveLength(0);
+  });
+
+  it("cleans up the placeholder even when inbound.run throws", async () => {
+    const runtime = mockRuntimeNoReply();
+    // Make inbound.run throw after resolving the turn.
+    (runtime.channel.inbound as unknown as { run: unknown }).run = vi.fn(async () => {
+      throw new Error("agent turn crashed");
+    });
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    await expect(
+      dispatchCliqInbound({
+        runtime,
+        cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+        account: account({
+          thinking: { mode: "placeholder", text: "💭 …" },
+          refreshToken: "rt",
+          blockStreaming: false,
+        }),
+        parsed: parsed!,
+        client,
+      }),
+    ).rejects.toThrow("agent turn crashed");
+    // The throw propagated, but the finally still deleted the stray placeholder.
+    expect(client.deletes).toHaveLength(1);
+    expect(client.deletes[0].messageId).toBe("ph-1");
+  });
+
+  it("resolves the group chat id lazily before cleaning up a channel placeholder", async () => {
+    const client = makeMockClient({ channelChatId: "CT_dev_team" });
+    const parsed = parseCliqWebhookPayload(groupPayload());
+    await dispatchCliqInbound({
+      runtime: mockRuntimeNoReply(),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "💭 …" },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    // Group send response carries no chatId → resolved lazily for the cleanup.
+    expect(client.resolveChannelChatId).toHaveBeenCalled();
+    expect(client.deletes).toHaveLength(1);
+    expect(client.deletes[0].chatId).toBe("CT_dev_team");
+    expect(client.deletes[0].messageId).toBe("ph-1");
+  });
+});
