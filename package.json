@@ -1,6 +1,6 @@
 {
   "name": "@sprintcx/openclaw-cliq",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Native Zoho Cliq channel for OpenClaw — reply to DMs and channel @mentions as a bot, with streaming previews, cards, and message actions.",
   "type": "module",
   "license": "MIT",

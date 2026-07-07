@@ -11,6 +11,8 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-07-07
+
 ### Added
 
 - **Cliq Forms — parameter capture (button-click re-entry as structured
@@ -649,7 +651,8 @@ publish workflow extracts the matching section as the release notes (see
   lookup, plugin doctor, interactive setup wizard, SecretRef-backed credentials,
   security audit collector, session binding, multi-account, lifecycle hooks.
 
-[Unreleased]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/sprintberlin/openclaw-cliq/releases/tag/v0.1.0
