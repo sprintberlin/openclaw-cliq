@@ -13,6 +13,31 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
+- REST API v3 opt-in for DM card/button posts (issue #60): the v3 path for
+  sending interactive cards (buttons) to a **DM** recipient. Under
+  `apiVersion: "v3"`, `CliqClient.sendCard` routes a DM card through the v3
+  "Send a bot message" endpoint `POST /api/v3/bots/{botId}/messages` — the
+  SAME endpoint the v3 DM **text** post uses — with a top-level `card` field
+  carrying the `modern-inline` Message Card body rendered by `src/v3-card.ts`
+  (the renderer introduced for v3 channel cards). The v3 bot-message endpoint
+  accepts a `card` object directly and posts **as the bot** (sender identity
+  preserved — the bot unique name is in the URL path, unlike
+  `POST /api/v3/chats/{chatId}/messages` which posts as the authenticated
+  user), so **no chat-id resolution is needed**: recipients are addressed via
+  `user_ids` (comma-separated), exactly like the v3 DM text post. The scope is
+  `ZohoCliq.Webhooks.CREATE` (obtainable via `client_credentials` — **no
+  refresh token required** for DM cards in v3 mode, unlike v3 *channel* cards
+  which need the user-context `Channels.CREATE` scope). `sync_message: true`
+  is set so the response carries `{ data: { message_id, chat_id } }`
+  (unwrapped by `parseCliqMessageRef`), giving live-edit streaming for DM
+  cards the message id without the nested `message_details` parse the v2
+  path needed. The same v2→v3 button mapping, v3 limits (title ≤200 chars,
+  max 5 buttons, label ≤30 chars), and "fall back to v2 when the v3 renderer
+  yields no payload" contract as v3 channel cards apply. The v2 default is
+  unchanged (DM cards use `POST /api/v2/bots/{botId}/message` with `userids`
+  + top-level `buttons`). No new OAuth scope (DM cards reuse
+  `ZohoCliq.Webhooks.CREATE`). See README §3c and §4.
+
 - REST API v3 opt-in for channel card/button posts (issue #59): the Phase 3
   v3 **Message Cards** renderer. A new `src/v3-card.ts` module converts the
   plugin's existing v2 card/button shape (`CliqButton` / `CliqRenderedCard`)
@@ -34,9 +59,8 @@ publish workflow extracts the matching section as the release notes (see
   `ZohoCliq.Channels.CREATE` scope (user-context, refresh-token grant — same
   constraint as `Channels.UPDATE`, so a `refreshToken` is still required for
   channel cards in v3 mode) and the `modern-inline` Message Card body. DM
-  cards stay on the v2 bot-message endpoint (the v3 Message Card DM endpoint
-  `POST /api/v3/chats/{chatId}/messages` needs a chat id the DM send path
-  does not have). When the v3 renderer yields no payload (no text AND all
+  cards in v3 mode route through the v3 bot-message endpoint's `card` field
+  (see the dedicated DM card entry below). When the v3 renderer yields no payload (no text AND all
   buttons dropped during conversion — e.g. all `action: "api"`), the send
   falls back to the v2 path so a degenerate card never fails. The v3 Message
   Card docs do not document a `bot_unique_name` query param, so a v3 channel

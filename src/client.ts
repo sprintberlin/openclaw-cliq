@@ -204,10 +204,17 @@ export interface CliqChannelConfig {
    * and a `modern-inline` Message Card body (header + optional text slide +
    * action buttons); the v3 docs do not document a `bot_unique_name` query
    * param, so a v3 channel card posts AS THE AUTHENTICATED USER (not as the
-   * bot — users who need bot sender identity for cards stay on `"v2"`). DM
-   * cards stay v2 (the v3 Message Card DM endpoint needs a chat id the DM
-   * send path does not have). Other families (media, edits, list, reactions,
-   * directory, file download, channel-chat-id resolution) stay on v2 —
+   * bot — users who need bot sender identity for cards stay on `"v2"`). The
+   * v3 DM **card/button** post family routes through the v3 "Send a bot
+   * message" endpoint `POST /api/v3/bots/{botId}/messages` (the SAME endpoint
+   * the v3 DM text post uses) with scope `ZohoCliq.Webhooks.CREATE`
+   * (client_credentials, NO refresh token required); the v3 bot-message
+   * endpoint accepts a top-level `card` object and posts AS THE BOT (sender
+   * identity preserved), addressing recipients via `user_ids` — so no chat-id
+   * resolution is needed (unlike the dedicated v3 Message Card chat endpoint
+   * `POST /api/v3/chats/{chatId}/messages`, which posts as the user and
+   * needs a chat id the DM send path does not have). Other families (media,
+   * edits, list, reactions, directory, file download, channel-chat-id resolution) stay on v2 —
    * confirmed against the v3 REST docs these are v3 dead ends with no swap
    * available (v3 Messages has no single-message edit or get endpoint; v3
    * has no reactions endpoint anywhere; v3 has no Files API; v3 chat
@@ -281,11 +288,11 @@ export interface ResolvedCliqAccount {
   oauthBase?: string;
   /**
    * Resolved REST API generation for the endpoint families that have a v3
-   * equivalent (channel text posts + bot DM posts + message delete). Defaults
-   * to `"v2`; per-account overrides apply via the shallow-merge resolution (so
-   * one account can pilot v3 while others stay on v2). See
-   * {@link CliqChannelConfig.apiVersion}. Optional on the resolved type so
-   * test fixtures can omit it; `resolveCliqConfig` always sets it and
+   * equivalent (channel text posts + bot DM posts + message delete + DM
+   * cards). Defaults to `"v2`; per-account overrides apply via the
+   * shallow-merge resolution (so one account can pilot v3 while others stay
+   * on v2). See {@link CliqChannelConfig.apiVersion}. Optional on the resolved
+   * type so test fixtures can omit it; `resolveCliqConfig` always sets it and
    * `CliqClient` defaults to `"v2"` when undefined.
    */
   apiVersion?: CliqApiVersion;
@@ -1137,22 +1144,35 @@ export class CliqClient {
    * `channelsbyname`, and singular `message`) with scope
    * `ZohoCliq.Channels.CREATE` and a `modern-inline` Message Card body
    * (header + optional text slide + action buttons) rendered by
-   * `cliqCardToV3MessageCard`. DM cards stay on the v2 bot-message endpoint
-   * (the v3 Message Card DM endpoint `POST /api/v3/chats/{chatId}/messages`
-   * needs a chat id the DM send path does not have). When the v3 renderer
-   * yields no payload (no text AND all buttons dropped), the send falls
-   * back to the v2 path. The v3 Message Card docs do not document a
-   * `bot_unique_name` query param, so a v3 channel card posts AS THE
-   * AUTHENTICATED USER (the OAuth client owner), not as the bot — a behavior
-   * difference from the v2 channel card path; users who need bot sender
-   * identity for cards stay on `apiVersion: "v2"`.
+   * `cliqCardToV3MessageCard`. When `apiVersion === "v3"` AND the send is a
+   * **DM**, the card routes through the v3 "Send a bot message" endpoint
+   * `POST /api/v3/bots/{botId}/messages` (the SAME endpoint the v3 DM text
+   * post uses) with scope `ZohoCliq.Webhooks.CREATE` (client_credentials, NO
+   * refresh token required) and the rendered Message Card in the `card`
+   * field — the v3 bot-message endpoint accepts a top-level `card` object
+   * directly and posts AS THE BOT (sender identity preserved, unlike
+   * `POST /api/v3/chats/{chatId}/messages` which posts as the authenticated
+   * user), so no chat-id resolution is needed (it addresses recipients via
+   * `user_ids`, same as the v3 DM text post). When the v3 renderer yields no
+   * payload (no text AND all buttons dropped), the send falls back to the v2
+   * path. For v3 channel cards the docs do not document a `bot_unique_name`
+   * query param, so a v3 channel card posts AS THE AUTHENTICATED USER (the
+   * OAuth client owner), not as the bot — a behavior difference from the v2
+   * channel card path; users who need bot sender identity for channel cards
+   * stay on `apiVersion: "v2"`.
    */
   async sendCard(opts: SendCardMessageOptions): Promise<{ messageId?: string; chatId?: string }> {
     const isDm = Boolean(opts.isDm);
-    // v3 Message Card path: channel (non-DM) only. DM cards stay v2.
-    if (!isDm && this.apiVersion === "v3") {
-      const v3 = await this.trySendCardV3Channel(opts);
-      if (v3.handled) return v3.result!;
+    // v3 Message Card paths: channel (non-DM) via the v3 Message Card
+    // endpoint, DM via the v3 bot-message endpoint's `card` field.
+    if (this.apiVersion === "v3") {
+      if (isDm) {
+        const v3 = await this.trySendCardV3Dm(opts);
+        if (v3.handled) return v3.result!;
+      } else {
+        const v3 = await this.trySendCardV3Channel(opts);
+        if (v3.handled) return v3.result!;
+      }
     }
     const scope = isDm ? "ZohoCliq.Webhooks.CREATE" : "ZohoCliq.Channels.UPDATE";
     const needsUserContext = !isDm;
@@ -1268,6 +1288,88 @@ export class CliqClient {
         } else {
           this.logger.warn?.(
             `[cliq] send card non-2xx: status=${r.status} channel id=${opts.to} attempt=${attempt} body=${truncateForLog(body)} api=v3`,
+          );
+        }
+        return { status: r.status, body, headers: r.headers };
+      },
+      this.retryOptions,
+    );
+    return { handled: true, result: parseCliqMessageRef(res.body) };
+  }
+
+  /**
+   * v3 Message Card DM send — the DM card/button post path under
+   * `apiVersion: "v3"`. Renders the v2 `CliqButton` card into a v3
+   * `modern-inline` Message Card body and POSTs it to the v3 "Send a bot
+   * message" endpoint `POST /api/v3/bots/{BOT_UNIQUE_NAME}/messages` (the
+   * SAME endpoint the v3 DM text post uses) with scope
+   * `ZohoCliq.Webhooks.CREATE` (client_credentials — NO refresh token
+   * required, unlike the v3 channel card path). The v3 bot-message endpoint
+   * accepts a top-level `card` object directly and posts AS THE BOT (sender
+   * identity preserved — the bot unique name is in the URL path, NOT a
+   * `POST /api/v3/chats/{chatId}/messages` user post), so NO chat-id
+   * resolution is needed: recipients are addressed via `user_ids` (comma-
+   * separated string), exactly like the v3 DM text post. `sync_message: true`
+   * is set so the response carries `{ data: { message_id, chat_id } }`
+   * (unwrapped by `parseCliqMessageRef`), giving live-edit streaming for DM
+   * cards the message id without the nested `message_details` parse the v2
+   * path needed.
+   *
+   * Returns `{ handled: false }` when the v3 renderer yields no payload (no
+   * text AND all buttons dropped during conversion) so the caller falls back
+   * to the v2 path. The 2xx response is unwrapped by `parseCliqMessageRef`
+   * (which already handles the v3 top-level `data` wrapper); a non-2xx is
+   * classified + retried by `withSendRetry` (transient 429/5xx retried with
+   * backoff, 4xx fatal → throws `CliqSendError`), matching the v2 send
+   * contract.
+   *
+   * Ref: <https://www.zoho.com/cliq/help/restapi/v3/bots/#send-a-bot-message>.
+   */
+  private async trySendCardV3Dm(
+    opts: SendCardMessageOptions,
+  ): Promise<{
+    handled: boolean;
+    result?: { messageId?: string; chatId?: string };
+  }> {
+    const card = cliqCardToV3MessageCard(
+      { text: opts.text, buttons: opts.buttons },
+      { botId: this.botId },
+    );
+    if (!card) return { handled: false };
+    const token = await this.resolveOutboundToken(
+      "ZohoCliq.Webhooks.CREATE",
+      false,
+    );
+    const url = `${this.apiBase}/api/v3/bots/${encodeURIComponent(this.botId)}/messages`;
+    const payload: Record<string, unknown> = {
+      ...card,
+      user_ids: opts.to,
+      sync_message: true,
+    };
+    this.logger.info?.(
+      `[cliq] send card: dm id=${opts.to} buttons=${opts.buttons.length}${opts.text ? ` textLen=${opts.text.length}` : ""} api=v3`,
+    );
+    let attempt = 0;
+    const res = await withSendRetry(
+      async () => {
+        attempt++;
+        const r = await fetch(url, {
+          method: "POST",
+          headers: {
+            Authorization: `Zoho-oauthtoken ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        });
+        const body = await r.text().catch(() => "");
+        if (r.ok) {
+          const ref = parseCliqMessageRef(body);
+          this.logger.info?.(
+            `[cliq] send card ok: status=${r.status} dm id=${opts.to} messageId=${ref.messageId ?? "-"} attempt=${attempt} api=v3`,
+          );
+        } else {
+          this.logger.warn?.(
+            `[cliq] send card non-2xx: status=${r.status} dm id=${opts.to} attempt=${attempt} body=${truncateForLog(body)} api=v3`,
           );
         }
         return { status: r.status, body, headers: r.headers };

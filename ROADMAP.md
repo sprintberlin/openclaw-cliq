@@ -64,10 +64,11 @@ verified-live core.
   - **Channel card / button posts** (`sendCard` non-DM) — v3 Message Card path
     is wired (`POST /api/v3/channels/{name}/message`, scope
     `ZohoCliq.Channels.CREATE`, `modern-inline` theme via `src/v3-card.ts`);
-    remaining: DM cards (the v3 Message Card DM endpoint
-    `POST /api/v3/chats/{chatId}/messages` needs a chat id the DM send path
-    does not have — resolve via `cliq:user:<id>` → chat id lookup), and the
+    remaining: the
     `poll` / `prompt` themes (only `modern-inline` is rendered today).
+    DM cards route through the v3 bot-message endpoint's `card` field
+    (`POST /api/v3/bots/{botId}/messages`, scope `ZohoCliq.Webhooks.CREATE`,
+    no refresh token, no chat-id resolution).
   - **Channel media posts** (`sendMediaMessage` non-DM) — v3 channel post body has no media
     field; needs the v3 attachment / Message-Card image flow.
   - **Message edit / list-by-chat** (`/api/v2/chats/{chatId}/messages…`) — confirmed against the
@@ -105,9 +106,9 @@ verified-live core.
 
 - **Adopt v3 Message Cards.** Render agent output as v3 cards where it improves UX:
   the `modern-inline` channel-post renderer is wired (`src/v3-card.ts`,
-  issue #59); remaining themes — `poll` (voting options) and `prompt`
-  (quick-reply buttons) — and the DM Message Card path (needs chat-id
-  resolution for `POST /api/v3/chats/{chatId}/messages`) are still to build.
+  issue #59) and the `modern-inline` DM renderer routes through the v3
+  bot-message `card` field (issue #60); remaining themes — `poll` (voting
+  options) and `prompt` (quick-reply buttons) — are still to build.
   Also expose `slides` (table / list / label / images / text supporting
   content) beyond the `text` slide the `modern-inline` renderer emits today.
   Ref: Message Cards v3

@@ -212,17 +212,111 @@ describe("CliqClient.sendCard", () => {
       expect(result.messageId).toBe("card-v2-fb");
       expect(captured[0].url).toContain("/api/v2/channelsbyname/dev-team/message");
     });
+  });
 
-    it("keeps DM cards on the v2 path even when apiVersion is v3", async () => {
+  describe("apiVersion: v3 DM card send", () => {
+    it("posts a DM card to /api/v3/bots/{botId}/messages with a modern-inline Message Card body + user_ids + sync_message", async () => {
+      const captured: { url: string; method: string; body: string; auth: string }[] = [];
+      mockFetch({
+        captured,
+        // No refreshToken — the v3 DM card path uses client_credentials.
+        sendBody: JSON.stringify({ data: { message_id: "card-dm-v3", chat_id: "CT_dm_v3" } }),
+      });
+
+      const client = makeClient({ apiVersion: "v3" });
+      const result = await client.sendCard({
+        to: "user-7",
+        isDm: true,
+        text: "Pick an option",
+        buttons,
+      });
+      expect(result.messageId).toBe("card-dm-v3");
+      expect(result.chatId).toBe("CT_dm_v3");
+
+      expect(captured).toHaveLength(1);
+      const req = captured[0];
+      expect(req.method).toBe("POST");
+      expect(req.url).toContain("/api/v3/bots/bot/messages");
+      // NO bot_unique_name query param (the bot identity is in the path).
+      expect(req.url).not.toContain("bot_unique_name");
+      // client_credentials token (no refresh-token grant involved).
+      expect(req.auth).toBe("Zoho-oauthtoken TOK");
+      const body = JSON.parse(req.body) as Record<string, unknown>;
+      expect(body.card).toBeDefined();
+      const card = body.card as { theme: string; title: string; buttons: unknown[] };
+      expect(card.theme).toBe("modern-inline");
+      expect(card.title).toBe("Pick an option");
+      expect(card.buttons).toHaveLength(2);
+      expect(body.user_ids).toBe("user-7");
+      expect(body.sync_message).toBe(true);
+      // Full text kept as the top-level fallback.
+      expect(body.text).toBe("Pick an option");
+    });
+
+    it("does NOT require a refresh token (client_credentials / Webhooks.CREATE scope)", async () => {
+      const allRequests: { url: string }[] = [];
+      const original = globalThis.fetch;
+      globalThis.fetch = (async (url: URL | string) => {
+        const urlStr = typeof url === "string" ? url : url.toString();
+        allRequests.push({ url: urlStr });
+        if (urlStr.includes("/oauth/v2/token")) {
+          return new Response(JSON.stringify({ access_token: "TOK", expires_in: 3600 }), {
+            status: 200,
+          });
+        }
+        return new Response(JSON.stringify({ data: { id: "x" } }), { status: 200 });
+      }) as typeof fetch;
+      try {
+        const client = makeClient({ apiVersion: "v3" });
+        await client.sendCard({ to: "user-7", isDm: true, text: "Pick", buttons });
+        // OAuth request used client_credentials (no refresh_token grant).
+        const oauth = allRequests.find((r) => r.url.includes("/oauth/v2/token"));
+        expect(oauth).toBeDefined();
+        expect(oauth!.url).toContain("grant_type=client_credentials");
+        expect(oauth!.url).toContain("scope=ZohoCliq.Webhooks.CREATE");
+        expect(oauth!.url).not.toContain("grant_type=refresh_token");
+      } finally {
+        globalThis.fetch = original;
+      }
+    });
+
+    it("falls back to the v2 DM path when the v3 renderer yields no payload", async () => {
+      const captured: { url: string; method: string; body: string; auth: string }[] = [];
+      mockFetch({ captured, sendBody: JSON.stringify({ id: "card-dm-v2-fb" }) });
+
+      const client = makeClient({ apiVersion: "v3" });
+      // No text + an unconvertible api-action button → v3 renderer returns
+      // null → falls back to v2 /bots/{botId}/message send.
+      const result = await client.sendCard({
+        to: "user-7",
+        isDm: true,
+        buttons: [{ label: "X", type: "+", action: "api", url: "https://x.com" }],
+      });
+      expect(result.messageId).toBe("card-dm-v2-fb");
+      expect(captured[0].url).toContain("/api/v2/bots/bot/message");
+      const body = JSON.parse(captured[0].body) as { buttons: unknown[] };
+      // v2 path keeps the raw v2 CliqButton shape at the top level.
+      expect(body.buttons).toHaveLength(1);
+    });
+
+    it("converts invoke buttons to invoke.bot carrying the configured botId", async () => {
       const captured: { url: string; method: string; body: string; auth: string }[] = [];
       mockFetch({ captured });
 
       const client = makeClient({ apiVersion: "v3" });
-      await client.sendCard({ to: "user-7", isDm: true, text: "Pick", buttons });
-      expect(captured[0].url).toContain("/api/v2/bots/bot/message");
-      const body = JSON.parse(captured[0].body) as { buttons: unknown[] };
-      // v2 path keeps the raw v2 CliqButton shape at the top level.
-      expect(body.buttons).toEqual(buttons);
+      await client.sendCard({
+        to: "user-9",
+        isDm: true,
+        text: "Confirm",
+        buttons: [{ label: "Yes", type: "+", action: "invoke", data: "yes" }],
+      });
+      const body = JSON.parse(captured[0].body) as {
+        card: { buttons: Array<{ action: { type: string; data: { bot_name: string; message: string } } }> };
+      };
+      expect(body.card.buttons).toHaveLength(1);
+      expect(body.card.buttons[0].action.type).toBe("invoke.bot");
+      expect(body.card.buttons[0].action.data.bot_name).toBe("bot");
+      expect(body.card.buttons[0].action.data.message).toBe("yes");
     });
   });
 });
