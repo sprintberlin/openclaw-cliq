@@ -1,0 +1,7 @@
+---
+title: `approveChannelPairingCode` / `addChannelAllowFromStoreEntry` admit a sender from a plugin (form-driven pairing approval)
+files: src/pairing.ts
+apis: approveChannelPairingCode,addChannelAllowFromStoreEntry,openclaw/plugin-sdk/conversation-runtime
+---
+
+- **`approveChannelPairingCode` admits a sender from a plugin.** The runtime surface `runtime.channel.pairing` only exposes `upsertPairingRequest` / `buildPairingReply` / `readAllowFromStore` — there is NO `approvePairingRequest` on the runtime. But the SDK *does* export the admission primitives from `openclaw/plugin-sdk/conversation-runtime`: `approveChannelPairingCode({ channel, code, accountId?, env? })` (resolves a pending request by code, writes the sender id to the channel allowFrom store, and returns `{ id, entry } | null`) and `addChannelAllowFromStoreEntry({ channel, entry, accountId?, env? })` (writes a raw id directly). So a plugin can build a self-contained form-driven approval flow (e.g. an Approve button card) that admits a sender WITHOUT the `openclaw pairing approve <channel> <code>` CLI step — call `approveChannelPairingCode` directly from the webhook handler when the button-click sentinel is recognized. There is no plugin-facing API to *remove* a pending pairing request (only `removeChannelAllowFromStoreEntry`, which removes an already-admitted allowlist entry), so a "deny" can only reply to the owner; the pending request stays and a denied sender who messages again is re-challenged idempotently (`upsertPairingRequest` returns `created: false` for an existing pending code).

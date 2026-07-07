@@ -23,6 +23,7 @@ function account(overrides: Partial<ResolvedCliqAccount> = {}): ResolvedCliqAcco
     blockStreaming: false,
     thinking: { mode: "off", text: "💭 …" },
     welcome: { enabled: false, text: "", textRejoin: "" },
+    pairing: { notifyOwnerTarget: null, approveLabel: "Approve", denyLabel: "Deny", approvalTitle: "🔐 Pairing request", approvedOwnerText: "✅ Approved.", deniedOwnerText: "🚫 Denied." },
     ...overrides,
   };
 }

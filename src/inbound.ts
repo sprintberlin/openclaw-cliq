@@ -20,6 +20,7 @@ import {
   buildConfirmCardButtons,
   parseCliqConfirmAction,
 } from "./confirm-gate.js";
+import { parseCliqPairingApprovalAction } from "./pairing.js";
 import {
   isCliqAbortIntent,
   cliqAbortCtxFields,
@@ -264,6 +265,16 @@ export interface ParsedCliqInbound {
    */
   confirmAction?: "confirm" | "cancel";
   /**
+   * Form-driven pairing approval (Phase 3, sub-part b): when the inbound
+   * text was a pairing approval-card button click (`invoke.bot`), this
+   * carries the parsed action (`kind: "approve" | "deny"` + the pairing
+   * `code`). The webhook handler short-circuits the dispatch path for a
+   * pairing action — it admits the sender via the SDK pairing store (or
+   * replies "denied") instead of dispatching the agent. `undefined` for an
+   * ordinary message / mention / welcome / form event.
+   */
+  pairingAction?: { kind: "approve" | "deny"; code: string };
+  /**
    * Cliq platform Form submission (Phase 3): when the inbound payload was a
    * Cliq Form submission forwarded by the bot's Form Handler, `formName`
    * carries the form's display name (best-effort) and `formValues` carries the
@@ -439,7 +450,15 @@ export function parseCliqWebhookPayload(
   // or short-circuit with the cancelled reply (cancel). The recovered text
   // (the original gated message on confirm) becomes the turn body.
   const confirmParsed = parseCliqConfirmAction(bodyText);
-  const finalText = confirmParsed.text;
+  // Form-driven pairing approval (Phase 3, sub-part b): an approval-card
+  // button click arrives as an ordinary inbound message whose text starts
+  // with a pairing sentinel. Record the action so the webhook handler can
+  // short-circuit the dispatch path and admit/deny the sender via the SDK
+  // pairing store (no agent turn). The sentinel + code is stripped from the
+  // text the agent would otherwise see (there is no agent turn here).
+  const pairingParsed = parseCliqPairingApprovalAction(bodyText);
+  const finalText =
+    pairingParsed.kind ? pairingParsed.text : confirmParsed.text;
 
   return {
     text: finalText,
@@ -459,6 +478,9 @@ export function parseCliqWebhookPayload(
     threadId: payload.thread?.id,
     replyTo,
     confirmAction: confirmParsed.action,
+    pairingAction: pairingParsed.kind
+      ? { kind: pairingParsed.kind, code: pairingParsed.code }
+      : undefined,
     formName: formSubmission?.formName,
     formValues: formSubmission?.values,
     handler,

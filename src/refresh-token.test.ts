@@ -252,6 +252,7 @@ describe("CliqClient refresh-token grant (issue #27)", () => {
       blockStreaming: false,
       thinking: { mode: "off", text: "💭 …" },
       welcome: { enabled: false, text: "", textRejoin: "" },
+    pairing: { notifyOwnerTarget: null, approveLabel: "Approve", denyLabel: "Deny", approvalTitle: "🔐 Pairing request", approvedOwnerText: "✅ Approved.", deniedOwnerText: "🚫 Denied." },
       refreshToken: "from-config-rt",
     };
     const client = resolveCliqClient(account);
@@ -280,6 +281,7 @@ describe("CliqClient refresh-token grant (issue #27)", () => {
       blockStreaming: false,
       thinking: { mode: "off", text: "💭 …" },
       welcome: { enabled: false, text: "", textRejoin: "" },
+    pairing: { notifyOwnerTarget: null, approveLabel: "Approve", denyLabel: "Deny", approvalTitle: "🔐 Pairing request", approvedOwnerText: "✅ Approved.", deniedOwnerText: "🚫 Denied." },
       refreshToken: "registry-rt",
     };
     const client = registry.getOrCreate(account);

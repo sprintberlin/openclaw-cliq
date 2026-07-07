@@ -158,6 +158,7 @@ describe("cliqStatusAdapter", () => {
       blockStreaming: false,
       thinking: { mode: "off" as const, text: "💭 …" },
       welcome: { enabled: false, text: "", textRejoin: "" },
+    pairing: { notifyOwnerTarget: null, approveLabel: "Approve", denyLabel: "Deny", approvalTitle: "🔐 Pairing request", approvedOwnerText: "✅ Approved.", deniedOwnerText: "🚫 Denied." },
     };
     const snapshot = cliqStatusAdapter.buildAccountSnapshot!({
       account,

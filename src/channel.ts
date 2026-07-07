@@ -74,9 +74,16 @@ export {
 export {
   CLIQ_PAIRING_APPROVED_MESSAGE,
   CLIQ_PAIRING_ID_LABEL,
+  CLIQ_PAIRING_APPROVE_SENTINEL,
+  CLIQ_PAIRING_DENY_SENTINEL,
   issueCliqPairingChallenge,
   buildCliqSenderIdLine,
+  buildPairingApprovalButtons,
+  buildPairingApprovalCardBody,
+  parseCliqPairingApprovalAction,
   notifyCliqPairingApproval,
+  handleCliqPairingApprovalAction,
+  type CliqPairingApprovalParse,
 } from "./pairing.js";
 export {
   cliqMessageActions,

@@ -168,6 +168,17 @@ export interface CliqChannelConfig {
    */
   welcome?: CliqWelcomeConfig;
   /**
+   * Pairing-approval config (under `channels.cliq.pairing`). When
+   * `notifyOwnerTarget` is set AND `dmPolicy === "pairing"`, the pairing
+   * flow additionally posts an approval prompt card (Approve / Deny
+   * `invoke.bot` buttons) to that target — typically a DM with the bot
+   * owner — so the owner can admit an unknown sender by tapping Approve
+   * instead of running `openclaw pairing approve cliq <code>` on the CLI.
+   * The CLI step keeps working alongside the card. See
+   * {@link CliqPairingConfig} for the field shape.
+   */
+  pairing?: CliqPairingConfig;
+  /**
    * Override the hard-coded EU REST API base (`https://cliq.zoho.eu`).
    * Intended for self-hosted / alternate Zoho data centers and for
    * hermetic testing (pointing at a local mock). When unset the EU
@@ -353,6 +364,44 @@ export const DEFAULT_CLIQ_WELCOME_TEXT =
 export const DEFAULT_CLIQ_WELCOME_REJOIN_TEXT =
   "👋 Welcome back, {{firstName}}!";
 
+/**
+ * Pairing-approval config (under `channels.cliq.pairing`). When
+ * `notifyOwnerTarget` is set, the pairing flow posts an approval prompt
+ * card there so the bot owner can admit an unknown sender by tapping
+ * Approve instead of running `openclaw pairing approve cliq <code>`.
+ */
+export type CliqPairingConfig = {
+  /**
+   * Cliq route target to post the approval card to. Accepts
+   * `cliq:user:<id>` / `user:<id>` / `cliq:channel:<uniqueName>` /
+   * `channel:<uniqueName>` (a bare string is treated as a DM user id).
+   * When unset, the pairing flow only replies to the sender with the
+   * code + CLI instructions (the original behavior).
+   */
+  notifyOwnerTarget?: string;
+  /** Approve button label (default "Approve"). */
+  approveLabel?: string;
+  /** Deny button label (default "Deny"). */
+  denyLabel?: string;
+  /** Approval card title (default "🔐 Pairing request"). */
+  approvalTitle?: string;
+  /** Reply posted to the owner after approving (default "✅ Approved."). */
+  approvedOwnerText?: string;
+  /** Reply posted to the owner after denying (default "🚫 Denied."). */
+  deniedOwnerText?: string;
+};
+
+/** Default title for the pairing approval prompt card. */
+export const DEFAULT_CLIQ_PAIRING_APPROVAL_TITLE = "🔐 Pairing request";
+/** Default Approve button label for the pairing approval card. */
+export const DEFAULT_CLIQ_PAIRING_APPROVE_LABEL = "Approve";
+/** Default Deny button label for the pairing approval card. */
+export const DEFAULT_CLIQ_PAIRING_DENY_LABEL = "Deny";
+/** Default reply posted to the owner after a pairing request is approved. */
+export const DEFAULT_CLIQ_PAIRING_APPROVED_OWNER_TEXT = "✅ Approved.";
+/** Default reply posted to the owner after a pairing request is denied. */
+export const DEFAULT_CLIQ_PAIRING_DENIED_OWNER_TEXT = "🚫 Denied.";
+
 export interface ResolvedCliqAccount {
   accountId: string | null;
   clientId: string;
@@ -414,6 +463,19 @@ export interface ResolvedCliqAccount {
    * {@link DEFAULT_CLIQ_WELCOME_REJOIN_TEXT} when `enabled === true`.
    */
   welcome: { enabled: boolean; text: string; textRejoin: string };
+  /**
+   * Resolved pairing-approval config. `notifyOwnerTarget` is the parsed
+   * route target (`{ to, isDm }`) or `null` when unset / unparseable (the
+   * pairing flow then only replies to the sender with the CLI instruction).
+   */
+  pairing: {
+    notifyOwnerTarget: NormalizedCliqTarget | null;
+    approveLabel: string;
+    denyLabel: string;
+    approvalTitle: string;
+    approvedOwnerText: string;
+    deniedOwnerText: string;
+  };
 }
 
 export function resolveCliqConfig(
@@ -500,6 +562,14 @@ export function resolveCliqConfig(
       enabled: section?.welcome?.enabled === true,
       text: section?.welcome?.text || DEFAULT_CLIQ_WELCOME_TEXT,
       textRejoin: section?.welcome?.textRejoin || DEFAULT_CLIQ_WELCOME_REJOIN_TEXT,
+    },
+    pairing: {
+      notifyOwnerTarget: resolvePairingOwnerTarget(section?.pairing?.notifyOwnerTarget),
+      approveLabel: section?.pairing?.approveLabel?.trim() || DEFAULT_CLIQ_PAIRING_APPROVE_LABEL,
+      denyLabel: section?.pairing?.denyLabel?.trim() || DEFAULT_CLIQ_PAIRING_DENY_LABEL,
+      approvalTitle: section?.pairing?.approvalTitle?.trim() || DEFAULT_CLIQ_PAIRING_APPROVAL_TITLE,
+      approvedOwnerText: section?.pairing?.approvedOwnerText?.trim() || DEFAULT_CLIQ_PAIRING_APPROVED_OWNER_TEXT,
+      deniedOwnerText: section?.pairing?.deniedOwnerText?.trim() || DEFAULT_CLIQ_PAIRING_DENIED_OWNER_TEXT,
     },
   };
 }
@@ -872,6 +942,30 @@ export function normalizeCliqRouteTarget(to: string): NormalizedCliqTarget {
     return { to: id, isDm: true };
   }
   return { to: id, isDm: false };
+}
+
+/**
+ * Resolve a `pairing.notifyOwnerTarget` config string into a normalized
+ * route target. Accepts `cliq:user:<id>` / `user:<id>` /
+ * `cliq:channel:<uniqueName>` / `channel:<uniqueName>`; a bare string is
+ * treated as a DM user id. Returns `null` when the input is empty or does
+ * not yield a non-empty target id.
+ */
+export function resolvePairingOwnerTarget(raw: string | undefined): NormalizedCliqTarget | null {
+  const trimmed = raw?.trim();
+  if (!trimmed) return null;
+  const m = /^(?:cliq:)?([a-z]+):(.+)$/i.exec(trimmed);
+  if (m) {
+    const kind = m[1].toLowerCase();
+    const id = m[2].trim();
+    if (!id) return null;
+    if (kind === "user" || kind === "dm") return { to: id, isDm: true };
+    if (kind === "channel" || kind === "group") return { to: id, isDm: false };
+    // Unknown prefix kind — treat the whole string as a DM user id.
+    return { to: trimmed, isDm: true };
+  }
+  // Bare string (no prefix) — treat as a DM user id.
+  return { to: trimmed, isDm: true };
 }
 
 /**

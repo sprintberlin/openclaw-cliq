@@ -48,18 +48,19 @@
 
 ## Phase 3 — Rich messaging
 
-- **Outbound Cliq Forms + form-driven approval / collection flows.** The
+- **Outbound Cliq Forms + form-driven collection flows.** The
   agent-facing form **renderer** is in place (`message(action=send,
   form=…)` renders a native `prompt` card with a button per select option
   plus a `modern-inline` summary card for text/number fields; tapping a
-  button posts `<fieldName>: <value>` back as an inbound message). What
-  remains: (b) a form-driven **pairing approval** flow (`dmPolicy:
-  "pairing"` → post an approval form to the owner's channel/DM instead of
-  the `openclaw pairing approve` CLI step); (c) **parameter capture** for
-  tool calls that need structured args (agent posts a form, the submitted
-  values re-enter as the tool's structured params — surfacing the button
-  click as a `FormValues` entry on the inbound context rather than plain
-  text). Ref: Cliq platform (Form handler)
+  button posts `<fieldName>: <value>` back as an inbound message), and a
+  form-driven **pairing approval** flow is in place (`dmPolicy: "pairing"`
+  + `pairing.notifyOwnerTarget` posts an Approve/Deny prompt card to the
+  owner instead of relying on the `openclaw pairing approve` CLI step).
+  What remains: (c) **parameter capture** for tool calls that need
+  structured args (agent posts a form, the submitted values re-enter as
+  the tool's structured params — surfacing the button click as a
+  `FormValues` entry on the inbound context rather than plain text).
+  Ref: Cliq platform (Form handler)
   <https://www.zoho.com/cliq/help/platform/>.
 
 ## Phase 4 — Programmatic Cliq via v3 CRUD

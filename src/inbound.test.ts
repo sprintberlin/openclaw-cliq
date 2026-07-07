@@ -32,6 +32,7 @@ function account(overrides: Partial<ResolvedCliqAccount> = {}): ResolvedCliqAcco
     blockStreaming: false,
     thinking: { mode: "off", text: "💭 …" },
     welcome: { enabled: false, text: "", textRejoin: "" },
+    pairing: { notifyOwnerTarget: null, approveLabel: "Approve", denyLabel: "Deny", approvalTitle: "🔐 Pairing request", approvedOwnerText: "✅ Approved.", deniedOwnerText: "🚫 Denied." },
     ...overrides,
   };
 }
@@ -2587,5 +2588,39 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
     expect(client.deletes).toHaveLength(1);
     expect(client.deletes[0].messageId).toBe("card-1");
     expect(client.deletes[0].chatId).toBe("chat-u1");
+  });
+});
+
+describe("parseCliqWebhookPayload — pairing approval sentinel (Phase 3, sub-part b)", () => {
+  it("parses an approve sentinel + code into pairingAction", () => {
+    const parsed = parseCliqWebhookPayload(
+      dmPayload({ message: "__cliq_pairing_approve__ ABC123" }),
+    )!;
+    expect(parsed.pairingAction).toEqual({ kind: "approve", code: "ABC123" });
+    // text stripped of the sentinel + code
+    expect(parsed.text).toBe("");
+  });
+  it("parses a deny sentinel + code into pairingAction", () => {
+    const parsed = parseCliqWebhookPayload(
+      dmPayload({ message: "__cliq_pairing_deny__ XYZ" }),
+    )!;
+    expect(parsed.pairingAction).toEqual({ kind: "deny", code: "XYZ" });
+  });
+  it("uppercases the recovered code", () => {
+    const parsed = parseCliqWebhookPayload(
+      dmPayload({ message: "__cliq_pairing_approve__ abc" }),
+    )!;
+    expect(parsed.pairingAction?.code).toBe("ABC");
+  });
+  it("leaves pairingAction undefined for an ordinary message", () => {
+    const parsed = parseCliqWebhookPayload(dmPayload({ message: "hello" }))!;
+    expect(parsed.pairingAction).toBeUndefined();
+  });
+  it("a pairing sentinel does not collide with the confirm sentinel", () => {
+    const parsed = parseCliqWebhookPayload(
+      dmPayload({ message: "__cliq_pairing_approve__ CODE1" }),
+    )!;
+    expect(parsed.confirmAction).toBeUndefined();
+    expect(parsed.pairingAction?.kind).toBe("approve");
   });
 });

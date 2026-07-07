@@ -116,6 +116,7 @@ describe("cliq heartbeat adapter", () => {
         blockStreaming: false,
         thinking: { mode: "off" as const, text: "💭 …" },
         welcome: { enabled: false, text: "", textRejoin: "" },
+    pairing: { notifyOwnerTarget: null, approveLabel: "Approve", denyLabel: "Deny", approvalTitle: "🔐 Pairing request", approvedOwnerText: "✅ Approved.", deniedOwnerText: "🚫 Denied." },
       };
       const result = await probeCliqHeartbeat(account);
       expect(result.ok).toBe(true);

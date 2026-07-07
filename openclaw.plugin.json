@@ -126,6 +126,18 @@
           "textRejoin": { "type": "string" }
         }
       },
+      "pairing": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "notifyOwnerTarget": { "type": "string" },
+          "approveLabel": { "type": "string" },
+          "denyLabel": { "type": "string" },
+          "approvalTitle": { "type": "string" },
+          "approvedOwnerText": { "type": "string" },
+          "deniedOwnerText": { "type": "string" }
+        }
+      },
       "apiBase": { "type": "string" },
       "oauthBase": { "type": "string" },
       "apiVersion": {
@@ -259,6 +271,18 @@
               "textRejoin": { "type": "string" }
             }
           },
+          "pairing": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "notifyOwnerTarget": { "type": "string" },
+              "approveLabel": { "type": "string" },
+              "denyLabel": { "type": "string" },
+              "approvalTitle": { "type": "string" },
+              "approvedOwnerText": { "type": "string" },
+              "deniedOwnerText": { "type": "string" }
+            }
+          },
           "apiBase": { "type": "string" },
           "oauthBase": { "type": "string" },
           "apiVersion": {
@@ -288,6 +312,7 @@
         "reactions": { "label": "Agent reaction guidance", "options": ["minimal", "extensive", "off"] },
         "thinking": { "label": "Instant acknowledgement (thinking placeholder)", "options": ["off", "placeholder", "card"] },
         "welcome": { "label": "Welcome message on subscribe (greeting DM on first contact)" },
+        "pairing": { "label": "Pairing-approval card (post an Approve/Deny card to the bot owner when dmPolicy is pairing)" },
         "oauthBase": { "label": "OAuth base URL (data center — defaults to EU https://accounts.zoho.eu)" },
         "apiBase": { "label": "Cliq API base URL (data center — defaults to EU https://cliq.zoho.eu)" },
         "apiVersion": { "label": "REST API generation for channel text posts + bot DMs (v2 default; v3 opt-in uses Webhooks.CREATE scope, no refresh token needed)", "options": ["v2", "v3"] }

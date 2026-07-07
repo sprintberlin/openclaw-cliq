@@ -4,7 +4,10 @@ import { cliqPlugin } from "./src/channel.js";
 import { resolveCliqConfig } from "./src/client.js";
 import { getCliqClientRegistry } from "./src/runtime-api.js";
 import { resolveCliqDmAdmission } from "./src/admission.js";
-import { issueCliqPairingChallenge } from "./src/pairing.js";
+import {
+  handleCliqPairingApprovalAction,
+  issueCliqPairingChallenge,
+} from "./src/pairing.js";
 import {
   dispatchCliqInbound,
   parseCliqWebhookPayload,
@@ -193,6 +196,47 @@ export default defineChannelPluginEntry({
           return true;
         }
 
+        // Form-driven pairing approval (Phase 3, sub-part b): an approval-
+        // card button click arrives as an inbound message carrying a
+        // pairing sentinel (`__cliq_pairing_approve__ <code>` /
+        // `__cliq_pairing_deny__ <code>`). Short-circuit the dispatch path
+        // BEFORE the mention / admission gates — the owner clicking the
+        // card may not themselves be on the allowlist, and this is a
+        // control message, not an agent turn. Approve admits the sender
+        // via the SDK pairing store + notifies them; deny replies to the
+        // owner. The owner target comes from `pairing.notifyOwnerTarget`
+        // (the card originator); when unset the sentinel is ignored
+        // (treated as ordinary text and dispatched normally, so a stray
+        // sentinel is harmless).
+        if (parsed.pairingAction) {
+          const ownerTarget = account.pairing?.notifyOwnerTarget ?? null;
+          if (ownerTarget) {
+            try {
+              await handleCliqPairingApprovalAction({
+                account,
+                action: parsed.pairingAction,
+                ownerTarget,
+                onError: (err, info) => {
+                  api.logger.error?.(
+                    `[cliq] ${info.kind} failed: ${String(err)}`,
+                  );
+                },
+              });
+            } catch (err) {
+              api.logger.error?.(
+                `[cliq] pairing ${parsed.pairingAction.kind} failed: ${String(err)}`,
+              );
+            }
+            res.statusCode = 200;
+            res.end("ok");
+            return true;
+          }
+          // No owner target configured — fall through to normal dispatch
+          // (the sentinel text will reach the agent as ordinary input,
+          // which is benign — a user manually crafting the sentinel
+          // merely sends that text to the agent).
+        }
+
         const decision = resolveCliqMentionDecision(parsed, account, {
           requireMention: parsed.isGroup,
           allowTextCommands: false,
@@ -224,6 +268,11 @@ export default defineChannelPluginEntry({
             onReplyError: (err) => {
               api.logger.error?.(
                 `[cliq] pairing reply to ${parsed.senderId} failed: ${String(err)}`,
+              );
+            },
+            onOwnerCardError: (err) => {
+              api.logger.error?.(
+                `[cliq] pairing approval card to owner failed: ${String(err)}`,
               );
             },
           }).catch((err) => {

@@ -38,6 +38,28 @@ publish workflow extracts the matching section as the release notes (see
   the renderer); pairing-approval and parameter-capture flows follow. See
   README §5c.
 
+- **Form-driven DM pairing approval.** When `dmPolicy` is `pairing`, an
+  unknown sender's pairing request can now be approved inline from Cliq
+  instead of running `openclaw pairing approve cliq <code>` on the CLI. Set
+  the new `channels.cliq.pairing.notifyOwnerTarget` config field to a Cliq
+  route target (`cliq:user:<zohoUserId>` / `user:<zohoUserId>` /
+  `cliq:channel:<uniqueName>` / `channel:<uniqueName>`; a bare string is a DM
+  user id) and the pairing flow additionally posts an approval **prompt
+  card** to that target (Approve / Deny `invoke.bot` buttons carrying the
+  sender id + pairing code). The owner taps **Approve** to admit the sender
+  (the plugin calls the SDK's `approveChannelPairingCode`, writing the
+  sender to the channel allowFrom store, and DMs the sender that they were
+  approved) or **Deny** to dismiss (the pending request is left in place;
+  the sender is re-challenged idempotently if they message again). The CLI
+  step keeps working alongside the card. The button click arrives as an
+  ordinary inbound message and is short-circuited before the mention /
+  admission gates so the owner need not be on the allowlist to approve.
+  Optional overrides: `approveLabel` / `denyLabel` / `approvalTitle` /
+  `approvedOwnerText` / `deniedOwnerText`. Requires `botId`; no new OAuth
+  scope (reuses the card-path scopes). The second increment of the Phase 3
+  "Outbound Cliq Forms" item (sub-part b — pairing approval); parameter
+  capture (sub-part c) follows. See README §4 (`pairing` config row).
+
 - **Cliq Forms — inbound structured input.** When a Zoho Cliq platform
   **Form** is submitted, the bot's **Form Handler** Deluge script can forward
   the submitted field values to the OpenClaw webhook (`/cliq/webhook`) and
