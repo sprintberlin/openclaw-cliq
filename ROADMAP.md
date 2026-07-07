@@ -66,11 +66,12 @@ verified-live core.
 
 ## Phase 3 — Rich messaging *(needs Phase 2)*
 
-- **Adopt v3 Message Cards.** Build the remaining v3 Message Card surfaces:
-  `slides` beyond the `text` slide emitted today — table / list / label /
-  images / text supporting content (compatible with all card themes,
-  including the already-wired `modern-inline`, `prompt`, and `poll` themes).
-  Ref: Message Cards v3
+- **Adopt v3 Message Cards.** Build the remaining v3 Message Card surfaces the
+  docs offer beyond the `text` slide + the three themes already wired
+  (`modern-inline` / `prompt` / `poll`): the `modern-inline` `sections` body
+  (labeled field groups — currently only `slides` is rendered, not the
+  in-card `sections` array) and the `thumbnail` header image. Ref: Message
+  Cards v3
   <https://www.zoho.com/cliq/help/restapi/v3/messagecards/>.
 - **Interactive status card + confirmation for sensitive actions.** Show a live status card
   (thinking → generating → done / failed) during a turn, and gate sensitive/tool actions behind an

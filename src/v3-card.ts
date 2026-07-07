@@ -65,6 +65,30 @@ export const V3_MAX_BUTTONS_PER_CARD = 5;
 /** Max visible label length for a v3 card button. */
 export const V3_MAX_BUTTON_LABEL_LENGTH = 30;
 
+/** Max number of supporting-content `slides` per message (defensive cap). */
+export const V3_MAX_SLIDES = 20;
+
+/** Max headers in a single v3 `table` slide (defensive cap). */
+export const V3_MAX_TABLE_HEADERS = 20;
+
+/** Max rows in a single v3 `table` slide (defensive cap). */
+export const V3_MAX_TABLE_ROWS = 50;
+
+/** Max cells in a single v3 `list` / `label` slide (defensive cap). */
+export const V3_MAX_LIST_ITEMS = 50;
+
+/** Max images in a single v3 `images` slide (defensive cap). */
+export const V3_MAX_IMAGE_URLS = 10;
+
+/** Max text length for a single v3 slide title (defensive cap, chars). */
+export const V3_MAX_SLIDE_TITLE_LENGTH = 100;
+
+/** Max text length for a single v3 `text` slide body (defensive cap, chars). */
+export const V3_MAX_SLIDE_TEXT_LENGTH = 4000;
+
+/** Max text length for a single v3 table cell / list item / label value (chars). */
+export const V3_MAX_SLIDE_CELL_LENGTH = 200;
+
 /** Min poll options on a v3 poll card (per the Message Cards docs). */
 export const V3_MIN_POLL_OPTIONS = 2;
 
@@ -127,6 +151,30 @@ export interface V3MessageCardSlide {
   data: unknown;
 }
 
+/**
+ * Input shape for a v3 Message Card supporting-content slide. A discriminated
+ * union over `type`; the `data` payload structure is per-type per the v3
+ * Message Cards docs (`slides` table):
+ *  - `table`: `{ headers: string[], rows: Record<string,string>[] }` — a data
+ *    table whose row keys map to a header.
+ *  - `list`: `string[]` — a bulleted list of items.
+ *  - `label`: `Array<{ label, value }>` — key/value pairs.
+ *  - `images`: `string[]` — publicly accessible HTTPS image URLs.
+ *  - `text`: `string` — a plain / formatted text block.
+ *
+ * The input uses field names that read naturally for an agent / tool caller
+ * (`headers`/`rows`, `items`, `pairs`, `urls`, `text`); the normalizer maps
+ * them onto the v3 `data` payload and clamps / drops invalid entries. An
+ * empty / wholly-invalid slide yields `null` (dropped) rather than a degenerate
+ * slide the API would reject.
+ */
+export type V3CardSlideInput =
+  | { type: "table"; title?: string; headers: string[]; rows: Record<string, string>[] }
+  | { type: "list"; title?: string; items: string[] }
+  | { type: "label"; title?: string; pairs: Array<{ label: string; value: string }> }
+  | { type: "images"; title?: string; urls: string[] }
+  | { type: "text"; title?: string; text: string };
+
 /** A v3 Message Card message payload (posted as the request body). */
 export interface V3MessageCardPayload {
   text?: string;
@@ -173,6 +221,16 @@ export interface CliqV3CardInput {
    * natively — a poll has no action buttons.
    */
   pollOptions?: string[];
+  /**
+   * Supporting-content slides attached to the top-level `slides` array
+   * (compatible with ALL card themes — `slides` sits alongside `card`, not
+   * inside it). Each entry is a discriminated-union `V3CardSlideInput`; the
+   * renderer validates + clamps each slide (drops empties / non-HTTPS image
+   * URLs / over-cap entries) and appends the survivors after any text-
+   * remainder slide derived from `text`. Invalid slides are dropped silently
+   * (never throw) so a malformed slide never fails the whole send.
+   */
+  slides?: V3CardSlideInput[];
 }
 
 /** Clamp a label to the v3 limit, suffixing with an ellipsis. */
@@ -260,6 +318,109 @@ function splitTitleAndRemainder(
   return { title: title || defaultTitle, remainder };
 }
 
+/** Clamp a string to `limit` chars, suffixing with an ellipsis on overflow. */
+function clampText(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  return text.slice(0, limit - 1).trimEnd() + "…";
+}
+
+/** Clamp a slide title to the v3 cap, dropping a whitespace-only title. */
+function clampSlideTitle(title: string | undefined): string | undefined {
+  const t = title?.trim();
+  if (!t) return undefined;
+  return clampText(t, V3_MAX_SLIDE_TITLE_LENGTH);
+}
+
+/**
+ * Normalize a single v3 Message Card supporting-content slide input into the
+ * v3 `slides` payload shape, validating + clamping each entry. Returns `null`
+ * when the slide is empty / wholly invalid (so a degenerate slide is dropped
+ * rather than emitted — the API would reject an empty `headers` array, a
+ * zero-item list, etc.). Per the v3 Message Cards docs (`slides` table):
+ *  - `table`: `data = { headers: string[], rows: Record<string,string>[] }`.
+ *  - `list`: `data = string[]`.
+ *  - `label`: `data = Array<{ label, value }>`.
+ *  - `images`: `data = string[]` (HTTPS URLs only — non-HTTPS dropped).
+ *  - `text`: `data = string`.
+ */
+export function normalizeV3Slide(slide: V3CardSlideInput): V3MessageCardSlide | null {
+  const title = clampSlideTitle(slide.title);
+  switch (slide.type) {
+    case "table": {
+      const headers = (slide.headers ?? [])
+        .map((h) => clampText(h.trim(), V3_MAX_SLIDE_CELL_LENGTH))
+        .filter((h) => h.length > 0)
+        .slice(0, V3_MAX_TABLE_HEADERS);
+      if (headers.length === 0) return null;
+      const rows = (slide.rows ?? [])
+        .slice(0, V3_MAX_TABLE_ROWS)
+        .map((row) => {
+          const out: Record<string, string> = {};
+          for (const h of headers) {
+            const v = row?.[h];
+            if (v !== undefined && v !== null) {
+              out[h] = clampText(String(v), V3_MAX_SLIDE_CELL_LENGTH);
+            }
+          }
+          return out;
+        });
+      return { type: "table", ...(title ? { title } : {}), data: { headers, rows } };
+    }
+    case "list": {
+      const items = (slide.items ?? [])
+        .map((i) => clampText(String(i ?? "").trim(), V3_MAX_SLIDE_CELL_LENGTH))
+        .filter((i) => i.length > 0)
+        .slice(0, V3_MAX_LIST_ITEMS);
+      if (items.length === 0) return null;
+      return { type: "list", ...(title ? { title } : {}), data: items };
+    }
+    case "label": {
+      const pairs = (slide.pairs ?? [])
+        .slice(0, V3_MAX_LIST_ITEMS)
+        .map((p) => ({
+          label: clampText(String(p?.label ?? "").trim(), V3_MAX_SLIDE_CELL_LENGTH),
+          value: clampText(String(p?.value ?? "").trim(), V3_MAX_SLIDE_CELL_LENGTH),
+        }))
+        .filter((p) => p.label.length > 0 && p.value.length > 0);
+      if (pairs.length === 0) return null;
+      return { type: "label", ...(title ? { title } : {}), data: pairs };
+    }
+    case "images": {
+      const urls = (slide.urls ?? [])
+        .map((u) => String(u ?? "").trim())
+        .filter((u) => /^https:\/\//i.test(u))
+        .slice(0, V3_MAX_IMAGE_URLS);
+      if (urls.length === 0) return null;
+      return { type: "images", ...(title ? { title } : {}), data: urls };
+    }
+    case "text": {
+      const text = clampText(String(slide.text ?? "").trim(), V3_MAX_SLIDE_TEXT_LENGTH);
+      if (!text) return null;
+      return { type: "text", ...(title ? { title } : {}), data: text };
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * Normalize an array of v3 Message Card slide inputs into the v3 `slides`
+ * payload (dropping invalid entries; capped at `V3_MAX_SLIDES`). Returns
+ * `undefined` when no slides survive (so the payload omits `slides` entirely).
+ */
+export function normalizeV3Slides(
+  slides: V3CardSlideInput[] | undefined,
+): V3MessageCardSlide[] | undefined {
+  if (!slides || slides.length === 0) return undefined;
+  const out: V3MessageCardSlide[] = [];
+  for (const s of slides) {
+    if (out.length >= V3_MAX_SLIDES) break;
+    const n = normalizeV3Slide(s);
+    if (n) out.push(n);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 /**
  * Convert the plugin's rendered card shape into a v3 Message Card payload.
  * The `theme` (from `card.theme` or `opts.theme`, default `modern-inline`)
@@ -309,6 +470,10 @@ export function cliqCardToV3MessageCard(
     };
     if (text) payload.text = text;
     if (remainder) payload.slides = [{ type: "text", data: remainder }];
+    const extraSlides = normalizeV3Slides(card.slides);
+    if (extraSlides) {
+      payload.slides = [...(payload.slides ?? []), ...extraSlides];
+    }
     return payload;
   }
   const buttons = (card.buttons ?? [])
@@ -336,6 +501,10 @@ export function cliqCardToV3MessageCard(
   }
   if (remainder) {
     payload.slides = [{ type: "text", data: remainder }];
+  }
+  const extraSlides = normalizeV3Slides(card.slides);
+  if (extraSlides) {
+    payload.slides = [...(payload.slides ?? []), ...extraSlides];
   }
   if (theme === "modern-inline" && buttons.length > 0) {
     (payload.card as V3ModernInlineCard).buttons = buttons;

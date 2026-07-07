@@ -41,6 +41,7 @@ import {
   type CliqButton,
   type PortablePresentation,
 } from "./presentation.js";
+import type { V3CardSlideInput } from "./v3-card.js";
 
 /** Actions Cliq can perform via the shared `message` tool, in priority order. */
 const CLIQ_ACTIONS_ALL: readonly ChannelMessageActionName[] = [
@@ -147,6 +148,79 @@ function readNumber(
   return undefined;
 }
 
+/**
+ * Read a `slides` param (an array of v3 Message Card supporting-content
+ * blocks) defensively. Each entry must be an object with a string `type` of
+ * `table` / `list` / `label` / `images` / `text`; the per-type data fields
+ * are accepted in their agent-friendly shapes (`headers`/`rows`, `items`,
+ * `pairs`, `urls`, `text`) and coerced to strings. Non-array / non-object
+ * entries and unknown slide types are dropped; the renderer clamps + re-
+ * validates each entry (see `normalizeV3Slide`). An empty array yields `[]`.
+ */
+function readSlidesParam(raw: unknown): V3CardSlideInput[] {
+  if (!Array.isArray(raw)) return [];
+  const out: V3CardSlideInput[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const rec = entry as Record<string, unknown>;
+    const type = typeof rec.type === "string" ? rec.type : "";
+    const title = typeof rec.title === "string" ? rec.title : undefined;
+    if (type === "table") {
+      const headers = Array.isArray(rec.headers)
+        ? rec.headers.map((h) => String(h ?? "")).filter((s) => s.length > 0)
+        : [];
+      const rows = Array.isArray(rec.rows)
+        ? rec.rows
+            .map((r) =>
+              r && typeof r === "object" && !Array.isArray(r)
+                ? (r as Record<string, string>)
+                : {},
+            )
+            .map((r) => {
+              const o: Record<string, string> = {};
+              for (const [k, v] of Object.entries(r)) {
+                o[k] = String(v ?? "");
+              }
+              return o;
+            })
+        : [];
+      if (headers.length === 0) continue;
+      out.push({ type: "table", ...(title ? { title } : {}), headers, rows });
+    } else if (type === "list") {
+      const items = Array.isArray(rec.items)
+        ? rec.items.map((i) => String(i ?? ""))
+        : [];
+      if (items.length === 0) continue;
+      out.push({ type: "list", ...(title ? { title } : {}), items });
+    } else if (type === "label") {
+      const pairs = Array.isArray(rec.pairs)
+        ? rec.pairs
+            .filter(
+              (p): p is Record<string, unknown> =>
+                Boolean(p && typeof p === "object" && !Array.isArray(p)),
+            )
+            .map((p) => ({
+              label: String(p.label ?? ""),
+              value: String(p.value ?? ""),
+            }))
+        : [];
+      if (pairs.length === 0) continue;
+      out.push({ type: "label", ...(title ? { title } : {}), pairs });
+    } else if (type === "images") {
+      const urls = Array.isArray(rec.urls)
+        ? rec.urls.map((u) => String(u ?? ""))
+        : [];
+      if (urls.length === 0) continue;
+      out.push({ type: "images", ...(title ? { title } : {}), urls });
+    } else if (type === "text") {
+      const text = typeof rec.text === "string" ? rec.text : "";
+      if (!text.trim()) continue;
+      out.push({ type: "text", ...(title ? { title } : {}), text });
+    }
+  }
+  return out;
+}
+
 /** Build a successful tool result with a JSON-shaped detail payload. */
 function okResult(
   text: string,
@@ -208,6 +282,7 @@ interface CliqClientLike {
     buttons?: CliqButton[];
     theme?: "modern-inline" | "prompt" | "poll";
     pollOptions?: string[];
+    slides?: V3CardSlideInput[];
   }): Promise<{ messageId?: string; chatId?: string }>;
   editMessage(opts: {
     chatId: string;
@@ -291,11 +366,17 @@ async function handleSend(
       "`pollOptions` (min 2) is required for send with theme=poll.",
     );
   }
-  if (!body && buttons.length === 0 && !isPoll) {
+  // v3 Message Card supporting-content `slides` (table / list / label /
+  // images / text blocks) attach alongside the card for v3 opt-in accounts;
+  // ignored on v2. Parsed defensively — invalid slides are dropped by the
+  // renderer, never throw.
+  const slides = readSlidesParam(params["slides"]);
+  if (!body && buttons.length === 0 && !isPoll && slides.length === 0) {
     return errorResult("`message` (text) or `buttons` is required for send.");
   }
   const target = normalizeCliqRouteTarget(to);
   const rich = body ? markdownToCliq(body) : undefined;
+  const slidesParam = slides.length > 0 ? slides : undefined;
   try {
     const result = isPoll
       ? await client.sendCard({
@@ -305,6 +386,7 @@ async function handleSend(
           buttons: [],
           theme: "poll",
           pollOptions,
+          ...(slidesParam ? { slides: slidesParam } : {}),
         })
       : buttons.length > 0
         ? await client.sendCard({
@@ -312,14 +394,23 @@ async function handleSend(
             isDm: target.isDm,
             text: rich,
             buttons,
+            ...(slidesParam ? { slides: slidesParam } : {}),
           })
-        : await client.sendMessage({
-            to: target.to,
-            isDm: target.isDm,
-            text: rich ?? "",
-          });
+        : slidesParam
+          ? await client.sendCard({
+              to: target.to,
+              isDm: target.isDm,
+              text: rich,
+              buttons: [],
+              ...(slidesParam ? { slides: slidesParam } : {}),
+            })
+          : await client.sendMessage({
+              to: target.to,
+              isDm: target.isDm,
+              text: rich ?? "",
+            });
     return okResult(
-      `Sent message to ${to}${result.messageId ? ` (messageId=${result.messageId})` : ""}${isPoll ? ` with ${pollOptions.length} poll option(s)` : buttons.length > 0 ? ` with ${buttons.length} button(s)` : ""}.`,
+      `Sent message to ${to}${result.messageId ? ` (messageId=${result.messageId})` : ""}${isPoll ? ` with ${pollOptions.length} poll option(s)` : buttons.length > 0 ? ` with ${buttons.length} button(s)` : slidesParam ? ` with ${slidesParam.length} slide(s)` : ""}.`,
       {
         action: "send",
         to,

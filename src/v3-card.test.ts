@@ -2,12 +2,22 @@ import { describe, it, expect } from "vitest";
 import {
   cliqButtonToV3CardButton,
   cliqCardToV3MessageCard,
+  normalizeV3Slide,
+  normalizeV3Slides,
   V3_DEFAULT_CARD_TITLE,
   V3_MAX_BUTTONS_PER_CARD,
   V3_MAX_BUTTON_LABEL_LENGTH,
+  V3_MAX_IMAGE_URLS,
+  V3_MAX_LIST_ITEMS,
   V3_MAX_POLL_OPTIONS,
+  V3_MAX_SLIDES,
+  V3_MAX_SLIDE_CELL_LENGTH,
+  V3_MAX_SLIDE_TEXT_LENGTH,
+  V3_MAX_TABLE_HEADERS,
+  V3_MAX_TABLE_ROWS,
   V3_MAX_TITLE_LENGTH,
   type CliqV3CardInput,
+  type V3CardSlideInput,
   type V3ModernInlineCard,
   type V3PollCard,
   type V3PromptCard,
@@ -501,5 +511,281 @@ describe("cliqCardToV3MessageCard — poll theme", () => {
     };
     const out = cliqCardToV3MessageCard(card, { theme: "modern-inline" })!;
     expect(out.card.theme).toBe("poll");
+  });
+});
+
+describe("normalizeV3Slide", () => {
+  it("normalizes a table slide (drops empty headers, keeps only matching row keys)", () => {
+    const out = normalizeV3Slide({
+      type: "table",
+      title: "Ticket Details",
+      headers: ["Field", "  ", "Value"],
+      rows: [
+        { Field: "Ticket ID", Value: "#TKT-1", Bogus: "x" },
+        { Field: "Priority", Value: "Critical" },
+      ],
+    })!;
+    expect(out).not.toBeNull();
+    expect(out.type).toBe("table");
+    expect(out.title).toBe("Ticket Details");
+    expect((out.data as { headers: string[] }).headers).toEqual([
+      "Field",
+      "Value",
+    ]);
+    const rows = (out.data as { rows: Record<string, string>[] }).rows;
+    expect(rows).toEqual([
+      { Field: "Ticket ID", Value: "#TKT-1" },
+      { Field: "Priority", Value: "Critical" },
+    ]);
+  });
+
+  it("returns null for a table with no surviving headers", () => {
+    expect(
+      normalizeV3Slide({ type: "table", headers: ["  ", ""], rows: [] }),
+    ).toBeNull();
+  });
+
+  it("clamps table headers/rows to their caps", () => {
+    const headers = Array.from({ length: V3_MAX_TABLE_HEADERS + 5 }, (_, i) => `h${i}`);
+    const rows = Array.from({ length: V3_MAX_TABLE_ROWS + 5 }, () =>
+      Object.fromEntries(headers.map((h) => [h, "v"])),
+    );
+    const out = normalizeV3Slide({ type: "table", headers, rows })!;
+    const data = out.data as { headers: string[]; rows: unknown[] };
+    expect(data.headers).toHaveLength(V3_MAX_TABLE_HEADERS);
+    expect(data.rows).toHaveLength(V3_MAX_TABLE_ROWS);
+  });
+
+  it("clamps over-long table cells to the cell cap with an ellipsis", () => {
+    const long = "A".repeat(V3_MAX_SLIDE_CELL_LENGTH + 50);
+    const out = normalizeV3Slide({
+      type: "table",
+      headers: ["H"],
+      rows: [{ H: long }],
+    })!;
+    const rows = (out.data as { rows: Record<string, string>[] }).rows;
+    expect(rows[0].H.length).toBe(V3_MAX_SLIDE_CELL_LENGTH);
+    expect(rows[0].H.endsWith("…")).toBe(true);
+  });
+
+  it("normalizes a list slide (drops empties)", () => {
+    const out = normalizeV3Slide({
+      type: "list",
+      title: "Steps",
+      items: ["one", "  ", "", "two"],
+    })!;
+    expect(out.type).toBe("list");
+    expect(out.title).toBe("Steps");
+    expect(out.data).toEqual(["one", "two"]);
+  });
+
+  it("returns null for an empty list", () => {
+    expect(normalizeV3Slide({ type: "list", items: ["  ", ""] })).toBeNull();
+    expect(normalizeV3Slide({ type: "list", items: [] })).toBeNull();
+  });
+
+  it("caps list items at the limit", () => {
+    const items = Array.from({ length: V3_MAX_LIST_ITEMS + 5 }, (_, i) => `i${i}`);
+    const out = normalizeV3Slide({ type: "list", items })!;
+    expect((out.data as string[]).length).toBe(V3_MAX_LIST_ITEMS);
+  });
+
+  it("normalizes a label slide (drops pairs with empty label or value)", () => {
+    const out = normalizeV3Slide({
+      type: "label",
+      pairs: [
+        { label: "Status", value: "Open" },
+        { label: "  ", value: "x" },
+        { label: "Owner", value: "" },
+        { label: "Env", value: "prod" },
+      ],
+    })!;
+    expect(out.type).toBe("label");
+    expect(out.data).toEqual([
+      { label: "Status", value: "Open" },
+      { label: "Env", value: "prod" },
+    ]);
+  });
+
+  it("returns null for a label slide with no surviving pairs", () => {
+    expect(
+      normalizeV3Slide({
+        type: "label",
+        pairs: [{ label: "", value: "" }],
+      }),
+    ).toBeNull();
+  });
+
+  it("normalizes an images slide (HTTPS only, drops non-https / empty)", () => {
+    const out = normalizeV3Slide({
+      type: "images",
+      urls: [
+        "https://example.com/a.png",
+        "http://insecure.com/b.png",
+        "  ",
+        "https://example.com/c.png",
+      ],
+    })!;
+    expect(out.type).toBe("images");
+    expect(out.data).toEqual([
+      "https://example.com/a.png",
+      "https://example.com/c.png",
+    ]);
+  });
+
+  it("returns null for an images slide with no HTTPS urls", () => {
+    expect(
+      normalizeV3Slide({ type: "images", urls: ["http://x.com/a.png"] }),
+    ).toBeNull();
+  });
+
+  it("caps image urls at the limit", () => {
+    const urls = Array.from(
+      { length: V3_MAX_IMAGE_URLS + 5 },
+      (_, i) => `https://example.com/${i}.png`,
+    );
+    const out = normalizeV3Slide({ type: "images", urls })!;
+    expect((out.data as string[]).length).toBe(V3_MAX_IMAGE_URLS);
+  });
+
+  it("normalizes a text slide (trims, clamps to cap)", () => {
+    const long = "A".repeat(V3_MAX_SLIDE_TEXT_LENGTH + 100);
+    const out = normalizeV3Slide({ type: "text", text: `  ${long}  ` })!;
+    expect(out.type).toBe("text");
+    expect((out.data as string).length).toBe(V3_MAX_SLIDE_TEXT_LENGTH);
+    expect((out.data as string).endsWith("…")).toBe(true);
+  });
+
+  it("returns null for an empty text slide", () => {
+    expect(normalizeV3Slide({ type: "text", text: "   " })).toBeNull();
+  });
+
+  it("drops the title when whitespace-only", () => {
+    const out = normalizeV3Slide({
+      type: "list",
+      title: "   ",
+      items: ["a"],
+    })!;
+    expect(out.title).toBeUndefined();
+  });
+
+  it("clamps an over-long slide title", () => {
+    const out = normalizeV3Slide({
+      type: "list",
+      title: "A".repeat(200),
+      items: ["a"],
+    })!;
+    expect(out.title!.length).toBe(100);
+    expect(out.title!.endsWith("…")).toBe(true);
+  });
+});
+
+describe("normalizeV3Slides", () => {
+  it("returns undefined for no input / empty array", () => {
+    expect(normalizeV3Slides(undefined)).toBeUndefined();
+    expect(normalizeV3Slides([])).toBeUndefined();
+  });
+
+  it("drops invalid slides and keeps the survivors in order", () => {
+    const out = normalizeV3Slides([
+      { type: "list", items: ["a", "b"] },
+      { type: "list", items: [] },
+      { type: "text", text: "hello" },
+      { type: "images", urls: ["http://insecure.com/x.png"] },
+    ])!;
+    expect(out).toHaveLength(2);
+    expect(out[0].type).toBe("list");
+    expect(out[1].type).toBe("text");
+  });
+
+  it("caps the number of slides at V3_MAX_SLIDES", () => {
+    const slides: V3CardSlideInput[] = Array.from(
+      { length: V3_MAX_SLIDES + 5 },
+      () => ({ type: "text" as const, text: "x" }),
+    );
+    expect(normalizeV3Slides(slides)).toHaveLength(V3_MAX_SLIDES);
+  });
+
+  it("returns undefined when every slide is invalid", () => {
+    expect(
+      normalizeV3Slides([
+        { type: "list", items: [] },
+        { type: "text", text: "  " },
+      ]),
+    ).toBeUndefined();
+  });
+});
+
+describe("cliqCardToV3MessageCard — slides passthrough", () => {
+  it("appends input slides after the text-remainder slide (modern-inline)", () => {
+    const card: CliqV3CardInput = {
+      text: "Header\nbody remainder",
+      slides: [
+        { type: "list", items: ["a", "b"] },
+        { type: "label", pairs: [{ label: "K", value: "V" }] },
+      ],
+    };
+    const out = cliqCardToV3MessageCard(card)!;
+    expect(out.slides).toEqual([
+      { type: "text", data: "body remainder" },
+      { type: "list", data: ["a", "b"] },
+      { type: "label", data: [{ label: "K", value: "V" }] },
+    ]);
+  });
+
+  it("appends input slides to a poll card (theme-independent)", () => {
+    const card: CliqV3CardInput = {
+      text: "Pick a feature.\nextra context",
+      theme: "poll",
+      pollOptions: ["A", "B"],
+      slides: [{ type: "table", headers: ["X"], rows: [{ X: "1" }] }],
+    };
+    const out = cliqCardToV3MessageCard(card)!;
+    expect(out.slides).toEqual([
+      { type: "text", data: "extra context" },
+      { type: "table", data: { headers: ["X"], rows: [{ X: "1" }] } },
+    ]);
+  });
+
+  it("appends input slides to a prompt card", () => {
+    const card: CliqV3CardInput = {
+      text: "Approve?",
+      buttons: [{ label: "OK", type: "+", action: "invoke", data: "y" }],
+      theme: "prompt",
+      slides: [{ type: "text", text: "extra detail" }],
+    };
+    const out = cliqCardToV3MessageCard(card, { botId: "bot" })!;
+    expect(out.slides).toEqual([{ type: "text", data: "extra detail" }]);
+  });
+
+  it("omits slides when no input slides and no text remainder", () => {
+    const card: CliqV3CardInput = {
+      text: "Single line",
+      slides: [{ type: "list", items: [] }],
+    };
+    const out = cliqCardToV3MessageCard(card)!;
+    expect(out.slides).toBeUndefined();
+  });
+
+  it("omits slides when all input slides are invalid and there is no remainder", () => {
+    const card: CliqV3CardInput = {
+      text: "Single line",
+      slides: [{ type: "list", items: [] }, { type: "text", text: "  " }],
+    };
+    const out = cliqCardToV3MessageCard(card)!;
+    expect(out.slides).toBeUndefined();
+  });
+
+  it("drops invalid slides silently and never fails the send", () => {
+    const card: CliqV3CardInput = {
+      text: "Title",
+      slides: [
+        { type: "table", headers: [], rows: [] },
+        { type: "images", urls: ["http://x.com/a.png"] },
+        { type: "list", items: ["ok"] },
+      ],
+    };
+    const out = cliqCardToV3MessageCard(card)!;
+    expect(out.slides).toEqual([{ type: "list", data: ["ok"] }]);
   });
 });

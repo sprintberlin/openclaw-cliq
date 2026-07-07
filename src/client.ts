@@ -7,7 +7,7 @@ import {
   type CliqLogger,
 } from "./logger.js";
 import type { CliqButton } from "./presentation.js";
-import { cliqCardToV3MessageCard } from "./v3-card.js";
+import { cliqCardToV3MessageCard, type V3CardSlideInput } from "./v3-card.js";
 import { resolveCliqSecretString } from "./secret-resolve.js";
 import { paginateList } from "./pagination.js";
 import {
@@ -577,6 +577,14 @@ export interface SendCardMessageOptions {
    * the renderer clamps + drops empties and requires ≥2 survivors.
    */
   pollOptions?: string[];
+  /**
+   * v3 Message Card supporting-content slides (v3 opt-in only; ignored on
+   * v2). Attaches validated + clamped `table` / `list` / `label` / `images` /
+   * `text` blocks to the top-level `slides` array (compatible with all card
+   * themes). Invalid slides are dropped silently (never fail the send). See
+   * `V3CardSlideInput` in `src/v3-card.ts`.
+   */
+  slides?: V3CardSlideInput[];
 }
 
 export interface NormalizedCliqTarget {
@@ -1294,7 +1302,7 @@ export class CliqClient {
     result?: { messageId?: string; chatId?: string };
   }> {
     const payload = cliqCardToV3MessageCard(
-      { text: opts.text, buttons: opts.buttons, theme: opts.theme, pollOptions: opts.pollOptions },
+      { text: opts.text, buttons: opts.buttons, theme: opts.theme, pollOptions: opts.pollOptions, slides: opts.slides },
       { botId: this.botId },
     );
     if (!payload) return { handled: false };
@@ -1304,7 +1312,7 @@ export class CliqClient {
     );
     const url = `${this.apiBase}/api/v3/channels/${encodeURIComponent(opts.to)}/message`;
     this.logger.info?.(
-      `[cliq] send card: channel id=${opts.to} buttons=${(opts.buttons ?? []).length}${opts.text ? ` textLen=${opts.text.length}` : ""}${opts.theme ? ` theme=${opts.theme}` : ""}${opts.pollOptions ? ` pollOptions=${opts.pollOptions.length}` : ""} api=v3`,
+      `[cliq] send card: channel id=${opts.to} buttons=${(opts.buttons ?? []).length}${opts.text ? ` textLen=${opts.text.length}` : ""}${opts.theme ? ` theme=${opts.theme}` : ""}${opts.pollOptions ? ` pollOptions=${opts.pollOptions.length}` : ""}${opts.slides ? ` slides=${opts.slides.length}` : ""} api=v3`,
     );
     let attempt = 0;
     const res = await withSendRetry(
@@ -1371,7 +1379,7 @@ export class CliqClient {
     result?: { messageId?: string; chatId?: string };
   }> {
     const card = cliqCardToV3MessageCard(
-      { text: opts.text, buttons: opts.buttons, theme: opts.theme, pollOptions: opts.pollOptions },
+      { text: opts.text, buttons: opts.buttons, theme: opts.theme, pollOptions: opts.pollOptions, slides: opts.slides },
       { botId: this.botId },
     );
     if (!card) return { handled: false };
@@ -1386,7 +1394,7 @@ export class CliqClient {
       sync_message: true,
     };
     this.logger.info?.(
-      `[cliq] send card: dm id=${opts.to} buttons=${(opts.buttons ?? []).length}${opts.text ? ` textLen=${opts.text.length}` : ""}${opts.theme ? ` theme=${opts.theme}` : ""}${opts.pollOptions ? ` pollOptions=${opts.pollOptions.length}` : ""} api=v3`,
+      `[cliq] send card: dm id=${opts.to} buttons=${(opts.buttons ?? []).length}${opts.text ? ` textLen=${opts.text.length}` : ""}${opts.theme ? ` theme=${opts.theme}` : ""}${opts.pollOptions ? ` pollOptions=${opts.pollOptions.length}` : ""}${opts.slides ? ` slides=${opts.slides.length}` : ""} api=v3`,
     );
     let attempt = 0;
     const res = await withSendRetry(

@@ -46,7 +46,7 @@ function makeCfg(account: Partial<ResolvedCliqAccount>): OpenClawConfig {
 
 interface FakeClient {
   sends: { to: string; text: string; isDm?: boolean }[];
-  cards: { to: string; text?: string; isDm?: boolean; buttons?: unknown[]; theme?: string; pollOptions?: string[] }[];
+  cards: { to: string; text?: string; isDm?: boolean; buttons?: unknown[]; theme?: string; pollOptions?: string[]; slides?: unknown[] }[];
   edits: { chatId: string; messageId: string; text: string }[];
   deletes: { chatId: string; messageId: string }[];
   reads: { chatId: string; limit?: number }[];
@@ -88,7 +88,7 @@ function makeFakeClient(opts: {
       sends.push(o);
       return { messageId: "m-sent", chatId: o.isDm ? "dm-chat" : undefined };
     }),
-    sendCard: vi.fn(async (o: { to: string; text?: string; isDm?: boolean; buttons?: unknown[]; theme?: string; pollOptions?: string[] }) => {
+    sendCard: vi.fn(async (o: { to: string; text?: string; isDm?: boolean; buttons?: unknown[]; theme?: string; pollOptions?: string[]; slides?: unknown[] }) => {
       cards.push(o);
       return { messageId: "m-card", chatId: o.isDm ? "dm-chat" : undefined };
     }),
@@ -340,6 +340,108 @@ describe("cliqMessageActions.handleAction", () => {
       ]);
       // A poll carries no action buttons.
       expect(card.buttons).toEqual([]);
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("send with `slides` param: dispatches a card via sendCard carrying the slides (no plain send)", async () => {
+    const client = makeFakeClient({});
+    const account = makeAccount({});
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!(
+        buildCtx(
+          {
+            to: "cliq:channel:dev-team",
+            message: "Sprint summary",
+            slides: [
+              {
+                type: "table",
+                title: "Bugs",
+                headers: ["ID", "Priority"],
+                rows: [
+                  { ID: "TKT-1", Priority: "Critical" },
+                  { ID: "TKT-2", Priority: "Low" },
+                ],
+              },
+              { type: "list", items: ["one", "two"] },
+              { type: "images", urls: ["http://insecure.com/x.png"] },
+            ],
+          },
+          account,
+        ) as Parameters<NonNullable<typeof cliqMessageActions.handleAction>>[0],
+      );
+      expect(result.details).toMatchObject({
+        action: "send",
+        messageId: "m-card",
+        buttons: 0,
+      });
+      expect(client.cards).toHaveLength(1);
+      expect(client.sends).toHaveLength(0);
+      const card = client.cards[0];
+      expect(card.to).toBe("dev-team");
+      expect(card.isDm).toBe(false);
+      expect(card.slides).toHaveLength(3);
+      // The third slide (non-HTTPS images) survives parsing; the renderer
+      // drops it later. The agent tool path only parses + forwards.
+      expect((card.slides as Array<{ type: string }>)[0].type).toBe("table");
+      expect((card.slides as Array<{ type: string }>)[1].type).toBe("list");
+      expect((card.slides as Array<{ type: string }>)[2].type).toBe("images");
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("send with only `slides` (no message/buttons) dispatches a slides-only card", async () => {
+    const client = makeFakeClient({});
+    const account = makeAccount({});
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!(
+        buildCtx(
+          {
+            to: "cliq:user:u-1",
+            slides: [{ type: "list", items: ["a", "b"] }],
+          },
+          account,
+        ) as Parameters<NonNullable<typeof cliqMessageActions.handleAction>>[0],
+      );
+      expect(result.details).toMatchObject({ action: "send", messageId: "m-card" });
+      expect(client.cards).toHaveLength(1);
+      expect(client.sends).toHaveLength(0);
+      expect(client.cards[0].slides).toHaveLength(1);
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("send with empty/invalid `slides` and no text/buttons fails with a helpful error", async () => {
+    const client = makeFakeClient({});
+    const account = makeAccount({});
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!(
+        buildCtx(
+          {
+            to: "cliq:channel:dev-team",
+            slides: [{ type: "list", items: [] }],
+          },
+          account,
+        ) as Parameters<NonNullable<typeof cliqMessageActions.handleAction>>[0],
+      );
+      expect(result.details).toMatchObject({ status: "failed" });
+      expect(client.cards).toHaveLength(0);
+      expect(client.sends).toHaveLength(0);
     } finally {
       setCliqClientRegistry(null);
     }

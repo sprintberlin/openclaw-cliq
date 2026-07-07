@@ -11,6 +11,38 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Added
+
+- REST API v3 Message Card supporting-content `slides` (issue #70): the
+  remaining v3 Message Card slide surfaces per
+  <https://www.zoho.com/cliq/help/restapi/v3/messagecards/>. `slides` is a
+  top-level array that sits alongside `card` (NOT nested inside it) and is
+  compatible with ALL card themes (`modern-inline`, `prompt`, `poll`). Each
+  entry is a discriminated-union `{ type, title?, ... }` block whose `data`
+  payload structure is per-type: `table` (`{ headers: string[], rows:
+  Record<header,string>[] }` — a data table), `list` (`string[]` — a bulleted
+  list), `label` (`Array<{ label, value }>` — key/value pairs), `images`
+  (`string[]` — publicly accessible HTTPS image URLs; non-HTTPS dropped), and
+  `text` (`string` — a plain / formatted text block). The renderer
+  (`normalizeV3Slide` / `normalizeV3Slides` in `src/v3-card.ts`) validates +
+  clamps each slide (drops empty headers / list items / label pairs, enforces
+  HTTPS-only image URLs, caps headers/rows/items/images/slides at defensive
+  limits, ellipsizes over-length cells + titles) and silently drops invalid
+  slides so a malformed slide never fails the whole send. The input `slides`
+  are appended to the payload's `slides` array AFTER the text-remainder slide
+  derived from the card `text` (so a card with a multi-line body + a table
+  slide emits `[ { type: "text", data: <remainder> }, { type: "table", ... } ]`).
+  Wired behind `apiVersion: "v3"` in `CliqClient.sendCard` for BOTH the channel
+  (`POST /api/v3/channels/{name}/message`, scope `ZohoCliq.Channels.CREATE`)
+  and DM (`POST /api/v3/bots/{botId}/messages`, scope
+  `ZohoCliq.Webhooks.CREATE`) v3 paths via a new optional `slides` field on
+  `SendCardMessageOptions` / `CliqV3CardInput`. The agent-facing surface is
+  the shared `message` tool: `message(action=send, slides=[{ type: "table",
+  headers: [...], rows: [...] }, ...])` attaches structured content to a card
+  send (combined with `buttons` / `theme` / `pollOptions` / `message` text as
+  usual); on v2 / unconfigured v3 the slides are ignored. No new OAuth scope
+  (reuses the existing card-path scopes).
+
 ### Changed
 
 - Directory list calls (`listUsers`, `listChannels`) now follow the v3
