@@ -3,6 +3,7 @@ import {
   createLiveEditDeliver,
   getLiveEditDeliverStats,
   getLiveEditPlaceholderConsumed,
+  editStatusCardPhase,
 } from "./live-edit.js";
 import type { CliqClient } from "./client.js";
 
@@ -636,5 +637,79 @@ describe("getLiveEditPlaceholderConsumed", () => {
     });
     await deliver({ text: "first" });
     expect(getLiveEditPlaceholderConsumed(deliver)).toBe(true);
+  });
+});
+
+describe("editStatusCardPhase (issue #78)", () => {
+  it("edits the card title in place when the chat id is already known (DM)", async () => {
+    const fake = makeFakeClient();
+    await editStatusCardPhase({
+      client: fake,
+      draft: { messageId: "card-1", chatId: "chat-u1" },
+      to: "u1",
+      isDm: true,
+      text: "Generating…",
+    });
+    expect(fake.edits).toHaveLength(1);
+    expect(fake.edits[0]).toEqual({
+      chatId: "chat-u1",
+      messageId: "card-1",
+      text: "Generating…",
+    });
+    expect(fake.chatIdResolves).toHaveLength(0);
+  });
+
+  it("resolves the chat id lazily for a group post before editing", async () => {
+    const fake = makeFakeClient({ channelChatId: "CT_dev_team" });
+    await editStatusCardPhase({
+      client: fake,
+      draft: { messageId: "card-1" },
+      to: "dev-team",
+      isDm: false,
+      text: "Generating…",
+    });
+    expect(fake.chatIdResolves).toHaveLength(1);
+    expect(fake.chatIdResolves[0]).toEqual({ name: "dev-team", chatId: "CT_dev_team" });
+    expect(fake.edits).toHaveLength(1);
+    expect(fake.edits[0].chatId).toBe("CT_dev_team");
+  });
+
+  it("is a no-op when the group chat id cannot be resolved", async () => {
+    const fake = makeFakeClient({ channelChatId: undefined });
+    await editStatusCardPhase({
+      client: fake,
+      draft: { messageId: "card-1" },
+      to: "dev-team",
+      isDm: false,
+      text: "Generating…",
+    });
+    expect(fake.edits).toHaveLength(0);
+  });
+
+  it("swallows a failed edit and reports it via onError", async () => {
+    const fake = makeFakeClient({ editFails: true });
+    const errors: { kind: string }[] = [];
+    await editStatusCardPhase({
+      client: fake,
+      draft: { messageId: "card-1", chatId: "chat-u1" },
+      to: "u1",
+      isDm: true,
+      text: "Generating…",
+      onError: (_err, info) => errors.push(info),
+    });
+    expect(fake.edits).toHaveLength(1);
+    expect(errors).toEqual([{ kind: "thinking-card-phase" }]);
+  });
+
+  it("is a no-op when the next phase text is empty", async () => {
+    const fake = makeFakeClient();
+    await editStatusCardPhase({
+      client: fake,
+      draft: { messageId: "card-1", chatId: "chat-u1" },
+      to: "u1",
+      isDm: true,
+      text: "",
+    });
+    expect(fake.edits).toHaveLength(0);
   });
 });

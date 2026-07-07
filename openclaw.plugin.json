@@ -107,6 +107,7 @@
         "properties": {
           "mode": { "type": "string", "enum": ["off", "placeholder", "card"], "default": "off" },
           "text": { "type": "string", "default": "💭 …" },
+          "thinkingText": { "type": "string", "default": "💭 thinking…" },
           "failureText": { "type": "string" }
         }
       },
@@ -233,6 +234,7 @@
             "properties": {
               "mode": { "type": "string", "enum": ["off", "placeholder", "card"], "default": "off" },
               "text": { "type": "string", "default": "💭 …" },
+              "thinkingText": { "type": "string", "default": "💭 thinking…" },
               "failureText": { "type": "string" }
             }
           },

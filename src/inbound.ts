@@ -13,7 +13,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import type { CliqClient, ResolvedCliqAccount } from "./client.js";
 import { stripCliqMentions } from "./mentions.js";
 import { resolveCliqClient } from "./runtime-api.js";
-import { createLiveEditDeliver, getLiveEditPlaceholderConsumed } from "./live-edit.js";
+import { createLiveEditDeliver, getLiveEditPlaceholderConsumed, editStatusCardPhase } from "./live-edit.js";
 import {
   isCliqAbortIntent,
   cliqAbortCtxFields,
@@ -855,21 +855,32 @@ export async function dispatchCliqInbound(params: {
       const placeholderText = account.thinking?.text
         ?? (cardMode ? "Generating…" : "💭 …");
       // `card` mode posts a v3 Message Card status indicator (a
-      // `modern-inline` card titled with `placeholderText`) instead of plain
-      // text — a richer "generating…" cue than the `💭 …` string. On v2 (or
-      // when the v3 card renderer yields no payload) `sendCard` degrades to
-      // the same plain-text bot-message send as `sendMessage`, so `card` mode
-      // is a no-op upgrade on v2. The card becomes the `initialDraft` the
-      // live-edit flow replaces: edit-into-reply when the edit API accepts a
-      // card→text swap, or delete + fresh send on edit failure (the existing
-      // fallback). DM cards post as the bot (v3 bot-message endpoint,
-      // `Webhooks.CREATE`); channel cards post as the authenticated user
-      // (`Channels.CREATE` — both need the refresh-token grant, which the gate
-      // above already requires for the edit path).
+      // `modern-inline` card) instead of plain text — a richer "generating…"
+      // cue than the `💭 …` string. On v2 (or when the v3 card renderer
+      // yields no payload) `sendCard` degrades to the same plain-text
+      // bot-message send as `sendMessage`, so `card` mode is a no-op upgrade
+      // on v2. The card becomes the `initialDraft` the live-edit flow
+      // replaces: edit-into-reply when the edit API accepts a card→text swap,
+      // or delete + fresh send on edit failure (the existing fallback). DM
+      // cards post as the bot (v3 bot-message endpoint, `Webhooks.CREATE`);
+      // channel cards post as the authenticated user (`Channels.CREATE` —
+      // both need the refresh-token grant, which the gate above already
+      // requires for the edit path).
+      //
+      // Phase transitions (issue #78): in `card` mode the card is first
+      // posted with the "thinking" phase title (`thinkingText`, default
+      // `💭 thinking…`), then edited in place to the "generating" phase
+      // title (`placeholderText`, default `Generating…`) right before the
+      // agent turn dispatches — giving the user a visible phase progression
+      // as the turn runs. The final reply is the "done" phase, handled by
+      // the live-edit deliver's edit-into-reply. The thinking→generating
+      // edit is best-effort (swallowed on failure) so a phase transition
+      // never breaks the turn; the chat id is resolved lazily for group
+      // posts (the card send response carries no chatId).
       const ref = cardMode
         ? await client.sendCard({
             to: deliverTo,
-            text: placeholderText,
+            text: account.thinking?.thinkingText ?? "💭 thinking…",
             isDm: !parsed.isGroup,
             theme: "modern-inline",
           })
@@ -880,6 +891,18 @@ export async function dispatchCliqInbound(params: {
           });
       if (ref.messageId) {
         initialDraft = { messageId: ref.messageId, chatId: ref.chatId };
+        // Card mode: transition the status card thinking → generating
+        // before dispatching the agent turn.
+        if (cardMode) {
+          await editStatusCardPhase({
+            client,
+            draft: initialDraft,
+            to: deliverTo,
+            isDm: !parsed.isGroup,
+            text: placeholderText,
+            onError: (err, info) => onError?.(err, info),
+          });
+        }
       }
     } catch (err) {
       // Swallow + log: a failed placeholder post must never break the turn.

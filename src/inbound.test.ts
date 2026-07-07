@@ -1462,17 +1462,21 @@ describe("dispatchCliqInbound — thinking placeholder (issue #47)", () => {
       parsed: parsed!,
       client,
     });
-    // One card post (no plain sendMessage placeholder) + one edit replacing
-    // the card with the reply text. No fresh reply send, no delete.
+    // Card posted with the "thinking" phase title (default `💭 thinking…`),
+    // then edited to the "generating" phase title (`text`), then edited into
+    // the final reply. No fresh reply send, no delete.
     expect(client.sends).toHaveLength(0);
     expect(client.cardSends).toHaveLength(1);
-    expect(client.cardSends[0].text).toBe("Generating…");
+    expect(client.cardSends[0].text).toBe("💭 thinking…");
     expect(client.cardSends[0].isDm).toBe(true);
     expect(client.cardSends[0].theme).toBe("modern-inline");
-    expect(client.edits).toHaveLength(1);
+    expect(client.edits).toHaveLength(2);
     expect(client.edits[0].messageId).toBe("card-1");
     expect(client.edits[0].chatId).toBe("chat-u1");
-    expect(client.edits[0].text).toBe("the final reply");
+    expect(client.edits[0].text).toBe("Generating…");
+    expect(client.edits[1].messageId).toBe("card-1");
+    expect(client.edits[1].chatId).toBe("chat-u1");
+    expect(client.edits[1].text).toBe("the final reply");
     expect(client.deletes).toHaveLength(0);
   });
 
@@ -1544,12 +1548,256 @@ describe("dispatchCliqInbound — thinking placeholder (issue #47)", () => {
       client,
     });
     expect(client.cardSends).toHaveLength(1);
-    expect(client.cardSends[0].text).toBe("Generating…");
+    expect(client.cardSends[0].text).toBe("💭 thinking…");
     expect(client.cardSends[0].isDm).toBe(false);
-    expect(client.edits).toHaveLength(1);
+    expect(client.edits).toHaveLength(2);
     expect(client.edits[0].chatId).toBe("CT_dev_team");
     expect(client.edits[0].messageId).toBe("card-1");
-    expect(client.edits[0].text).toBe("reply");
+    expect(client.edits[0].text).toBe("Generating…");
+    expect(client.edits[1].chatId).toBe("CT_dev_team");
+    expect(client.edits[1].messageId).toBe("card-1");
+    expect(client.edits[1].text).toBe("reply");
+  });
+});
+
+describe("dispatchCliqInbound — card status phase transitions (issue #78)", () => {
+  // Reuse the thinking-placeholder mock client + runtime helpers (they are
+  // declared inside the `thinking placeholder (issue #47)` describe block
+  // above; the phase-transition behavior under test is a strict superset of
+  // the #76 card surface). Each test opts into `thinking.mode === "card"`.
+
+  function makeClient(opts: {
+    placeholderChatId?: string;
+    channelChatId?: string;
+    editFails?: boolean;
+    resolveFails?: boolean;
+  } = {}) {
+    const sends: { to: string; text: string; isDm?: boolean }[] = [];
+    const cardSends: {
+      to: string;
+      text?: string;
+      isDm?: boolean;
+      theme?: string;
+    }[] = [];
+    const edits: { chatId: string; messageId: string; text: string }[] = [];
+    const deletes: { chatId: string; messageId: string }[] = [];
+    const client = {
+      sends,
+      cardSends,
+      edits,
+      deletes,
+      sendMessage: vi.fn(async (o: { to: string; text: string; isDm?: boolean }) => {
+        sends.push(o);
+        return o.isDm
+          ? { messageId: "card-1", chatId: opts.placeholderChatId ?? `chat-${o.to}` }
+          : { messageId: "card-1" };
+      }),
+      sendCard: vi.fn(async (o: {
+        to: string;
+        text?: string;
+        isDm?: boolean;
+        theme?: string;
+      }) => {
+        cardSends.push(o);
+        return o.isDm
+          ? { messageId: "card-1", chatId: opts.placeholderChatId ?? `chat-${o.to}` }
+          : { messageId: "card-1" };
+      }),
+      editMessage: vi.fn(async (o: { chatId: string; messageId: string; text: string }) => {
+        edits.push(o);
+        if (opts.editFails) throw new Error("edit rejected");
+        return { messageId: o.messageId, chatId: o.chatId };
+      }),
+      resolveChannelChatId: vi.fn(async () => {
+        if (opts.resolveFails) throw new Error("resolve failed");
+        return opts.channelChatId ?? undefined;
+      }),
+      listChatMessages: vi.fn(async () => []),
+      deleteMessage: vi.fn(async (o: { chatId: string; messageId: string }) => {
+        deletes.push(o);
+        return true;
+      }),
+      downloadAttachment: vi.fn(async () => {
+        throw new Error("download attachment not mocked");
+      }),
+    };
+    return client;
+  }
+
+  function replyRuntime(replyText: string): CliqRuntime {
+    return {
+      channel: {
+        routing: {
+          resolveAgentRoute: () => ({
+            agentId: "agent-1",
+            sessionKey: "sess-1",
+            accountId: "default",
+          }),
+        },
+        session: {
+          resolveStorePath: () => "/tmp/store",
+          readSessionUpdatedAt: () => undefined,
+          recordInboundSession: () => undefined,
+        },
+        reply: {
+          resolveEnvelopeFormatOptions: () => ({}),
+          formatAgentEnvelope: (p: Record<string, unknown>) => String(p.body ?? ""),
+          finalizeInboundContext: (fields: Record<string, unknown>) => fields,
+          dispatchReplyWithBufferedBlockDispatcher: async () => undefined,
+        },
+        inbound: {
+          run: async (params) => {
+            const adapter = (params as unknown as {
+              adapter: { resolveTurn: (...args: unknown[]) => unknown };
+            }).adapter;
+            const turn = adapter.resolveTurn({}, {}, {}) as unknown as {
+              delivery: {
+                deliver: (payload: { text?: string }) => Promise<void>;
+                onError: (err: unknown, info: { kind: string }) => void;
+              };
+            };
+            try {
+              await turn.delivery.deliver({ text: replyText });
+            } catch (err) {
+              turn.delivery.onError(err, { kind: "deliver" });
+            }
+          },
+        },
+        pairing: {
+          buildPairingReply: () => "",
+          upsertPairingRequest: async () => ({ code: "CODE", created: true }),
+        },
+      },
+    };
+  }
+
+  function noReplyRuntime(): CliqRuntime {
+    return {
+      ...replyRuntime(""),
+      channel: {
+        ...replyRuntime("").channel,
+        inbound: { run: async () => undefined },
+      },
+    };
+  }
+
+  it("transitions the card title thinking → generating → reply (DM)", async () => {
+    const client = makeClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    await dispatchCliqInbound({
+      runtime: replyRuntime("the final reply"),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "card", text: "Generating…" },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    // Defaults: card posted with `💭 thinking…`, edited to `Generating…`,
+    // then edited into the reply text.
+    expect(client.cardSends).toHaveLength(1);
+    expect(client.cardSends[0].text).toBe("💭 thinking…");
+    expect(client.edits).toHaveLength(2);
+    expect(client.edits[0].text).toBe("Generating…");
+    expect(client.edits[1].text).toBe("the final reply");
+    expect(client.deletes).toHaveLength(0);
+  });
+
+  it("honors custom thinkingText and text (generating) phase titles", async () => {
+    const client = makeClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    await dispatchCliqInbound({
+      runtime: replyRuntime("answer"),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: {
+          mode: "card",
+          thinkingText: "🤔 Pondering…",
+          text: "⚙️ Working…",
+        },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    expect(client.cardSends[0].text).toBe("🤔 Pondering…");
+    expect(client.edits[0].text).toBe("⚙️ Working…");
+    expect(client.edits[1].text).toBe("answer");
+  });
+
+  it("resolves the group chat id lazily for the thinking→generating edit", async () => {
+    const client = makeClient({ channelChatId: "CT_dev_team" });
+    const parsed = parseCliqWebhookPayload(groupPayload());
+    await dispatchCliqInbound({
+      runtime: replyRuntime("reply"),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "card", text: "Generating…" },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    // Group card send carries no chatId → resolved for the phase edit (and
+    // re-resolved by the live-edit deliver's lazy resolve; the real client
+    // caches it).
+    expect(client.resolveChannelChatId).toHaveBeenCalled();
+    expect(client.edits[0].chatId).toBe("CT_dev_team");
+    expect(client.edits[0].text).toBe("Generating…");
+    expect(client.edits[1].chatId).toBe("CT_dev_team");
+    expect(client.edits[1].text).toBe("reply");
+  });
+
+  it("swallows a failed thinking→generating edit (the reply still sends)", async () => {
+    const client = makeClient({
+      placeholderChatId: "chat-u1",
+      editFails: true,
+    });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    await dispatchCliqInbound({
+      runtime: replyRuntime("the reply"),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "card", text: "Generating…" },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    // The phase edit threw (swallowed). The live-edit deliver then tried to
+    // edit the card into the reply and that edit also failed → it deleted
+    // the stray card and sent the reply fresh. The turn never broke.
+    expect(client.edits.length).toBeGreaterThanOrEqual(1);
+    expect(client.deletes).toHaveLength(1);
+    expect(client.sends.length).toBeGreaterThanOrEqual(1);
+    expect(client.sends.some((s) => s.text === "the reply")).toBe(true);
+  });
+
+  it("does not advance phases when the chat id is unresolvable (group)", async () => {
+    const client = makeClient({ channelChatId: undefined });
+    const parsed = parseCliqWebhookPayload(groupPayload());
+    await dispatchCliqInbound({
+      runtime: noReplyRuntime(),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "card", text: "Generating…" },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    // Card posted with the thinking title; no phase edit (no chat id); no
+    // reply → cleanup deletes the still-thinking card.
+    expect(client.cardSends).toHaveLength(1);
+    expect(client.cardSends[0].text).toBe("💭 thinking…");
+    expect(client.edits).toHaveLength(0);
+    expect(client.deletes).toHaveLength(0);
   });
 });
 
@@ -1845,9 +2093,11 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
       parsed: parsed!,
       client,
     });
-    // Card posted, never edited into a reply → deleted on turn end.
+    // Card posted (with the "thinking" phase title), transitioned to the
+    // "generating" phase title, never edited into a reply → deleted on turn end.
     expect(client.cardSends).toHaveLength(1);
-    expect(client.edits).toHaveLength(0);
+    expect(client.edits).toHaveLength(1);
+    expect(client.edits[0].text).toBe("Generating…");
     expect(client.deletes).toHaveLength(1);
     expect(client.deletes[0].messageId).toBe("card-1");
     expect(client.deletes[0].chatId).toBe("chat-u1");

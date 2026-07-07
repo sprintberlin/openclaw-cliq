@@ -404,6 +404,50 @@ export function getLiveEditDeliverStats(
 }
 
 /**
+ * Edit the status card's title text in place to advance it to the next phase
+ * (e.g. `💭 thinking…` → `⚙️ generating…`). Used by the inbound path's
+ * `thinking.mode === "card"` flow to transition the status card through
+ * explicit phases as the turn progresses (the card is posted with the
+ * "thinking" phase title, then edited to the "generating" phase title right
+ * before the agent turn dispatches; the final reply is the "done" phase,
+ * handled by the live-edit deliver's edit-into-reply). Best-effort: a failed
+ * edit (or an unresolvable chat id for a group post) is swallowed + reported
+ * via `onError` so a phase transition never breaks or delays the turn. Resolves
+ * the chat id lazily for group posts (the card send response carries no
+ * chatId) — the resolution is cached on the client, so the live-edit
+ * deliver's later edit reuses it.
+ */
+export async function editStatusCardPhase(opts: {
+  client: Pick<CliqClient, "editMessage" | "resolveChannelChatId">;
+  draft: { messageId: string; chatId?: string };
+  /** Raw Cliq id the card was addressed to (channel unique name for groups). */
+  to: string;
+  /** Whether the card was a DM (carries a chatId in the send response) or a group post. */
+  isDm: boolean;
+  /** The next phase's title text to edit the card into. */
+  text: string;
+  onError?: (err: unknown, info: { kind: string }) => void;
+}): Promise<void> {
+  const { client, draft, to, isDm, text, onError } = opts;
+  if (!text) return;
+  let chatId = draft.chatId;
+  if (!chatId && !isDm) {
+    try {
+      chatId = (await client.resolveChannelChatId(to)) ?? undefined;
+    } catch (err) {
+      onError?.(err, { kind: "thinking-card-phase-resolve" });
+      return;
+    }
+  }
+  if (!chatId) return;
+  try {
+    await client.editMessage({ chatId, messageId: draft.messageId, text });
+  } catch (err) {
+    onError?.(err, { kind: "thinking-card-phase" });
+  }
+}
+
+/**
  * Whether the `initialDraft` placeholder's fate was resolved by a `deliver`
  * call (`true`), or whether it is still sitting untouched as `💭 …` waiting
  * for the caller to clean it up (`false`). Returns `true` when no

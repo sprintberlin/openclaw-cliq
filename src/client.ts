@@ -237,19 +237,33 @@ export type CliqThinkingConfig = {
    * - `"placeholder"`: post a lightweight text placeholder (e.g. `💭 …`)
    *   immediately, then edit it in place into the final reply.
    * - `"card"`: post a v3 Message Card status indicator (a `modern-inline`
-   *   card titled with `text`, default `Generating…`) instead of plain text.
-   *   On `apiVersion: "v3"` this is a real card (DM via
-   *   `POST /api/v3/bots/{botId}/messages` with scope `Webhooks.CREATE`,
-   *   channel via `POST /api/v3/channels/{name}/message` with scope
-   *   `Channels.CREATE`); on v2 it degrades to the plain-text placeholder
-   *   (v2 has no buttonless card). The card becomes the `initialDraft` the
-   *   live-edit flow replaces: when the reply arrives the card is edited into
-   *   the reply text in place (when the edit API accepts a card→text swap)
-   *   or deleted + the reply sent fresh (the existing edit-failure fallback).
-   *   No new OAuth scope (reuses the card-path + `Messages.UPDATE` scopes).
+   *   card) instead of plain text, and transition its title through explicit
+   *   phases as the turn progresses: the card is first posted with the
+   *   "thinking" phase title (`thinkingText`, default `💭 thinking…`), then
+   *   edited in place to the "generating" phase title (`text`, default
+   *   `Generating…`) right before the agent turn dispatches, and finally
+   *   edited into the reply text in place when the reply arrives (the
+   *   existing edit-into-reply path). On `apiVersion: "v3"` this is a real
+   *   card (DM via `POST /api/v3/bots/{botId}/messages` with scope
+   *   `Webhooks.CREATE`, channel via `POST /api/v3/channels/{name}/message`
+   *   with scope `Channels.CREATE`); on v2 it degrades to the plain-text
+   *   placeholder (v2 has no buttonless card). The card becomes the
+   *   `initialDraft` the live-edit flow replaces: when the reply arrives the
+   *   card is edited into the reply text in place (when the edit API accepts
+   *   a card→text swap) or deleted + the reply sent fresh (the existing
+   *   edit-failure fallback). No new OAuth scope (reuses the card-path +
+   *   `Messages.UPDATE` scopes).
    */
   mode?: "off" | "placeholder" | "card";
   text?: string;
+  /**
+   * The initial "thinking" phase title for a `thinking.mode === "card"`
+   * status card (posted the moment a message is admitted), before it is
+   * edited into the "generating" phase title (`text`) right before the
+   * agent turn dispatches. Defaults to `💭 thinking…`. Card-mode only;
+   * ignored for `"placeholder"` / `"off"`.
+   */
+  thinkingText?: string;
   /**
    * Text the placeholder is edited into when the agent turn ends with no
    * reply produced (the turn threw, or the dispatcher flushed no blocks).
@@ -263,8 +277,11 @@ export type CliqThinkingConfig = {
 /** Default placeholder text posted when `thinking.mode === "placeholder"`. */
 export const DEFAULT_CLIQ_THINKING_TEXT = "💭 …";
 
-/** Default title for a `thinking.mode === "card"` status card. */
+/** Default title for a `thinking.mode === "card"` status card ("generating" phase). */
 export const DEFAULT_CLIQ_THINKING_CARD_TEXT = "Generating…";
+
+/** Default initial "thinking" phase title for a `thinking.mode === "card"` status card. */
+export const DEFAULT_CLIQ_THINKING_CARD_THINKING_TEXT = "💭 thinking…";
 
 /**
  * Welcome-message-on-subscribe config (under `channels.cliq.welcome`). The
@@ -332,7 +349,12 @@ export interface ResolvedCliqAccount {
    * `refreshToken` is configured AND streaming preview is off (the live-edit
    * path already shows progress otherwise).
    */
-  thinking: { mode: "off" | "placeholder" | "card"; text: string; failureText?: string };
+  thinking: {
+    mode: "off" | "placeholder" | "card";
+    text: string;
+    thinkingText?: string;
+    failureText?: string;
+  };
   /**
    * Resolved welcome-on-subscribe config. `enabled` defaults to `false`
    * (opt-in — no setup gets a surprise greeting DM). `text` / `textRejoin`
@@ -401,6 +423,10 @@ export function resolveCliqConfig(
         ?? (section?.thinking?.mode === "card"
           ? DEFAULT_CLIQ_THINKING_CARD_TEXT
           : DEFAULT_CLIQ_THINKING_TEXT),
+      thinkingText:
+        section?.thinking?.mode === "card"
+          ? (section?.thinking?.thinkingText || DEFAULT_CLIQ_THINKING_CARD_THINKING_TEXT)
+          : undefined,
       failureText: section?.thinking?.failureText || undefined,
     },
     welcome: {

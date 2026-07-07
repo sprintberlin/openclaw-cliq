@@ -13,6 +13,22 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
+- Status card phase transitions (`thinking.mode === "card"`): the status
+  card now advances its title through explicit phases as the turn runs rather
+  than only swapping for the reply. The card is first posted with the
+  "thinking" phase title (`thinking.thinkingText`, default `💭 thinking…`),
+  then edited in place to the "generating" phase title (`thinking.text`,
+  default `Generating…`) right before the agent turn dispatches, and finally
+  edited into the reply text when the reply arrives (the existing
+  edit-into-reply path). The thinking→generating edit reuses the v3
+  `modern-inline` card renderer and the existing `editMessage` path; it is
+  best-effort (swallowed + reported on failure, never breaks the turn) and
+  resolves the chat id lazily for group posts (cached on the client). The
+  `failed`/no-reply tail (edit to `thinking.failureText` or delete) is
+  unchanged. New optional `thinking.thinkingText` config field (under
+  `channels.cliq.thinking`, card-mode only, default `💭 thinking…`). No new
+  OAuth scope. The second increment of the Phase 3 "interactive status card
+  (thinking → generating → done)" item — the phase transitions.
 - Thinking status card mode (`thinking.mode === "card"`): a new instant-
   acknowledgement style that posts a v3 Message Card status indicator (a
   `modern-inline` card titled with `thinking.text`, default `Generating…`)

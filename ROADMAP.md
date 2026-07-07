@@ -48,13 +48,11 @@
 
 ## Phase 3 — Rich messaging
 
-- **Interactive status card phase transitions + confirmation for sensitive actions.**
-  Extend the `thinking.mode === "card"` status indicator to transition through
-  explicit phases (generating → done) by editing the card title in place as the
-  turn progresses rather than only swapping it for the reply, and gate
-  sensitive/tool actions behind an explicit confirm button before executing. Ref:
-  Message Cards v3 + Cliq Bot Handlers (Context Handler)
-  <https://www.zoho.com/cliq/help/platform/bothandlers.html>.
+- **Interactive status card: confirmation buttons for sensitive actions.**
+  Gate sensitive/tool actions behind an explicit confirm button on the
+  `thinking.mode === "card"` status card (the phase-transition surface is in
+  place; this is the remaining piece). Ref: Message Cards v3 + Cliq Bot
+  Handlers (Context Handler) <https://www.zoho.com/cliq/help/platform/bothandlers.html>.
 - **Cliq Forms for structured input.** Use Cliq Forms for approval / collection flows (pairing
   approval, parameter capture) instead of free-text parsing. Ref: Cliq platform (Form handler)
   <https://www.zoho.com/cliq/help/platform/>.
