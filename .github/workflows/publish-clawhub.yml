@@ -185,13 +185,21 @@ jobs:
             DRY="--dry-run"
             echo "[publish] DRY RUN — no upload"
           fi
+          # ClawHub's release-notes field rejects an oversized changelog
+          # ("releaseId: invalid value"), so cap what we send it. The full notes
+          # still go to the GitHub Release and the repo CHANGELOG.md.
+          head -c 3500 /tmp/notes.md > /tmp/notes-clawhub.md
+          if [ "$(wc -c < /tmp/notes.md)" -gt 3500 ]; then
+            printf '\n\n… truncated — full changelog: https://github.com/%s/blob/%s/CHANGELOG.md\n' \
+              "${{ github.repository }}" "${{ github.ref_name }}" >> /tmp/notes-clawhub.md
+          fi
           clawhub package publish sprintcx-openclaw-cliq-*.tgz \
             --family code-plugin \
             --version "${{ needs.verify.outputs.version }}" \
             --source-repo "${{ github.repository }}" \
             --source-commit "${{ github.sha }}" \
             --source-ref "${{ github.ref_name }}" \
-            --changelog "$(cat /tmp/notes.md)" \
+            --changelog "$(cat /tmp/notes-clawhub.md)" \
             --json \
             $DRY
 
