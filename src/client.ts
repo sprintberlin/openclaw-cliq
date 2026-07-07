@@ -272,6 +272,43 @@ export type CliqThinkingConfig = {
    * itself; when the edit fails the placeholder is deleted as a fallback.
    */
   failureText?: string;
+  /**
+   * Confirmation gate for sensitive inbound actions (Phase 3 — the remaining
+   * piece of the interactive status card item). When set AND `mode === "card"`,
+   * a sensitive inbound message is NOT dispatched to the agent immediately;
+   * instead a `prompt`-theme Message Card with Confirm / Cancel buttons is
+   * posted. Confirm re-posts the original message (prefixed with a sentinel)
+   * so the next webhook call dispatches the agent with the gate skipped;
+   * Cancel posts a sentinel that short-circuits the turn with
+   * `cancelledText`. The button clicks arrive as ordinary inbound messages
+   * via the bot's Message handler (`invoke.bot`) — no Cliq Context handler
+   * is required. Card-mode only; ignored for `"placeholder"` / `"off"`. The
+   * gate also inherits the thinking-card preconditions (a `refreshToken`,
+   * streaming preview off) which the inbound path enforces separately.
+   *  - `"off"` (default): no gating.
+   *  - `"sensitive"`: gate only when the cleaned text matches a
+   *    `confirmKeywords` entry (case-insensitive word-boundary match; defaults
+   *    to a conservative destructive-verb list).
+   *  - `"always"`: gate every turn (apart from abort intents + button-click
+   *    re-dispatches).
+   */
+  confirm?: "off" | "sensitive" | "always";
+  /**
+   * Keyword list used when `confirm === "sensitive"` (ignored otherwise).
+   * Each entry is matched against the cleaned inbound text as a case-
+   * insensitive word boundary (single word) or substring (multi-word).
+   * Defaults to a built-in conservative destructive-verb list when unset /
+   * empty. An empty array disables `"sensitive"` matching (nothing is gated).
+   */
+  confirmKeywords?: string[];
+  /** Title for the confirm prompt card (default `⚠️ Confirm action?`). */
+  confirmText?: string;
+  /** Label for the Confirm button (default `Confirm`, ≤30 chars). */
+  confirmLabel?: string;
+  /** Label for the Cancel button (default `Cancel`). */
+  cancelLabel?: string;
+  /** Reply posted when the user cancels a gated action (default `🚫 Cancelled.`). */
+  cancelledText?: string;
 };
 
 /** Default placeholder text posted when `thinking.mode === "placeholder"`. */
@@ -282,6 +319,15 @@ export const DEFAULT_CLIQ_THINKING_CARD_TEXT = "Generating…";
 
 /** Default initial "thinking" phase title for a `thinking.mode === "card"` status card. */
 export const DEFAULT_CLIQ_THINKING_CARD_THINKING_TEXT = "💭 thinking…";
+
+/** Default title for the confirm prompt card (`thinking.confirm` gated flow). */
+export const DEFAULT_CLIQ_CONFIRM_TEXT = "⚠️ Confirm action?";
+/** Default Confirm button label for the confirm prompt card. */
+export const DEFAULT_CLIQ_CONFIRM_LABEL = "Confirm";
+/** Default Cancel button label for the confirm prompt card. */
+export const DEFAULT_CLIQ_CANCEL_LABEL = "Cancel";
+/** Default reply posted when the user cancels a gated action. */
+export const DEFAULT_CLIQ_CANCELLED_TEXT = "🚫 Cancelled.";
 
 /**
  * Welcome-message-on-subscribe config (under `channels.cliq.welcome`). The
@@ -354,6 +400,12 @@ export interface ResolvedCliqAccount {
     text: string;
     thinkingText?: string;
     failureText?: string;
+    confirm?: "off" | "sensitive" | "always";
+    confirmKeywords?: string[];
+    confirmText?: string;
+    confirmLabel?: string;
+    cancelLabel?: string;
+    cancelledText?: string;
   };
   /**
    * Resolved welcome-on-subscribe config. `enabled` defaults to `false`
@@ -428,6 +480,21 @@ export function resolveCliqConfig(
           ? (section?.thinking?.thinkingText || DEFAULT_CLIQ_THINKING_CARD_THINKING_TEXT)
           : undefined,
       failureText: section?.thinking?.failureText || undefined,
+      confirm:
+        section?.thinking?.confirm === "sensitive"
+          ? "sensitive"
+          : section?.thinking?.confirm === "always"
+            ? "always"
+            : "off",
+      confirmKeywords: section?.thinking?.confirmKeywords ?? [],
+      confirmText:
+        section?.thinking?.confirmText ?? DEFAULT_CLIQ_CONFIRM_TEXT,
+      confirmLabel:
+        section?.thinking?.confirmLabel ?? DEFAULT_CLIQ_CONFIRM_LABEL,
+      cancelLabel:
+        section?.thinking?.cancelLabel ?? DEFAULT_CLIQ_CANCEL_LABEL,
+      cancelledText:
+        section?.thinking?.cancelledText ?? DEFAULT_CLIQ_CANCELLED_TEXT,
     },
     welcome: {
       enabled: section?.welcome?.enabled === true,

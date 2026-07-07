@@ -11,9 +11,15 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import type { CliqClient, ResolvedCliqAccount } from "./client.js";
+import { DEFAULT_CLIQ_CONFIRM_TEXT, DEFAULT_CLIQ_CANCELLED_TEXT } from "./client.js";
 import { stripCliqMentions } from "./mentions.js";
 import { resolveCliqClient } from "./runtime-api.js";
 import { createLiveEditDeliver, getLiveEditPlaceholderConsumed, editStatusCardPhase } from "./live-edit.js";
+import {
+  isSensitiveInbound,
+  buildConfirmCardButtons,
+  parseCliqConfirmAction,
+} from "./confirm-gate.js";
 import {
   isCliqAbortIntent,
   cliqAbortCtxFields,
@@ -227,6 +233,17 @@ export interface ParsedCliqInbound {
    * chat-messages API.
    */
   replyTo?: CliqReplyToContext;
+  /**
+   * Confirm-gate sentinel parsed from the inbound text (Phase 3). Set when
+   * the message was posted by a confirm-card button click (`invoke.bot`):
+   *  - `"confirm"` — the user tapped Confirm; the text is the original
+   *    gated message, and the turn dispatches the agent with the gate
+   *    skipped (no re-prompt loop).
+   *  - `"cancel"` — the user tapped Cancel; the turn short-circuits with
+   *    `thinking.cancelledText` and NO agent dispatch.
+   * `undefined` for a normal inbound message (the gate, if armed, may apply).
+   */
+  confirmAction?: "confirm" | "cancel";
   handler: string;
 }
 
@@ -372,8 +389,16 @@ export function parseCliqWebhookPayload(
 
   const replyTo = parseCliqReplyToContext(payload);
 
+  // Confirm-gate sentinel (Phase 3): a confirm-card button click arrives as
+  // an ordinary inbound message whose text starts with a sentinel. Strip it
+  // and record the action so the dispatch path can skip the gate (confirm)
+  // or short-circuit with the cancelled reply (cancel). The recovered text
+  // (the original gated message on confirm) becomes the turn body.
+  const confirmParsed = parseCliqConfirmAction(bodyText);
+  const finalText = confirmParsed.text;
+
   return {
-    text: bodyText,
+    text: finalText,
     messageId: messageId || "",
     timestamp: time || new Date().toISOString(),
     senderId: user.id,
@@ -389,6 +414,7 @@ export function parseCliqWebhookPayload(
     attachments,
     threadId: payload.thread?.id,
     replyTo,
+    confirmAction: confirmParsed.action,
     handler,
   };
 }
@@ -713,6 +739,60 @@ export async function dispatchCliqInbound(params: {
   const deliverTo = parsed.isGroup
     ? (parsed.channelUniqueName ?? parsed.chatId)
     : parsed.senderId;
+
+  // Confirm gate — cancel short-circuit (Phase 3). When the inbound message
+  // is a Cancel button click (sentinel posted by `invoke.bot`), post the
+  // cancelled reply and return WITHOUT dispatching the agent. The user
+  // explicitly declined the gated action; no agent turn runs.
+  if (parsed.confirmAction === "cancel") {
+    try {
+      await client.sendMessage({
+        to: deliverTo,
+        text: account.thinking.cancelledText ?? DEFAULT_CLIQ_CANCELLED_TEXT,
+        isDm: !parsed.isGroup,
+      });
+    } catch (err) {
+      onError?.(err, { kind: "confirm-cancel-reply" });
+    }
+    return;
+  }
+
+  // Confirm gate — sensitive action prompt (Phase 3). When the gate is armed
+  // (`thinking.mode === "card"` + `thinking.confirm` set) and the cleaned
+  // inbound text is sensitive (and this is NOT a confirm re-dispatch or an
+  // abort intent), post a `prompt`-theme Message Card with Confirm / Cancel
+  // buttons and return WITHOUT dispatching the agent. The user must tap
+  // Confirm (which re-posts the original message with a sentinel) to run the
+  // action. A failed confirm-card post is swallowed + reported and falls
+  // through to a normal dispatch (the gate is a UX guardrail, not a security
+  // boundary — the agent's own tool / permission policy still applies).
+  if (
+    isSensitiveInbound(parsed, account) &&
+    !isAbort &&
+    parsed.confirmAction !== "confirm"
+  ) {
+    const buttons = buildConfirmCardButtons({
+      botId: account.botId,
+      originalText: cleanText,
+      confirmLabel: account.thinking.confirmLabel,
+      cancelLabel: account.thinking.cancelLabel,
+    });
+    if (buttons) {
+      try {
+        await client.sendCard({
+          to: deliverTo,
+          text: account.thinking.confirmText ?? DEFAULT_CLIQ_CONFIRM_TEXT,
+          isDm: !parsed.isGroup,
+          theme: "prompt",
+          buttons: [buttons.confirm, buttons.cancel],
+        });
+        return;
+      } catch (err) {
+        onError?.(err, { kind: "confirm-card-post" });
+        // Fall through to a normal dispatch (best-effort gate).
+      }
+    }
+  }
 
   // Inbound quote / reply context (issue #49): when the message is a reply to
   // or quote of another message, carry the referenced message's id + text +

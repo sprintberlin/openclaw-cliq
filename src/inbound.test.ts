@@ -1801,6 +1801,334 @@ describe("dispatchCliqInbound — card status phase transitions (issue #78)", ()
   });
 });
 
+describe("dispatchCliqInbound — confirm gate (Phase 3 confirmation buttons)", () => {
+  // Mock client + runtime for the confirm-gate flow. The client records every
+  // send / sendCard / edit / delete so the tests can assert the exact surface
+  // the gate produces. `inboundRunCalled` lets a test assert that the agent
+  // turn was (or was not) dispatched.
+  function makeClient(opts: { sendCardFails?: boolean; sendFails?: boolean } = {}) {
+    const sends: { to: string; text: string; isDm?: boolean }[] = [];
+    const cardSends: {
+      to: string;
+      text?: string;
+      isDm?: boolean;
+      theme?: string;
+      buttons?: unknown[];
+    }[] = [];
+    const edits: { chatId: string; messageId: string; text: string }[] = [];
+    const deletes: { chatId: string; messageId: string }[] = [];
+    const client = {
+      sends,
+      cardSends,
+      edits,
+      deletes,
+      sendMessage: vi.fn(async (o: { to: string; text: string; isDm?: boolean }) => {
+        if (opts.sendFails) throw new Error("send rejected");
+        sends.push(o);
+        return { messageId: "msg-1", chatId: `chat-${o.to}` };
+      }),
+      sendCard: vi.fn(async (o: {
+        to: string;
+        text?: string;
+        isDm?: boolean;
+        theme?: string;
+        buttons?: unknown[];
+      }) => {
+        if (opts.sendCardFails) throw new Error("sendCard rejected");
+        cardSends.push(o);
+        return { messageId: "prompt-1", chatId: `chat-${o.to}` };
+      }),
+      editMessage: vi.fn(async (o: { chatId: string; messageId: string; text: string }) => {
+        edits.push(o);
+        return { messageId: o.messageId, chatId: o.chatId };
+      }),
+      resolveChannelChatId: vi.fn(async () => "CT_dev_team"),
+      listChatMessages: vi.fn(async () => []),
+      deleteMessage: vi.fn(async (o: { chatId: string; messageId: string }) => {
+        deletes.push(o);
+        return true;
+      }),
+      downloadAttachment: vi.fn(async () => {
+        throw new Error("download attachment not mocked");
+      }),
+    };
+    return client;
+  }
+
+  function runtimeTracking(replyText: string): {
+    runtime: CliqRuntime;
+    inboundRunCalled: () => boolean;
+  } {
+    let called = false;
+    const runtime: CliqRuntime = {
+      channel: {
+        routing: {
+          resolveAgentRoute: () => ({
+            agentId: "agent-1",
+            sessionKey: "sess-1",
+            accountId: "default",
+          }),
+        },
+        session: {
+          resolveStorePath: () => "/tmp/store",
+          readSessionUpdatedAt: () => undefined,
+          recordInboundSession: () => undefined,
+        },
+        reply: {
+          resolveEnvelopeFormatOptions: () => ({}),
+          formatAgentEnvelope: (p: Record<string, unknown>) => String(p.body ?? ""),
+          finalizeInboundContext: (fields: Record<string, unknown>) => fields,
+          dispatchReplyWithBufferedBlockDispatcher: async () => undefined,
+        },
+        inbound: {
+          run: async (params) => {
+            called = true;
+            const adapter = (params as unknown as {
+              adapter: { resolveTurn: (...args: unknown[]) => unknown };
+            }).adapter;
+            const turn = adapter.resolveTurn({}, {}, {}) as unknown as {
+              delivery: {
+                deliver: (payload: { text?: string }) => Promise<void>;
+                onError: (err: unknown, info: { kind: string }) => void;
+              };
+            };
+            try {
+              await turn.delivery.deliver({ text: replyText });
+            } catch (err) {
+              turn.delivery.onError(err, { kind: "deliver" });
+            }
+          },
+        },
+        pairing: {
+          buildPairingReply: () => "",
+          upsertPairingRequest: async () => ({ code: "CODE", created: true }),
+        },
+      },
+    };
+    return { runtime, inboundRunCalled: () => called };
+  }
+
+  const confirmAccount = account({
+    thinking: {
+      mode: "card",
+      text: "Generating…",
+      confirm: "sensitive",
+    },
+    refreshToken: "rt",
+    blockStreaming: false,
+  });
+
+  it("posts a confirm prompt card (not the agent turn) for a sensitive DM", async () => {
+    const client = makeClient();
+    const { runtime, inboundRunCalled } = runtimeTracking("the reply");
+    const parsed = parseCliqWebhookPayload(dmPayload({ message: "please delete the prod database" }))!;
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: confirmAccount,
+      parsed,
+      client,
+    });
+    // A prompt card with Confirm + Cancel buttons was posted; no agent turn.
+    expect(client.cardSends).toHaveLength(1);
+    expect(client.cardSends[0].theme).toBe("prompt");
+    expect(client.cardSends[0].text).toBe("⚠️ Confirm action?");
+    expect(client.cardSends[0].isDm).toBe(true);
+    const buttons = client.cardSends[0].buttons as Array<{ data?: string }>;
+    expect(buttons).toHaveLength(2);
+    expect(buttons[0].data).toBe("__cliq_confirm__ please delete the prod database");
+    expect(buttons[1].data).toBe("__cliq_cancel__");
+    expect(inboundRunCalled()).toBe(false);
+    expect(client.sends).toHaveLength(0);
+  });
+
+  it("does NOT gate a benign message (dispatches normally)", async () => {
+    const client = makeClient();
+    const { runtime, inboundRunCalled } = runtimeTracking("the reply");
+    const parsed = parseCliqWebhookPayload(dmPayload({ message: "what is the weather" }))!;
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: confirmAccount,
+      parsed,
+      client,
+    });
+    // No prompt card; the agent turn ran and posted the thinking card.
+    expect(client.cardSends.some((c) => c.theme === "prompt")).toBe(false);
+    expect(inboundRunCalled()).toBe(true);
+  });
+
+  it("gates a sensitive channel post too (isDm=false)", async () => {
+    const client = makeClient();
+    const { runtime, inboundRunCalled } = runtimeTracking("the reply");
+    const parsed = parseCliqWebhookPayload(
+      groupPayload({ message: "drop the users table" }),
+    )!;
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: confirmAccount,
+      parsed,
+      client,
+    });
+    expect(client.cardSends).toHaveLength(1);
+    expect(client.cardSends[0].theme).toBe("prompt");
+    expect(client.cardSends[0].isDm).toBe(false);
+    expect(inboundRunCalled()).toBe(false);
+  });
+
+  it("a Cancel button click posts the cancelled reply and does NOT dispatch", async () => {
+    const client = makeClient();
+    const { runtime, inboundRunCalled } = runtimeTracking("the reply");
+    const parsed = parseCliqWebhookPayload(
+      dmPayload({ message: "__cliq_cancel__" }),
+    )!;
+    expect(parsed.confirmAction).toBe("cancel");
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: confirmAccount,
+      parsed,
+      client,
+    });
+    expect(client.sends).toHaveLength(1);
+    expect(client.sends[0].text).toBe("🚫 Cancelled.");
+    expect(client.sends[0].isDm).toBe(true);
+    expect(client.cardSends).toHaveLength(0);
+    expect(inboundRunCalled()).toBe(false);
+  });
+
+  it("a Confirm button click re-dispatches the original text WITHOUT re-gating", async () => {
+    const client = makeClient();
+    const { runtime, inboundRunCalled } = runtimeTracking("the reply");
+    const parsed = parseCliqWebhookPayload(
+      dmPayload({ message: "__cliq_confirm__ drop the prod database" }),
+    )!;
+    expect(parsed.confirmAction).toBe("confirm");
+    expect(parsed.text).toBe("drop the prod database");
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: confirmAccount,
+      parsed,
+      client,
+    });
+    // The agent turn ran (no re-prompt loop); the thinking card flow posted
+    // a modern-inline card (NOT a prompt card).
+    expect(inboundRunCalled()).toBe(true);
+    expect(client.cardSends.some((c) => c.theme === "prompt")).toBe(false);
+    expect(client.cardSends.some((c) => c.theme === "modern-inline")).toBe(true);
+  });
+
+  it("does not gate when thinking.mode is not card (confirm is a no-op)", async () => {
+    const client = makeClient();
+    const { runtime, inboundRunCalled } = runtimeTracking("the reply");
+    const parsed = parseCliqWebhookPayload(dmPayload({ message: "delete everything" }))!;
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "💭 …", confirm: "always" },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed,
+      client,
+    });
+    expect(client.cardSends.some((c) => c.theme === "prompt")).toBe(false);
+    expect(inboundRunCalled()).toBe(true);
+  });
+
+  it("gates every turn when confirm is always (even benign text)", async () => {
+    const client = makeClient();
+    const { runtime, inboundRunCalled } = runtimeTracking("the reply");
+    const parsed = parseCliqWebhookPayload(dmPayload({ message: "hello there" }))!;
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "card", text: "Generating…", confirm: "always" },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed,
+      client,
+    });
+    expect(client.cardSends).toHaveLength(1);
+    expect(client.cardSends[0].theme).toBe("prompt");
+    expect(inboundRunCalled()).toBe(false);
+  });
+
+  it("does not gate an abort intent even when confirm is always", async () => {
+    const client = makeClient();
+    const { runtime, inboundRunCalled } = runtimeTracking("the reply");
+    const parsed = parseCliqWebhookPayload(dmPayload({ message: "stop" }))!;
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "card", text: "Generating…", confirm: "always" },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed,
+      client,
+    });
+    // Abort intents skip the gate (no prompt card); the dispatch proceeded.
+    expect(client.cardSends.some((c) => c.theme === "prompt")).toBe(false);
+    expect(inboundRunCalled()).toBe(true);
+  });
+
+  it("swallows a failed confirm-card post and falls through to dispatch", async () => {
+    const client = makeClient({ sendCardFails: true });
+    const { runtime, inboundRunCalled } = runtimeTracking("the reply");
+    const parsed = parseCliqWebhookPayload(dmPayload({ message: "delete everything" }))!;
+    let reported = false;
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: confirmAccount,
+      parsed,
+      client,
+      onError: () => {
+        reported = true;
+      },
+    });
+    // The prompt post failed → reported + the agent turn ran (best-effort).
+    expect(reported).toBe(true);
+    expect(inboundRunCalled()).toBe(true);
+  });
+
+  it("honors custom confirmText / labels / cancelledText", async () => {
+    const client = makeClient();
+    const { runtime } = runtimeTracking("the reply");
+    const parsed = parseCliqWebhookPayload(dmPayload({ message: "delete the table" }))!;
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: {
+          mode: "card",
+          text: "Generating…",
+          confirm: "sensitive",
+          confirmText: "Really?",
+          confirmLabel: "Yes",
+          cancelLabel: "No",
+          cancelledText: "Nope.",
+        },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed,
+      client,
+    });
+    expect(client.cardSends[0].text).toBe("Really?");
+    const buttons = client.cardSends[0].buttons as Array<{ label: string }>;
+    expect(buttons[0].label).toBe("Yes");
+    expect(buttons[1].label).toBe("No");
+  });
+});
+
 describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () => {
   // A runtime whose `inbound.run` resolves the turn but never calls
   // `delivery.deliver` — simulating an agent turn that produced no reply

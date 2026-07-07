@@ -13,6 +13,35 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
+- Confirmation buttons for sensitive actions (`thinking.confirm`): when
+  `thinking.mode === "card"` and `thinking.confirm` is set (`"sensitive"` or
+  `"always"`), a sensitive inbound message is gated behind an explicit
+  Confirm / Cancel button card instead of dispatching the agent immediately.
+  A `prompt`-theme Message Card titled `thinking.confirmText` (default
+  `⚠️ Confirm action?`) with `thinking.confirmLabel` / `thinking.cancelLabel`
+  buttons (defaults `Confirm` / `Cancel`) is posted and the agent turn is
+  held until the user taps a button. **Confirm** re-posts the original
+  message (prefixed with a `__cliq_confirm__` sentinel) so the next webhook
+  call dispatches the agent with the gate skipped (no re-prompt loop);
+  **Cancel** posts a `__cliq_cancel__` sentinel that short-circuits the turn
+  with `thinking.cancelledText` (default `🚫 Cancelled.`) and no agent
+  dispatch. The button clicks arrive as ordinary inbound messages via the
+  bot's Message handler (`invoke.bot`) — no Cliq Context handler is required,
+  so this works with the existing Deluge webhook wiring. `"sensitive"` mode
+  matches the cleaned message against `thinking.confirmKeywords` (case-
+  insensitive word-boundary match; defaults to a conservative destructive-
+  verb list — `delete`, `drop`, `reset`, `wipe`, `purge`, …); `"always"`
+  gates every turn (apart from abort intents and Confirm re-dispatches).
+  Messages longer than 1500 chars bypass the gate (cannot be safely encoded
+  in the confirm button payload). The gate is a UX guardrail, not a security
+  boundary — the agent's own tool / permission policy still applies to the
+  confirmed action. A failed confirm-card post is swallowed + reported and
+  falls through to a normal dispatch. New optional `thinking.confirm`,
+  `thinking.confirmKeywords`, `thinking.confirmText`, `thinking.confirmLabel`,
+  `thinking.cancelLabel`, and `thinking.cancelledText` config fields (under
+  `channels.cliq.thinking`, card-mode only). No new OAuth scope (reuses the
+  card-path + `Messages.UPDATE` scopes). Completes the Phase 3 "interactive
+  status card: confirmation buttons for sensitive actions" item.
 - Status card phase transitions (`thinking.mode === "card"`): the status
   card now advances its title through explicit phases as the turn runs rather
   than only swapping for the reply. The card is first posted with the

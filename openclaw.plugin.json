@@ -108,7 +108,13 @@
           "mode": { "type": "string", "enum": ["off", "placeholder", "card"], "default": "off" },
           "text": { "type": "string", "default": "💭 …" },
           "thinkingText": { "type": "string", "default": "💭 thinking…" },
-          "failureText": { "type": "string" }
+          "failureText": { "type": "string" },
+          "confirm": { "type": "string", "enum": ["off", "sensitive", "always"], "default": "off" },
+          "confirmKeywords": { "type": "array", "items": { "type": "string" } },
+          "confirmText": { "type": "string", "default": "⚠️ Confirm action?" },
+          "confirmLabel": { "type": "string", "default": "Confirm" },
+          "cancelLabel": { "type": "string", "default": "Cancel" },
+          "cancelledText": { "type": "string", "default": "🚫 Cancelled." }
         }
       },
       "welcome": {
@@ -235,7 +241,13 @@
               "mode": { "type": "string", "enum": ["off", "placeholder", "card"], "default": "off" },
               "text": { "type": "string", "default": "💭 …" },
               "thinkingText": { "type": "string", "default": "💭 thinking…" },
-              "failureText": { "type": "string" }
+              "failureText": { "type": "string" },
+              "confirm": { "type": "string", "enum": ["off", "sensitive", "always"], "default": "off" },
+              "confirmKeywords": { "type": "array", "items": { "type": "string" } },
+              "confirmText": { "type": "string", "default": "⚠️ Confirm action?" },
+              "confirmLabel": { "type": "string", "default": "Confirm" },
+              "cancelLabel": { "type": "string", "default": "Cancel" },
+              "cancelledText": { "type": "string", "default": "🚫 Cancelled." }
             }
           },
           "welcome": {
