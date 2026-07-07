@@ -13,6 +13,47 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
+- REST API v3 opt-in for channel card/button posts (issue #59): the Phase 3
+  v3 **Message Cards** renderer. A new `src/v3-card.ts` module converts the
+  plugin's existing v2 card/button shape (`CliqButton` / `CliqRenderedCard`)
+  into a v3 `modern-inline` Message Card payload per
+  <https://www.zoho.com/cliq/help/restapi/v3/messagecards/> — a `card` object
+  with `theme: "modern-inline"`, a `title` (first line of the card text,
+  ≤200 chars), optional `slides` (a `text` slide carrying the remainder when
+  the body text exceeds the title), and action `buttons`. The v2 button
+  action mapping: `openurl` + `url` → `{ type: "open.url", data: { web: url } }`;
+  `invoke` + `data` (the slash command / message text the Deluge Message
+  Handler receives) → `{ type: "invoke.bot", data: { bot_name, message } }`
+  (the closest v3 analog, which posts `message` back to the bot so the
+  Deluge handler receives it — same loop as v2 `invoke`). v3 limits honored:
+  title max 200 chars, max 5 buttons per card (vs v2's 10), button label max
+  30 chars. Wired behind `apiVersion: "v3"` in `CliqClient.sendCard` for the
+  **channel** (non-DM) path: when `apiVersion === "v3"` and the send targets a
+  channel, the card routes through `POST /api/v3/channels/{name}/message`
+  (note: `channels`, NOT `channelsbyname`, and singular `message`) with the
+  `ZohoCliq.Channels.CREATE` scope (user-context, refresh-token grant — same
+  constraint as `Channels.UPDATE`, so a `refreshToken` is still required for
+  channel cards in v3 mode) and the `modern-inline` Message Card body. DM
+  cards stay on the v2 bot-message endpoint (the v3 Message Card DM endpoint
+  `POST /api/v3/chats/{chatId}/messages` needs a chat id the DM send path
+  does not have). When the v3 renderer yields no payload (no text AND all
+  buttons dropped during conversion — e.g. all `action: "api"`), the send
+  falls back to the v2 path so a degenerate card never fails. The v3 Message
+  Card docs do not document a `bot_unique_name` query param, so a v3 channel
+  card posts **as the authenticated user** (the OAuth client owner), not as
+  the bot — a behavior difference from the v2 channel card path; users who
+  need bot sender identity for cards stay on `"v2"`. The 2xx response is
+  `{ data: { id, card: {...} } }` (the existing `parseCliqMessageRef` already
+  unwraps the v3 top-level `data` wrapper and reads `id`). This is the fourth
+  increment of the incremental v3 migration (one endpoint family at a time,
+  keeping v2 as the default so the core never regresses): channel media
+  posts, message edits / list, reactions, directory, file download, and
+  channel-chat-id resolution stay on v2 until their own increments. New
+  OAuth scope `ZohoCliq.Channels.CREATE` added to README §3b (scope table)
+  and §3c (scope string) — only needed when `apiVersion: "v3"` is set AND you
+  send cards to channels; the v2 channel card path reuses `Channels.UPDATE`,
+  so if you stay on the `"v2"` default you can skip it. See README §3c and §4.
+
 - REST API v3 opt-in for message delete (issue #56): extending the existing
   `apiVersion` config (`"v2"` (default) | `"v3"`) to also cover the message
   **delete** family. When set to `"v3"`, message deletes route through the v3

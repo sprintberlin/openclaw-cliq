@@ -61,8 +61,13 @@ verified-live core.
   v2 as a fallback** so the core never regresses in a single large refactor. Channel **text**
   posts, bot **DM** posts, and message **delete** route through their v3 endpoints when
   `apiVersion: "v3"` (v2 default); the remaining endpoint families to migrate:
-  - **Channel card / button posts** (`sendCard` non-DM) — v3 has no `buttons` field (moved to
-    Message Cards); requires the Phase 3 Message-Card renderer, not a direct swap.
+  - **Channel card / button posts** (`sendCard` non-DM) — v3 Message Card path
+    is wired (`POST /api/v3/channels/{name}/message`, scope
+    `ZohoCliq.Channels.CREATE`, `modern-inline` theme via `src/v3-card.ts`);
+    remaining: DM cards (the v3 Message Card DM endpoint
+    `POST /api/v3/chats/{chatId}/messages` needs a chat id the DM send path
+    does not have — resolve via `cliq:user:<id>` → chat id lookup), and the
+    `poll` / `prompt` themes (only `modern-inline` is rendered today).
   - **Channel media posts** (`sendMediaMessage` non-DM) — v3 channel post body has no media
     field; needs the v3 attachment / Message-Card image flow.
   - **Message edit / list-by-chat** (`/api/v2/chats/{chatId}/messages…`) — confirmed against the
@@ -98,9 +103,14 @@ verified-live core.
 
 ## Phase 3 — Rich messaging *(needs Phase 2)*
 
-- **Adopt v3 Message Cards.** Render agent output as v3 cards where it improves UX — `modern-inline`
-  (header, field sections, action buttons) and `poll` — rather than the current button/card shape
-  in `src/presentation.ts`. Ref: Message Cards v3
+- **Adopt v3 Message Cards.** Render agent output as v3 cards where it improves UX:
+  the `modern-inline` channel-post renderer is wired (`src/v3-card.ts`,
+  issue #59); remaining themes — `poll` (voting options) and `prompt`
+  (quick-reply buttons) — and the DM Message Card path (needs chat-id
+  resolution for `POST /api/v3/chats/{chatId}/messages`) are still to build.
+  Also expose `slides` (table / list / label / images / text supporting
+  content) beyond the `text` slide the `modern-inline` renderer emits today.
+  Ref: Message Cards v3
   <https://www.zoho.com/cliq/help/restapi/v3/messagecards/>.
 - **Interactive status card + confirmation for sensitive actions.** Show a live status card
   (thinking → generating → done / failed) during a turn, and gate sensitive/tool actions behind an

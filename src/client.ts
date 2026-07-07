@@ -7,6 +7,7 @@ import {
   type CliqLogger,
 } from "./logger.js";
 import type { CliqButton } from "./presentation.js";
+import { cliqCardToV3MessageCard } from "./v3-card.js";
 import { resolveCliqSecretString } from "./secret-resolve.js";
 import {
   appendCliqDataCenterHint as appendDcHint,
@@ -36,19 +37,29 @@ export type CliqApiVersion = "v2" | "v3";
  *    id (scope `ZohoCliq.Messages.DELETE` — user-context, refresh-token
  *    grant, same constraint as `Messages.UPDATE`). v3 has NO single-message
  *    delete endpoint, only the bulk one — a 1-element delete-multiple call.
- *  - channel **card/button** posts, channel **media** posts,
- *    message edit / list, reactions, directory, file download,
- *    channel-chat-id resolution → v2 only. Confirmed against the v3 REST
- *    docs: v3 Messages has only delete-multiple, post, forward, search (no
- *    single-message edit or get); v3 Chats has no message operations at
- *    all; v3 has no reactions endpoint anywhere (not under Messages,
- *    Chats, or Threads — only Stars + Pin Messages exist as
- *    reaction-adjacent surfaces); v3 has no Files API and no
- *    channelsbyname lookup (v3 chat retrieval is by CHAT_ID, not unique
- *    name). These families therefore stay v2 indefinitely (v3 dead ends —
- *    no swap available). The message-delete family was migrated in its own
+ *  - channel **card/button** posts → v3 available (opt-in via
+ *    `apiVersion: "v3"`, channel/non-DM only); routes through the v3 Message
+ *    Card endpoint `POST /api/v3/channels/{name}/message` (note: `channels`,
+ *    not `channelsbyname`, singular `message`) with scope
+ *    `ZohoCliq.Channels.CREATE` and a `modern-inline` Message Card body
+ *    (header + optional text slide + action buttons) rendered by
+ *    `cliqCardToV3MessageCard`. DM cards stay v2 (the v3 Message Card DM
+ *    endpoint needs a chat id the DM send path does not have). The v3 docs
+ *    do not document a `bot_unique_name` query param, so a v3 channel card
+ *    posts AS THE AUTHENTICATED USER (not as the bot).
+ *  - channel **media** posts, message edit / list, reactions, directory,
+ *    file download, channel-chat-id resolution → v2 only. Confirmed against
+ *    the v3 REST docs: v3 Messages has only delete-multiple, post, forward,
+ *    search (no single-message edit or get); v3 Chats has no message
+ *    operations at all; v3 has no reactions endpoint anywhere (not under
+ *    Messages, Chats, or Threads — only Stars + Pin Messages exist as
+ *    reaction-adjacent surfaces); v3 has no Files API and no channelsbyname
+ *    lookup (v3 chat retrieval is by CHAT_ID, not by unique name). These
+ *    families therefore stay v2 indefinitely (v3 dead ends — no swap
+ *    available). The message-delete family was migrated in its own
  *    increment (v3 bulk-delete with a 1-element `message_ids` list, scope
- *    `Messages.DELETE`).
+ *    `Messages.DELETE`); the channel card/button family was migrated in its
+ *    own increment (v3 Message Card `modern-inline`, scope `Channels.CREATE`).
  *
  * v3 channel text post: `POST /api/v3/channelsbyname/{name}/messages` with
  * body `{ text, reply_to?, sync_message? }` and the
@@ -186,13 +197,22 @@ export interface CliqChannelConfig {
    * sets `sync_message: true` so the response carries the message id + chat
    * id for live-edit. The v3 delete path is a 1-element delete-multiple call
    * (v3 has no single-message delete endpoint) and parses the per-message
-   * `message.delete_result` response. Other families (cards, media, edits,
-   * list, reactions, directory, file download, channel-chat-id resolution)
-   * stay on v2 — confirmed against the v3 REST docs these are v3 dead ends
-   * with no swap available (v3 Messages has no single-message edit or get
-   * endpoint; v3 has no reactions endpoint anywhere; v3 has no Files API;
-   * v3 chat retrieval is by CHAT_ID, not by unique name). Migrating is
-   * incremental and per-family so the core never regresses in one change.
+   * `message.delete_result` response. The v3 channel **card/button** post
+   * family routes through the v3 Message Card endpoint
+   * `POST /api/v3/channels/{name}/message` (note: `channels`, not
+   * `channelsbyname`, singular `message`) with scope `ZohoCliq.Channels.CREATE`
+   * and a `modern-inline` Message Card body (header + optional text slide +
+   * action buttons); the v3 docs do not document a `bot_unique_name` query
+   * param, so a v3 channel card posts AS THE AUTHENTICATED USER (not as the
+   * bot — users who need bot sender identity for cards stay on `"v2"`). DM
+   * cards stay v2 (the v3 Message Card DM endpoint needs a chat id the DM
+   * send path does not have). Other families (media, edits, list, reactions,
+   * directory, file download, channel-chat-id resolution) stay on v2 —
+   * confirmed against the v3 REST docs these are v3 dead ends with no swap
+   * available (v3 Messages has no single-message edit or get endpoint; v3
+   * has no reactions endpoint anywhere; v3 has no Files API; v3 chat
+   * retrieval is by CHAT_ID, not by unique name). Migrating is incremental
+   * and per-family so the core never regresses in one change.
    */
   apiVersion?: CliqApiVersion;
 }
@@ -1110,9 +1130,30 @@ export class CliqClient {
    * the Cliq bot-message `buttons` field. Same scope/retry/logging contract
    * as `sendMessage`; the log line records the button count (never button
    * contents).
+   *
+   * v3 opt-in (issue #59): when `apiVersion === "v3"` AND the send is a
+   * **channel** (non-DM) post, the card routes through the v3 Message Card
+   * endpoint `POST /api/v3/channels/{name}/message` (note: `channels`, not
+   * `channelsbyname`, and singular `message`) with scope
+   * `ZohoCliq.Channels.CREATE` and a `modern-inline` Message Card body
+   * (header + optional text slide + action buttons) rendered by
+   * `cliqCardToV3MessageCard`. DM cards stay on the v2 bot-message endpoint
+   * (the v3 Message Card DM endpoint `POST /api/v3/chats/{chatId}/messages`
+   * needs a chat id the DM send path does not have). When the v3 renderer
+   * yields no payload (no text AND all buttons dropped), the send falls
+   * back to the v2 path. The v3 Message Card docs do not document a
+   * `bot_unique_name` query param, so a v3 channel card posts AS THE
+   * AUTHENTICATED USER (the OAuth client owner), not as the bot — a behavior
+   * difference from the v2 channel card path; users who need bot sender
+   * identity for cards stay on `apiVersion: "v2"`.
    */
   async sendCard(opts: SendCardMessageOptions): Promise<{ messageId?: string; chatId?: string }> {
     const isDm = Boolean(opts.isDm);
+    // v3 Message Card path: channel (non-DM) only. DM cards stay v2.
+    if (!isDm && this.apiVersion === "v3") {
+      const v3 = await this.trySendCardV3Channel(opts);
+      if (v3.handled) return v3.result!;
+    }
     const scope = isDm ? "ZohoCliq.Webhooks.CREATE" : "ZohoCliq.Channels.UPDATE";
     const needsUserContext = !isDm;
     const token = await this.resolveOutboundToken(scope, needsUserContext);
@@ -1158,6 +1199,82 @@ export class CliqClient {
       this.retryOptions,
     );
     return parseCliqMessageRef(res.body);
+  }
+
+  /**
+   * v3 Message Card channel send — the channel card/button post path under
+   * `apiVersion: "v3"` (issue #59). Renders the v2 `CliqButton` card into a
+   * v3 `modern-inline` Message Card body and POSTs it to
+   * `POST /api/v3/channels/{CHANNEL_UNIQUE_NAME}/message` (note: `channels`,
+   * NOT `channelsbyname`, and singular `message`) with scope
+   * `ZohoCliq.Channels.CREATE` — a different path AND scope from both the v2
+   * channel card endpoint and the v3 channel *text* post endpoint. Routes
+   * through the refresh-token grant (`Channels.CREATE` is a user-context
+   * scope, same constraint as `Channels.UPDATE` — see issue #27) and throws
+   * when no `refreshToken` is configured (matching the v2 channel card
+   * contract; the caller treats a throw as a failed send).
+   *
+   * The v3 Message Card docs do not document a `bot_unique_name` query param,
+   * so the card posts AS THE AUTHENTICATED USER (the OAuth client owner),
+   * not as the bot — a behavior difference from the v2 channel card path.
+   *
+   * Returns `{ handled: false }` when the v3 renderer yields no payload (no
+   * text AND all buttons dropped during conversion) so the caller falls back
+   * to the v2 path. The 2xx response is `{ data: { id, card: {...} } }`
+   * (unwrapped by `parseCliqMessageRef`, which already handles the v3
+   * top-level `data` wrapper); a non-2xx is classified + retried by
+   * `withSendRetry` (transient 429/5xx retried with backoff, 4xx fatal →
+   * throws `CliqSendError`), matching the v2 send contract.
+   *
+   * Ref: <https://www.zoho.com/cliq/help/restapi/v3/messagecards/#post-a-message-card-to-a-channel>.
+   */
+  private async trySendCardV3Channel(
+    opts: SendCardMessageOptions,
+  ): Promise<{
+    handled: boolean;
+    result?: { messageId?: string; chatId?: string };
+  }> {
+    const payload = cliqCardToV3MessageCard(
+      { text: opts.text, buttons: opts.buttons },
+      { botId: this.botId },
+    );
+    if (!payload) return { handled: false };
+    const token = await this.resolveOutboundToken(
+      "ZohoCliq.Channels.CREATE",
+      true,
+    );
+    const url = `${this.apiBase}/api/v3/channels/${encodeURIComponent(opts.to)}/message`;
+    this.logger.info?.(
+      `[cliq] send card: channel id=${opts.to} buttons=${opts.buttons.length}${opts.text ? ` textLen=${opts.text.length}` : ""} api=v3`,
+    );
+    let attempt = 0;
+    const res = await withSendRetry(
+      async () => {
+        attempt++;
+        const r = await fetch(url, {
+          method: "POST",
+          headers: {
+            Authorization: `Zoho-oauthtoken ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        });
+        const body = await r.text().catch(() => "");
+        if (r.ok) {
+          const ref = parseCliqMessageRef(body);
+          this.logger.info?.(
+            `[cliq] send card ok: status=${r.status} channel id=${opts.to} messageId=${ref.messageId ?? "-"} attempt=${attempt} api=v3`,
+          );
+        } else {
+          this.logger.warn?.(
+            `[cliq] send card non-2xx: status=${r.status} channel id=${opts.to} attempt=${attempt} body=${truncateForLog(body)} api=v3`,
+          );
+        }
+        return { status: r.status, body, headers: r.headers };
+      },
+      this.retryOptions,
+    );
+    return { handled: true, result: parseCliqMessageRef(res.body) };
   }
 
   /**
