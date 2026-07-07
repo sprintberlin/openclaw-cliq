@@ -27,8 +27,8 @@ models:
     cost_output_1M_usd: 30.0
     description: OpenAI's frontier model for complex professional workloads.
   claude-opus:
-    id: anthropic/claude-opus-4.7
-    name: Claude Opus 4.7 (High-End Expert)
+    id: anthropic/claude-opus-4.8
+    name: Claude Opus 4.8 (High-End Expert)
     context_length: 1000000
     cost_input_1M_usd: 5.0
     cost_output_1M_usd: 25.0
