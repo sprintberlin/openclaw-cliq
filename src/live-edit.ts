@@ -44,7 +44,7 @@
  * the edit cannot be performed cleanly (chat id unresolvable, edit API
  * rejects, …), the placeholder is DELETED and the reply is sent as a fresh
  * message — the "no stray `💭 …` left behind" contract. The placeholder
- * flow is only used when `thinking.mode === "placeholder"`, a `refreshToken`
+ * flow is only used when `thinking.mode` is `"placeholder"` OR `"card"`, a `refreshToken`
  * is configured (editing needs a user-context token), and streaming preview
  * is off (live-edit already shows progress); the inbound path enforces this
  * gate before passing `initialDraft`.

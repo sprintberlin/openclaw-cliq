@@ -700,6 +700,7 @@ describe("dispatchCliqInbound — stop / abort intent (issue #51)", () => {
   function makeClient() {
     return {
       sendMessage: vi.fn(async () => ({ messageId: "out-1" })),
+      sendCard: vi.fn(async () => ({ messageId: "out-1" })),
       editMessage: vi.fn(async (o: { chatId: string; messageId: string; text: string }) => ({
         messageId: o.messageId,
         chatId: o.chatId,
@@ -836,6 +837,7 @@ describe("dispatchCliqInbound — inbound quote / reply context (issue #49)", ()
       sendMessage: vi.fn(async (_o: { to: string; text: string; isDm?: boolean }) => ({
         messageId: "out-1",
       })),
+      sendCard: vi.fn(async () => ({ messageId: "out-1" })),
       editMessage: vi.fn(async (o: { chatId: string; messageId: string; text: string }) => ({
         messageId: o.messageId,
         chatId: o.chatId,
@@ -948,6 +950,7 @@ describe("dispatchCliqInbound — inbound quote / reply context (issue #49)", ()
     )!;
     const client = {
       sendMessage: vi.fn(async () => ({ messageId: "out-1" })),
+      sendCard: vi.fn(async () => ({ messageId: "out-1" })),
       editMessage: vi.fn(async () => ({ messageId: "x", chatId: "y" })),
       resolveChannelChatId: vi.fn(async () => undefined),
       listChatMessages: vi.fn(async () => {
@@ -1047,6 +1050,7 @@ describe("dispatchCliqInbound — inbound media (issue #48)", () => {
         messageId: o.isDm ? `mid-${o.to}` : undefined,
         chatId: o.isDm ? `chat-${o.to}` : undefined,
       })),
+      sendCard: vi.fn(async () => ({ messageId: "out-1" })),
       editMessage: vi.fn(async () => ({ messageId: "x", chatId: "x" })),
       resolveChannelChatId: vi.fn(async () => undefined),
       listChatMessages: vi.fn(async () => []),
@@ -1261,10 +1265,17 @@ describe("dispatchCliqInbound — thinking placeholder (issue #47)", () => {
     channelChatId?: string;
   } = {}) {
     const sends: { to: string; text: string; isDm?: boolean }[] = [];
+    const cardSends: {
+      to: string;
+      text?: string;
+      isDm?: boolean;
+      theme?: string;
+    }[] = [];
     const edits: { chatId: string; messageId: string; text: string }[] = [];
     const deletes: { chatId: string; messageId: string }[] = [];
     const client = {
       sends,
+      cardSends,
       edits,
       deletes,
       sendMessage: vi.fn(async (o: { to: string; text: string; isDm?: boolean }) => {
@@ -1274,6 +1285,18 @@ describe("dispatchCliqInbound — thinking placeholder (issue #47)", () => {
         return o.isDm
           ? { messageId: "ph-1", chatId: opts.placeholderChatId ?? `chat-${o.to}` }
           : { messageId: "ph-1" };
+      }),
+      sendCard: vi.fn(async (o: {
+        to: string;
+        text?: string;
+        isDm?: boolean;
+        theme?: string;
+      }) => {
+        if (opts.sendFails) throw new Error("send rejected");
+        cardSends.push(o);
+        return o.isDm
+          ? { messageId: "card-1", chatId: opts.placeholderChatId ?? `chat-${o.to}` }
+          : { messageId: "card-1" };
       }),
       editMessage: vi.fn(async (o: { chatId: string; messageId: string; text: string }) => {
         edits.push(o);
@@ -1424,6 +1447,110 @@ describe("dispatchCliqInbound — thinking placeholder (issue #47)", () => {
     expect(client.edits[0].messageId).toBe("ph-1");
     expect(client.edits[0].text).toBe("reply");
   });
+
+  it("posts a Message Card status indicator in card mode (DM, v3-style sendCard)", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    await dispatchCliqInbound({
+      runtime: mockRuntimeWithDeliver("the final reply"),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "card", text: "Generating…" },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    // One card post (no plain sendMessage placeholder) + one edit replacing
+    // the card with the reply text. No fresh reply send, no delete.
+    expect(client.sends).toHaveLength(0);
+    expect(client.cardSends).toHaveLength(1);
+    expect(client.cardSends[0].text).toBe("Generating…");
+    expect(client.cardSends[0].isDm).toBe(true);
+    expect(client.cardSends[0].theme).toBe("modern-inline");
+    expect(client.edits).toHaveLength(1);
+    expect(client.edits[0].messageId).toBe("card-1");
+    expect(client.edits[0].chatId).toBe("chat-u1");
+    expect(client.edits[0].text).toBe("the final reply");
+    expect(client.deletes).toHaveLength(0);
+  });
+
+  it("card mode is a no-op when streaming preview is on", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    await dispatchCliqInbound({
+      runtime: mockRuntimeWithDeliver("reply"),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "card", text: "Generating…" },
+        refreshToken: "rt",
+        blockStreaming: true,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    expect(client.cardSends).toHaveLength(0);
+    expect(client.edits).toHaveLength(0);
+  });
+
+  it("card mode is a no-op without a refreshToken (edits need a user-context token)", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    await dispatchCliqInbound({
+      runtime: mockRuntimeWithDeliver("reply"),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "card", text: "Generating…" },
+        refreshToken: undefined,
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    expect(client.cardSends).toHaveLength(0);
+    expect(client.edits).toHaveLength(0);
+  });
+
+  it("card mode does not post for an abort intent", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload({ message: "stop" }));
+    await dispatchCliqInbound({
+      runtime: mockRuntimeWithDeliver("reply"),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "card", text: "Generating…" },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    expect(client.cardSends).toHaveLength(0);
+  });
+
+  it("card mode supports group/channel posts (chat id resolved lazily on edit)", async () => {
+    const client = makeMockClient({ channelChatId: "CT_dev_team" });
+    const parsed = parseCliqWebhookPayload(groupPayload());
+    await dispatchCliqInbound({
+      runtime: mockRuntimeWithDeliver("reply"),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "card", text: "Generating…" },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    expect(client.cardSends).toHaveLength(1);
+    expect(client.cardSends[0].text).toBe("Generating…");
+    expect(client.cardSends[0].isDm).toBe(false);
+    expect(client.edits).toHaveLength(1);
+    expect(client.edits[0].chatId).toBe("CT_dev_team");
+    expect(client.edits[0].messageId).toBe("card-1");
+    expect(client.edits[0].text).toBe("reply");
+  });
 });
 
 describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () => {
@@ -1524,10 +1651,17 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
     channelChatId?: string;
   } = {}) {
     const sends: { to: string; text: string; isDm?: boolean }[] = [];
+    const cardSends: {
+      to: string;
+      text?: string;
+      isDm?: boolean;
+      theme?: string;
+    }[] = [];
     const edits: { chatId: string; messageId: string; text: string }[] = [];
     const deletes: { chatId: string; messageId: string }[] = [];
     const client = {
       sends,
+      cardSends,
       edits,
       deletes,
       sendMessage: vi.fn(async (o: { to: string; text: string; isDm?: boolean }) => {
@@ -1535,6 +1669,17 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
         return o.isDm
           ? { messageId: "ph-1", chatId: opts.placeholderChatId ?? `chat-${o.to}` }
           : { messageId: "ph-1" };
+      }),
+      sendCard: vi.fn(async (o: {
+        to: string;
+        text?: string;
+        isDm?: boolean;
+        theme?: string;
+      }) => {
+        cardSends.push(o);
+        return o.isDm
+          ? { messageId: "card-1", chatId: opts.placeholderChatId ?? `chat-${o.to}` }
+          : { messageId: "card-1" };
       }),
       editMessage: vi.fn(async (o: { chatId: string; messageId: string; text: string }) => {
         edits.push(o);
@@ -1684,5 +1829,27 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
     expect(client.deletes).toHaveLength(1);
     expect(client.deletes[0].chatId).toBe("CT_dev_team");
     expect(client.deletes[0].messageId).toBe("ph-1");
+  });
+
+  it("card mode: deletes the untouched status card when no reply is produced", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    await dispatchCliqInbound({
+      runtime: mockRuntimeNoReply(),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "card", text: "Generating…" },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    // Card posted, never edited into a reply → deleted on turn end.
+    expect(client.cardSends).toHaveLength(1);
+    expect(client.edits).toHaveLength(0);
+    expect(client.deletes).toHaveLength(1);
+    expect(client.deletes[0].messageId).toBe("card-1");
+    expect(client.deletes[0].chatId).toBe("chat-u1");
   });
 });

@@ -620,15 +620,16 @@ export async function dispatchCliqInbound(params: {
    * through {@link resolveCliqClient} from the shared registry so the OAuth
    * token cache is reused across requests.
    */
-  client?: Pick<
-    CliqClient,
-    | "sendMessage"
-    | "editMessage"
-    | "resolveChannelChatId"
-    | "listChatMessages"
-    | "deleteMessage"
-    | "downloadAttachment"
-  >;
+   client?: Pick<
+     CliqClient,
+     | "sendMessage"
+     | "sendCard"
+     | "editMessage"
+     | "resolveChannelChatId"
+     | "listChatMessages"
+     | "deleteMessage"
+     | "downloadAttachment"
+   >;
   /**
    * Directory to write downloaded inbound attachments into. Defaults to a
    * per-turn subdirectory under the OS temp dir. The runtime media
@@ -826,31 +827,57 @@ export async function dispatchCliqInbound(params: {
     ...(isAbort ? cliqAbortCtxFields() : {}),
   });
   // Instant acknowledgement / "thinking" placeholder (issue #47): when
-  // opted in (`thinking.mode === "placeholder"`), streaming preview is OFF
-  // (live-edit already shows progress otherwise), and a `refreshToken` is
-  // configured (editing a message needs the user-context token), post a
-  // lightweight placeholder message immediately so the user sees the bot is
-  // working, then have the deliver callback edit that placeholder into the
-  // final reply (no duplicate message). The placeholder post is swallowed
-  // on failure so a rejected post never breaks or delays the agent turn
-  // (the deliver then just sends a fresh message as usual). DMs and
-  // channel posts both support this; the group case carries no chatId in
-  // the send response, so `createLiveEditDeliver` resolves it lazily on
-  // the first edit (cached per account).
+  // opted in (`thinking.mode` is `"placeholder"` OR `"card"`), streaming
+  // preview is OFF (live-edit already shows progress otherwise), and a
+  // `refreshToken` is configured (editing a message needs the user-context
+  // token), post a lightweight placeholder message immediately so the user
+  // sees the bot is working, then have the deliver callback edit that
+  // placeholder into the final reply (no duplicate message). `placeholder`
+  // mode posts plain text (`💭 …`); `card` mode posts a v3 Message Card
+  // status indicator (a `modern-inline` card titled `Generating…`) via
+  // `sendCard` — a real card on `apiVersion: "v3"`, degrading to plain text
+  // on v2. The placeholder post is swallowed on failure so a rejected post
+  // never breaks or delays the agent turn (the deliver then just sends a
+  // fresh message as usual). DMs and channel posts both support this; the
+  // group case carries no chatId in the send response, so
+  // `createLiveEditDeliver` resolves it lazily on the first edit (cached per
+  // account).
   let initialDraft: { messageId: string; chatId?: string } | undefined;
   if (
-    account.thinking?.mode === "placeholder" &&
+    (account.thinking?.mode === "placeholder" ||
+      account.thinking?.mode === "card") &&
     !account.blockStreaming &&
     account.refreshToken &&
     !isAbort
   ) {
     try {
-      const placeholderText = account.thinking?.text || "💭 …";
-      const ref = await client.sendMessage({
-        to: deliverTo,
-        text: placeholderText,
-        isDm: !parsed.isGroup,
-      });
+      const cardMode = account.thinking?.mode === "card";
+      const placeholderText = account.thinking?.text
+        ?? (cardMode ? "Generating…" : "💭 …");
+      // `card` mode posts a v3 Message Card status indicator (a
+      // `modern-inline` card titled with `placeholderText`) instead of plain
+      // text — a richer "generating…" cue than the `💭 …` string. On v2 (or
+      // when the v3 card renderer yields no payload) `sendCard` degrades to
+      // the same plain-text bot-message send as `sendMessage`, so `card` mode
+      // is a no-op upgrade on v2. The card becomes the `initialDraft` the
+      // live-edit flow replaces: edit-into-reply when the edit API accepts a
+      // card→text swap, or delete + fresh send on edit failure (the existing
+      // fallback). DM cards post as the bot (v3 bot-message endpoint,
+      // `Webhooks.CREATE`); channel cards post as the authenticated user
+      // (`Channels.CREATE` — both need the refresh-token grant, which the gate
+      // above already requires for the edit path).
+      const ref = cardMode
+        ? await client.sendCard({
+            to: deliverTo,
+            text: placeholderText,
+            isDm: !parsed.isGroup,
+            theme: "modern-inline",
+          })
+        : await client.sendMessage({
+            to: deliverTo,
+            text: placeholderText,
+            isDm: !parsed.isGroup,
+          });
       if (ref.messageId) {
         initialDraft = { messageId: ref.messageId, chatId: ref.chatId };
       }

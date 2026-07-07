@@ -13,6 +13,24 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
+- Thinking status card mode (`thinking.mode === "card"`): a new instant-
+  acknowledgement style that posts a v3 Message Card status indicator (a
+  `modern-inline` card titled with `thinking.text`, default `Generating…`)
+  instead of the plain-text `💭 …` placeholder. On `apiVersion: "v3"` this is
+  a real card posted via `CliqClient.sendCard` (DM via
+  `POST /api/v3/bots/{botId}/messages` with scope `ZohoCliq.Webhooks.CREATE`,
+  channel via `POST /api/v3/channels/{name}/message` with scope
+  `ZohoCliq.Channels.CREATE`); on v2 it degrades to the plain-text placeholder
+  (v2 has no buttonless card). The card becomes the `initialDraft` the
+  existing live-edit flow replaces — when the reply arrives the card is edited
+  into the reply text in place (when the edit API accepts a card→text swap) or
+  deleted + the reply sent fresh (the existing edit-failure fallback); on a
+  no-reply turn the card is edited to `thinking.failureText` or deleted (the
+  existing cleanup path). Same gating as `placeholder` mode: a no-op when
+  `streaming.preview` is `"on"`, when no `refreshToken` is configured, or for
+  an abort-intent turn. No new OAuth scope (reuses the card-path +
+  `Messages.UPDATE` scopes). The first increment of the Phase 3 "interactive
+  status card (generating → done)" item — the "generating" card surface.
 - Thinking-placeholder cleanup on no-reply turns: when the instant-
   acknowledgement placeholder (`thinking.mode === "placeholder"`) is enabled
   and the agent turn ends **without producing a reply** (the turn threw, or

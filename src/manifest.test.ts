@@ -255,7 +255,7 @@ describe("cliq thinking config schema (issue #47)", () => {
   };
 
   it("accepts thinking.mode with each valid enum value", () => {
-    for (const m of ["off", "placeholder"]) {
+    for (const m of ["off", "placeholder", "card"]) {
       const errors = validate(schema, {
         ...baseConfig,
         thinking: { mode: m, text: "💭 …" },
@@ -267,7 +267,7 @@ describe("cliq thinking config schema (issue #47)", () => {
   it("rejects an unknown thinking.mode value", () => {
     const errors = validate(schema, {
       ...baseConfig,
-      thinking: { mode: "card" },
+      thinking: { mode: "status" },
     });
     expect(errors.some((e) => e.includes("not one of"))).toBe(true);
   });
@@ -295,6 +295,7 @@ describe("cliq thinking config schema (issue #47)", () => {
     expect(manifest.configSchema.properties?.thinking?.properties?.mode?.enum).toEqual([
       "off",
       "placeholder",
+      "card",
     ]);
   });
 
@@ -307,7 +308,7 @@ describe("cliq thinking config schema (issue #47)", () => {
       };
     }).channelConfigs.cliq.uiHints;
     expect(uiHints?.thinking).toBeDefined();
-    expect(uiHints?.thinking?.options).toEqual(["off", "placeholder"]);
+    expect(uiHints?.thinking?.options).toEqual(["off", "placeholder", "card"]);
   });
 });
 
@@ -341,5 +342,29 @@ describe("cliq resolveCliqConfig reads thinking (issue #47)", () => {
     const account = resolveCliqConfig(cfg);
     expect(account.thinking.mode).toBe("placeholder");
     expect(account.thinking.text).toBe("💭 …");
+  });
+
+  it("resolves thinking.mode === 'card' with the card default title", () => {
+    const cfg = cfgWith({
+      clientId: "id",
+      clientSecret: "s",
+      botId: "b",
+      thinking: { mode: "card" },
+    });
+    const account = resolveCliqConfig(cfg);
+    expect(account.thinking.mode).toBe("card");
+    expect(account.thinking.text).toBe("Generating…");
+  });
+
+  it("resolves a custom thinking.text for card mode", () => {
+    const cfg = cfgWith({
+      clientId: "id",
+      clientSecret: "s",
+      botId: "b",
+      thinking: { mode: "card", text: "Working…" },
+    });
+    const account = resolveCliqConfig(cfg);
+    expect(account.thinking.mode).toBe("card");
+    expect(account.thinking.text).toBe("Working…");
   });
 });

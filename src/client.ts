@@ -232,7 +232,23 @@ export type CliqReactionGuidanceConfig = {
 
 /** Instant-acknowledgement / "thinking" placeholder config (under `channels.cliq.thinking`). */
 export type CliqThinkingConfig = {
-  mode?: "off" | "placeholder";
+  /**
+   * - `"off"` (default): no instant acknowledgement.
+   * - `"placeholder"`: post a lightweight text placeholder (e.g. `💭 …`)
+   *   immediately, then edit it in place into the final reply.
+   * - `"card"`: post a v3 Message Card status indicator (a `modern-inline`
+   *   card titled with `text`, default `Generating…`) instead of plain text.
+   *   On `apiVersion: "v3"` this is a real card (DM via
+   *   `POST /api/v3/bots/{botId}/messages` with scope `Webhooks.CREATE`,
+   *   channel via `POST /api/v3/channels/{name}/message` with scope
+   *   `Channels.CREATE`); on v2 it degrades to the plain-text placeholder
+   *   (v2 has no buttonless card). The card becomes the `initialDraft` the
+   *   live-edit flow replaces: when the reply arrives the card is edited into
+   *   the reply text in place (when the edit API accepts a card→text swap)
+   *   or deleted + the reply sent fresh (the existing edit-failure fallback).
+   *   No new OAuth scope (reuses the card-path + `Messages.UPDATE` scopes).
+   */
+  mode?: "off" | "placeholder" | "card";
   text?: string;
   /**
    * Text the placeholder is edited into when the agent turn ends with no
@@ -246,6 +262,9 @@ export type CliqThinkingConfig = {
 
 /** Default placeholder text posted when `thinking.mode === "placeholder"`. */
 export const DEFAULT_CLIQ_THINKING_TEXT = "💭 …";
+
+/** Default title for a `thinking.mode === "card"` status card. */
+export const DEFAULT_CLIQ_THINKING_CARD_TEXT = "Generating…";
 
 /**
  * Welcome-message-on-subscribe config (under `channels.cliq.welcome`). The
@@ -307,12 +326,13 @@ export interface ResolvedCliqAccount {
   apiVersion?: CliqApiVersion;
   /**
    * Resolved instant-acknowledgement config. `mode` defaults to `"off"`; `text`
-   * defaults to {@link DEFAULT_CLIQ_THINKING_TEXT} when `mode === "placeholder"`.
-   * The inbound path only acts when `mode === "placeholder"` AND a
+   * defaults to {@link DEFAULT_CLIQ_THINKING_TEXT} when `mode === "placeholder"`
+   * and to {@link DEFAULT_CLIQ_THINKING_CARD_TEXT} when `mode === "card"`.
+   * The inbound path only acts when `mode` is `"placeholder"` OR `"card"` AND a
    * `refreshToken` is configured AND streaming preview is off (the live-edit
    * path already shows progress otherwise).
    */
-  thinking: { mode: "off" | "placeholder"; text: string; failureText?: string };
+  thinking: { mode: "off" | "placeholder" | "card"; text: string; failureText?: string };
   /**
    * Resolved welcome-on-subscribe config. `enabled` defaults to `false`
    * (opt-in — no setup gets a surprise greeting DM). `text` / `textRejoin`
@@ -372,8 +392,15 @@ export function resolveCliqConfig(
     oauthBase: section?.oauthBase || undefined,
     apiVersion: section?.apiVersion === "v3" ? "v3" : "v2",
     thinking: {
-      mode: section?.thinking?.mode === "placeholder" ? "placeholder" : "off",
-      text: section?.thinking?.text || DEFAULT_CLIQ_THINKING_TEXT,
+      mode: section?.thinking?.mode === "placeholder"
+        ? "placeholder"
+        : section?.thinking?.mode === "card"
+          ? "card"
+          : "off",
+      text: section?.thinking?.text
+        ?? (section?.thinking?.mode === "card"
+          ? DEFAULT_CLIQ_THINKING_CARD_TEXT
+          : DEFAULT_CLIQ_THINKING_TEXT),
       failureText: section?.thinking?.failureText || undefined,
     },
     welcome: {
