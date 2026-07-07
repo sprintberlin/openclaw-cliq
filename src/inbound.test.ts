@@ -332,6 +332,87 @@ describe("parseCliqWebhookPayload", () => {
     });
   });
 
+  describe("Agent-rendered form button-click response (Phase 3, sub-part c)", () => {
+    it("parses a __cliq_form__ sentinel payload into structured FormValues", () => {
+      const parsed = parseCliqWebhookPayload({
+        handler: "message",
+        message: { text: "__cliq_form__ priority=high", id: "m1" },
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm" },
+      } as CliqWebhookPayload);
+      expect(parsed).not.toBeNull();
+      // The sentinel is stripped from the agent-visible body; the
+      // human-readable `<field>: <value>` rendering remains.
+      expect(parsed!.text).toBe("priority: high");
+      // The structured field/value is surfaced for a tool call.
+      expect(parsed!.formValues).toEqual({ priority: "high" });
+      // No form name on the agent-rendered path (the agent knows its form).
+      expect(parsed!.formName).toBeUndefined();
+      // A button click is a directed action at the bot → implicit mention.
+      expect(parsed!.isMention).toBe(true);
+    });
+
+    it("preserves spaces and = in the button-click value", () => {
+      const parsed = parseCliqWebhookPayload({
+        handler: "message",
+        message: { text: "__cliq_form__ reason=deploy the prod=build", id: "m2" },
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm" },
+      } as CliqWebhookPayload);
+      expect(parsed).not.toBeNull();
+      expect(parsed!.formValues).toEqual({ reason: "deploy the prod=build" });
+      expect(parsed!.text).toBe("reason: deploy the prod=build");
+    });
+
+    it("marks a group button-click response as an implicit mention", () => {
+      const parsed = parseCliqWebhookPayload({
+        handler: "message",
+        message: { text: "__cliq_form__ env=prod", id: "m3" },
+        user: { id: "u2", name: "Bob" },
+        chat: {
+          id: "CT_channel_chat",
+          type: "channel",
+          chat_type: "channel",
+          channel_unique_name: "dev-team",
+          title: "#dev-team",
+        },
+      } as CliqWebhookPayload);
+      expect(parsed).not.toBeNull();
+      expect(parsed!.isGroup).toBe(true);
+      // Admitted without a separate @mention (directed action at the bot).
+      expect(parsed!.isMention).toBe(true);
+      expect(parsed!.formValues).toEqual({ env: "prod" });
+    });
+
+    it("treats a free-text `field: value` reply as an ordinary message (no FormValues)", () => {
+      // A summary-card text-field reply is NOT sentinel-prefixed → it stays
+      // plain text. Only prompt-card button clicks are structured.
+      const parsed = parseCliqWebhookPayload({
+        handler: "message",
+        message: { text: "version: 1.2.3", id: "m4" },
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm" },
+      } as CliqWebhookPayload);
+      expect(parsed).not.toBeNull();
+      expect(parsed!.text).toBe("version: 1.2.3");
+      expect(parsed!.formValues).toBeUndefined();
+      expect(parsed!.isMention).toBe(false);
+    });
+
+    it("a malformed sentinel payload (no =) still dispatches with empty FormValues", () => {
+      const parsed = parseCliqWebhookPayload({
+        handler: "message",
+        message: { text: "__cliq_form__ bogus", id: "m5" },
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm" },
+      } as CliqWebhookPayload);
+      expect(parsed).not.toBeNull();
+      expect(parsed!.text).toBe("bogus");
+      expect(parsed!.formValues).toBeUndefined();
+      expect(parsed!.isMention).toBe(true);
+    });
+  });
+
   it("parses a file attachment (type=file) with caption and synthesizes text", () => {
     const parsed = parseCliqWebhookPayload({
       handler: "message",
@@ -811,6 +892,31 @@ describe("dispatchCliqInbound context fields", () => {
     });
     expect(capture.ctxPayload?.FormValues).toBeUndefined();
     expect(capture.ctxPayload?.FormName).toBeUndefined();
+  });
+
+  it("surfaces FormValues on the context for an agent-rendered form button-click (Phase 3, sub-part c)", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload({
+      handler: "message",
+      message: { text: "__cliq_form__ priority=high", id: "m-form-1" },
+      user: { id: "u1", name: "Alice" },
+      chat: { id: "CT_dm" },
+    } as CliqWebhookPayload);
+    expect(parsed).not.toBeNull();
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account(),
+      parsed: parsed!,
+    });
+    // Structured params surfaced for a tool call.
+    expect(capture.ctxPayload?.FormValues).toEqual({ priority: "high" });
+    // No form name on the agent-rendered button-click path.
+    expect(capture.ctxPayload?.FormName).toBeUndefined();
+    // The agent envelope body is the clean `<field>: <value>` rendering
+    // (sentinel stripped), so the agent also sees a readable answer.
+    expect(String(capture.ctxPayload?.Body)).toContain("priority: high");
+    expect(String(capture.ctxPayload?.Body)).not.toContain("__cliq_form__");
   });
 });
 

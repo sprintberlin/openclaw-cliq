@@ -41,6 +41,7 @@ import {
   parseCliqFormSubmission,
   type CliqFormSubmission,
 } from "./forms.js";
+import { parseCliqFormResponse } from "./forms-render.js";
 
 /**
  * Minimal slice of `api.runtime` that the inbound dispatch path needs. Kept
@@ -395,8 +396,18 @@ export function parseCliqWebhookPayload(
   const formSubmission: CliqFormSubmission | null = isCliqFormPayload(payload)
     ? parseCliqFormSubmission(payload)
     : null;
+  // Agent-rendered form button-click response (Phase 3, sub-part c): a
+  // prompt-card button posts a `__cliq_form__ <field>=<value>` sentinel as
+  // the message text. Parse it into structured form values so the answer
+  // re-enters as a `FormValues` entry on the inbound context (structured
+  // params for a tool call) rather than plain text — the same surfacing the
+  // platform Form Handler path uses below. Free-text replies to the summary
+  // card are NOT sentinel-prefixed and stay ordinary text.
+  const formResponse = parseCliqFormResponse(text);
   let bodyText = text;
-  if (!bodyText && formSubmission) {
+  if (formResponse.matched) {
+    bodyText = formResponse.body;
+  } else if (!bodyText && formSubmission) {
     bodyText = formSubmission.body;
   }
   if (!bodyText && attachments.length > 0) {
@@ -440,6 +451,7 @@ export function parseCliqWebhookPayload(
     handler.includes("mention") ||
     hasBotMention ||
     Boolean(formSubmission) ||
+    Boolean(formResponse.matched) ||
     (isGroup && false);
 
   const replyTo = parseCliqReplyToContext(payload);
@@ -482,7 +494,11 @@ export function parseCliqWebhookPayload(
       ? { kind: pairingParsed.kind, code: pairingParsed.code }
       : undefined,
     formName: formSubmission?.formName,
-    formValues: formSubmission?.values,
+    formValues:
+      formSubmission?.values ??
+      (formResponse.matched && Object.keys(formResponse.formValues).length > 0
+        ? formResponse.formValues
+        : undefined),
     handler,
   };
 }

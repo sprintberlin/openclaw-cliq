@@ -24,9 +24,9 @@
 > the triggering issue (what to do now). No separate progress file — that context is reassembled
 > fresh each run.
 >
-> **Phase dependencies.** The v3 foundation is in place, so Phase 3 (rich messaging) and Phase 4
-> (programmatic v3 CRUD) can proceed directly; Phase 5 is independent and can be pulled forward on
-> demand.
+> **Phase dependencies.** The v3 foundation is in place, so Phase 4
+> (programmatic v3 CRUD) can proceed directly; Phase 5 is independent and can
+> be pulled forward on demand.
 >
 > **Reference implementations.** The coding-agent runner only checks out **this** repo — it cannot
 > read sibling clones on a maintainer's disk. Every reference here is therefore a **fetchable URL**
@@ -45,23 +45,6 @@
 >   dingtalk <https://github.com/soimy/openclaw-channel-dingtalk>.
 
 ---
-
-## Phase 3 — Rich messaging
-
-- **Outbound Cliq Forms + form-driven collection flows.** The
-  agent-facing form **renderer** is in place (`message(action=send,
-  form=…)` renders a native `prompt` card with a button per select option
-  plus a `modern-inline` summary card for text/number fields; tapping a
-  button posts `<fieldName>: <value>` back as an inbound message), and a
-  form-driven **pairing approval** flow is in place (`dmPolicy: "pairing"`
-  + `pairing.notifyOwnerTarget` posts an Approve/Deny prompt card to the
-  owner instead of relying on the `openclaw pairing approve` CLI step).
-  What remains: (c) **parameter capture** for tool calls that need
-  structured args (agent posts a form, the submitted values re-enter as
-  the tool's structured params — surfacing the button click as a
-  `FormValues` entry on the inbound context rather than plain text).
-  Ref: Cliq platform (Form handler)
-  <https://www.zoho.com/cliq/help/platform/>.
 
 ## Phase 4 — Programmatic Cliq via v3 CRUD
 

@@ -43,7 +43,7 @@ DM the bot → it answers. To also reply to channel **@mentions** and stream liv
 
 | | Capability |
 | --- | --- |
-| 💬 **Messaging** | DMs + channel @mentions, inbound via a Deluge webhook, outbound as the bot (DMs via `userids`, channel posts via `channelsbyname`). Inbound image / file / voice attachments are downloaded and handed to the agent. Send `stop` / `/stop` / `esc` to interrupt a running turn. **Cliq Form submissions** (structured input via the bot's Form Handler) are recognized and routed to the agent with their field values surfaced as `FormValues` / `FormName`. The agent can also **solicit structured input** by rendering a form as a native `prompt` card with a button per option (`message(action=send, form=…)`). |
+| 💬 **Messaging** | DMs + channel @mentions, inbound via a Deluge webhook, outbound as the bot (DMs via `userids`, channel posts via `channelsbyname`). Inbound image / file / voice attachments are downloaded and handed to the agent. Send `stop` / `/stop` / `esc` to interrupt a running turn. **Cliq Form submissions** (structured input via the bot's Form Handler) are recognized and routed to the agent with their field values surfaced as `FormValues` / `FormName`. The agent can also **solicit structured input** by rendering a form as a native `prompt` card with a button per option (`message(action=send, form=…)`); a prompt-card button click re-enters as a structured `FormValues` entry on the inbound context (parameter capture). |
 | ✍️ **Rich replies** | Markdown → Cliq formatting, **live-edit streaming previews**, interactive buttons & cards, slash-style commands, reply threading. **v3 Message Cards** (`apiVersion: "v3"`): `modern-inline` / `prompt` / `poll` themes, supporting-content **`slides`** (table / list / label / images / text blocks attached alongside the card), and `modern-inline` **`sections`** (in-card labeled field groups) + **`thumbnail`** header image. |
 | ⚡ **Message actions** | Edit / delete / react to sent messages from the agent. |
 | 🔐 **OAuth 2.0** | `client_credentials` for DMs; a user-context **refresh token** for channel posts / message edits. Works on any Zoho [data center](#data-centers). |
@@ -464,8 +464,8 @@ message(action=send, to="cliq:user:u-1", form={
 
 Rendering rules:
 
-- Each `select` field with **≥2 options** becomes its own `prompt` card (a button per option, capped at 5; extras listed in the card body). Tapping a button posts `<fieldName>: <value>` back to the bot as an ordinary inbound message the agent reads as the user's answer (e.g. `priority: high`).
-- `text` / `number` fields (and optionless `select` fields) fold into a single `modern-inline` summary card posted **before** the prompt cards, listing each as a question with a `reply with <name>: <value>` hint.
+- Each `select` field with **≥2 options** becomes its own `prompt` card (a button per option, capped at 5; extras listed in the card body). Tapping a button posts a `__cliq_form__ <fieldName>=<value>` sentinel payload back to the bot, which the plugin recognizes and surfaces on the inbound context as a structured `FormValues` entry (`{ <fieldName>: <value> }`) — so an agent-posted form's answers re-enter as structured params for a tool call, not plain text. The agent envelope body is the clean `<fieldName>: <value>` rendering (sentinel stripped). A button click is a directed action at the bot, so a group form response is admitted without a separate @mention.
+- `text` / `number` fields (and optionless `select` fields) fold into a single `modern-inline` summary card posted **before** the prompt cards, listing each as a question with a `reply with <name>: <value>` hint. These free-text replies are **not** sentinel-prefixed and re-enter as ordinary message text (the agent reads them as typed answers); only prompt-card button clicks are structured.
 - An optional `message` param prefixes the first card's text as extra context (instructions, context, etc.).
 - A degenerate form (no viable fields) returns an error so the agent can correct and retry.
 
@@ -493,6 +493,7 @@ Notes (the parser is tolerant):
 - Group vs DM detection: `chat.type === "channel"` (or the presence of `channel.*` fields) marks a group; otherwise the message is treated as a DM.
 - The `x-cliq-webhook-secret` header is checked against the configured `webhookSecret`. The plugin also accepts `x-webhook-secret` or `Authorization: Bearer <secret>` for convenience.
 - **Form submissions** (see [§5b](#5b-form-handler-optional--structured-input)): a payload with `handler: "form"` and/or a non-empty `values` object (also accepted under `form.values` / `form_data` / `formvalues`, including inside a `params` wrapper) is recognized as a Cliq Form submission; the submitted field values synthesize the agent body and are surfaced as `FormValues` / `FormName` on the inbound context.
+- **Agent-rendered form button clicks** (see [§5c](#5c-agent-rendered-forms-outbound-structured-input)): a prompt-card button posts `__cliq_form__ <fieldName>=<value>` as the message text; the plugin recognizes the sentinel and surfaces the answer as a `FormValues` entry (`{ <fieldName>: <value> }`) on the inbound context (structured params for a tool call), with the clean `<fieldName>: <value>` rendering as the agent body.
 
 ##### Inbound quote / reply context
 

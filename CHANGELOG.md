@@ -13,6 +13,28 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
+- **Cliq Forms — parameter capture (button-click re-entry as structured
+  input).** An agent-rendered form's prompt-card button click now re-enters
+  as a structured `FormValues` entry on the inbound context (structured
+  params for a tool call) rather than plain text. Each prompt-card button
+  posts a `__cliq_form__ <fieldName>=<value>` sentinel payload back to the
+  bot; the inbound path recognizes the sentinel, parses the
+  `<fieldName>=<value>` pair (split on the first `=`, so a value may contain
+  `=` or spaces), and surfaces it as `FormValues: { <fieldName>: <value> }`
+  on the inbound context — the same surfacing the Cliq platform Form Handler
+  path uses, so an agent tool can read the answer as structured data. The
+  agent envelope body is the clean `<fieldName>: <value>` rendering (sentinel
+  stripped). A button click is a directed action at the bot, so a group form
+  response is admitted without a separate @mention, and it bypasses the
+  `thinking.confirm` sensitive-keyword gate (a structured submission is an
+  explicit action, not free text). Free-text replies to the summary card
+  (text / number fields, or overflow select options) are NOT sentinel-
+  prefixed and re-enter as ordinary message text. No new OAuth scope, no new
+  config field — the structured re-entry is automatic for any
+  `message(action=send, form=…)` prompt-card button click. The final
+  increment of the Phase 3 "Outbound Cliq Forms" item (sub-part c —
+  parameter capture). See README §5c.
+
 - **Cliq Forms — outbound structured-input renderer.** The agent can now
   **solicit** structured input by rendering a form as a native Cliq `prompt`
   card with a button per option — the portable equivalent of a Cliq platform
@@ -23,20 +45,17 @@ publish workflow extracts the matching section as the release notes (see
   button per option, capped at 5; extras listed in the card body); `text` /
   `number` fields fold into a single `modern-inline` summary card posted
   first, listing each as a question with a `reply with <name>: <value>` hint.
-  Tapping a button posts `<fieldName>: <value>` back to the bot as an
-  ordinary inbound message the agent reads as the user's answer (e.g.
-  `priority: high`) — no inbound-side changes required, so this works on
-  both v2 and v3 without a separate Form Handler. An optional `message`
-  param prefixes the first card's text as extra context. A degenerate form
-  (no viable fields) returns an error so the agent can correct and retry.
-  The `form` param takes precedence over `buttons` / `theme` / `slides` when
-  present. No new OAuth scope — prompt cards reuse the same card-path scopes
-  (`Webhooks.CREATE` for DM cards via `client_credentials`; `Channels.UPDATE`
-  on v2 / `Channels.CREATE` on v3 for channel cards) the existing
-  `message(action=send, buttons=…)` path uses. No new config field. The
-  first increment of the Phase 3 "Outbound Cliq Forms" item (sub-part a —
-  the renderer); pairing-approval and parameter-capture flows follow. See
-  README §5c.
+  Tapping a button posts a `__cliq_form__ <fieldName>=<value>` sentinel back
+  to the bot (see the parameter-capture entry above for the structured
+  re-entry). An optional `message` param prefixes the first card's text as
+  extra context. A degenerate form (no viable fields) returns an error so
+  the agent can correct and retry. The `form` param takes precedence over
+  `buttons` / `theme` / `slides` when present. No new OAuth scope — prompt
+  cards reuse the same card-path scopes (`Webhooks.CREATE` for DM cards via
+  `client_credentials`; `Channels.UPDATE` on v2 / `Channels.CREATE` on v3
+  for channel cards) the existing `message(action=send, buttons=…)` path
+  uses. No new config field. The first increment of the Phase 3 "Outbound
+  Cliq Forms" item (sub-part a — the renderer). See README §5c.
 
 - **Form-driven DM pairing approval.** When `dmPolicy` is `pairing`, an
   unknown sender's pairing request can now be approved inline from Cliq

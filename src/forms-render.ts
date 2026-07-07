@@ -26,6 +26,18 @@
  * that lists them as questions. A degenerate form with no viable fields
  * yields `[]` (the caller surfaces an error to the agent).
  *
+ * **Parameter capture (sub-part c).** Tapping a prompt-card button posts a
+ * {@link CLIQ_FORM_SENTINEL}-prefixed payload (`__cliq_form__ <field>=<value>`)
+ * back to the bot as an ordinary inbound message. The inbound path
+ * ({@link parseCliqFormResponse}) recognizes the sentinel, parses the
+ * `<field>=<value>` pair, and surfaces it on the inbound context as a
+ * `FormValues` entry (structured params for a tool call) rather than plain
+ * text — so an agent-posted form's answers re-enter as structured input the
+ * same way a Cliq platform Form Handler submission does (see `src/forms.ts`).
+ * Free-text replies to the summary card (text / number fields, or overflow
+ * select options) are NOT sentinel-prefixed and re-enter as ordinary text;
+ * only prompt-card button clicks are structured.
+ *
  * No new OAuth scope — prompt cards reuse the same card-path scopes
  * (`Webhooks.CREATE` for DM cards, `Channels.CREATE` / `Channels.UPDATE`
  * for channel cards) the existing `message(action=send, buttons=…)` path
@@ -44,6 +56,16 @@ export const CLIQ_FORM_MAX_BUTTONS_PER_CARD = 5;
 
 /** Max length of a rendered form card title (matches the v3 title cap). */
 export const CLIQ_FORM_MAX_TITLE_LENGTH = 200;
+
+/**
+ * Prefix every prompt-card form button's `invoke.bot` message carries, so
+ * the inbound path can recognize an agent-rendered form's button-click
+ * answer and surface it as a structured `FormValues` entry on the inbound
+ * context (parameter capture — Phase 3, sub-part c). Followed by a single
+ * space and a `<fieldName>=<value>` pair. Detected on the next webhook call
+ * by {@link parseCliqFormResponse}.
+ */
+export const CLIQ_FORM_SENTINEL = "__cliq_form__";
 
 /**
  * A single field in an agent-rendered Cliq form. A `select` field with
@@ -134,10 +156,12 @@ function normalizeOptions(
 }
 
 /**
- * Build a Cliq `invoke` button for a form option. Tapping it posts
- * `<fieldName>: <value>` back to the bot as an inbound message the agent
- * reads as the user's answer. The label is clamped to the Cliq button-label
- * limit.
+ * Build a Cliq `invoke` button for a form option. Tapping it posts a
+ * {@link CLIQ_FORM_SENTINEL}-prefixed `<fieldName>=<value>` payload back to
+ * the bot as an inbound message, which the inbound path
+ * ({@link parseCliqFormResponse}) recognizes and surfaces as a structured
+ * `FormValues` entry on the inbound context (parameter capture). The label
+ * is clamped to the Cliq button-label limit.
  */
 function formOptionButton(
   fieldName: string,
@@ -147,7 +171,7 @@ function formOptionButton(
     label: clampText(option.label, CLIQ_MAX_BUTTON_LABEL_LENGTH),
     type: "+",
     action: "invoke",
-    data: `${fieldName}: ${option.value}`,
+    data: `${CLIQ_FORM_SENTINEL} ${fieldName}=${option.value}`,
   };
 }
 
@@ -280,4 +304,58 @@ export function readFormParam(raw: unknown): CliqFormInput | null {
   }
   if (fields.length === 0) return null;
   return { ...(title ? { title } : {}), fields };
+}
+
+/**
+ * Result of inspecting an inbound message text for an agent-rendered form
+ * button-click response (the {@link CLIQ_FORM_SENTINEL} payload a prompt-card
+ * button posts). When `matched` is true, `formValues` holds the parsed
+ * `<field>=<value>` pair (a single entry — one button click answers one
+ * field), `body` is the agent-readable plain-text rendering
+ * (`<field>: <value>`), and `text` is the message with the sentinel stripped
+ * (equal to `body` when matched). When no sentinel is present, `matched` is
+ * `false`, `formValues` is `{}`, and `text` is the input verbatim (trimmed).
+ */
+export interface CliqFormResponseParse {
+  matched: boolean;
+  formValues: Record<string, string>;
+  body: string;
+  text: string;
+}
+
+/**
+ * Inspect a raw inbound message text for an agent-rendered form button-click
+ * response. A prompt-card button posts
+ * `__cliq_form__ <fieldName>=<value>` as the message text; this parses the
+ * `<fieldName>=<value>` pair (split on the first `=` so a value may contain
+ * `=`) and returns it as a structured `formValues` entry. The recovered
+ * `<field>: <value>` rendering becomes the agent-readable body. Returns
+ * `{ matched: false, … }` when the text carries no form sentinel (an
+ * ordinary message). A sentinel with no `=` (malformed) is still recognized
+ * as a form response but yields an empty `formValues` and a body equal to
+ * the text after the sentinel.
+ */
+export function parseCliqFormResponse(raw: string): CliqFormResponseParse {
+  const text = raw ?? "";
+  const prefix = CLIQ_FORM_SENTINEL + " ";
+  if (!text.startsWith(prefix)) {
+    return { matched: false, formValues: {}, body: "", text: text.trim() };
+  }
+  const rest = text.slice(prefix.length).trim();
+  const eq = rest.indexOf("=");
+  if (eq < 0) {
+    return { matched: true, formValues: {}, body: rest, text: rest };
+  }
+  const key = rest.slice(0, eq).trim();
+  const value = rest.slice(eq + 1).trim();
+  if (!key) {
+    return { matched: true, formValues: {}, body: rest, text: rest };
+  }
+  const body = `${key}: ${value}`;
+  return {
+    matched: true,
+    formValues: { [key]: value },
+    body,
+    text: body,
+  };
 }

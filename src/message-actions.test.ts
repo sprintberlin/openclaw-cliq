@@ -672,8 +672,8 @@ describe("cliqMessageActions.handleAction", () => {
       expect(card.isDm).toBe(true);
       expect(card.theme).toBe("prompt");
       expect(card.buttons).toHaveLength(2);
-      expect(card.buttons![0]).toMatchObject({ label: "High", action: "invoke", data: "priority: high" });
-      expect(card.buttons![1]).toMatchObject({ label: "Low", data: "priority: low" });
+      expect(card.buttons![0]).toMatchObject({ label: "High", action: "invoke", data: "__cliq_form__ priority=high" });
+      expect(card.buttons![1]).toMatchObject({ label: "Low", data: "__cliq_form__ priority=low" });
     } finally {
       setCliqClientRegistry(null);
     }
@@ -715,7 +715,7 @@ describe("cliqMessageActions.handleAction", () => {
       // Prompt card second
       expect(client.cards[1].theme).toBe("prompt");
       expect(client.cards[1].buttons).toHaveLength(2);
-      expect(client.cards[1].buttons![0]).toMatchObject({ data: "priority: high" });
+      expect(client.cards[1].buttons![0]).toMatchObject({ data: "__cliq_form__ priority=high" });
     } finally {
       setCliqClientRegistry(null);
     }
@@ -799,7 +799,7 @@ describe("cliqMessageActions.handleAction", () => {
       expect(result.details).toMatchObject({ form: true });
       expect(client.cards).toHaveLength(1);
       // The form buttons, not the `buttons` param buttons
-      expect(client.cards[0].buttons![0]).toMatchObject({ data: "env: prod" });
+      expect(client.cards[0].buttons![0]).toMatchObject({ data: "__cliq_form__ env=prod" });
     } finally {
       setCliqClientRegistry(null);
     }
