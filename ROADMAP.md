@@ -56,15 +56,13 @@ base. (The instant-ack placeholder is already in flight — see the open issue.)
 The base everything rich builds on. Do this **incrementally**, not as a big-bang rewrite of the
 verified-live core.
 
-- **Adopt the v3 conventions the rest of the roadmap depends on:**
-  `PATCH` partial updates (cleaner message edits for `src/live-edit.ts`) and
-  uniform `next_token` pagination on list calls. (The v3 error shape — the
-  consistent `{"message":"…"}` envelope — is already parsed and fed into
-  `classifyCliqSendResponse` + `appendCliqDataCenterHint`, so v3 auth
-  failures trigger the data-center hint. `page`/`per_page` is NOT the v3
-  convention; v3 standardizes on `next_token` for paging and `sync_token`
-  for incremental sync.) Ref: v3 Introduction + v3 Pagination
-  <https://www.zoho.com/cliq/help/restapi/v3/introduction/>.
+- **Adopt v3 `PATCH` partial-update semantics for the Phase 4 CRUD resources** (bots, slash
+  commands, message actions, schedulers — the v3 update endpoints use `PATCH`, not `PUT`).
+  Message-edit-in-place (`src/live-edit.ts`) is NOT part of this — v3 Messages has no
+  single-message edit endpoint (only delete-multiple / post / forward / search), so the v2
+  `PUT /api/v2/chats/{chatId}/messages/{messageId}` path stays indefinitely. Build the `PATCH`
+  convention when the first v3 CRUD update call lands (Phase 4). Ref: v3 HTTP Methods
+  <https://www.zoho.com/cliq/help/restapi/v3/httpmethods/>.
 
 ## Phase 3 — Rich messaging *(needs Phase 2)*
 

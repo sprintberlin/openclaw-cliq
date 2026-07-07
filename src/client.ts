@@ -9,6 +9,7 @@ import {
 import type { CliqButton } from "./presentation.js";
 import { cliqCardToV3MessageCard } from "./v3-card.js";
 import { resolveCliqSecretString } from "./secret-resolve.js";
+import { paginateList } from "./pagination.js";
 import {
   appendCliqDataCenterHint as appendDcHint,
   findCliqDataCenterByApiBase,
@@ -1856,71 +1857,86 @@ export class CliqClient {
 
   /**
    * List Zoho Cliq users (organization peers) for the directory. Paginates
-   * via the `from`/`limit` query params (Cliq's max page size is 200) up to
-   * `maxItems`, then returns normalized entries. The raw record is kept on
-   * `raw` for callers that need extra fields. Never throws on a malformed
-   * record — it is skipped.
+   * via the v3 `next_token` cursor when the v2 response carries one (v2 used
+   * `next_token` as one of its six pagination tokens), falling back to
+   * `from`/`limit` offset pagination otherwise — so the directory is
+   * forward-compatible with v3's standardized `next_token` model even though
+   * the `/users` path stays v2 (v3 has no org-directory equivalent). Cliq's
+   * max page size is 200; pages are fetched up to `maxItems`. The raw record
+   * is kept on `raw` for callers that need extra fields. Never throws on a
+   * malformed record — it is skipped.
    */
   async listUsers(maxItems = 500): Promise<CliqDirectoryEntry[]> {
+    const recs = await paginateList<CliqUserRecord>(
+      async ({ nextToken, from, limit }) => {
+        const path = nextToken
+          ? `/api/v2/users?from=${from}&limit=${limit}&next_token=${encodeURIComponent(nextToken)}`
+          : `/api/v2/users?from=${from}&limit=${limit}`;
+        const json = (await this.getJson(path, "ZohoCliq.Users.READ")) as {
+          users?: CliqUserRecord[];
+          next_token?: string;
+        } | CliqUserRecord[];
+        const items = Array.isArray(json) ? json : (json?.users ?? []);
+        const token =
+          !Array.isArray(json) && typeof json?.next_token === "string"
+            ? json.next_token
+            : undefined;
+        return { items, nextToken: token };
+      },
+      { maxItems, pageSize: 200 },
+    );
     const entries: CliqDirectoryEntry[] = [];
-    const pageSize = 200;
-    let from = 0;
-    while (entries.length < maxItems) {
-      const limit = Math.min(pageSize, maxItems - entries.length);
-      const path = `/api/v2/users?from=${from}&limit=${limit}`;
-      const json = (await this.getJson(path, "ZohoCliq.Users.READ")) as {
-        users?: CliqUserRecord[];
-      } | CliqUserRecord[];
-      const recs = Array.isArray(json) ? json : json?.users ?? [];
-      if (recs.length === 0) break;
-      for (const rec of recs) {
-        const id = readCliqUserId(rec);
-        if (!id) continue;
-        entries.push({
-          kind: "user",
-          id,
-          name: readCliqUserName(rec),
-          raw: rec,
-        });
-      }
-      if (recs.length < limit) break;
-      from += recs.length;
+    for (const rec of recs) {
+      const id = readCliqUserId(rec);
+      if (!id) continue;
+      entries.push({
+        kind: "user",
+        id,
+        name: readCliqUserName(rec),
+        raw: rec,
+      });
     }
     return entries;
   }
 
   /**
    * List Zoho Cliq channels (group chats the bot/user can see) for the
-   * directory. Paginates like `listUsers`. Channel ids become directory
-   * entries of kind `group`; `unique_name` (when present) is exposed as the
-   * `handle` so routing can target either `cliq:chat:<id>` or
+   * directory. Paginates like `listUsers` (`next_token` cursor when present,
+   * `from`/`limit` offset otherwise). Channel ids become directory entries of
+   * kind `group`; `unique_name` (when present) is exposed as the `handle` so
+   * routing can target either `cliq:chat:<id>` or
    * `cliq:channel:<unique_name>`.
    */
   async listChannels(maxItems = 500): Promise<CliqDirectoryEntry[]> {
+    const recs = await paginateList<CliqChannelRecord>(
+      async ({ nextToken, from, limit }) => {
+        const path = nextToken
+          ? `/api/v2/channels?from=${from}&limit=${limit}&next_token=${encodeURIComponent(nextToken)}`
+          : `/api/v2/channels?from=${from}&limit=${limit}`;
+        const json = (await this.getJson(path, "ZohoCliq.Channels.READ")) as {
+          channels?: CliqChannelRecord[];
+          next_token?: string;
+        } | CliqChannelRecord[];
+        const items = Array.isArray(json) ? json : (json?.channels ?? []);
+        const token =
+          !Array.isArray(json) && typeof json?.next_token === "string"
+            ? json.next_token
+            : undefined;
+        return { items, nextToken: token };
+      },
+      { maxItems, pageSize: 200 },
+    );
     const entries: CliqDirectoryEntry[] = [];
-    const pageSize = 200;
-    let from = 0;
-    while (entries.length < maxItems) {
-      const limit = Math.min(pageSize, maxItems - entries.length);
-      const path = `/api/v2/channels?from=${from}&limit=${limit}`;
-      const json = (await this.getJson(path, "ZohoCliq.Channels.READ")) as {
-        channels?: CliqChannelRecord[];
-      } | CliqChannelRecord[];
-      const recs = Array.isArray(json) ? json : json?.channels ?? [];
-      if (recs.length === 0) break;
-      for (const rec of recs) {
-        const id = readCliqChannelId(rec);
-        if (!id) continue;
-        entries.push({
-          kind: "group",
-          id,
-          name: readCliqChannelName(rec),
-          handle: rec.unique_name ?? undefined,
-          raw: rec,
-        });
-      }
-      if (recs.length < limit) break;
-      from += recs.length;
+    for (const rec of recs) {
+      const id = readCliqChannelId(rec);
+      if (!id) continue;
+      entries.push({
+        kind: "group",
+        id,
+        name: readCliqChannelName(rec),
+        handle: rec.unique_name ?? undefined,
+        raw: rec,
+      });
     }
     return entries;
   }

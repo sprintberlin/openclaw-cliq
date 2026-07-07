@@ -489,3 +489,99 @@ describe("CliqClient directory listing stays on /api/v2 regardless of apiVersion
     expect(seen.some((u) => u.includes("/api/v3/"))).toBe(false);
   });
 });
+
+/**
+ * v3 `next_token` cursor pagination adoption. The directory list calls stay
+ * on the v2 `/users` / `/channels` paths (v3 has no org-directory equivalent
+ * — see docs/learnings/094), but they now follow a `next_token` cursor when
+ * the v2 response carries one (v2 used `next_token` as one of its six
+ * pagination tokens), falling back to `from`/`limit` offset pagination
+ * otherwise. This makes the directory forward-compatible with v3's
+ * standardized `next_token` model (the v3 pagination convention — see
+ * docs/learnings/096) and is the primitive the future v3 CRUD list
+ * endpoints (Phase 4) will build on.
+ */
+describe("CliqClient directory list follows next_token cursors", () => {
+  beforeEach(() => setCliqClientRegistry(null));
+  afterEach(() => setCliqClientRegistry(null));
+
+  it("listUsers follows next_token across pages and stops when absent", async () => {
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient("id", "secret", "bot");
+    const page1 = Array.from({ length: 3 }, (_, i) => ({ id: `u${i}`, name: `U${i}` }));
+    const page2 = Array.from({ length: 2 }, (_, i) => ({ id: `u${3 + i}`, name: `U${3 + i}` }));
+    const seen: string[] = [];
+    const original = globalThis.fetch;
+    let usersCall = 0;
+    globalThis.fetch = (async (url: URL | string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      seen.push(urlStr);
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(JSON.stringify({ access_token: "tok", expires_in: 3600 }), { status: 200 });
+      }
+      if (urlStr.includes("/api/v2/users")) {
+        usersCall++;
+        if (usersCall === 1) {
+          return new Response(JSON.stringify({ users: page1, next_token: "cur-1" }), {
+            status: 200, headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({ users: page2 }), {
+          status: 200, headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("", { status: 404 });
+    }) as typeof fetch;
+    let peers;
+    try {
+      peers = await client.listUsers(500);
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(peers).toHaveLength(5);
+    expect(usersCall).toBe(2);
+    // seen[0] is the OAuth token request; seen[1] = page 1; seen[2] = page 2.
+    // The second users request carried the cursor as a next_token query param.
+    expect(seen[2]).toContain("next_token=cur-1");
+    // No third users request — the second page had no next_token.
+    expect(usersCall).toBe(2);
+  });
+
+  it("listChannels falls back to from/limit offset when next_token is absent", async () => {
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient("id", "secret", "bot");
+    const page1 = Array.from({ length: 200 }, (_, i) => ({ id: `c${i}`, unique_name: `ch${i}` }));
+    const page2 = Array.from({ length: 50 }, (_, i) => ({ id: `c${200 + i}`, unique_name: `ch${200 + i}` }));
+    const seen: string[] = [];
+    const original = globalThis.fetch;
+    let call = 0;
+    globalThis.fetch = (async (url: URL | string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      seen.push(urlStr);
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(JSON.stringify({ access_token: "tok", expires_in: 3600 }), { status: 200 });
+      }
+      if (urlStr.includes("/api/v2/channels")) {
+        call++;
+        const recs = call === 1 ? page1 : page2;
+        return new Response(JSON.stringify({ channels: recs }), {
+          status: 200, headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("", { status: 404 });
+    }) as typeof fetch;
+    let groups;
+    try {
+      groups = await client.listChannels(500);
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(groups).toHaveLength(250);
+    expect(call).toBe(2);
+    // seen[0] is the OAuth token request; seen[1] = page 1; seen[2] = page 2.
+    // No next_token param on either request (offset mode).
+    expect(seen.filter((u) => u.includes("/api/v2/")).every((u) => !u.includes("next_token="))).toBe(true);
+    // The second channels request advanced the `from` offset by the page size.
+    expect(seen[2]).toContain("from=200");
+  });
+});

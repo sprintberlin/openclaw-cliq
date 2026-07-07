@@ -13,6 +13,21 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Changed
 
+- Directory list calls (`listUsers`, `listChannels`) now follow the v3
+  `next_token` cursor convention. v3 standardizes ALL list endpoints on a
+  two-token model (`next_token` for paging, `sync_token` for incremental
+  sync); v2 used six different tokens and the directory endpoints stayed on
+  v2 (v3 has no org-directory equivalent — see learning 094). The new
+  `paginateList` helper (`src/pagination.ts`) follows a `next_token` cursor
+  when the v2 response carries one (v2 `next_token` was one of its six
+  tokens) and falls back to `from`/`limit` offset pagination otherwise, so
+  the directory is forward-compatible with v3's standardized pagination
+  model and is the primitive the future v3 CRUD list endpoints (Phase 4)
+  will build on. No config change; behavior is strictly more correct for
+  Zoho orgs whose v2 endpoints return a `next_token`.
+
+### Changed
+
 - Outbound error classification + the data-center hint now parse the v3
   `{"message":"…"}` error envelope (issue #67). v3 endpoints return a
   consistent JSON error envelope whose auth-failure phrasings differ from
