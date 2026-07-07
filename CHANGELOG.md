@@ -11,6 +11,18 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-07-07
+
+### Fixed
+
+- **Header logo now renders on the ClawHub package page.** In 0.1.4 the logo
+  pointed at an external CDN (`sprintcx.net`); ClawHub proxies README images
+  through Vercel image optimization, which rejects non-allowlisted domains with
+  HTTP 400, so the logo showed as broken there (the file itself was reachable).
+  It now uses the same tag-pinned `raw.githubusercontent.com` URL as the
+  screenshots — an allowlisted domain that the proxy optimizes. Documentation
+  only; no plugin or runtime behavior change.
+
 ## [0.1.4] - 2026-07-07
 
 ### Fixed
@@ -673,7 +685,8 @@ publish workflow extracts the matching section as the release notes (see
   lookup, plugin doctor, interactive setup wizard, SecretRef-backed credentials,
   security audit collector, session binding, multi-account, lifecycle hooks.
 
-[Unreleased]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.1...v0.1.2
