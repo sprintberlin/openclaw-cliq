@@ -1,22 +1,19 @@
-default_tier: tier-2
+default_tier: tier-3
 verification:
   alias: minimax-m2.7
   max_log_chars: 128000
 tiers:
   tier-1:
-    model: claude-opus
+    model: claude-fable
     reasoning: high
   tier-2:
-    model: glm-5.2
+    model: claude-opus
     reasoning: high
   tier-3:
-    model: mimo-pro
+    model: glm-5.2
     reasoning: high
   tier-4:
-    model: deepseek-pro
-    reasoning: high
-  tier-5:
-    model: kimi-k2
+    model: mimo-pro
     reasoning: high
 models:
   gpt-5.5:
@@ -89,3 +86,11 @@ models:
     cost_input_1M_usd: 1.2
     cost_output_1M_usd: 4.1
     description: Large-scale reasoning model with 1M context window.
+  claude-fable:
+    id: anthropic/claude-fable-5
+    name: Claude Fable 5
+    context_length: 1000000
+    cost_input_1M_usd: 10.0
+    cost_output_1M_usd: 50.0
+    description: Mythos-class model from Anthropic, built for autonomous knowledge work and coding. Supports text, image,
+      and file inputs. Suited for long-running, complex, and asynchronous tasks with self-correcting verification loops.
