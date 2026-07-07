@@ -150,4 +150,33 @@ describe("appendCliqDataCenterHint", () => {
     const body = `invalid_client — ${CLIQ_DATA_CENTER_HINT}`;
     expect(appendCliqDataCenterHint(body)).toBe("");
   });
+
+  it("appends the hint for a v3-envelope 401 (invalid AuthToken) (issue #67)", () => {
+    expect(
+      appendCliqDataCenterHint(
+        JSON.stringify({
+          message: "Request was rejected because of invalid AuthToken.",
+        }),
+      ),
+    ).toContain(CLIQ_DATA_CENTER_HINT);
+  });
+
+  it("appends the hint for a v3-envelope 403 (not enough permission) (issue #67)", () => {
+    expect(
+      appendCliqDataCenterHint(
+        JSON.stringify({
+          message:
+            "The user does not have enough permission to access the resource.",
+        }),
+      ),
+    ).toContain(CLIQ_DATA_CENTER_HINT);
+  });
+
+  it("returns empty for a v3-envelope non-auth failure", () => {
+    expect(
+      appendCliqDataCenterHint(
+        JSON.stringify({ message: "Too many requests within a certain time frame." }),
+      ),
+    ).toBe("");
+  });
 });

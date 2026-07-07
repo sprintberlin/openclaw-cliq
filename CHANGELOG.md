@@ -13,6 +13,23 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Changed
 
+- Outbound error classification + the data-center hint now parse the v3
+  `{"message":"…"}` error envelope (issue #67). v3 endpoints return a
+  consistent JSON error envelope whose auth-failure phrasings differ from
+  v2's tokens (a v3 401 is `Request was rejected because of invalid
+  AuthToken.` and a 403 is `The user does not have enough permission…`),
+  so the previous pattern set — which matched raw substrings like
+  `invalid_token` / `unauthorized` — never fired for v3: a non-EU account
+  hitting the EU endpoints via a v3 endpoint got an opaque error with no
+  `verify your Zoho data center` pointer. The new `parseCliqErrorBody`
+  helper extracts the `message` field; `appendCliqDataCenterHint` and
+  `classifyCliqSendResponse` now match patterns against both the raw body
+  and the extracted message, and `CliqSendError` exposes an `errorMessage`
+  field carrying the extracted text. v2 opaque-string bodies are passed
+  through unchanged.
+
+### Changed
+
 - Confirmed channel media posts (`sendMediaMessage`) stay on the v2 multipart
   endpoints indefinitely regardless of `apiVersion` (issue #65). v3 has no
   byte-upload surface — the v3 Messages post endpoints take a JSON

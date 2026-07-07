@@ -47,6 +47,36 @@ describe("classifyCliqSendResponse", () => {
     expect(classifyCliqSendResponse({ status: 400, body: "missing required field text" })).toBe("fatal");
   });
 
+  it("classifies v3-envelope 400s by the extracted message (issue #67)", () => {
+    // v3 wraps the error text in `{"message":"…"}`. The structural pattern
+    // must match the extracted message, not require the raw JSON to contain
+    // the substring outside the envelope.
+    expect(
+      classifyCliqSendResponse({
+        status: 400,
+        body: JSON.stringify({ message: "invalid userids" }),
+      }),
+    ).toBe("fatal");
+    expect(
+      classifyCliqSendResponse({
+        status: 400,
+        body: JSON.stringify({ message: "chatid not found" }),
+      }),
+    ).toBe("fatal");
+    expect(
+      classifyCliqSendResponse({
+        status: 400,
+        body: JSON.stringify({ message: "unsupported markdown character" }),
+      }),
+    ).toBe("format_rejected");
+    expect(
+      classifyCliqSendResponse({
+        status: 400,
+        body: JSON.stringify({ message: "Bad Request: invalid format" }),
+      }),
+    ).toBe("format_rejected");
+  });
+
   it("falls back to format_rejected for unmatched 400 (conservative: try plain)", () => {
     expect(classifyCliqSendResponse({ status: 400, body: "something weird" })).toBe("format_rejected");
   });
@@ -219,6 +249,39 @@ describe("CliqSendError", () => {
       '{"error":"invalid_client"}',
     );
     expect(err.message).toContain("verify your Zoho data center");
+  });
+
+  it("appends the data-center hint to a v3-envelope auth failure (issue #67)", () => {
+    // v3 401: `{"message":"Request was rejected because of invalid AuthToken."}`
+    // — the v2 patterns (`invalid_token`, `unauthorized`) would NOT match the
+    // raw body; the v3 envelope parser + the `invalid\s+authtoken` pattern
+    // make the hint fire.
+    const err = new CliqSendError(
+      "fatal",
+      401,
+      JSON.stringify({ message: "Request was rejected because of invalid AuthToken." }),
+    );
+    expect(err.message).toContain("verify your Zoho data center");
+    expect(err.errorMessage).toBe(
+      "Request was rejected because of invalid AuthToken.",
+    );
+  });
+
+  it("appends the data-center hint to a v3 403 not-enough-permission body (issue #67)", () => {
+    const err = new CliqSendError(
+      "fatal",
+      403,
+      JSON.stringify({
+        message:
+          "The user does not have enough permission to access the resource.",
+      }),
+    );
+    expect(err.message).toContain("verify your Zoho data center");
+  });
+
+  it("exposes errorMessage as the raw body for a v2 opaque string", () => {
+    const err = new CliqSendError("fatal", 401, "invalid_client");
+    expect(err.errorMessage).toBe("invalid_client");
   });
 
   it("appends the data-center hint for oauthtoken_scope_invalid", () => {

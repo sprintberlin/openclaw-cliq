@@ -18,6 +18,7 @@
  */
 
 import { appendCliqDataCenterHint } from "./region.js";
+import { parseCliqErrorBody } from "./cliq-error.js";
 
 export type CliqSendErrorKind =
   | "transient"
@@ -40,6 +41,13 @@ export class CliqSendError extends Error {
   readonly kind: CliqSendErrorKind;
   readonly status: number;
   readonly body: string;
+  /**
+   * The human-readable message extracted from the response body: the
+   * `message` field of a v3 `{"message":"…"}` envelope, or the raw body for
+   * v2 / non-JSON responses. Exposed so callers / logs can surface the Cliq
+   * error text without re-parsing the raw body.
+   */
+  readonly errorMessage: string;
   readonly retryAfterMs?: number;
 
   constructor(
@@ -58,6 +66,7 @@ export class CliqSendError extends Error {
     this.kind = kind;
     this.status = status;
     this.body = body;
+    this.errorMessage = parseCliqErrorBody(body).message;
     this.retryAfterMs = retryAfterMs;
   }
 }
@@ -111,11 +120,18 @@ export function classifyCliqSendResponse(input: ClassifyInput): CliqSendErrorKin
   if (status === 401 || status === 403 || status === 404) return "fatal";
   if (status === 429 || (status >= 500 && status < 600)) return "transient";
   if (status === 400) {
+    // v3 wraps the error text in a `{"message":"…"}` envelope; match the
+    // structural / format patterns against BOTH the raw body and the
+    // extracted message so a v3 400 like `{"message":"invalid userids"}`
+    // is classified as fatal (structural) rather than falling through to
+    // format_rejected.
+    const parsed = parseCliqErrorBody(body);
+    const haystacks = parsed.isV3Envelope ? [parsed.message, body] : [body];
     for (const re of STRUCTURAL_REJECT_PATTERNS) {
-      if (re.test(body)) return "fatal";
+      if (haystacks.some((h) => re.test(h))) return "fatal";
     }
     for (const re of FORMAT_REJECT_PATTERNS) {
-      if (re.test(body)) return "format_rejected";
+      if (haystacks.some((h) => re.test(h))) return "format_rejected";
     }
     // Unmatched 400 — try plain once before giving up.
     return "format_rejected";

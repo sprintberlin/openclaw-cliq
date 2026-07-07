@@ -56,10 +56,15 @@ base. (The instant-ack placeholder is already in flight — see the open issue.)
 The base everything rich builds on. Do this **incrementally**, not as a big-bang rewrite of the
 verified-live core.
 
-- **Adopt the v3 conventions the rest of the roadmap depends on:** `PATCH` partial updates (cleaner
-  message edits for `src/live-edit.ts`), pagination (`page` / `per_page`) on list calls, and the
-  consistent v3 error shape (feeds better error classification, incl. the existing data-center
-  hint). Ref: v3 Introduction (same URL).
+- **Adopt the v3 conventions the rest of the roadmap depends on:**
+  `PATCH` partial updates (cleaner message edits for `src/live-edit.ts`) and
+  uniform `next_token` pagination on list calls. (The v3 error shape — the
+  consistent `{"message":"…"}` envelope — is already parsed and fed into
+  `classifyCliqSendResponse` + `appendCliqDataCenterHint`, so v3 auth
+  failures trigger the data-center hint. `page`/`per_page` is NOT the v3
+  convention; v3 standardizes on `next_token` for paging and `sync_token`
+  for incremental sync.) Ref: v3 Introduction + v3 Pagination
+  <https://www.zoho.com/cliq/help/restapi/v3/introduction/>.
 
 ## Phase 3 — Rich messaging *(needs Phase 2)*
 

@@ -49,7 +49,7 @@ DM the bot → it answers. To also reply to channel **@mentions** and stream liv
 | 🔐 **OAuth 2.0** | `client_credentials` for DMs; a user-context **refresh token** for channel posts / message edits. Works on any Zoho [data center](#data-centers). |
 | 🛡️ **DM security** | `allowlist` / `pairing` / `open` / `disabled` policies with an approval flow. |
 | 🧩 **Per-channel policy** | Group admission + per-channel `requireMention`, tool policy, and per-sender tool overrides. |
-| 🔁 **Reliability** | Durable-before-ack ingest, de-dup on redelivery, bot-loop / self-message protection, outbound retry with error classification. |
+| 🔁 **Reliability** | Durable-before-ack ingest, de-dup on redelivery, bot-loop / self-message protection, outbound retry with error classification (parses the v3 `{"message":"…"}` error envelope). |
 | 🔒 **Hardened webhook** | Constant-time secret compare, single-header auth, failed-auth rate limiting. |
 | 🩺 **Operations** | `openclaw status` / `channels` health probe, `openclaw directory` lookup, plugin doctor, interactive setup wizard, SecretRef credentials, security audit, session binding, multi-account, lifecycle hooks. |
 
@@ -529,6 +529,9 @@ OAuth flow.
   the two point at different regions (a likely copy-paste mistake).
 - A Zoho auth failure (`invalid_client` / `oauthtoken_scope_invalid` / 4xx
   auth) surfaces a `verify your Zoho data center` hint pointing back here.
+  This includes v3 endpoints (`apiVersion: "v3"`), whose `{"message":"…"}`
+  error envelope is parsed so the auth-failure patterns match the extracted
+  message text (e.g. a v3 401 "…invalid AuthToken." triggers the same hint).
 
 **Example — a US-based account** (`.com`). EU accounts can omit both fields:
 

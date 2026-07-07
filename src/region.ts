@@ -18,6 +18,8 @@
  * Reference: https://www.zoho.com/accounts/protocol/oauth/multi-dc.html
  */
 
+import { parseCliqErrorBody } from "./cliq-error.js";
+
 export interface CliqDataCenter {
   /** Stable lowercase id (`eu`, `us`, `in`, …). */
   readonly id: string;
@@ -199,6 +201,15 @@ const CLIQ_AUTH_FAILURE_PATTERNS: readonly RegExp[] = [
   /invalid_token/i,
   /unauthorized/i,
   /access\s*denied/i,
+  // v3 error-envelope messages (the v3 Errors docs use phrasings like
+  // "Request was rejected because of invalid AuthToken." for 401 and
+  // "The user does not have enough permission …" for 403). Without these,
+  // a v3 endpoint's auth failure would NOT trigger the data-center hint
+  // because the substrings differ from the v2 `invalid_token` /
+  // `unauthorized` tokens.
+  /invalid\s+authtoken/i,
+  /not\s+enough\s+permission/i,
+  /does\s+not\s+have\s+enough\s+permission/i,
 ];
 
 /**
@@ -206,11 +217,19 @@ const CLIQ_AUTH_FAILURE_PATTERNS: readonly RegExp[] = [
  * message. Returns `""` when the body does not look like an auth failure (so
  * unrelated errors stay clean) or when the body already contains the hint
  * (so it is never duplicated).
+ *
+ * Both the raw body and the v3 envelope's extracted `message` are tested
+ * against the auth-failure patterns, so a v3 JSON `{"message":"…invalid
+ * AuthToken…"}` triggers the hint just like a v2 `invalid_client` body.
  */
 export function appendCliqDataCenterHint(body: string): string {
   if (!body) return "";
   if (body.includes(CLIQ_DATA_CENTER_HINT)) return "";
-  const looksLikeAuthFailure = CLIQ_AUTH_FAILURE_PATTERNS.some((re) => re.test(body));
+  const parsed = parseCliqErrorBody(body);
+  const haystacks = parsed.isV3Envelope ? [parsed.message, body] : [body];
+  const looksLikeAuthFailure = haystacks.some((re_body) =>
+    CLIQ_AUTH_FAILURE_PATTERNS.some((re) => re.test(re_body)),
+  );
   if (!looksLikeAuthFailure) return "";
   return ` — ${CLIQ_DATA_CENTER_HINT}`;
 }
