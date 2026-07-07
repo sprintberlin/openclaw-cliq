@@ -24,9 +24,9 @@
 > the triggering issue (what to do now). No separate progress file — that context is reassembled
 > fresh each run.
 >
-> **Phase dependencies.** Phase 1 is v3-independent and ships on the current base. **Phase 2 is the
-> v3 foundation**; Phases 3 and 4 build on it (each of their items is tagged *(needs Phase 2)*).
-> Phase 5 is mostly v3-independent and can be pulled forward on demand.
+> **Phase dependencies.** The v3 foundation is in place, so Phase 3 (rich messaging) and Phase 4
+> (programmatic v3 CRUD) can proceed directly; Phase 5 is independent and can be pulled forward on
+> demand.
 >
 > **Reference implementations.** The coding-agent runner only checks out **this** repo — it cannot
 > read sibling clones on a maintainer's disk. Every reference here is therefore a **fetchable URL**
@@ -46,25 +46,7 @@
 
 ---
 
-## Phase 1 — v3-independent UX wins
-
-Small, safe, high-visibility. None of these need the v3 migration, so they ship on the current
-base. (The instant-ack placeholder is already in flight — see the open issue.)
-
-## Phase 2 — REST API v3 foundation
-
-The base everything rich builds on. Do this **incrementally**, not as a big-bang rewrite of the
-verified-live core.
-
-- **Adopt v3 `PATCH` partial-update semantics for the Phase 4 CRUD resources** (bots, slash
-  commands, message actions, schedulers — the v3 update endpoints use `PATCH`, not `PUT`).
-  Message-edit-in-place (`src/live-edit.ts`) is NOT part of this — v3 Messages has no
-  single-message edit endpoint (only delete-multiple / post / forward / search), so the v2
-  `PUT /api/v2/chats/{chatId}/messages/{messageId}` path stays indefinitely. Build the `PATCH`
-  convention when the first v3 CRUD update call lands (Phase 4). Ref: v3 HTTP Methods
-  <https://www.zoho.com/cliq/help/restapi/v3/httpmethods/>.
-
-## Phase 3 — Rich messaging *(needs Phase 2)*
+## Phase 3 — Rich messaging
 
 - **Interactive status card + confirmation for sensitive actions.** Show a live status card
   transitioning through phases (generating → done) during a turn (the "failed" tail is already
@@ -76,10 +58,15 @@ verified-live core.
   approval, parameter capture) instead of free-text parsing. Ref: Cliq platform (Form handler)
   <https://www.zoho.com/cliq/help/platform/>.
 
-## Phase 4 — Programmatic Cliq via v3 CRUD *(needs Phase 2)*
+## Phase 4 — Programmatic Cliq via v3 CRUD
 
 v3 adds CRUD endpoints v2 never had (bots, slash commands, message actions, widgets, schedulers).
 
+- **Adopt v3 `PATCH` partial-update semantics for the CRUD update calls** (bots, slash commands,
+  message actions, schedulers — v3 update endpoints use `PATCH`, not `PUT`); build it with the
+  first v3 CRUD update below. Message-edit-in-place is NOT part of this — v3 has no single-message
+  edit endpoint, so the v2 `PUT /api/v2/chats/{chatId}/messages/{messageId}` path stays. Ref: v3
+  HTTP Methods <https://www.zoho.com/cliq/help/restapi/v3/httpmethods/>.
 - **`cliq_management` agent tool.** Expose Cliq operations to the agent as one profile-gated tool:
   post to a channel, list channels / members (paginated GET), resolve users, etc. Ref: REST API v3
   <https://www.zoho.com/cliq/help/restapi/v3/>. (Prior art: octo's single management tool.)
