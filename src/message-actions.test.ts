@@ -46,7 +46,7 @@ function makeCfg(account: Partial<ResolvedCliqAccount>): OpenClawConfig {
 
 interface FakeClient {
   sends: { to: string; text: string; isDm?: boolean }[];
-  cards: { to: string; text?: string; isDm?: boolean; buttons: unknown[] }[];
+  cards: { to: string; text?: string; isDm?: boolean; buttons?: unknown[]; theme?: string; pollOptions?: string[] }[];
   edits: { chatId: string; messageId: string; text: string }[];
   deletes: { chatId: string; messageId: string }[];
   reads: { chatId: string; limit?: number }[];
@@ -88,7 +88,7 @@ function makeFakeClient(opts: {
       sends.push(o);
       return { messageId: "m-sent", chatId: o.isDm ? "dm-chat" : undefined };
     }),
-    sendCard: vi.fn(async (o: { to: string; text?: string; isDm?: boolean; buttons: unknown[] }) => {
+    sendCard: vi.fn(async (o: { to: string; text?: string; isDm?: boolean; buttons?: unknown[]; theme?: string; pollOptions?: string[] }) => {
       cards.push(o);
       return { messageId: "m-card", chatId: o.isDm ? "dm-chat" : undefined };
     }),
@@ -295,8 +295,78 @@ describe("cliqMessageActions.handleAction", () => {
       // Markdown conversion applies to the body text.
       expect(card.text).toBe("Pick one");
       expect(card.buttons).toHaveLength(2);
-      expect(card.buttons[0]).toMatchObject({ action: "openurl", url: "https://example.com" });
-      expect(card.buttons[1]).toMatchObject({ action: "invoke", data: "yes" });
+      expect(card.buttons![0]).toMatchObject({ action: "openurl", url: "https://example.com" });
+      expect(card.buttons![1]).toMatchObject({ action: "invoke", data: "yes" });
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("send with theme=poll + pollOptions dispatches a poll card (no plain send)", async () => {
+    const client = makeFakeClient({});
+    const account = makeAccount({});
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!(
+        buildCtx(
+          {
+            to: "cliq:channel:dev-team",
+            message: "Which feature should we prioritize?",
+            theme: "poll",
+            pollOptions: ["OAuth 2.0", "Dark mode", "Push notifications"],
+          },
+          account,
+        ) as Parameters<NonNullable<typeof cliqMessageActions.handleAction>>[0],
+      );
+      expect(result.details).toMatchObject({
+        action: "send",
+        messageId: "m-card",
+        theme: "poll",
+        pollOptions: 3,
+      });
+      expect(client.cards).toHaveLength(1);
+      expect(client.sends).toHaveLength(0);
+      const card = client.cards[0];
+      expect(card.to).toBe("dev-team");
+      expect(card.isDm).toBe(false);
+      expect(card.theme).toBe("poll");
+      expect(card.pollOptions).toEqual([
+        "OAuth 2.0",
+        "Dark mode",
+        "Push notifications",
+      ]);
+      // A poll carries no action buttons.
+      expect(card.buttons).toEqual([]);
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("send with theme=poll but <2 pollOptions fails with a helpful error", async () => {
+    const client = makeFakeClient({});
+    const account = makeAccount({});
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!(
+        buildCtx(
+          {
+            to: "cliq:channel:dev-team",
+            message: "Pick one",
+            theme: "poll",
+            pollOptions: ["only"],
+          },
+          account,
+        ) as Parameters<NonNullable<typeof cliqMessageActions.handleAction>>[0],
+      );
+      expect(result.details).toMatchObject({ status: "failed" });
+      expect(result.content[0].type === "text" && result.content[0].text).toContain("pollOptions");
+      expect(client.cards).toHaveLength(0);
     } finally {
       setCliqClientRegistry(null);
     }
@@ -351,7 +421,7 @@ describe("cliqMessageActions.handleAction", () => {
       expect(client.cards).toHaveLength(1);
       // Title + text block concatenated into the body.
       expect(client.cards[0].text).toBe("Choose\n\nAn action:");
-      expect(client.cards[0].buttons[0]).toMatchObject({ data: "run" });
+      expect(client.cards[0].buttons![0]).toMatchObject({ data: "run" });
     } finally {
       setCliqClientRegistry(null);
     }

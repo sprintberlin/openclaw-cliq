@@ -13,6 +13,37 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
+- REST API v3 `poll` Message Card theme (issue #64): the third v3 Message
+  Card theme (alongside `modern-inline` and `prompt`) per
+  <https://www.zoho.com/cliq/help/restapi/v3/messagecards/>. The `poll`
+  theme renders a voting card — a `title` (the poll question, ≤200 chars,
+  same first-line split as the other themes) plus 2–10 `options` (each
+  `{ text }`, ≤100 chars). Cliq tracks live vote counts + percentages
+  **natively** — a vote does NOT post anything back to the bot (votes are
+  counted in-place by Cliq, not surfaced as an inbound message), so poll
+  options are NOT action buttons (the `buttons` field is ignored for a
+  poll). `options` is REQUIRED (min 2) per the v3 docs, so the renderer
+  returns `null` when fewer than 2 options survive (empties / whitespace
+  dropped before counting; options capped at 10, over-length clamped to
+  100 chars with an ellipsis) and the caller falls back to the v2 /
+  plain-text path (never emits an invalid card). The top-level `text`
+  fallback and `slides` (a `text` slide carries the body remainder) apply
+  exactly as for the other themes. Wired behind `apiVersion: "v3"` in
+  `CliqClient.sendCard` for BOTH the channel
+  (`POST /api/v3/channels/{name}/message`, scope `ZohoCliq.Channels.CREATE`)
+  and DM (`POST /api/v3/bots/{botId}/messages`, scope
+  `ZohoCliq.Webhooks.CREATE`) v3 paths via a new optional `pollOptions`
+  field on `SendCardMessageOptions` / `CliqRenderedCard` (a string array;
+  `theme: "poll"` selects the theme). The agent-facing surface is the
+  shared `message` tool: `message(action=send, theme="poll",
+  pollOptions=["A","B",...])` posts a poll (the `message` text is the poll
+  question; on v2 / unconfigured v3 it degrades to plain text). The
+  `message` tool schema is `null` (params flow through regardless), so the
+  new `theme` + `pollOptions` params are documented in the agent prompt
+  hints instead. No new OAuth scope (the `poll` theme reuses the same
+  scopes as the other card themes: `Channels.CREATE` for channel cards,
+  `Webhooks.CREATE` for DM cards). See README §4.
+
 - REST API v3 `prompt` Message Card theme (issue #63): a second v3 Message
   Card theme (alongside the existing `modern-inline`) per
   <https://www.zoho.com/cliq/help/restapi/v3/messagecards/>. The `prompt`

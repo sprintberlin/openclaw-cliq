@@ -5,11 +5,19 @@ import {
   V3_DEFAULT_CARD_TITLE,
   V3_MAX_BUTTONS_PER_CARD,
   V3_MAX_BUTTON_LABEL_LENGTH,
+  V3_MAX_POLL_OPTIONS,
   V3_MAX_TITLE_LENGTH,
   type CliqV3CardInput,
+  type V3ModernInlineCard,
+  type V3PollCard,
   type V3PromptCard,
 } from "./v3-card.js";
 import type { CliqButton } from "./presentation.js";
+
+/** Cast a v3 card body to modern-inline (the test author knows the theme). */
+function asModern(card: { theme: string }): V3ModernInlineCard {
+  return card as unknown as V3ModernInlineCard;
+}
 
 describe("cliqButtonToV3CardButton", () => {
   it("converts a v2 openurl button to a v3 open.url button", () => {
@@ -122,9 +130,9 @@ describe("cliqCardToV3MessageCard", () => {
     expect(out).not.toBeNull();
     expect(out!.card.theme).toBe("modern-inline");
     expect(out!.card.title).toBe("Pick an option");
-    expect(out!.card.buttons).toHaveLength(2);
-    expect(out!.card.buttons![0].action.type).toBe("open.url");
-    expect(out!.card.buttons![1].action.type).toBe("invoke.bot");
+    expect(asModern(out!.card).buttons).toHaveLength(2);
+    expect(asModern(out!.card).buttons![0].action.type).toBe("open.url");
+    expect(asModern(out!.card).buttons![1].action.type).toBe("invoke.bot");
     // Full text kept as the top-level fallback.
     expect(out!.text).toBe("Pick an option");
     // No remainder → no slides.
@@ -165,7 +173,7 @@ describe("cliqCardToV3MessageCard", () => {
     }));
     const card: CliqV3CardInput = { text: "t", buttons: many };
     const out = cliqCardToV3MessageCard(card)!;
-    expect(out.card.buttons).toHaveLength(V3_MAX_BUTTONS_PER_CARD);
+    expect(asModern(out.card).buttons).toHaveLength(V3_MAX_BUTTONS_PER_CARD);
   });
 
   it("drops invoke buttons when no botId is given but still renders the card from text", () => {
@@ -179,15 +187,15 @@ describe("cliqCardToV3MessageCard", () => {
     const out = cliqCardToV3MessageCard(card);
     expect(out!.card.title).toBe("Pick");
     // The invoke button is dropped; the openurl button survives.
-    expect(out!.card.buttons).toHaveLength(1);
-    expect(out!.card.buttons![0].action.type).toBe("open.url");
+    expect(asModern(out!.card).buttons).toHaveLength(1);
+    expect(asModern(out!.card).buttons![0].action.type).toBe("open.url");
   });
 
   it("uses the default title for a buttons-only card (no text)", () => {
     const card: CliqV3CardInput = { buttons };
     const out = cliqCardToV3MessageCard(card, { botId: "bot" });
     expect(out!.card.title).toBe(V3_DEFAULT_CARD_TITLE);
-    expect(out!.card.buttons).toHaveLength(2);
+    expect(asModern(out!.card).buttons).toHaveLength(2);
     expect(out!.text).toBeUndefined();
     expect(out!.slides).toBeUndefined();
   });
@@ -219,7 +227,7 @@ describe("cliqCardToV3MessageCard", () => {
     const card: CliqV3CardInput = { text: "Hello\nWorld" };
     const out = cliqCardToV3MessageCard(card)!;
     expect(out.card.title).toBe("Hello");
-    expect(out.card.buttons).toBeUndefined();
+    expect(asModern(out.card).buttons).toBeUndefined();
     expect(out.text).toBe("Hello\nWorld");
     expect(out.slides).toEqual([{ type: "text", data: "World" }]);
   });
@@ -370,5 +378,128 @@ describe("cliqCardToV3MessageCard — prompt theme", () => {
     const card: CliqV3CardInput = { text: "Pick", buttons: promptButtons };
     const out = cliqCardToV3MessageCard(card, { botId: "bot" })!;
     expect(out.card.theme).toBe("modern-inline");
+  });
+});
+
+describe("cliqCardToV3MessageCard — poll theme", () => {
+  it("emits a poll card with theme/title/options when theme === 'poll'", () => {
+    const card: CliqV3CardInput = {
+      text: "Which feature should we prioritize?",
+      theme: "poll",
+      pollOptions: ["OAuth 2.0", "Dark mode", "Push notifications"],
+    };
+    const out = cliqCardToV3MessageCard(card);
+    expect(out).not.toBeNull();
+    expect(out!.card.theme).toBe("poll");
+    const poll = out!.card as V3PollCard;
+    expect(poll.theme).toBe("poll");
+    expect(poll.title).toBe("Which feature should we prioritize?");
+    expect(poll.options).toEqual([
+      { text: "OAuth 2.0" },
+      { text: "Dark mode" },
+      { text: "Push notifications" },
+    ]);
+    // poll has NO buttons / sections / thumbnail fields.
+    expect("buttons" in poll).toBe(false);
+    expect("sections" in poll).toBe(false);
+    expect("thumbnail" in poll).toBe(false);
+    // Full text kept as the top-level fallback.
+    expect(out!.text).toBe("Which feature should we prioritize?");
+    // Single-line text → no remainder → no slides.
+    expect(out!.slides).toBeUndefined();
+  });
+
+  it("ignores `buttons` for a poll (voting options are not action buttons)", () => {
+    const card: CliqV3CardInput = {
+      text: "Vote!",
+      theme: "poll",
+      pollOptions: ["A", "B"],
+      buttons: [
+        { label: "Open", type: "+", action: "openurl", url: "https://x.com" },
+      ],
+    };
+    const out = cliqCardToV3MessageCard(card)!;
+    expect((out.card as V3PollCard).options).toHaveLength(2);
+    expect("buttons" in out.card).toBe(false);
+  });
+
+  it("splits the first line into the title and the rest into a text slide", () => {
+    const card: CliqV3CardInput = {
+      text: "Pick a feature.\nExtra context line.",
+      theme: "poll",
+      pollOptions: ["A", "B"],
+    };
+    const out = cliqCardToV3MessageCard(card)!;
+    expect(out.card.title).toBe("Pick a feature.");
+    expect(out.text).toBe("Pick a feature.\nExtra context line.");
+    expect(out.slides).toEqual([{ type: "text", data: "Extra context line." }]);
+  });
+
+  it("uses the default title when text is empty", () => {
+    const card: CliqV3CardInput = {
+      theme: "poll",
+      pollOptions: ["A", "B"],
+    };
+    const out = cliqCardToV3MessageCard(card, { defaultTitle: "Poll" })!;
+    expect(out.card.title).toBe("Poll");
+    expect(out.text).toBeUndefined();
+    expect(out.slides).toBeUndefined();
+  });
+
+  it("returns null when fewer than 2 poll options survive", () => {
+    expect(
+      cliqCardToV3MessageCard({ theme: "poll", pollOptions: ["only"] }),
+    ).toBeNull();
+    expect(
+      cliqCardToV3MessageCard({ theme: "poll", pollOptions: [] }),
+    ).toBeNull();
+    expect(
+      cliqCardToV3MessageCard({ theme: "poll" }),
+    ).toBeNull();
+  });
+
+  it("drops empty/whitespace poll options before counting", () => {
+    const card: CliqV3CardInput = {
+      theme: "poll",
+      pollOptions: ["A", "  ", "", "B"],
+    };
+    const out = cliqCardToV3MessageCard(card)!;
+    expect((out.card as V3PollCard).options).toEqual([{ text: "A" }, { text: "B" }]);
+  });
+
+  it("caps poll options at 10 (v3 limit)", () => {
+    const many = Array.from({ length: 15 }, (_, i) => `Option ${i}`);
+    const card: CliqV3CardInput = { theme: "poll", pollOptions: many };
+    const out = cliqCardToV3MessageCard(card)!;
+    expect((out.card as V3PollCard).options).toHaveLength(V3_MAX_POLL_OPTIONS);
+  });
+
+  it("clamps a too-long option to 100 chars with an ellipsis", () => {
+    const long = "A".repeat(150);
+    const card: CliqV3CardInput = { theme: "poll", pollOptions: [long, "B"] };
+    const out = cliqCardToV3MessageCard(card)!;
+    const options = (out.card as V3PollCard).options;
+    expect(options[0].text.length).toBe(100);
+    expect(options[0].text.endsWith("…")).toBe(true);
+    expect(options[1].text).toBe("B");
+  });
+
+  it("honors opts.theme as a fallback when card.theme is absent", () => {
+    const card: CliqV3CardInput = {
+      text: "Vote",
+      pollOptions: ["A", "B"],
+    };
+    const out = cliqCardToV3MessageCard(card, { theme: "poll" })!;
+    expect(out.card.theme).toBe("poll");
+  });
+
+  it("card.theme takes precedence over opts.theme", () => {
+    const card: CliqV3CardInput = {
+      text: "Vote",
+      theme: "poll",
+      pollOptions: ["A", "B"],
+    };
+    const out = cliqCardToV3MessageCard(card, { theme: "modern-inline" })!;
+    expect(out.card.theme).toBe("poll");
   });
 });

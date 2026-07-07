@@ -553,14 +553,29 @@ export interface SendCardMessageOptions {
   to: string;
   text?: string;
   isDm?: boolean;
-  buttons: CliqButton[];
+  /**
+   * Action buttons for `modern-inline` / `prompt` cards (and the v2 path).
+   * Optional for a `poll` theme card (a poll has no buttons — it uses
+   * `pollOptions` instead); a poll send typically passes `buttons: []` or
+   * omits this field.
+   */
+  buttons?: CliqButton[];
   /**
    * v3 Message Card theme to render when `apiVersion === "v3"`. Defaults to
    * `modern-inline`. `prompt` renders a focused quick-reply card (title +
-   * 1–5 buttons, no sections); the v2 path ignores this field (v2 always
-   * sends the raw `buttons` array at the top level).
+   * 1–5 buttons, no sections); `poll` renders a voting card (title + 2–10
+   * options, no buttons — Cliq counts votes natively, no callback to the
+   * bot). The v2 path ignores this field (v2 always sends the raw `buttons`
+   * array at the top level; a v2 poll degrades to a buttons-only card or
+   * plain text).
    */
-  theme?: "modern-inline" | "prompt";
+  theme?: "modern-inline" | "prompt" | "poll";
+  /**
+   * Voting options for a `poll` theme card (v3 opt-in only; ignored for the
+   * other themes and on v2). Each entry is a plain-text string (≤100 chars);
+   * the renderer clamps + drops empties and requires ≥2 survivors.
+   */
+  pollOptions?: string[];
 }
 
 export interface NormalizedCliqTarget {
@@ -1186,9 +1201,10 @@ export class CliqClient {
     const needsUserContext = !isDm;
     const token = await this.resolveOutboundToken(scope, needsUserContext);
     const targetKind = isDm ? "dm" : "channel";
+    const buttons = opts.buttons ?? [];
     const payload: Record<string, unknown> = {};
     if (opts.text) payload.text = opts.text;
-    payload.buttons = opts.buttons;
+    if (buttons.length > 0) payload.buttons = buttons;
     let url: string;
     if (isDm) {
       url = `${this.apiBase}/api/v2/bots/${encodeURIComponent(this.botId)}/message`;
@@ -1197,7 +1213,7 @@ export class CliqClient {
       url = `${this.apiBase}/api/v2/channelsbyname/${encodeURIComponent(opts.to)}/message?bot_unique_name=${encodeURIComponent(this.botId)}`;
     }
     this.logger.info?.(
-      `[cliq] send card: ${targetKind} id=${opts.to} buttons=${opts.buttons.length}${opts.text ? ` textLen=${opts.text.length}` : ""}`,
+      `[cliq] send card: ${targetKind} id=${opts.to} buttons=${buttons.length}${opts.text ? ` textLen=${opts.text.length}` : ""}${opts.theme ? ` theme=${opts.theme}` : ""}${opts.pollOptions ? ` pollOptions=${opts.pollOptions.length}` : ""}`,
     );
     let attempt = 0;
     const res = await withSendRetry(
@@ -1263,7 +1279,7 @@ export class CliqClient {
     result?: { messageId?: string; chatId?: string };
   }> {
     const payload = cliqCardToV3MessageCard(
-      { text: opts.text, buttons: opts.buttons, theme: opts.theme },
+      { text: opts.text, buttons: opts.buttons, theme: opts.theme, pollOptions: opts.pollOptions },
       { botId: this.botId },
     );
     if (!payload) return { handled: false };
@@ -1273,7 +1289,7 @@ export class CliqClient {
     );
     const url = `${this.apiBase}/api/v3/channels/${encodeURIComponent(opts.to)}/message`;
     this.logger.info?.(
-      `[cliq] send card: channel id=${opts.to} buttons=${opts.buttons.length}${opts.text ? ` textLen=${opts.text.length}` : ""}${opts.theme ? ` theme=${opts.theme}` : ""} api=v3`,
+      `[cliq] send card: channel id=${opts.to} buttons=${(opts.buttons ?? []).length}${opts.text ? ` textLen=${opts.text.length}` : ""}${opts.theme ? ` theme=${opts.theme}` : ""}${opts.pollOptions ? ` pollOptions=${opts.pollOptions.length}` : ""} api=v3`,
     );
     let attempt = 0;
     const res = await withSendRetry(
@@ -1340,7 +1356,7 @@ export class CliqClient {
     result?: { messageId?: string; chatId?: string };
   }> {
     const card = cliqCardToV3MessageCard(
-      { text: opts.text, buttons: opts.buttons, theme: opts.theme },
+      { text: opts.text, buttons: opts.buttons, theme: opts.theme, pollOptions: opts.pollOptions },
       { botId: this.botId },
     );
     if (!card) return { handled: false };
@@ -1355,7 +1371,7 @@ export class CliqClient {
       sync_message: true,
     };
     this.logger.info?.(
-      `[cliq] send card: dm id=${opts.to} buttons=${opts.buttons.length}${opts.text ? ` textLen=${opts.text.length}` : ""}${opts.theme ? ` theme=${opts.theme}` : ""} api=v3`,
+      `[cliq] send card: dm id=${opts.to} buttons=${(opts.buttons ?? []).length}${opts.text ? ` textLen=${opts.text.length}` : ""}${opts.theme ? ` theme=${opts.theme}` : ""}${opts.pollOptions ? ` pollOptions=${opts.pollOptions.length}` : ""} api=v3`,
     );
     let attempt = 0;
     const res = await withSendRetry(

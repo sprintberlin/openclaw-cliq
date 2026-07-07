@@ -51,8 +51,13 @@ const CLIQ_CARD_CHANNEL_DATA_KEY = "cliqCard";
 export interface CliqRenderedCard {
   text?: string;
   buttons?: CliqButton[];
-  /** v3 Message Card theme (v3 opt-in only; v2 ignores this). */
-  theme?: "modern-inline" | "prompt";
+  /**
+   * v3 Message Card theme (v3 opt-in only; v2 ignores this). `poll` requires
+   * ≥2 `pollOptions` and ignores `buttons`.
+   */
+  theme?: "modern-inline" | "prompt" | "poll";
+  /** Voting options for a `poll` theme card (v3 opt-in only; ignored otherwise). */
+  pollOptions?: string[];
 }
 
 /** Type guard for the `cliqCard` marker on `payload.channelData`. */
@@ -143,20 +148,23 @@ export async function sendCliqPayload(
     : null;
   const buttons = card?.buttons;
   const theme = card?.theme;
+  const pollOptions = card?.pollOptions;
 
   const rawText = payload.text ?? "";
   const richText = rawText ? markdownToCliq(rawText) : "";
   const chunks = richText ? chunkMessage(richText, CLIQ_TEXT_CHUNK_LIMIT) : [""];
 
-  if (buttons && buttons.length > 0) {
-    // First chunk + buttons → sendCard. Remaining chunks → sendMessage.
+  const hasCard = (buttons && buttons.length > 0) || (theme === "poll" && pollOptions && pollOptions.length > 0);
+  if (hasCard) {
+    // First chunk + card → sendCard. Remaining chunks → sendMessage.
     const firstText = chunks[0] || undefined;
     const firstResult = await client.sendCard({
       to: target.to,
       isDm: target.isDm,
       ...(firstText ? { text: firstText } : {}),
-      buttons,
+      ...(buttons && buttons.length > 0 ? { buttons } : {}),
       ...(theme ? { theme } : {}),
+      ...(pollOptions && pollOptions.length > 0 ? { pollOptions } : {}),
     });
     for (let i = 1; i < chunks.length; i++) {
       await client.sendMessage({

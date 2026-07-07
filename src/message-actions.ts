@@ -122,6 +122,18 @@ function readString(
   return typeof v === "string" && v.trim() ? v.trim() : undefined;
 }
 
+/** Read a string-array param; non-strings + empty/whitespace entries dropped. */
+function readStringArray(
+  params: Record<string, unknown>,
+  key: string,
+): string[] {
+  const v = params[key];
+  if (!Array.isArray(v)) return [];
+  return v
+    .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+    .filter((s) => s.length > 0);
+}
+
 function readNumber(
   params: Record<string, unknown>,
   key: string,
@@ -193,7 +205,9 @@ interface CliqClientLike {
     to: string;
     text?: string;
     isDm?: boolean;
-    buttons: CliqButton[];
+    buttons?: CliqButton[];
+    theme?: "modern-inline" | "prompt" | "poll";
+    pollOptions?: string[];
   }): Promise<{ messageId?: string; chatId?: string }>;
   editMessage(opts: {
     chatId: string;
@@ -266,32 +280,54 @@ async function handleSend(
   // from a portable `presentation` (title/text/context blocks). A send with
   // only buttons and no text is allowed (Cliq accepts a buttons-only card).
   const body = message ?? presentationText;
-  if (!body && buttons.length === 0) {
+  // `theme: "poll"` + `pollOptions` switches the send to a v3 poll Message
+  // Card (voting options, no action buttons). Votes are counted natively by
+  // Cliq — nothing is posted back to the bot.
+  const theme = readString(params, "theme");
+  const pollOptions = readStringArray(params, "pollOptions");
+  const isPoll = theme === "poll";
+  if (isPoll && pollOptions.length < 2) {
+    return errorResult(
+      "`pollOptions` (min 2) is required for send with theme=poll.",
+    );
+  }
+  if (!body && buttons.length === 0 && !isPoll) {
     return errorResult("`message` (text) or `buttons` is required for send.");
   }
   const target = normalizeCliqRouteTarget(to);
   const rich = body ? markdownToCliq(body) : undefined;
   try {
-    const result = buttons.length > 0
+    const result = isPoll
       ? await client.sendCard({
           to: target.to,
           isDm: target.isDm,
           text: rich,
-          buttons,
+          buttons: [],
+          theme: "poll",
+          pollOptions,
         })
-      : await client.sendMessage({
-          to: target.to,
-          isDm: target.isDm,
-          text: rich ?? "",
-        });
+      : buttons.length > 0
+        ? await client.sendCard({
+            to: target.to,
+            isDm: target.isDm,
+            text: rich,
+            buttons,
+          })
+        : await client.sendMessage({
+            to: target.to,
+            isDm: target.isDm,
+            text: rich ?? "",
+          });
     return okResult(
-      `Sent message to ${to}${result.messageId ? ` (messageId=${result.messageId})` : ""}${buttons.length > 0 ? ` with ${buttons.length} button(s)` : ""}.`,
+      `Sent message to ${to}${result.messageId ? ` (messageId=${result.messageId})` : ""}${isPoll ? ` with ${pollOptions.length} poll option(s)` : buttons.length > 0 ? ` with ${buttons.length} button(s)` : ""}.`,
       {
         action: "send",
         to,
         messageId: result.messageId ?? null,
         chatId: result.chatId ?? null,
-        buttons: buttons.length,
+        ...(isPoll
+          ? { theme: "poll", pollOptions: pollOptions.length }
+          : { buttons: buttons.length }),
       },
     );
   } catch (err) {

@@ -61,13 +61,6 @@ verified-live core.
   v2 as a fallback** so the core never regresses in a single large refactor. Channel **text**
   posts, bot **DM** posts, and message **delete** route through their v3 endpoints when
   `apiVersion: "v3"` (v2 default); the remaining endpoint families to migrate:
-  - **Channel card / button posts** (`sendCard` non-DM) — v3 Message Card path
-    is wired (`POST /api/v3/channels/{name}/message`, scope
-    `ZohoCliq.Channels.CREATE`, `modern-inline` + `prompt` themes via
-    `src/v3-card.ts`); remaining: the `poll` theme.
-    DM cards route through the v3 bot-message endpoint's `card` field
-    (`POST /api/v3/bots/{botId}/messages`, scope `ZohoCliq.Webhooks.CREATE`,
-    no refresh token, no chat-id resolution).
   - **Channel media posts** (`sendMediaMessage` non-DM) — v3 channel post body has no media
     field; needs the v3 attachment / Message-Card image flow.
   - **Message edit / list-by-chat** (`/api/v2/chats/{chatId}/messages…`) — confirmed against the
@@ -104,10 +97,9 @@ verified-live core.
 ## Phase 3 — Rich messaging *(needs Phase 2)*
 
 - **Adopt v3 Message Cards.** Build the remaining v3 Message Card surfaces:
-  the `poll` theme (voting options), and `slides` beyond the `text` slide
-  emitted today — table / list / label / images / text supporting content
-  (compatible with all card themes, including the already-wired
-  `modern-inline` and `prompt` themes).
+  `slides` beyond the `text` slide emitted today — table / list / label /
+  images / text supporting content (compatible with all card themes,
+  including the already-wired `modern-inline`, `prompt`, and `poll` themes).
   Ref: Message Cards v3
   <https://www.zoho.com/cliq/help/restapi/v3/messagecards/>.
 - **Interactive status card + confirmation for sensitive actions.** Show a live status card

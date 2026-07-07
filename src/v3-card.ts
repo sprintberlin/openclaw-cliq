@@ -14,7 +14,13 @@
  *    (no sections). Used for the slash-command quick-reply buttons emitted
  *    by `src/commands.ts` (`/models`, `/model`); `buttons` is REQUIRED for a
  *    prompt (a buttonless prompt is invalid → the renderer returns `null`).
- *  - `poll` (voting options) is not yet rendered.
+ *  - `poll` — a voting card: `title` + 2–10 `options` (each `{ text }`, ≤100
+ *    chars). Cliq tracks live vote counts + percentages natively — a poll
+ *    does NOT post anything back to the bot (votes are counted in-place by
+ *    Cliq, not surfaced as an inbound message). `buttons` is ignored for a
+ *    poll (voting options are not action buttons); the options come from
+ *    `pollOptions` on the input. A poll with fewer than 2 surviving options
+ *    is invalid → the renderer returns `null`.
  * Supporting structured content (tables / lists / label rows / images / text
  * blocks) is attached via the top-level `slides` array that sits alongside
  * `card` in the payload (NOT nested inside it).
@@ -58,6 +64,15 @@ export const V3_MAX_BUTTONS_PER_CARD = 5;
 
 /** Max visible label length for a v3 card button. */
 export const V3_MAX_BUTTON_LABEL_LENGTH = 30;
+
+/** Min poll options on a v3 poll card (per the Message Cards docs). */
+export const V3_MIN_POLL_OPTIONS = 2;
+
+/** Max poll options on a v3 poll card (per the Message Cards docs). */
+export const V3_MAX_POLL_OPTIONS = 10;
+
+/** Max text length for a single v3 poll option (per the Message Cards docs). */
+export const V3_MAX_POLL_OPTION_LENGTH = 100;
 
 /** Default card title when the source card carries no body text. */
 export const V3_DEFAULT_CARD_TITLE = "Message";
@@ -103,7 +118,7 @@ export interface V3PromptCard {
 }
 
 /** A v3 Message Card `card` object (theme-discriminated). */
-export type V3MessageCard = V3ModernInlineCard | V3PromptCard;
+export type V3MessageCard = V3ModernInlineCard | V3PromptCard | V3PollCard;
 
 /** A v3 Message Card slide (top-level supporting content, alongside `card`). */
 export interface V3MessageCardSlide {
@@ -120,7 +135,22 @@ export interface V3MessageCardPayload {
 }
 
 /** v3 Message Card theme the plugin can render. */
-export type V3CardTheme = "modern-inline" | "prompt";
+export type V3CardTheme = "modern-inline" | "prompt" | "poll";
+
+/**
+ * A v3 `poll` Message Card body (the `card` object). A voting card: a
+ * `title` (the poll question, ≤200 chars) + 2–10 `options` (each
+ * `{ text }`, ≤100 chars). Cliq tracks live vote counts + percentages
+ * natively — a vote does NOT post anything back to the bot (votes are
+ * counted in-place by Cliq), so a poll has no `buttons` field. `options`
+ * is REQUIRED (min 2) per the Message Cards docs — a poll with fewer than
+ * 2 surviving options is invalid, so the renderer returns `null`.
+ */
+export interface V3PollCard {
+  theme: "poll";
+  title: string;
+  options: Array<{ text: string }>;
+}
 
 /**
  * The plugin's rendered card input shape (structural; matches
@@ -132,8 +162,17 @@ export type V3CardTheme = "modern-inline" | "prompt";
 export interface CliqV3CardInput {
   text?: string;
   buttons?: CliqButton[];
-  /** Card theme to render; defaults to `modern-inline`. `prompt` requires ≥1 button. */
+  /**
+   * Card theme to render; defaults to `modern-inline`. `prompt` requires
+   * ≥1 button; `poll` requires ≥2 `pollOptions` (and ignores `buttons`).
+   */
   theme?: V3CardTheme;
+  /**
+   * Voting options for a `poll` theme card (each a plain-text string, ≤100
+   * chars). Ignored for `modern-inline` / `prompt`. Cliq counts votes
+   * natively — a poll has no action buttons.
+   */
+  pollOptions?: string[];
 }
 
 /** Clamp a label to the v3 limit, suffixing with an ellipsis. */
@@ -141,6 +180,16 @@ function clampV3Label(label: string): string {
   const trimmed = label.trim();
   if (trimmed.length <= V3_MAX_BUTTON_LABEL_LENGTH) return trimmed;
   return trimmed.slice(0, V3_MAX_BUTTON_LABEL_LENGTH - 1).trimEnd() + "…";
+}
+
+/**
+ * Clamp a poll option text to the v3 limit (100 chars), suffixing with an
+ * ellipsis. Whitespace-only options are dropped (returned as `""`).
+ */
+function clampV3PollOption(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= V3_MAX_POLL_OPTION_LENGTH) return trimmed;
+  return trimmed.slice(0, V3_MAX_POLL_OPTION_LENGTH - 1).trimEnd() + "…";
 }
 
 /**
@@ -223,12 +272,21 @@ function splitTitleAndRemainder(
  *    no convertible buttons returns `null` (the caller falls back to v2 /
  *    plain text). Has no `sections` / `thumbnail` (those are
  *    `modern-inline`-only); the text remainder still becomes a `text` slide.
+ *  - `poll`: a voting card — `title` + 2–10 `options` (each `{ text }`,
+ *    ≤100 chars). `buttons` is IGNORED for a poll (voting options are not
+ *    action buttons); the options come from `card.pollOptions`. Cliq counts
+ *    votes natively (no callback to the bot). A poll with fewer than 2
+ *    surviving options is invalid → returns `null`. The text remainder (the
+ *    card body past the first line) still becomes a `text` slide, exactly as
+ *    for the other themes.
  *
  * The full card `text` is always kept as the top-level `text` fallback so
  * clients that don't render cards still show something. Buttons convert per
  * {@link cliqButtonToV3CardButton} (capped at 5). Returns `null` when the
- * card has neither text nor convertible buttons, OR when `theme === "prompt"`
- * and no convertible buttons survive (a buttonless prompt is invalid).
+ * card has neither text nor convertible buttons (modern-inline), OR when
+ * `theme === "prompt"` and no convertible buttons survive (a buttonless
+ * prompt is invalid), OR when `theme === "poll"` and fewer than 2 poll
+ * options survive (a <2-option poll is invalid).
  */
 export function cliqCardToV3MessageCard(
   card: CliqV3CardInput,
@@ -236,6 +294,23 @@ export function cliqCardToV3MessageCard(
 ): V3MessageCardPayload | null {
   const theme: V3CardTheme = card.theme ?? opts.theme ?? "modern-inline";
   const text = card.text?.trim() ?? "";
+  if (theme === "poll") {
+    // poll REQUIRES ≥2 surviving options; voting options are NOT buttons.
+    const options = (card.pollOptions ?? [])
+      .map((o) => clampV3PollOption(o))
+      .filter((t) => t.length > 0)
+      .slice(0, V3_MAX_POLL_OPTIONS)
+      .map((t) => ({ text: t }));
+    if (options.length < V3_MIN_POLL_OPTIONS) return null;
+    const defaultTitle = opts.defaultTitle ?? V3_DEFAULT_CARD_TITLE;
+    const { title, remainder } = splitTitleAndRemainder(text, defaultTitle);
+    const payload: V3MessageCardPayload = {
+      card: { theme: "poll", title, options },
+    };
+    if (text) payload.text = text;
+    if (remainder) payload.slides = [{ type: "text", data: remainder }];
+    return payload;
+  }
   const buttons = (card.buttons ?? [])
     .slice(0, V3_MAX_BUTTONS_PER_CARD)
     .map((b) => cliqButtonToV3CardButton(b, opts.botId))
