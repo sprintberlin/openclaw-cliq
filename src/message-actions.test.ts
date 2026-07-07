@@ -46,7 +46,7 @@ function makeCfg(account: Partial<ResolvedCliqAccount>): OpenClawConfig {
 
 interface FakeClient {
   sends: { to: string; text: string; isDm?: boolean }[];
-  cards: { to: string; text?: string; isDm?: boolean; buttons?: unknown[]; theme?: string; pollOptions?: string[]; slides?: unknown[] }[];
+  cards: { to: string; text?: string; isDm?: boolean; buttons?: unknown[]; theme?: string; pollOptions?: string[]; slides?: unknown[]; thumbnail?: string; sections?: unknown[] }[];
   edits: { chatId: string; messageId: string; text: string }[];
   deletes: { chatId: string; messageId: string }[];
   reads: { chatId: string; limit?: number }[];
@@ -88,7 +88,7 @@ function makeFakeClient(opts: {
       sends.push(o);
       return { messageId: "m-sent", chatId: o.isDm ? "dm-chat" : undefined };
     }),
-    sendCard: vi.fn(async (o: { to: string; text?: string; isDm?: boolean; buttons?: unknown[]; theme?: string; pollOptions?: string[]; slides?: unknown[] }) => {
+    sendCard: vi.fn(async (o: { to: string; text?: string; isDm?: boolean; buttons?: unknown[]; theme?: string; pollOptions?: string[]; slides?: unknown[]; thumbnail?: string; sections?: unknown[] }) => {
       cards.push(o);
       return { messageId: "m-card", chatId: o.isDm ? "dm-chat" : undefined };
     }),
@@ -417,6 +417,82 @@ describe("cliqMessageActions.handleAction", () => {
       expect(client.cards).toHaveLength(1);
       expect(client.sends).toHaveLength(0);
       expect(client.cards[0].slides).toHaveLength(1);
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("send with `thumbnail` + `sections` params: forwards them to sendCard", async () => {
+    const client = makeFakeClient({});
+    const account = makeAccount({});
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!(
+        buildCtx(
+          {
+            to: "cliq:channel:dev-team",
+            message: "Ticket #1",
+            thumbnail: "https://example.com/t.png",
+            sections: [
+              {
+                title: "Details",
+                fields: [
+                  { title: "Priority", value: "High" },
+                  { title: "Owner", value: "olivia" },
+                ],
+              },
+            ],
+          },
+          account,
+        ) as Parameters<NonNullable<typeof cliqMessageActions.handleAction>>[0],
+      );
+      expect(result.details).toMatchObject({
+        action: "send",
+        messageId: "m-card",
+        buttons: 0,
+      });
+      expect(client.cards).toHaveLength(1);
+      const card = client.cards[0];
+      expect(card.to).toBe("dev-team");
+      expect(card.thumbnail).toBe("https://example.com/t.png");
+      expect(card.sections).toEqual([
+        {
+          title: "Details",
+          fields: [
+            { title: "Priority", value: "High" },
+            { title: "Owner", value: "olivia" },
+          ],
+        },
+      ]);
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("send with only `sections` (no message/buttons/slides) dispatches a card", async () => {
+    const client = makeFakeClient({});
+    const account = makeAccount({});
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!(
+        buildCtx(
+          {
+            to: "cliq:channel:dev-team",
+            sections: [{ fields: [{ title: "k", value: "v" }] }],
+          },
+          account,
+        ) as Parameters<NonNullable<typeof cliqMessageActions.handleAction>>[0],
+      );
+      expect(result.details).toMatchObject({ action: "send", messageId: "m-card" });
+      expect(client.cards).toHaveLength(1);
+      expect(client.sends).toHaveLength(0);
+      expect(client.cards[0].sections).toHaveLength(1);
     } finally {
       setCliqClientRegistry(null);
     }

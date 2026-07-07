@@ -1,0 +1,9 @@
+---
+title: REST API v3 `modern-inline` Message Card `sections` + `thumbnail` are in-card fields (issue #73)
+category: Zoho Cliq specifics
+files: [src/v3-card.ts, src/message-actions.ts, src/client.ts]
+apis: [/api/v3/channels/{CHANNEL_UNIQUE_NAME}/message, /api/v3/bots/{BOT_UNIQUE_NAME}/messages, ZohoCliq.Channels.CREATE, ZohoCliq.Webhooks.CREATE]
+issues: [#73]
+---
+
+Per <https://www.zoho.com/cliq/help/restapi/v3/messagecards/> the `modern-inline` Message Card body carries two optional in-card fields NESTED INSIDE `card` (alongside `title` / `buttons`), NOT as top-level `slides`: `thumbnail` (string — a publicly accessible **HTTPS** URL of an image shown in the card header next to the title) and `sections` (array of `{ title?, fields: [{ title, value }] }` labeled field groups rendered in the card body). Both are **`modern-inline`-only** — the v3 docs list them as optional for `modern-inline` and absent for `prompt` (title + buttons only) and `poll` (title + options only); emitting them on a `prompt` / `poll` card is a no-op the renderer must skip, not an error. This is distinct from `slides`, which is a theme-independent TOP-LEVEL array. The v3 docs do NOT document per-section limits, so `normalizeV3Section` / `normalizeV3Thumbnail` apply defensive caps (sections ≤10, fields-per-section ≤50, section title ≤100 chars, field title/value ≤200 chars, thumbnail URL ≤2048 chars) and silently drop invalid entries (non-HTTPS / over-length thumbnail, fields with an empty title OR value, empty sections) so a malformed field never fails the whole send — a wholly-empty `sections` array yields `undefined` (the card omits `sections` entirely). The agent-facing input shape (`V3CardSectionInput` + `thumbnail` on `CliqV3CardInput` in `src/v3-card.ts`) mirrors the slides pattern; `readSectionsParam` / `readThumbnailParam` in `src/message-actions.ts` parse the loose tool params defensively, and the renderer re-validates.

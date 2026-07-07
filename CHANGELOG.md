@@ -13,6 +13,30 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
+- REST API v3 Message Card `modern-inline` `sections` + `thumbnail`
+  (issue #73): the remaining v3 Message Card surfaces per
+  <https://www.zoho.com/cliq/help/restapi/v3/messagecards/>. Both are
+  `modern-inline`-only in-card fields (NOT top-level slides — they nest
+  inside `card` alongside `title` / `buttons`) and are ignored for `prompt` /
+  `poll` themes and on v2. `thumbnail` (string) is a publicly accessible HTTPS
+  URL shown in the card header next to the title; non-HTTPS / empty / over-
+  length URLs are dropped silently. `sections` is an array of
+  `{ title?, fields: [{ title, value }] }` labeled field groups; the renderer
+  (`normalizeV3Section` / `normalizeV3Sections` in `src/v3-card.ts`) clamps
+  section titles + field values, drops fields with an empty title OR value,
+  drops empty sections, and caps sections (10) + fields-per-section (50) at
+  defensive limits — invalid entries never fail the whole send. Wired behind
+  `apiVersion: "v3"` in `CliqClient.sendCard` for BOTH the channel
+  (`POST /api/v3/channels/{name}/message`, scope `ZohoCliq.Channels.CREATE`)
+  and DM (`POST /api/v3/bots/{botId}/messages`, scope
+  `ZohoCliq.Webhooks.CREATE`) v3 paths via new optional `thumbnail` + `sections`
+  fields on `SendCardMessageOptions` / `CliqV3CardInput`. The agent-facing
+  surface is the shared `message` tool: `message(action=send,
+  thumbnail="https://…", sections=[{ title, fields: [{ title, value }] }])`
+  attaches a header image + labeled field groups to a card send (combined with
+  `buttons` / `theme` / `pollOptions` / `slides` / `message` text as usual);
+  on v2 / unconfigured v3 the fields are ignored. No new OAuth scope (reuses
+  the existing card-path scopes).
 - REST API v3 Message Card supporting-content `slides` (issue #70): the
   remaining v3 Message Card slide surfaces per
   <https://www.zoho.com/cliq/help/restapi/v3/messagecards/>. `slides` is a

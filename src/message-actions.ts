@@ -41,7 +41,7 @@ import {
   type CliqButton,
   type PortablePresentation,
 } from "./presentation.js";
-import type { V3CardSlideInput } from "./v3-card.js";
+import type { V3CardSectionInput, V3CardSlideInput } from "./v3-card.js";
 
 /** Actions Cliq can perform via the shared `message` tool, in priority order. */
 const CLIQ_ACTIONS_ALL: readonly ChannelMessageActionName[] = [
@@ -221,6 +221,49 @@ function readSlidesParam(raw: unknown): V3CardSlideInput[] {
   return out;
 }
 
+/**
+ * Read a `sections` param (an array of v3 `modern-inline` Message Card in-
+ * card labeled field groups) defensively. Each entry must be an object with
+ * an optional string `title` and an array `fields` of `{ title, value }`
+ * pairs (coerced to strings; entries missing `title` or `value` survive here
+ * and are dropped later by the renderer). Non-array / non-object entries
+ * are dropped; an empty array yields `[]`. See `normalizeV3Section`.
+ */
+function readSectionsParam(raw: unknown): V3CardSectionInput[] {
+  if (!Array.isArray(raw)) return [];
+  const out: V3CardSectionInput[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const rec = entry as Record<string, unknown>;
+    const title = typeof rec.title === "string" ? rec.title : undefined;
+    const fields = Array.isArray(rec.fields)
+      ? rec.fields
+          .filter(
+            (p): p is Record<string, unknown> =>
+              Boolean(p && typeof p === "object" && !Array.isArray(p)),
+          )
+          .map((p) => ({
+            title: String(p.title ?? ""),
+            value: String(p.value ?? ""),
+          }))
+      : [];
+    if (fields.length === 0) continue;
+    out.push({ ...(title ? { title } : {}), fields });
+  }
+  return out;
+}
+
+/**
+ * Read a `thumbnail` param (a `modern-inline` Message Card header image
+ * URL) defensively. Must be a string; the renderer enforces HTTPS-only +
+ * length limits. Returns `undefined` for non-string / empty values.
+ */
+function readThumbnailParam(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const t = raw.trim();
+  return t.length > 0 ? t : undefined;
+}
+
 /** Build a successful tool result with a JSON-shaped detail payload. */
 function okResult(
   text: string,
@@ -283,6 +326,8 @@ interface CliqClientLike {
     theme?: "modern-inline" | "prompt" | "poll";
     pollOptions?: string[];
     slides?: V3CardSlideInput[];
+    thumbnail?: string;
+    sections?: V3CardSectionInput[];
   }): Promise<{ messageId?: string; chatId?: string }>;
   editMessage(opts: {
     chatId: string;
@@ -371,12 +416,25 @@ async function handleSend(
   // ignored on v2. Parsed defensively — invalid slides are dropped by the
   // renderer, never throw.
   const slides = readSlidesParam(params["slides"]);
-  if (!body && buttons.length === 0 && !isPoll && slides.length === 0) {
+  // v3 `modern-inline` Message Card in-card fields: a `thumbnail` header
+  // image URL + `sections` of labeled key/value field groups. Both are
+  // `modern-inline`-only (ignored for `prompt` / `poll` and on v2); parsed
+  // defensively — the renderer clamps + drops invalid entries, never throws.
+  const thumbnail = readThumbnailParam(params["thumbnail"]);
+  const sections = readSectionsParam(params["sections"]);
+  if (!body && buttons.length === 0 && !isPoll && slides.length === 0 && sections.length === 0) {
     return errorResult("`message` (text) or `buttons` is required for send.");
   }
   const target = normalizeCliqRouteTarget(to);
   const rich = body ? markdownToCliq(body) : undefined;
   const slidesParam = slides.length > 0 ? slides : undefined;
+  const sectionsParam = sections.length > 0 ? sections : undefined;
+  const thumbnailParam = thumbnail;
+  const cardExtras = {
+    ...(slidesParam ? { slides: slidesParam } : {}),
+    ...(sectionsParam ? { sections: sectionsParam } : {}),
+    ...(thumbnailParam ? { thumbnail: thumbnailParam } : {}),
+  };
   try {
     const result = isPoll
       ? await client.sendCard({
@@ -386,7 +444,7 @@ async function handleSend(
           buttons: [],
           theme: "poll",
           pollOptions,
-          ...(slidesParam ? { slides: slidesParam } : {}),
+          ...cardExtras,
         })
       : buttons.length > 0
         ? await client.sendCard({
@@ -394,15 +452,15 @@ async function handleSend(
             isDm: target.isDm,
             text: rich,
             buttons,
-            ...(slidesParam ? { slides: slidesParam } : {}),
+            ...cardExtras,
           })
-        : slidesParam
+        : slidesParam || sectionsParam || thumbnailParam
           ? await client.sendCard({
               to: target.to,
               isDm: target.isDm,
               text: rich,
               buttons: [],
-              ...(slidesParam ? { slides: slidesParam } : {}),
+              ...cardExtras,
             })
           : await client.sendMessage({
               to: target.to,
@@ -410,7 +468,7 @@ async function handleSend(
               text: rich ?? "",
             });
     return okResult(
-      `Sent message to ${to}${result.messageId ? ` (messageId=${result.messageId})` : ""}${isPoll ? ` with ${pollOptions.length} poll option(s)` : buttons.length > 0 ? ` with ${buttons.length} button(s)` : slidesParam ? ` with ${slidesParam.length} slide(s)` : ""}.`,
+      `Sent message to ${to}${result.messageId ? ` (messageId=${result.messageId})` : ""}${isPoll ? ` with ${pollOptions.length} poll option(s)` : buttons.length > 0 ? ` with ${buttons.length} button(s)` : slidesParam ? ` with ${slidesParam.length} slide(s)` : sectionsParam ? ` with ${sectionsParam.length} section(s)` : thumbnailParam ? ` with a thumbnail` : ""}.`,
       {
         action: "send",
         to,

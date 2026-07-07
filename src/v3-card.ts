@@ -95,6 +95,21 @@ export const V3_MIN_POLL_OPTIONS = 2;
 /** Max poll options on a v3 poll card (per the Message Cards docs). */
 export const V3_MAX_POLL_OPTIONS = 10;
 
+/** Max labeled-field `sections` in a single v3 modern-inline card body (defensive cap). */
+export const V3_MAX_SECTIONS = 10;
+
+/** Max `fields` in a single v3 modern-inline card section (defensive cap). */
+export const V3_MAX_SECTION_FIELDS = 50;
+
+/** Max text length for a single v3 modern-inline card section title (defensive cap, chars). */
+export const V3_MAX_SECTION_TITLE_LENGTH = 100;
+
+/** Max text length for a single v3 modern-inline card section field title/value (chars). */
+export const V3_MAX_SECTION_FIELD_LENGTH = 200;
+
+/** Max length of a v3 modern-inline card `thumbnail` URL (defensive cap, chars). */
+export const V3_MAX_THUMBNAIL_URL_LENGTH = 2048;
+
 /** Max text length for a single v3 poll option (per the Message Cards docs). */
 export const V3_MAX_POLL_OPTION_LENGTH = 100;
 
@@ -175,6 +190,21 @@ export type V3CardSlideInput =
   | { type: "images"; title?: string; urls: string[] }
   | { type: "text"; title?: string; text: string };
 
+/**
+ * Input shape for a v3 modern-inline card `sections` entry (an in-card
+ * labeled field group, NOT a top-level slide). Per the Message Cards docs
+ * (`modern-inline` card body):
+ *  - `title`: optional section heading displayed above the fields.
+ *  - `fields`: a list of key/value pairs (`{ title, value }`).
+ * The normalizer maps each entry onto the v3 `sections` payload, clamps
+ * titles + field values, drops fields with an empty title OR value, and
+ * drops an empty / wholly-invalid section entirely.
+ */
+export interface V3CardSectionInput {
+  title?: string;
+  fields: Array<{ title: string; value: string }>;
+}
+
 /** A v3 Message Card message payload (posted as the request body). */
 export interface V3MessageCardPayload {
   text?: string;
@@ -231,6 +261,24 @@ export interface CliqV3CardInput {
    * (never throw) so a malformed slide never fails the whole send.
    */
   slides?: V3CardSlideInput[];
+  /**
+   * Header thumbnail URL for a `modern-inline` card (a publicly accessible
+   * HTTPS URL shown in the card header next to the `title`). `modern-inline`
+   * only — ignored for `prompt` / `poll`. Non-HTTPS / over-length URLs are
+   * dropped silently (never fail the send). No `thumbnail` is emitted when
+   * the URL is invalid or absent.
+   */
+  thumbnail?: string;
+  /**
+   * In-card labeled field `sections` for a `modern-inline` card body (NOT a
+   * top-level slide — `sections` nests inside `card`, alongside `title` /
+   * `thumbnail` / `buttons`). `modern-inline` only — ignored for `prompt` /
+   * `poll`. Each entry is a `V3CardSectionInput` (`{ title?, fields: [{ title,
+   * value }] }`); the renderer clamps titles + field values, drops fields
+   * with an empty title OR value, and drops empty sections entirely. Invalid
+   * sections are dropped silently (never fail the send).
+   */
+  sections?: V3CardSectionInput[];
 }
 
 /** Clamp a label to the v3 limit, suffixing with an ellipsis. */
@@ -421,6 +469,69 @@ export function normalizeV3Slides(
   return out.length > 0 ? out : undefined;
 }
 
+/** Clamp a string to `limit` chars, suffixing with an ellipsis on overflow. */
+function clampSectionTitle(title: string): string | undefined {
+  const t = title?.trim();
+  if (!t) return undefined;
+  return clampText(t, V3_MAX_SECTION_TITLE_LENGTH);
+}
+
+/**
+ * Normalize a single v3 modern-inline card `sections` entry (an in-card
+ * labeled field group) into the v3 payload shape, validating + clamping each
+ * field. Returns `null` when the section has no surviving fields (so a
+ * degenerate section is dropped rather than emitted — the API would reject an
+ * empty `fields` array). Per the Message Cards docs (`modern-inline` card
+ * body): `sections[].title` is optional; `sections[].fields` is an array of
+ * `{ title, value }` pairs.
+ */
+export function normalizeV3Section(
+  section: V3CardSectionInput,
+): { title?: string; fields: Array<{ title: string; value: string }> } | null {
+  const title = clampSectionTitle(section.title ?? "");
+  const fields = (section.fields ?? [])
+    .slice(0, V3_MAX_SECTION_FIELDS)
+    .map((f) => ({
+      title: clampText(String(f?.title ?? "").trim(), V3_MAX_SECTION_FIELD_LENGTH),
+      value: clampText(String(f?.value ?? "").trim(), V3_MAX_SECTION_FIELD_LENGTH),
+    }))
+    .filter((f) => f.title.length > 0 && f.value.length > 0);
+  if (fields.length === 0) return null;
+  return { ...(title ? { title } : {}), fields };
+}
+
+/**
+ * Normalize an array of v3 modern-inline card `sections` inputs into the v3
+ * `sections` payload (dropping invalid entries; capped at `V3_MAX_SECTIONS`).
+ * Returns `undefined` when no sections survive (so the card omits `sections`
+ * entirely).
+ */
+export function normalizeV3Sections(
+  sections: V3CardSectionInput[] | undefined,
+): Array<{ title?: string; fields: Array<{ title: string; value: string }> }> | undefined {
+  if (!sections || sections.length === 0) return undefined;
+  const out: Array<{ title?: string; fields: Array<{ title: string; value: string }> }> = [];
+  for (const s of sections) {
+    if (out.length >= V3_MAX_SECTIONS) break;
+    const n = normalizeV3Section(s);
+    if (n) out.push(n);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+/**
+ * Normalize a v3 modern-inline card `thumbnail` URL. Per the Message Cards
+ * docs the thumbnail must be a publicly accessible HTTPS URL; non-HTTPS /
+ * empty / over-length values are dropped (return `undefined`), never thrown.
+ */
+export function normalizeV3Thumbnail(url: string | undefined): string | undefined {
+  const u = String(url ?? "").trim();
+  if (!u) return undefined;
+  if (!/^https:\/\//i.test(u)) return undefined;
+  if (u.length > V3_MAX_THUMBNAIL_URL_LENGTH) return undefined;
+  return u;
+}
+
 /**
  * Convert the plugin's rendered card shape into a v3 Message Card payload.
  * The `theme` (from `card.theme` or `opts.theme`, default `modern-inline`)
@@ -506,8 +617,16 @@ export function cliqCardToV3MessageCard(
   if (extraSlides) {
     payload.slides = [...(payload.slides ?? []), ...extraSlides];
   }
-  if (theme === "modern-inline" && buttons.length > 0) {
-    (payload.card as V3ModernInlineCard).buttons = buttons;
+  if (theme === "modern-inline") {
+    const cardBody = payload.card as V3ModernInlineCard;
+    if (buttons.length > 0) cardBody.buttons = buttons;
+    // `thumbnail` + `sections` are modern-inline-only in-card fields (NOT
+    // top-level slides); ignored for prompt / poll. Invalid entries are
+    // dropped silently — a bad thumbnail / section never fails the send.
+    const thumbnail = normalizeV3Thumbnail(card.thumbnail);
+    if (thumbnail) cardBody.thumbnail = thumbnail;
+    const sections = normalizeV3Sections(card.sections);
+    if (sections) cardBody.sections = sections;
   }
   return payload;
 }

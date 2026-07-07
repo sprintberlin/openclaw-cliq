@@ -7,7 +7,7 @@ import {
   type CliqLogger,
 } from "./logger.js";
 import type { CliqButton } from "./presentation.js";
-import { cliqCardToV3MessageCard, type V3CardSlideInput } from "./v3-card.js";
+import { cliqCardToV3MessageCard, type V3CardSectionInput, type V3CardSlideInput } from "./v3-card.js";
 import { resolveCliqSecretString } from "./secret-resolve.js";
 import { paginateList } from "./pagination.js";
 import {
@@ -585,6 +585,22 @@ export interface SendCardMessageOptions {
    * `V3CardSlideInput` in `src/v3-card.ts`.
    */
   slides?: V3CardSlideInput[];
+  /**
+   * Header thumbnail URL for a `modern-inline` v3 Message Card (a publicly
+   * accessible HTTPS URL shown in the card header next to the title). v3
+   * opt-in + `modern-inline` only — ignored on v2 and for `prompt` / `poll`
+   * themes. Non-HTTPS / over-length URLs are dropped silently. See
+   * `V3CardSectionInput`-family types in `src/v3-card.ts`.
+   */
+  thumbnail?: string;
+  /**
+   * In-card labeled field `sections` for a `modern-inline` v3 Message Card
+   * body (NOT a top-level slide — `sections` nests inside `card`). v3 opt-in
+   * + `modern-inline` only — ignored on v2 and for `prompt` / `poll` themes.
+   * Each entry is a `V3CardSectionInput` (`{ title?, fields: [{ title, value }]
+   * }`); invalid sections are dropped silently. See `src/v3-card.ts`.
+   */
+  sections?: V3CardSectionInput[];
 }
 
 export interface NormalizedCliqTarget {
@@ -1302,7 +1318,7 @@ export class CliqClient {
     result?: { messageId?: string; chatId?: string };
   }> {
     const payload = cliqCardToV3MessageCard(
-      { text: opts.text, buttons: opts.buttons, theme: opts.theme, pollOptions: opts.pollOptions, slides: opts.slides },
+      { text: opts.text, buttons: opts.buttons, theme: opts.theme, pollOptions: opts.pollOptions, slides: opts.slides, thumbnail: opts.thumbnail, sections: opts.sections },
       { botId: this.botId },
     );
     if (!payload) return { handled: false };
@@ -1379,7 +1395,7 @@ export class CliqClient {
     result?: { messageId?: string; chatId?: string };
   }> {
     const card = cliqCardToV3MessageCard(
-      { text: opts.text, buttons: opts.buttons, theme: opts.theme, pollOptions: opts.pollOptions, slides: opts.slides },
+      { text: opts.text, buttons: opts.buttons, theme: opts.theme, pollOptions: opts.pollOptions, slides: opts.slides, thumbnail: opts.thumbnail, sections: opts.sections },
       { botId: this.botId },
     );
     if (!card) return { handled: false };

@@ -2,21 +2,29 @@ import { describe, it, expect } from "vitest";
 import {
   cliqButtonToV3CardButton,
   cliqCardToV3MessageCard,
+  normalizeV3Section,
+  normalizeV3Sections,
   normalizeV3Slide,
   normalizeV3Slides,
+  normalizeV3Thumbnail,
   V3_DEFAULT_CARD_TITLE,
   V3_MAX_BUTTONS_PER_CARD,
   V3_MAX_BUTTON_LABEL_LENGTH,
   V3_MAX_IMAGE_URLS,
   V3_MAX_LIST_ITEMS,
   V3_MAX_POLL_OPTIONS,
+  V3_MAX_SECTION_FIELD_LENGTH,
+  V3_MAX_SECTION_FIELDS,
+  V3_MAX_SECTIONS,
   V3_MAX_SLIDES,
   V3_MAX_SLIDE_CELL_LENGTH,
   V3_MAX_SLIDE_TEXT_LENGTH,
   V3_MAX_TABLE_HEADERS,
   V3_MAX_TABLE_ROWS,
+  V3_MAX_THUMBNAIL_URL_LENGTH,
   V3_MAX_TITLE_LENGTH,
   type CliqV3CardInput,
+  type V3CardSectionInput,
   type V3CardSlideInput,
   type V3ModernInlineCard,
   type V3PollCard,
@@ -787,5 +795,249 @@ describe("cliqCardToV3MessageCard — slides passthrough", () => {
     };
     const out = cliqCardToV3MessageCard(card)!;
     expect(out.slides).toEqual([{ type: "list", data: ["ok"] }]);
+  });
+});
+
+describe("normalizeV3Section", () => {
+  it("keeps a section with a title + surviving fields", () => {
+    const out = normalizeV3Section({
+      title: "Ticket",
+      fields: [
+        { title: "ID", value: "#1" },
+        { title: "Priority", value: "High" },
+      ],
+    })!;
+    expect(out).not.toBeNull();
+    expect(out.title).toBe("Ticket");
+    expect(out.fields).toEqual([
+      { title: "ID", value: "#1" },
+      { title: "Priority", value: "High" },
+    ]);
+  });
+
+  it("drops fields with an empty title OR value", () => {
+    const out = normalizeV3Section({
+      fields: [
+        { title: "A", value: "1" },
+        { title: "  ", value: "x" },
+        { title: "B", value: "" },
+        { title: "C", value: "3" },
+      ],
+    })!;
+    expect(out.title).toBeUndefined();
+    expect(out.fields).toEqual([
+      { title: "A", value: "1" },
+      { title: "C", value: "3" },
+    ]);
+  });
+
+  it("returns null when no fields survive", () => {
+    expect(
+      normalizeV3Section({ fields: [{ title: "", value: "" }] }),
+    ).toBeNull();
+    expect(normalizeV3Section({ fields: [] })).toBeNull();
+  });
+
+  it("clamps over-length field titles + values to the cap with an ellipsis", () => {
+    const long = "A".repeat(V3_MAX_SECTION_FIELD_LENGTH + 50);
+    const out = normalizeV3Section({
+      fields: [{ title: long, value: long }],
+    })!;
+    expect(out.fields).toHaveLength(1);
+    expect(out.fields[0].title.length).toBe(V3_MAX_SECTION_FIELD_LENGTH);
+    expect(out.fields[0].title.endsWith("…")).toBe(true);
+    expect(out.fields[0].value.length).toBe(V3_MAX_SECTION_FIELD_LENGTH);
+    expect(out.fields[0].value.endsWith("…")).toBe(true);
+  });
+
+  it("caps the number of fields at the limit", () => {
+    const fields = Array.from(
+      { length: V3_MAX_SECTION_FIELDS + 5 },
+      (_, i) => ({ title: `k${i}`, value: `v${i}` }),
+    );
+    const out = normalizeV3Section({ fields })!;
+    expect(out.fields).toHaveLength(V3_MAX_SECTION_FIELDS);
+  });
+
+  it("clamps an over-length section title", () => {
+    const out = normalizeV3Section({
+      title: "A".repeat(200),
+      fields: [{ title: "k", value: "v" }],
+    })!;
+    expect(out.title!.length).toBe(100);
+    expect(out.title!.endsWith("…")).toBe(true);
+  });
+
+  it("drops a whitespace-only section title", () => {
+    const out = normalizeV3Section({
+      title: "   ",
+      fields: [{ title: "k", value: "v" }],
+    })!;
+    expect(out.title).toBeUndefined();
+  });
+});
+
+describe("normalizeV3Sections", () => {
+  it("returns undefined for no input / empty array", () => {
+    expect(normalizeV3Sections(undefined)).toBeUndefined();
+    expect(normalizeV3Sections([])).toBeUndefined();
+  });
+
+  it("drops invalid sections and keeps the survivors in order", () => {
+    const out = normalizeV3Sections([
+      { title: "A", fields: [{ title: "k", value: "v" }] },
+      { fields: [] },
+      { title: "B", fields: [{ title: "x", value: "y" }] },
+    ])!;
+    expect(out).toHaveLength(2);
+    expect(out[0].title).toBe("A");
+    expect(out[1].title).toBe("B");
+  });
+
+  it("caps the number of sections at the limit", () => {
+    const sections: V3CardSectionInput[] = Array.from(
+      { length: V3_MAX_SECTIONS + 5 },
+      () => ({ fields: [{ title: "k", value: "v" }] }),
+    );
+    expect(normalizeV3Sections(sections)).toHaveLength(V3_MAX_SECTIONS);
+  });
+
+  it("returns undefined when every section is invalid", () => {
+    expect(
+      normalizeV3Sections([{ fields: [] }, { fields: [{ title: "", value: "" }] }]),
+    ).toBeUndefined();
+  });
+});
+
+describe("normalizeV3Thumbnail", () => {
+  it("keeps a trimmed HTTPS url", () => {
+    expect(normalizeV3Thumbnail("  https://example.com/t.png  ")).toBe(
+      "https://example.com/t.png",
+    );
+  });
+
+  it("drops a non-HTTPS url", () => {
+    expect(normalizeV3Thumbnail("http://example.com/t.png")).toBeUndefined();
+  });
+
+  it("drops an empty / whitespace-only value", () => {
+    expect(normalizeV3Thumbnail("   ")).toBeUndefined();
+    expect(normalizeV3Thumbnail("")).toBeUndefined();
+    expect(normalizeV3Thumbnail(undefined)).toBeUndefined();
+  });
+
+  it("drops an over-length url", () => {
+    const long = "https://example.com/" + "a".repeat(V3_MAX_THUMBNAIL_URL_LENGTH);
+    expect(normalizeV3Thumbnail(long)).toBeUndefined();
+  });
+});
+
+describe("cliqCardToV3MessageCard — thumbnail + sections (modern-inline)", () => {
+  it("attaches thumbnail + sections to a modern-inline card", () => {
+    const card: CliqV3CardInput = {
+      text: "Ticket #1",
+      thumbnail: "https://example.com/t.png",
+      sections: [
+        {
+          title: "Details",
+          fields: [
+            { title: "Priority", value: "High" },
+            { title: "Owner", value: "olivia" },
+          ],
+        },
+      ],
+    };
+    const out = cliqCardToV3MessageCard(card)!;
+    expect(out.card.theme).toBe("modern-inline");
+    const m = asModern(out.card);
+    expect(m.thumbnail).toBe("https://example.com/t.png");
+    expect(m.sections).toEqual([
+      {
+        title: "Details",
+        fields: [
+          { title: "Priority", value: "High" },
+          { title: "Owner", value: "olivia" },
+        ],
+      },
+    ]);
+  });
+
+  it("omits thumbnail / sections when absent (no empty fields emitted)", () => {
+    const card: CliqV3CardInput = { text: "Hi" };
+    const out = cliqCardToV3MessageCard(card)!;
+    const m = asModern(out.card);
+    expect(m.thumbnail).toBeUndefined();
+    expect(m.sections).toBeUndefined();
+  });
+
+  it("drops a non-HTTPS thumbnail silently", () => {
+    const card: CliqV3CardInput = {
+      text: "Hi",
+      thumbnail: "http://insecure.com/t.png",
+    };
+    const out = cliqCardToV3MessageCard(card)!;
+    expect(asModern(out.card).thumbnail).toBeUndefined();
+  });
+
+  it("drops an all-empty sections array silently", () => {
+    const card: CliqV3CardInput = {
+      text: "Hi",
+      sections: [{ fields: [] }, { fields: [{ title: "", value: "" }] }],
+    };
+    const out = cliqCardToV3MessageCard(card)!;
+    expect(asModern(out.card).sections).toBeUndefined();
+  });
+
+  it("ignores thumbnail + sections for a prompt card (modern-inline-only)", () => {
+    const card: CliqV3CardInput = {
+      text: "Pick",
+      buttons: [
+        { label: "OK", type: "+", action: "openurl", url: "https://x.com" },
+      ],
+      theme: "prompt",
+      thumbnail: "https://example.com/t.png",
+      sections: [{ fields: [{ title: "k", value: "v" }] }],
+    };
+    const out = cliqCardToV3MessageCard(card)!;
+    expect(out.card.theme).toBe("prompt");
+    expect("thumbnail" in out.card).toBe(false);
+    expect("sections" in out.card).toBe(false);
+  });
+
+  it("ignores thumbnail + sections for a poll card (modern-inline-only)", () => {
+    const card: CliqV3CardInput = {
+      text: "Pick",
+      theme: "poll",
+      pollOptions: ["A", "B"],
+      thumbnail: "https://example.com/t.png",
+      sections: [{ fields: [{ title: "k", value: "v" }] }],
+    };
+    const out = cliqCardToV3MessageCard(card)!;
+    expect(out.card.theme).toBe("poll");
+    expect("thumbnail" in out.card).toBe(false);
+    expect("sections" in out.card).toBe(false);
+  });
+
+  it("combines thumbnail + sections with buttons + slides", () => {
+    const card: CliqV3CardInput = {
+      text: "Header\nbody remainder",
+      buttons: [
+        { label: "Open", type: "+", action: "openurl", url: "https://x.com" },
+      ],
+      thumbnail: "https://example.com/t.png",
+      sections: [{ fields: [{ title: "k", value: "v" }] }],
+      slides: [{ type: "list", items: ["a", "b"] }],
+    };
+    const out = cliqCardToV3MessageCard(card, { botId: "bot" })!;
+    const m = asModern(out.card);
+    expect(m.thumbnail).toBe("https://example.com/t.png");
+    expect(m.sections).toEqual([
+      { fields: [{ title: "k", value: "v" }] },
+    ]);
+    expect(m.buttons).toHaveLength(1);
+    expect(out.slides).toEqual([
+      { type: "text", data: "body remainder" },
+      { type: "list", data: ["a", "b"] },
+    ]);
   });
 });
