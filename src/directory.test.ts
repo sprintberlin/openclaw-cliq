@@ -399,3 +399,93 @@ describe("applyCliqDirectoryQueryAndLimit", () => {
     expect(applyCliqDirectoryQueryAndLimit(entries, null, null)).toHaveLength(2);
   });
 });
+
+/**
+ * v3 directory dead-end regression guard.
+ *
+ * v3 has NO org-user / channel directory: `GET /api/v3/chats?type=dm|channel`
+ * returns only the chats the bot has ALREADY conversed with — a semantic change,
+ * not a clean swap. `openclaw directory` lists ALL org users / channels, so the
+ * `listUsers` / `listChannels` paths stay on `/api/v2/...` indefinitely,
+ * REGARDLESS of the `apiVersion` opt-in. These tests lock that invariant so a
+ * future contributor does not wire the directory to a v3 path that cannot list
+ * the full org directory. See docs/learnings/094-*.md.
+ */
+describe("CliqClient directory listing stays on /api/v2 regardless of apiVersion", () => {
+  beforeEach(() => setCliqClientRegistry(null));
+  afterEach(() => setCliqClientRegistry(null));
+
+  it("listUsers hits /api/v2/users (never /api/v3/) even when apiVersion==='v3'", async () => {
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient(
+      "id", "secret", "bot",
+      undefined, undefined,
+      { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1, sleep: async () => {}, random: () => 0 },
+      undefined, undefined, "v3",
+    );
+    const seen: string[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      seen.push(urlStr);
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(
+          JSON.stringify({ access_token: "tok", expires_in: 3600 }),
+          { status: 200 },
+        );
+      }
+      if (urlStr.includes("/api/v2/users")) {
+        return new Response(JSON.stringify({ users: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("", { status: 404 });
+    }) as typeof fetch;
+    try {
+      await client.listUsers(10);
+    } finally {
+      globalThis.fetch = original;
+    }
+    const usersCall = seen.find((u) => u.includes("/api/v2/users"));
+    expect(usersCall).toBeDefined();
+    expect(seen.some((u) => u.includes("/api/v3/"))).toBe(false);
+  });
+
+  it("listChannels hits /api/v2/channels (never /api/v3/) even when apiVersion==='v3'", async () => {
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient(
+      "id", "secret", "bot",
+      undefined, undefined,
+      { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1, sleep: async () => {}, random: () => 0 },
+      undefined, undefined, "v3",
+    );
+    const seen: string[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      seen.push(urlStr);
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(
+          JSON.stringify({ access_token: "tok", expires_in: 3600 }),
+          { status: 200 },
+        );
+      }
+      if (urlStr.includes("/api/v2/channels")) {
+        return new Response(JSON.stringify({ channels: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("", { status: 404 });
+    }) as typeof fetch;
+    try {
+      await client.listChannels(10);
+    } finally {
+      globalThis.fetch = original;
+    }
+    const channelsCall = seen.find((u) => u.includes("/api/v2/channels"));
+    expect(channelsCall).toBeDefined();
+    expect(seen.some((u) => u.includes("/api/v3/"))).toBe(false);
+  });
+});

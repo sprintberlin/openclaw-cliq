@@ -56,52 +56,6 @@ base. (The instant-ack placeholder is already in flight — see the open issue.)
 The base everything rich builds on. Do this **incrementally**, not as a big-bang rewrite of the
 verified-live core.
 
-- **Migrate outbound calls to v3.** Move the send / edit / react / metadata calls off the
-  hard-coded `/api/v2/` paths in `src/client.ts` to v3 **one endpoint family per change, keeping
-  v2 as a fallback** so the core never regresses in a single large refactor. Channel **text**
-  posts, bot **DM** posts, and message **delete** route through their v3 endpoints when
-  `apiVersion: "v3"` (v2 default); the remaining endpoint families are
-  confirmed v2-only dead ends (guardrails against re-attempting the
-  migration), except Directory which is an open behavior decision:
-  - **Channel media posts** (`sendMediaMessage` non-DM) — confirmed v2-only
-    indefinitely: v3 has NO byte-upload surface (the v3 Messages post
-    endpoints take a JSON `{ text, reply_to?, sync_message? }` body with no
-    `attachments` field; v3 has no Files API; the only v3 image option is a
-    Message-Card `images` slide that accepts PUBLIC HTTPS image URLs only —
-    no raw bytes — via the Message-Card channel endpoint, which posts as the
-    authenticated USER, not the bot, and needs the user-context refresh
-    token). That path is strictly worse than the v2 multipart path (bot
-    sender identity, raw bytes, any MIME type), so media posts stay on
-    `/api/v2/...` regardless of `apiVersion` (locked by a regression test in
-    `src/channel.test.ts`). Inline image rendering from a public URL via the
-    v3 Message-Card `images` slide is a Phase 3 (rich messaging) concern, not
-    a Phase 2 migration.
-  - **Message edit / list-by-chat** (`/api/v2/chats/{chatId}/messages…`) — confirmed against the
-    v3 OpenAPI / REST docs: v3 Messages has **no** single-message edit or get/list-by-chat
-    endpoint (only delete-multiple, post, forward, search), and v3 Chats has no message
-    operations at all. The v2 edit + list-chat-messages paths therefore stay v2 indefinitely
-    (a v3 dead end — no swap available). The message-delete family was migrated in its own
-    increment (v3 bulk-delete with a 1-element `message_ids` list, scope `Messages.DELETE`).
-  - **Reactions** (`/api/v2/chats/{chatId}/messages/{messageId}/reactions`) —
-    confirmed v2-only: the v3 REST API has no reactions endpoint anywhere
-    (not under Messages, Chats, or Threads — v3 exposes only Stars + Pin
-    Messages as reaction-adjacent surfaces). The add/remove paths stay on
-    `/api/v2/...` indefinitely regardless of `apiVersion` (locked by a
-    regression test in `src/reactions.test.ts`).
-  - **Directory** (`/api/v2/users`, `/api/v2/channels`) — v3 has no org-user / channel
-    directory; `GET /api/v3/chats?type=dm|channel` returns chats (a semantic change: only
-    users / channels the bot already has a conversation with), so this is a behavior decision,
-    not a clean swap.
-  - **File download** (`/api/v2/files/{fileId}`) — confirmed v2-only: v3 has no
-    Files API (FILE_ID appears in the v3 glossary but no Files endpoint exists
-    in the v3 sidebar / OpenAPI).
-  - **Channel-chat-id resolution** (`GET /api/v2/channelsbyname/{name}`) —
-    confirmed v2-only: v3 chat retrieval is `GET /api/v3/chats/{chatId}` (by
-    chat id, not by unique name); the channelsbyname lookup has no v3
-    equivalent.
-  Ref: v3 Introduction <https://www.zoho.com/cliq/help/restapi/v3/introduction/>,
-  v3 Messages <https://www.zoho.com/cliq/help/restapi/v3/messages/>,
-  v3 Chats <https://www.zoho.com/cliq/help/restapi/v3/chats/>.
 - **Adopt the v3 conventions the rest of the roadmap depends on:** `PATCH` partial updates (cleaner
   message edits for `src/live-edit.ts`), pagination (`page` / `per_page`) on list calls, and the
   consistent v3 error shape (feeds better error classification, incl. the existing data-center

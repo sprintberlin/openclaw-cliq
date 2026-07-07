@@ -95,3 +95,4 @@ One line per durable learning; full fact + tags in the linked file. `rg` this fo
 - [`g`-flagged `RegExp` is stateful](091-g-flagged-regexp-is-stateful.md)
 - [The SDK's channel/plugin test-contract helpers are NOT published for third-party plugins](092-the-sdks-channel-plugin-test-contract-helpers-are.md)  — files: src/test-api.ts
 - [REST API v3 channel media posts are a v3 dead end (no byte upload)](093-rest-api-v3-channel-media-posts-are-a-v3-dead.md)  — files: src/client.ts,src/v3-card.ts · apis: /api/v2/bots/{botId}/message,/api/v2/channelsbyname/{name}/message,/api/v3/channelsbyname/{name}/messages,/api/v3/channels/{name}/message,ZohoCliq.Channels.UPDATE,ZohoCliq.Channels.CREATE,ZohoCliq.Webhooks.CREATE
+- [Directory listing (users / channels) is a v3 dead end — no org-directory equivalent](094-directory-listing-users-channels-is-a-v3-dead-end.md)  — apis: /api/v2/users,/api/v2/channels,/api/v3/chats,ZohoCliq.Users.READ,ZohoCliq.Channels.READ

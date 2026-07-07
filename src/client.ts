@@ -1834,6 +1834,11 @@ export class CliqClient {
    * directory listing endpoints (`/api/v2/users`, `/api/v2/channels`) which
    * are read-only GETs scoped to `ZohoCliq.Users.READ` / `ZohoCliq.Channels.READ`.
    * Throws on a non-2xx with the response body for diagnostics.
+   *
+   * v3 dead end: v3 has no org-user / channel directory (`GET /api/v3/chats`
+   * returns only chats the bot already has, a semantic change), so these paths
+   * stay on `/api/v2/...` indefinitely regardless of `apiVersion` — locked by
+   * a regression test in `src/directory.test.ts`.
    */
   private async getJson(path: string, scope: string): Promise<unknown> {
     const token = await this.getAccessToken(scope);
