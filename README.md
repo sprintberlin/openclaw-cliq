@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/zoho-cliq-128.png" alt="Zoho Cliq" width="96" height="96">
+  <img src="https://sprintcx.net/uploads/zoho-icons/zoho-cliq-128.png" alt="Zoho Cliq" width="96" height="96">
 </p>
 
 <h1 align="center">Zoho Cliq Channel for OpenClaw</h1>
@@ -41,17 +41,15 @@ DM the bot → it answers. To also reply to channel **@mentions** and stream liv
 
 ## Features
 
-| | Capability |
-| --- | --- |
-| 💬 **Messaging** | DMs + channel @mentions, inbound via a Deluge webhook, outbound as the bot (DMs via `userids`, channel posts via `channelsbyname`). Inbound image / file / voice attachments are downloaded and handed to the agent. Send `stop` / `/stop` / `esc` to interrupt a running turn. **Cliq Form submissions** (structured input via the bot's Form Handler) are recognized and routed to the agent with their field values surfaced as `FormValues` / `FormName`. The agent can also **solicit structured input** by rendering a form as a native `prompt` card with a button per option (`message(action=send, form=…)`); a prompt-card button click re-enters as a structured `FormValues` entry on the inbound context (parameter capture). |
-| ✍️ **Rich replies** | Markdown → Cliq formatting, **live-edit streaming previews**, interactive buttons & cards, slash-style commands, reply threading. **v3 Message Cards** (`apiVersion: "v3"`): `modern-inline` / `prompt` / `poll` themes, supporting-content **`slides`** (table / list / label / images / text blocks attached alongside the card), and `modern-inline` **`sections`** (in-card labeled field groups) + **`thumbnail`** header image. |
-| ⚡ **Message actions** | Edit / delete / react to sent messages from the agent. |
-| 🔐 **OAuth 2.0** | `client_credentials` for DMs; a user-context **refresh token** for channel posts / message edits. Works on any Zoho [data center](#data-centers). |
-| 🛡️ **DM security** | `allowlist` / `pairing` / `open` / `disabled` policies with an approval flow. |
-| 🧩 **Per-channel policy** | Group admission + per-channel `requireMention`, tool policy, and per-sender tool overrides. |
-| 🔁 **Reliability** | Durable-before-ack ingest, de-dup on redelivery, bot-loop / self-message protection, outbound retry with error classification (parses the v3 `{"message":"…"}` error envelope). |
-| 🔒 **Hardened webhook** | Constant-time secret compare, single-header auth, failed-auth rate limiting. |
-| 🩺 **Operations** | `openclaw status` / `channels` health probe, `openclaw directory` lookup, plugin doctor, interactive setup wizard, SecretRef credentials, security audit, session binding, multi-account, lifecycle hooks. |
+- **💬 Messaging** — DMs + channel @mentions via a Deluge webhook, outbound as the bot (DMs via `userids`, channel posts via `channelsbyname`). Inbound **image / file / voice attachments** are downloaded and handed to the agent. `stop` / `/stop` / `esc` interrupts a running turn. **Cliq Form submissions** (structured input via the bot's Form Handler) are recognized and routed to the agent with their field values surfaced as `FormValues` / `FormName`; the agent can also **solicit structured input** by rendering a form as a native `prompt` card — a button click re-enters as a structured `FormValues` entry (parameter capture).
+- **✍️ Rich replies** — Markdown → Cliq formatting, **live-edit streaming previews**, interactive buttons & cards, slash-style commands, reply threading. Opt-in **v3 Message Cards** (`apiVersion: "v3"`) add `modern-inline` / `prompt` / `poll` themes, supporting-content **`slides`** (table / list / label / image / text blocks), `modern-inline` **`sections`** (in-card labeled field groups), and a **`thumbnail`** header image.
+- **⚡ Message actions** — Edit / delete / react to sent messages from the agent.
+- **🔐 OAuth 2.0** — `client_credentials` for DMs; a user-context **refresh token** for channel posts / message edits. Works on any Zoho [data center](#data-centers).
+- **🛡️ DM security** — `allowlist` / `pairing` / `open` / `disabled` policies with an approval flow.
+- **🧩 Per-channel policy** — Group admission + per-channel `requireMention`, tool policy, and per-sender tool overrides.
+- **🔁 Reliability** — Durable-before-ack ingest, de-dup on redelivery, bot-loop / self-message protection, outbound retry with error classification (parses the v3 `{"message":"…"}` error envelope).
+- **🔒 Hardened webhook** — Constant-time secret compare, single-header auth, failed-auth rate limiting.
+- **🩺 Operations** — `openclaw status` / `channels` health probe, `openclaw directory` lookup, plugin doctor, interactive setup wizard, SecretRef credentials, security audit, session binding, multi-account, lifecycle hooks.
 
 > **Known limitation:** the bot can *send* reactions, but *inbound* reaction notifications (being told when a user reacts) are not yet possible — the OpenClaw plugin SDK exposes no inbound non-message event hook for external channel plugins. Tracked upstream: [openclaw/openclaw#100447](https://github.com/openclaw/openclaw/issues/100447).
 
@@ -74,7 +72,7 @@ Everything that must be configured **on the Zoho side** so the `cliq` channel pl
 Open the bot builder: click your **profile picture** (top-right in Zoho Cliq) → under **My Cliq** choose **Bots & Tools**.
 
 <p align="center">
-  <img src="assets/cliq-bots-tools-menu.png" alt="Zoho Cliq — profile picture menu → My Cliq → Bots & Tools" width="440">
+  <img src="https://raw.githubusercontent.com/sprintberlin/openclaw-cliq/v0.1.4/assets/cliq-bots-tools-menu.png" alt="Zoho Cliq — profile picture menu → My Cliq → Bots & Tools" width="440">
 </p>
 
 1. In **Bots & Tools**, open the **Bots** section.
@@ -303,7 +301,7 @@ The Cliq bot must forward every mention / message event to the OpenClaw webhook.
 > **Where to find them:** in the Cliq Bot editor open **Edit Handlers**, then click *Edit Code* on **Message Handler** (DMs) and **Mention Handler** (channel @mentions) — the two arrowed below.
 
 <p align="center">
-  <img src="assets/cliq-bot-handlers.png" alt="Zoho Cliq bot Edit Handlers page — Message Handler and Mention Handler highlighted" width="820">
+  <img src="https://raw.githubusercontent.com/sprintberlin/openclaw-cliq/v0.1.4/assets/cliq-bot-handlers.png" alt="Zoho Cliq bot Edit Handlers page — Message Handler and Mention Handler highlighted" width="820">
 </p>
 
 ```deluge

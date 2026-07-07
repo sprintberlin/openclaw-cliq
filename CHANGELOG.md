@@ -11,6 +11,28 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-07-07
+
+### Fixed
+
+- **README renders correctly on ClawHub.** The logo and screenshots now use
+  absolute image URLs (the logo via CDN, the screenshots via tag-pinned GitHub
+  raw URLs) instead of repo-relative `assets/…` paths, which ClawHub could not
+  resolve on its package page — the images showed as broken. Separately, the
+  **Features** section is now a bullet list instead of a two-column table:
+  ClawHub renders README tables with `table-layout: fixed` and a very narrow
+  first column, which char-wrapped the feature labels (e.g. "Messaging" became
+  "Mess aging"). Purely a documentation/presentation change — no plugin or
+  runtime behavior is affected.
+
+### Documentation
+
+- Document the ClawHub publish source-commit gotcha in
+  [RELEASING.md](RELEASING.md): a manual publish must pass the **commit** SHA
+  (`git rev-parse vX.Y.Z^{commit}`), not an annotated tag's object SHA, or
+  ClawHub builds a broken `raw.githubusercontent.com` image URL. CI is
+  unaffected — it uses `github.sha`.
+
 ## [0.1.3] - 2026-07-07
 
 ### Added
@@ -651,7 +673,8 @@ publish workflow extracts the matching section as the release notes (see
   lookup, plugin doctor, interactive setup wizard, SecretRef-backed credentials,
   security audit collector, session binding, multi-account, lifecycle hooks.
 
-[Unreleased]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.0...v0.1.1

@@ -125,10 +125,12 @@ npm pack                                            # produces sprintcx-openclaw
 clawhub package publish sprintcx-openclaw-cliq-*.tgz \
   --family code-plugin --owner sprintcx --version X.Y.Z \
   --source-repo sprintberlin/openclaw-cliq \
-  --source-commit "$(git rev-parse vX.Y.Z)" --source-ref vX.Y.Z \
+  --source-commit "$(git rev-parse vX.Y.Z^{commit})" --source-ref vX.Y.Z \
   --changelog "…"
 # If it errors with the "invalid value" message above, just run it again.
 ```
+
+Note the **`^{commit}`** in `--source-commit` — see failure mode 4.
 
 ### 3. GitHub Release step needs `gh` — **present in CI, maybe not locally**
 
@@ -136,6 +138,24 @@ The workflow uses the `gh` CLI (preinstalled on GitHub runners) to create the
 Release. If you ever publish by hand on a machine without `gh`, create the
 Release via the REST API instead (`POST /repos/{owner}/{repo}/releases`, then
 upload the `.tgz` to the returned `upload_url`).
+
+### 4. Broken README images on ClawHub — **wrong `--source-commit` (annotated-tag object SHA)**
+
+ClawHub turns repo-relative README image paths (`assets/…`) into
+`raw.githubusercontent.com/<repo>/<source-commit>/assets/…` URLs using the
+release's **`--source-commit`**. Our tags are **annotated**, so
+`git rev-parse vX.Y.Z` returns the **tag object** SHA, not a commit — and
+raw.githubusercontent only serves **commit** SHAs (and refs), so a tag-object
+SHA yields a 404 and every relative README image renders broken. Always resolve
+the commit with **`git rev-parse vX.Y.Z^{commit}`** for a manual publish. **CI is
+unaffected** — it passes `${{ github.sha }}`, which is the commit.
+
+> Defense in depth: this README also uses **absolute** image URLs (CDN logo,
+> tag-pinned `raw.githubusercontent.com/.../vX.Y.Z/assets/…` screenshots) so the
+> images survive even if a release records the wrong source-commit. Keep new
+> README images absolute for the same reason. Also note ClawHub renders README
+> tables with a very narrow, fixed first column — prefer bullet lists over
+> two-column label/description tables so labels don't char-wrap.
 
 ## Troubleshooting
 
@@ -146,6 +166,10 @@ upload the `.tgz` to the returned `upload_url`).
 - **`spawnSync npm ENOENT`** (local publish) — Windows-only CLI quirk; pass a
   pre-built `.tgz` as the source (see
   [failure mode 2](#2-spawnsyncnpm--enoent-when-publishing-from-a-folder--localwindows-only)).
+- **Broken README images on the ClawHub page** — a manual publish recorded an
+  annotated-tag object SHA as `--source-commit`; use `git rev-parse vX.Y.Z^{commit}`
+  (see [failure mode 4](#4-broken-readme-images-on-clawhub--wrong---source-commit-annotated-tag-object-sha)).
+  Prefer absolute image URLs to avoid the dependency entirely.
 - **`package.json version (...) does not match tag (...)`** — bump
   `package.json` on `main` before tagging (step 3), then re-tag.
 - **`No CHANGELOG.md section found for version X.Y.Z`** — add the
