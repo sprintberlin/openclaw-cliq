@@ -48,19 +48,19 @@
 
 ## Phase 3 — Rich messaging
 
-- **Outbound Cliq Forms + form-driven approval / collection flows.** Inbound
-  form-submission parsing is in place (a `handler: "form"` payload forwarded by
-  the bot's Form Handler is recognized, its field values synthesize the agent
-  body, and `FormValues` / `FormName` are surfaced on the inbound context).
-  What remains: (a) an agent-facing tool / message-action that **renders** a
-  native Cliq Form (or the closest portable equivalent — a `prompt`-card with
-  a button per field option) so the agent can solicit structured input instead
-  of asking for free text; (b) a form-driven **pairing approval** flow
-  (`dmPolicy: "pairing"` → post an approval form to the owner's channel/DM
-  instead of the `openclaw pairing approve` CLI step); (c) **parameter capture**
-  for tool calls that need structured args (agent posts a form, the submitted
-  values re-enter as the tool's structured params). Ref: Cliq platform (Form
-  handler) <https://www.zoho.com/cliq/help/platform/>.
+- **Outbound Cliq Forms + form-driven approval / collection flows.** The
+  agent-facing form **renderer** is in place (`message(action=send,
+  form=…)` renders a native `prompt` card with a button per select option
+  plus a `modern-inline` summary card for text/number fields; tapping a
+  button posts `<fieldName>: <value>` back as an inbound message). What
+  remains: (b) a form-driven **pairing approval** flow (`dmPolicy:
+  "pairing"` → post an approval form to the owner's channel/DM instead of
+  the `openclaw pairing approve` CLI step); (c) **parameter capture** for
+  tool calls that need structured args (agent posts a form, the submitted
+  values re-enter as the tool's structured params — surfacing the button
+  click as a `FormValues` entry on the inbound context rather than plain
+  text). Ref: Cliq platform (Form handler)
+  <https://www.zoho.com/cliq/help/platform/>.
 
 ## Phase 4 — Programmatic Cliq via v3 CRUD
 

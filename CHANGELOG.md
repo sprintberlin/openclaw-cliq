@@ -13,6 +13,31 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
+- **Cliq Forms — outbound structured-input renderer.** The agent can now
+  **solicit** structured input by rendering a form as a native Cliq `prompt`
+  card with a button per option — the portable equivalent of a Cliq platform
+  Form, emitted on demand. The shared `message` tool accepts a new `form`
+  param (`message(action=send, to=…, form={ title?, fields: [{ name, label?,
+  type?: "select"|"text"|"number", options?, placeholder? }] })`). Each
+  `select` field with ≥2 options becomes a `prompt`-theme Message Card (a
+  button per option, capped at 5; extras listed in the card body); `text` /
+  `number` fields fold into a single `modern-inline` summary card posted
+  first, listing each as a question with a `reply with <name>: <value>` hint.
+  Tapping a button posts `<fieldName>: <value>` back to the bot as an
+  ordinary inbound message the agent reads as the user's answer (e.g.
+  `priority: high`) — no inbound-side changes required, so this works on
+  both v2 and v3 without a separate Form Handler. An optional `message`
+  param prefixes the first card's text as extra context. A degenerate form
+  (no viable fields) returns an error so the agent can correct and retry.
+  The `form` param takes precedence over `buttons` / `theme` / `slides` when
+  present. No new OAuth scope — prompt cards reuse the same card-path scopes
+  (`Webhooks.CREATE` for DM cards via `client_credentials`; `Channels.UPDATE`
+  on v2 / `Channels.CREATE` on v3 for channel cards) the existing
+  `message(action=send, buttons=…)` path uses. No new config field. The
+  first increment of the Phase 3 "Outbound Cliq Forms" item (sub-part a —
+  the renderer); pairing-approval and parameter-capture flows follow. See
+  README §5c.
+
 - **Cliq Forms — inbound structured input.** When a Zoho Cliq platform
   **Form** is submitted, the bot's **Form Handler** Deluge script can forward
   the submitted field values to the OpenClaw webhook (`/cliq/webhook`) and

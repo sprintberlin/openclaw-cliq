@@ -43,7 +43,7 @@ DM the bot → it answers. To also reply to channel **@mentions** and stream liv
 
 | | Capability |
 | --- | --- |
-| 💬 **Messaging** | DMs + channel @mentions, inbound via a Deluge webhook, outbound as the bot (DMs via `userids`, channel posts via `channelsbyname`). Inbound image / file / voice attachments are downloaded and handed to the agent. Send `stop` / `/stop` / `esc` to interrupt a running turn. **Cliq Form submissions** (structured input via the bot's Form Handler) are recognized and routed to the agent with their field values surfaced as `FormValues` / `FormName`. |
+| 💬 **Messaging** | DMs + channel @mentions, inbound via a Deluge webhook, outbound as the bot (DMs via `userids`, channel posts via `channelsbyname`). Inbound image / file / voice attachments are downloaded and handed to the agent. Send `stop` / `/stop` / `esc` to interrupt a running turn. **Cliq Form submissions** (structured input via the bot's Form Handler) are recognized and routed to the agent with their field values surfaced as `FormValues` / `FormName`. The agent can also **solicit structured input** by rendering a form as a native `prompt` card with a button per option (`message(action=send, form=…)`). |
 | ✍️ **Rich replies** | Markdown → Cliq formatting, **live-edit streaming previews**, interactive buttons & cards, slash-style commands, reply threading. **v3 Message Cards** (`apiVersion: "v3"`): `modern-inline` / `prompt` / `poll` themes, supporting-content **`slides`** (table / list / label / images / text blocks attached alongside the card), and `modern-inline` **`sections`** (in-card labeled field groups) + **`thumbnail`** header image. |
 | ⚡ **Message actions** | Edit / delete / react to sent messages from the agent. |
 | 🔐 **OAuth 2.0** | `client_credentials` for DMs; a user-context **refresh token** for channel posts / message edits. Works on any Zoho [data center](#data-centers). |
@@ -445,6 +445,30 @@ reason: prod deploy gate
 ```
 
 The raw structured values are ALSO surfaced on the inbound context as `FormValues` (a string-keyed map) and `FormName` (the form's display name), so an agent tool or downstream flow can read them as structured data rather than parsing the body text. A form submission is treated as a directed action at the bot — a group form submission is admitted without a separate @mention (the same way a reply to the bot is). DM admission (`dmPolicy` / `allowFrom`) and self-message / dedupe guards apply unchanged. A form submission whose every field is empty is dropped (no agent-readable content). No new OAuth scope is required — the Form Handler is a bot handler that posts to the webhook over the same `x-cliq-webhook-secret`-authenticated transport as Message / Mention / Welcome. There is no separate opt-in config field — if no form is wired up, no form submissions arrive.
+
+#### 5c. Agent-rendered forms (outbound structured input)
+
+In addition to the inbound Form Handler above, the agent can **solicit** structured input at runtime by rendering a form as a native Cliq `prompt` card with a button per option — the portable equivalent of a Cliq platform Form, emitted on demand. The agent calls the shared `message` tool with a `form` param:
+
+```
+message(action=send, to="cliq:user:u-1", form={
+  title: "Which priority?",
+  fields: [
+    { name: "priority", label: "Priority", type: "select",
+      options: [{ label: "High", value: "high" }, { label: "Low", value: "low" }] },
+    { name: "reason", type: "text", placeholder: "brief justification" }
+  ]
+})
+```
+
+Rendering rules:
+
+- Each `select` field with **≥2 options** becomes its own `prompt` card (a button per option, capped at 5; extras listed in the card body). Tapping a button posts `<fieldName>: <value>` back to the bot as an ordinary inbound message the agent reads as the user's answer (e.g. `priority: high`).
+- `text` / `number` fields (and optionless `select` fields) fold into a single `modern-inline` summary card posted **before** the prompt cards, listing each as a question with a `reply with <name>: <value>` hint.
+- An optional `message` param prefixes the first card's text as extra context (instructions, context, etc.).
+- A degenerate form (no viable fields) returns an error so the agent can correct and retry.
+
+No new OAuth scope — prompt cards reuse the same card-path scopes the existing `message(action=send, buttons=…)` path uses (`ZohoCliq.Webhooks.CREATE` for DM cards via `client_credentials`; `ZohoCliq.Channels.UPDATE` on v2 / `ZohoCliq.Channels.CREATE` on v3 for channel cards via the refresh-token grant). On v2 the `prompt` theme is ignored and the buttons render as a standard v2 bot-message buttons array; on v3 (`apiVersion: "v3"`) a real `prompt`-theme Message Card is posted. No config field — the `form` param is always available on a configured account.
 
 #### Payload format reference
 

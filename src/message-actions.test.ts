@@ -626,6 +626,184 @@ describe("cliqMessageActions.handleAction", () => {
     }
   });
 
+  it("send with `form` param: renders a prompt card with a button per option", async () => {
+    const client = makeFakeClient({});
+    const account = makeAccount({});
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!(
+        buildCtx(
+          {
+            to: "cliq:user:u-1",
+            form: {
+              title: "Which priority?",
+              fields: [
+                {
+                  name: "priority",
+                  label: "Priority",
+                  type: "select",
+                  options: [
+                    { label: "High", value: "high" },
+                    { label: "Low", value: "low" },
+                  ],
+                },
+              ],
+            },
+          },
+          account,
+        ) as Parameters<NonNullable<typeof cliqMessageActions.handleAction>>[0],
+      );
+      expect(result.details).toMatchObject({
+        action: "send",
+        form: true,
+        cards: 1,
+        promptCards: 1,
+        posted: 1,
+        messageId: "m-card",
+      });
+      expect(client.cards).toHaveLength(1);
+      expect(client.sends).toHaveLength(0);
+      const card = client.cards[0];
+      expect(card.to).toBe("u-1");
+      expect(card.isDm).toBe(true);
+      expect(card.theme).toBe("prompt");
+      expect(card.buttons).toHaveLength(2);
+      expect(card.buttons![0]).toMatchObject({ label: "High", action: "invoke", data: "priority: high" });
+      expect(card.buttons![1]).toMatchObject({ label: "Low", data: "priority: low" });
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("send with `form` + text fields: posts a summary card then a prompt card", async () => {
+    const client = makeFakeClient({});
+    const account = makeAccount({});
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!(
+        buildCtx(
+          {
+            to: "cliq:channel:general",
+            form: {
+              title: "Deploy info",
+              fields: [
+                { name: "version", type: "text", placeholder: "v1.2.3" },
+                {
+                  name: "priority",
+                  type: "select",
+                  options: ["high", "low"],
+                },
+              ],
+            },
+          },
+          account,
+        ) as Parameters<NonNullable<typeof cliqMessageActions.handleAction>>[0],
+      );
+      expect(result.details).toMatchObject({ cards: 2, promptCards: 1, posted: 2 });
+      expect(client.cards).toHaveLength(2);
+      // Summary card first (modern-inline, no buttons)
+      expect(client.cards[0].theme).toBe("modern-inline");
+      expect(client.cards[0].buttons).toEqual([]);
+      expect(client.cards[0].text).toContain("version");
+      // Prompt card second
+      expect(client.cards[1].theme).toBe("prompt");
+      expect(client.cards[1].buttons).toHaveLength(2);
+      expect(client.cards[1].buttons![0]).toMatchObject({ data: "priority: high" });
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("send with `form` + `message`: prefixes the first card text", async () => {
+    const client = makeFakeClient({});
+    const account = makeAccount({});
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      await cliqMessageActions.handleAction!(
+        buildCtx(
+          {
+            to: "cliq:user:u-1",
+            message: "Please choose:",
+            form: {
+              fields: [
+                { name: "env", type: "select", options: ["prod", "dev"] },
+              ],
+            },
+          },
+          account,
+        ) as Parameters<NonNullable<typeof cliqMessageActions.handleAction>>[0],
+      );
+      expect(client.cards).toHaveLength(1);
+      expect(client.cards[0].text).toContain("Please choose:");
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("send with a degenerate `form` (no viable fields) fails with a helpful error", async () => {
+    const client = makeFakeClient({});
+    const account = makeAccount({});
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!(
+        buildCtx(
+          {
+            to: "cliq:user:u-1",
+            form: { fields: [] },
+          },
+          account,
+        ) as Parameters<NonNullable<typeof cliqMessageActions.handleAction>>[0],
+      );
+      expect(result.details).toMatchObject({ status: "failed" });
+      expect(client.cards).toHaveLength(0);
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("send with `form` param takes precedence over `buttons`", async () => {
+    const client = makeFakeClient({});
+    const account = makeAccount({});
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!(
+        buildCtx(
+          {
+            to: "cliq:user:u-1",
+            buttons: [{ label: "Ignored", value: "x" }],
+            form: {
+              fields: [
+                { name: "env", type: "select", options: ["prod", "dev"] },
+              ],
+            },
+          },
+          account,
+        ) as Parameters<NonNullable<typeof cliqMessageActions.handleAction>>[0],
+      );
+      expect(result.details).toMatchObject({ form: true });
+      expect(client.cards).toHaveLength(1);
+      // The form buttons, not the `buttons` param buttons
+      expect(client.cards[0].buttons![0]).toMatchObject({ data: "env: prod" });
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
   it("`buttons` param takes precedence over `presentation`", () => {
     const out = resolveSendButtons({
       buttons: [{ label: "A", value: "a" }],

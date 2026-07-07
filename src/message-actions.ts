@@ -42,6 +42,11 @@ import {
   type PortablePresentation,
 } from "./presentation.js";
 import type { V3CardSectionInput, V3CardSlideInput } from "./v3-card.js";
+import {
+  readFormParam,
+  renderCliqFormCards,
+  type CliqFormInput,
+} from "./forms-render.js";
 
 /** Actions Cliq can perform via the shared `message` tool, in priority order. */
 const CLIQ_ACTIONS_ALL: readonly ChannelMessageActionName[] = [
@@ -388,6 +393,79 @@ function resolveSendButtons(params: Record<string, unknown>): {
   return { buttons: [] };
 }
 
+/**
+ * Render an agent-supplied form definition as one or more Cliq prompt card(s)
+ * and post them via `sendCard`. Each `select` field with options becomes a
+ * `prompt` card (a button per option; tapping a button posts
+ * `<fieldName>: <value>` back to the bot as an inbound message the agent
+ * reads as the user's answer). `text` / `number` fields fold into a single
+ * `modern-inline` summary card posted first. The optional `message` param
+ * prefixes the summary card (or the first prompt card when there is no
+ * summary) as additional context. Returns an agent-visible success result
+ * listing the number of cards posted; a degenerate form (no viable fields)
+ * yields an error so the agent can correct and retry.
+ */
+async function handleFormSend(
+  client: CliqClientLike,
+  to: string,
+  form: CliqFormInput,
+  params: Record<string, unknown>,
+): Promise<AgentToolResult<unknown>> {
+  const cards = renderCliqFormCards(form);
+  if (cards.length === 0) {
+    return errorResult(
+      "`form` must define at least one viable field (a `select` with ≥2 options, or a text/number field with a `name`).",
+    );
+  }
+  const message = readString(params, "message");
+  const target = normalizeCliqRouteTarget(to);
+  // An optional `message` prefixes the first card's text as extra context
+  // (e.g. instructions or context for the form).
+  if (message) {
+    const first = cards[0];
+    const prefix = markdownToCliq(message);
+    first.text = first.text ? `${prefix}\n\n${first.text}` : prefix;
+  }
+  const posted: Array<{ messageId?: string; chatId?: string }> = [];
+  let lastError: unknown;
+  for (const spec of cards) {
+    try {
+      const result = await client.sendCard({
+        to: target.to,
+        isDm: target.isDm,
+        text: spec.text,
+        buttons: spec.buttons ?? [],
+        ...(spec.theme ? { theme: spec.theme } : {}),
+      });
+      posted.push(result);
+    } catch (err) {
+      lastError = err;
+      break;
+    }
+  }
+  if (posted.length === 0) {
+    return errorResult(`form send failed: ${String(lastError)}`);
+  }
+  const last = posted[posted.length - 1];
+  const selectCount = cards.filter((c) => c.theme === "prompt").length;
+  return okResult(
+    `Rendered form to ${cards.length} card(s) (${selectCount} prompt card(s) with buttons) in ${to}${last.messageId ? ` (last messageId=${last.messageId})` : ""}${posted.length < cards.length ? ` — ${cards.length - posted.length} card(s) failed to post` : ""}.`,
+    {
+      action: "send",
+      to,
+      form: true,
+      cards: cards.length,
+      promptCards: selectCount,
+      posted: posted.length,
+      messageId: last.messageId ?? null,
+      chatId: last.chatId ?? null,
+      ...(posted.length < cards.length
+        ? { failed: cards.length - posted.length }
+        : {}),
+    },
+  );
+}
+
 async function handleSend(
   client: CliqClientLike,
   params: Record<string, unknown>,
@@ -395,6 +473,16 @@ async function handleSend(
   const to = readString(params, "to") ?? readString(params, "channelId");
   const message = readString(params, "message");
   if (!to) return errorResult("`to` (channel target) is required for send.");
+  // A `form` param switches the send to the form-rendering path: the form
+  // definition is rendered as one or more Cliq prompt card(s) (a `prompt`-
+  // theme card with a button per select option, plus an optional summary
+  // card for text/number fields). This takes precedence over `buttons` /
+  // `theme` / `slides` — a form send is a distinct structured-input
+  // solicitation, not a plain card post.
+  const formInput = readFormParam(params["form"]);
+  if (formInput) {
+    return handleFormSend(client, to, formInput, params);
+  }
   const { buttons, presentationText } = resolveSendButtons(params);
   // Body text: explicit `message` wins; otherwise fall back to text derived
   // from a portable `presentation` (title/text/context blocks). A send with
@@ -681,6 +769,7 @@ export {
   resolveCliqActions,
   resolveChatIdForAction,
   resolveSendButtons,
+  handleFormSend,
   CLIQ_ACTIONS_ALL,
   CLIQ_MESSAGE_CAPABILITIES,
   type CliqClientLike,

@@ -83,6 +83,7 @@ export {
   describeCliqMessageTool,
   resolveCliqActions,
   resolveChatIdForAction,
+  handleFormSend,
   CLIQ_ACTIONS_ALL,
   type CliqClientLike,
 } from "./message-actions.js";
@@ -170,6 +171,14 @@ export {
   type PortablePresentation,
   type PortableBlock,
 } from "./presentation.js";
+export {
+  renderCliqFormCards,
+  readFormParam,
+  CLIQ_FORM_MAX_BUTTONS_PER_CARD,
+  type CliqFormInput,
+  type CliqFormFieldInput,
+  type CliqFormCardSpec,
+} from "./forms-render.js";
 
 const CHANNEL_ID = "cliq" as const;
 
