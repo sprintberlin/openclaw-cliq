@@ -11,6 +11,18 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-07-07
+
+### Changed
+
+- **Scopes (§3b) and Configuration (§4) reference sections are now lists, not
+  tables.** ClawHub renders README tables with `table-layout: fixed` and a very
+  narrow (~60px) first column, which char-wrapped the first-column code
+  identifiers (e.g. `clientSecret` stacked one letter per line). Rewriting these
+  two dense reference tables as bullet lists renders cleanly on ClawHub while
+  staying readable on GitHub. The Data centers table is kept (short region names
+  in the first column wrap fine). Documentation only — content is unchanged.
+
 ## [0.1.5] - 2026-07-07
 
 ### Fixed
@@ -685,7 +697,8 @@ publish workflow extracts the matching section as the release notes (see
   lookup, plugin doctor, interactive setup wizard, SecretRef-backed credentials,
   security audit collector, session binding, multi-account, lifecycle hooks.
 
-[Unreleased]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.2...v0.1.3
