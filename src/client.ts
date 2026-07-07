@@ -1097,6 +1097,20 @@ export class CliqClient {
     return parseCliqMessageRef(res.body);
   }
 
+  /**
+   * Post a media attachment (raw bytes) to a DM or channel via the v2
+   * multipart endpoints. This is a v3 DEAD END: v3 message-post endpoints
+   * take a JSON `{ text, reply_to?, sync_message? }` body with NO
+   * `attachments` field, v3 has no Files API (no byte-upload surface), and
+   * the only v3 image option is a Message-Card `images` slide that accepts
+   * PUBLIC HTTPS image URLs only (no raw bytes) via the Message-Card channel
+   * endpoint — which posts as the authenticated USER (not the bot) and needs
+   * the user-context refresh token (`Channels.CREATE`). That path is strictly
+   * worse than the v2 multipart path (bot sender identity, raw bytes, any
+   * MIME type) for the plugin's media-upload use case, so media posts stay
+   * on `/api/v2/...` REGARDLESS of the `apiVersion` opt-in, indefinitely
+   * (locked by a regression test in `src/channel.test.ts`).
+   */
   async sendMediaMessage(opts: SendMediaMessageOptions): Promise<{ messageId?: string }> {
     const isDm = Boolean(opts.isDm);
     const scope = isDm ? "ZohoCliq.Webhooks.CREATE" : "ZohoCliq.Channels.UPDATE";

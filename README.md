@@ -175,8 +175,10 @@ exchange for a permanent **refresh token**.
 > edits still require the refresh token (channel card posts route through the
 > v3 Message Card endpoint `POST /api/v3/channels/{name}/message` with the
 > `ZohoCliq.Channels.CREATE` scope — a user-context scope, same constraint
-> as `Channels.UPDATE`; media posts and edits stay on v2 until a later
-> increment — v3 Messages has no single-message edit endpoint). **DM
+> as `Channels.UPDATE`; media posts stay on v2 indefinitely — v3 has no
+> byte-upload surface, only a public-HTTPS-image Message-Card slide that
+> posts as the user, not the bot; message edits stay on v2 indefinitely —
+> v3 Messages has no single-message edit endpoint). **DM
 > card/button posts** in v3 mode route through the v3 "Send a bot message"
 > endpoint `POST /api/v3/bots/{botId}/messages` with a top-level `card` field
 > — the same `Webhooks.CREATE` scope as DM text posts (`client_credentials`,

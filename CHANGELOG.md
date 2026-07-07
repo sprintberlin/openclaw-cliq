@@ -11,6 +11,23 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Changed
+
+- Confirmed channel media posts (`sendMediaMessage`) stay on the v2 multipart
+  endpoints indefinitely regardless of `apiVersion` (issue #65). v3 has no
+  byte-upload surface — the v3 Messages post endpoints take a JSON
+  `{ text, reply_to?, sync_message? }` body with no `attachments` field, v3
+  has no Files API, and the only v3 image option is a Message-Card `images`
+  slide that accepts public HTTPS image URLs only (no raw bytes) via the
+  Message-Card channel endpoint, which posts as the authenticated user (not
+  the bot) and needs the user-context refresh token. That path is strictly
+  worse than the v2 multipart path (bot sender identity, raw bytes, any MIME
+  type), so `CliqClient.sendMediaMessage` stays on `/api/v2/...` for both
+  DMs and channel posts even when `apiVersion === "v3"` (locked by a
+  regression test in `src/channel.test.ts`). The §3c / §4 v3 opt-in notes in
+  the README now state this explicitly. No behavior change — media already
+  used the v2 path; this just documents the v3 dead end.
+
 ### Added
 
 - REST API v3 `poll` Message Card theme (issue #64): the third v3 Message

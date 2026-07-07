@@ -574,6 +574,111 @@ describe("cliq plugin", () => {
   });
 });
 
+describe("CliqClient.sendMediaMessage v3 dead-end (issue #65)", () => {
+  /**
+   * v3 dead-end guard. v3 has NO byte-upload / multipart-attachment
+   * mechanism: the v3 Messages post endpoints take a JSON `{ text,
+   * reply_to?, sync_message? }` body (no `attachments` field), v3 has no
+   * Files API (FILE_ID appears in the glossary but no endpoint exists), and
+   * the only v3 image surface is a Message-Card `images` slide that accepts
+   * PUBLIC HTTPS image URLs only (no raw bytes) via the Message-Card channel
+   * endpoint — which posts as the authenticated USER (not the bot) and needs
+   * the user-context refresh token (`Channels.CREATE`). That path is strictly
+   * worse than the v2 multipart path (bot sender identity, raw bytes, any
+   * MIME type) for the plugin's media-upload use case, so media posts stay on
+   * `/api/v2/...` REGARDLESS of the `apiVersion` opt-in, indefinitely. This
+   * test locks that invariant so a future contributor does not wire media to a
+   * v3 path that cannot carry raw bytes.
+   */
+  it("channel media posts stay on /api/v2 multipart even when apiVersion==='v3'", async () => {
+    setCliqClientRegistry(null);
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient(
+      "id", "secret", "bot",
+      undefined, undefined,
+      { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1, sleep: async () => {}, random: () => 0 },
+      undefined, "rt-token", "v3",
+    );
+    const seen: { url: string; method?: string; body?: unknown; scope?: string | null; grantType?: string | null }[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        const u = new URL(urlStr);
+        seen.push({ url: "oauth", scope: u.searchParams.get("scope"), grantType: u.searchParams.get("grant_type") });
+        return new Response(JSON.stringify({ access_token: "tok", expires_in: 3600 }), { status: 200 });
+      }
+      seen.push({ url: urlStr, method: init?.method, body: init?.body });
+      return new Response(JSON.stringify({ id: "msg-media-v3" }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      await client.sendMediaMessage({
+        to: "dev-team",
+        isDm: false,
+        text: "img",
+        attachment: { bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47]), fileName: "file.png", mimeType: "image/png" },
+      });
+    } finally {
+      globalThis.fetch = original;
+    }
+    // Channel media must use the user-context refresh-token grant (the
+    // refresh-token grant reuses the consented scopes — no `scope` query
+    // param is sent, matching the v2 channel-post contract).
+    const oauth = seen.find((s) => s.url === "oauth");
+    expect(oauth?.grantType).toBe("refresh_token");
+    expect(oauth?.scope).toBeNull();
+    // And must hit the v2 channelsbyname multipart endpoint, never /api/v3/.
+    const post = seen.find((s) => s.method === "POST" && s.url.includes("/channelsbyname/"));
+    expect(post).toBeDefined();
+    expect(post!.url).toContain("/api/v2/channelsbyname/dev-team/message");
+    expect(post!.url).toContain("bot_unique_name=bot");
+    expect(post!.url).not.toContain("/api/v3/");
+    expect(post!.body).toBeInstanceOf(FormData);
+    const form = post!.body as FormData;
+    expect(form.get("text")).toBe("img");
+    expect((form.get("attachments") as File).name).toBe("file.png");
+  });
+
+  it("DM media posts stay on /api/v2 multipart even when apiVersion==='v3'", async () => {
+    setCliqClientRegistry(null);
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient(
+      "id", "secret", "bot",
+      undefined, undefined,
+      { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1, sleep: async () => {}, random: () => 0 },
+      undefined, undefined, "v3",
+    );
+    const seen: { url: string; method?: string; scope?: string | null; grantType?: string | null }[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        const u = new URL(urlStr);
+        seen.push({ url: "oauth", scope: u.searchParams.get("scope"), grantType: u.searchParams.get("grant_type") });
+        return new Response(JSON.stringify({ access_token: "tok", expires_in: 3600 }), { status: 200 });
+      }
+      seen.push({ url: urlStr, method: init?.method });
+      return new Response(JSON.stringify({ id: "msg-media-dm-v3" }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      await client.sendMediaMessage({
+        to: "u-1",
+        isDm: true,
+        attachment: { bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47]), fileName: "file.png", mimeType: "image/png" },
+      });
+    } finally {
+      globalThis.fetch = original;
+    }
+    const oauth = seen.find((s) => s.url === "oauth");
+    expect(oauth?.scope).toBe("ZohoCliq.Webhooks.CREATE");
+    expect(oauth?.grantType).toBe("client_credentials");
+    const post = seen.find((s) => s.method === "POST" && s.url.includes("/bots/"));
+    expect(post).toBeDefined();
+    expect(post!.url).toContain("/api/v2/bots/bot/message");
+    expect(post!.url).not.toContain("/api/v3/");
+  });
+});
+
 describe("CliqClient.editMessage — Cliq message edit API (streaming preview building block)", () => {
   it("PUTs to /chats/{chatId}/messages/{messageId} with the Messages.UPDATE scope", async () => {
     setCliqClientRegistry(null);
