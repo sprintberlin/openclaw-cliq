@@ -43,7 +43,7 @@ DM the bot → it answers. To also reply to channel **@mentions** and stream liv
 
 | | Capability |
 | --- | --- |
-| 💬 **Messaging** | DMs + channel @mentions, inbound via a Deluge webhook, outbound as the bot (DMs via `userids`, channel posts via `channelsbyname`). Inbound image / file / voice attachments are downloaded and handed to the agent. Send `stop` / `/stop` / `esc` to interrupt a running turn. |
+| 💬 **Messaging** | DMs + channel @mentions, inbound via a Deluge webhook, outbound as the bot (DMs via `userids`, channel posts via `channelsbyname`). Inbound image / file / voice attachments are downloaded and handed to the agent. Send `stop` / `/stop` / `esc` to interrupt a running turn. **Cliq Form submissions** (structured input via the bot's Form Handler) are recognized and routed to the agent with their field values surfaced as `FormValues` / `FormName`. |
 | ✍️ **Rich replies** | Markdown → Cliq formatting, **live-edit streaming previews**, interactive buttons & cards, slash-style commands, reply threading. **v3 Message Cards** (`apiVersion: "v3"`): `modern-inline` / `prompt` / `poll` themes, supporting-content **`slides`** (table / list / label / images / text blocks attached alongside the card), and `modern-inline` **`sections`** (in-card labeled field groups) + **`thumbnail`** header image. |
 | ⚡ **Message actions** | Edit / delete / react to sent messages from the agent. |
 | 🔐 **OAuth 2.0** | `client_credentials` for DMs; a user-context **refresh token** for channel posts / message edits. Works on any Zoho [data center](#data-centers). |
@@ -388,6 +388,64 @@ return response;
 
 When `welcome.enabled === true` in the channel config, the gateway posts the configured greeting DM to the subscriber (see the `welcome` row in [§4](#4-openclaw-configuration)). The event is always acknowledged so Cliq does not redeliver it; a redelivery is deduped by subscriber id so the user is never greeted twice. The `dmPolicy` / `allowFrom` gate is honored — a denied sender is never greeted. Without this handler, or with `welcome.enabled === false` (the default), subscribe events are simply not consumed by the plugin.
 
+#### 5b. Form Handler (optional — structured input)
+
+Zoho Cliq's platform **Forms** let you define a structured form (text / number / dropdown / date / … fields) that a user fills out from the bot's command surface. When a user submits a form, the bot's **Form Handler** Deluge script fires and can forward the submitted values to the OpenClaw webhook so the agent receives them as structured input rather than free text — useful for approval / collection flows (pairing approval, parameter capture) instead of asking the user to type free-text answers.
+
+Paste this script into the bot's **Form Handler** function (in the Cliq Bot editor → **Edit Handlers** → *Edit Code* on **Form Handler**) — it forwards to the same `/cliq/webhook` endpoint the other handlers use:
+
+```deluge
+// === Configuration (set these once — same values as §5) ===
+webhookUrl    = "https://<gateway-host>/cliq/webhook";
+webhookSecret = "<the same secret you set as webhookSecret in openclaw.json>";
+
+// Cliq passes the submitted values to the Form Handler scope as the `form`
+// object's fields (each named after your form field). Read them out and
+// forward them as a `values` map the plugin can parse.
+payload = Map();
+payload.put("handler", "form");
+payload.put("form", { "name": "approval_request" });   // your form's name
+payload.put("user", user);
+payload.put("chat", chat);
+
+// Build the submitted-values map. Replace the keys with your own form's
+// field names; Cliq passes each field value as a Deluge variable named after
+// the field. Example fields: approver, priority, reason.
+values = Map();
+values.put("approver", approver);
+values.put("priority", priority);
+values.put("reason", reason);
+payload.put("values", values);
+
+headers = Map();
+headers.put("Content-Type", "application/json");
+headers.put("x-cliq-webhook-secret", webhookSecret);
+
+invokeUrl
+[
+    url    : webhookUrl
+    type   : POST
+    body   : payload.toString()
+    headers: headers
+];
+
+// The reply is delivered by the OpenClaw gateway via the Cliq bot API,
+// so the handler itself returns an empty response.
+response = Map();
+return response;
+```
+
+When a form submission arrives, the plugin synthesizes the agent's message body from the submitted values:
+
+```
+Form: approval_request
+approver: alice@corp.com
+priority: High
+reason: prod deploy gate
+```
+
+The raw structured values are ALSO surfaced on the inbound context as `FormValues` (a string-keyed map) and `FormName` (the form's display name), so an agent tool or downstream flow can read them as structured data rather than parsing the body text. A form submission is treated as a directed action at the bot — a group form submission is admitted without a separate @mention (the same way a reply to the bot is). DM admission (`dmPolicy` / `allowFrom`) and self-message / dedupe guards apply unchanged. A form submission whose every field is empty is dropped (no agent-readable content). No new OAuth scope is required — the Form Handler is a bot handler that posts to the webhook over the same `x-cliq-webhook-secret`-authenticated transport as Message / Mention / Welcome. There is no separate opt-in config field — if no form is wired up, no form submissions arrive.
+
 #### Payload format reference
 
 The plugin parses the JSON payload posted by the Deluge handler. The canonical shape is:
@@ -409,6 +467,7 @@ Notes (the parser is tolerant):
 - A wrapped `params` object (`{ params: { message, user, channel } }`) is also accepted.
 - Group vs DM detection: `chat.type === "channel"` (or the presence of `channel.*` fields) marks a group; otherwise the message is treated as a DM.
 - The `x-cliq-webhook-secret` header is checked against the configured `webhookSecret`. The plugin also accepts `x-webhook-secret` or `Authorization: Bearer <secret>` for convenience.
+- **Form submissions** (see [§5b](#5b-form-handler-optional--structured-input)): a payload with `handler: "form"` and/or a non-empty `values` object (also accepted under `form.values` / `form_data` / `formvalues`, including inside a `params` wrapper) is recognized as a Cliq Form submission; the submitted field values synthesize the agent body and are surfaced as `FormValues` / `FormName` on the inbound context.
 
 ##### Inbound quote / reply context
 

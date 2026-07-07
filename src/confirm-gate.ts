@@ -177,6 +177,11 @@ export function isSensitiveInbound(
 ): boolean {
   if (!isConfirmGateArmed(account)) return false;
   if (parsed.confirmAction) return false;
+  // A Cliq Form submission (Phase 3) is an explicit structured action, not
+  // free text to keyword-match — its synthesized body may incidentally
+  // contain a destructive verb (e.g. a "reason: delete prod" field) without
+  // the user having typed a destructive command. Never gate form submissions.
+  if (parsed.formValues) return false;
   const text = parsed.text ?? "";
   if (!text) return false;
   if (text.length > CLIQ_CONFIRM_MAX_TEXT_LEN) return false;

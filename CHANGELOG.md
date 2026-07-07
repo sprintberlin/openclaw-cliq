@@ -13,6 +13,35 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
+- **Cliq Forms — inbound structured input.** When a Zoho Cliq platform
+  **Form** is submitted, the bot's **Form Handler** Deluge script can forward
+  the submitted field values to the OpenClaw webhook (`/cliq/webhook`) and
+  the plugin now recognizes it as a form submission, synthesizing the
+  agent-readable message body from the submitted values (e.g. `Form:
+  approval_request\napprover: alice@corp.com\npriority: High`). The raw
+  structured values are ALSO surfaced on the inbound context as `FormValues`
+  (a string-keyed map) and `FormName` (the form's display name) so an agent
+  tool or downstream flow can read them as structured data rather than
+  parsing the body text — the foundation for approval / collection flows
+  (pairing approval, parameter capture) instead of free-text parsing. A form
+  submission is treated as a directed action at the bot: a group form
+  submission is admitted without a separate @mention (the same way a reply
+  to the bot is). DM admission (`dmPolicy` / `allowFrom`) and self-message /
+  dedupe guards apply unchanged; form submissions bypass the `thinking.confirm`
+  sensitive-keyword gate (a structured submission is an explicit action, not
+  free text to keyword-match — a "reason: delete prod" field does not trip
+  the gate). A form whose every field is empty is dropped (no agent-readable
+  content). The payload is recognized when `handler: "form"` and/or a non-
+  empty `values` object is present (also accepted under `form.values` /
+  `form_data` / `formvalues`, including inside a `params` wrapper); field
+  values may be primitives, arrays (multi-select), or Cliq `{ label, value }`
+  dropdown objects. No new OAuth scope — the Form Handler is a bot handler
+  that posts to the webhook over the same `x-cliq-webhook-secret`-
+  authenticated transport as Message / Mention / Welcome. No opt-in config
+  field — if no form is wired up, no form submissions arrive. The first
+  increment of the Phase 3 "Cliq Forms for structured input" item. See
+  README §5b for the Deluge Form Handler script + payload reference.
+
 - Confirmation buttons for sensitive actions (`thinking.confirm`): when
   `thinking.mode === "card"` and `thinking.confirm` is set (`"sensitive"` or
   `"always"`), a sensitive inbound message is gated behind an explicit

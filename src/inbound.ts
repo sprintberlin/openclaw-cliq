@@ -35,6 +35,11 @@ import {
   formatCliqReplyToBlock,
   type CliqReplyToContext,
 } from "./inbound-quote.js";
+import {
+  isCliqFormPayload,
+  parseCliqFormSubmission,
+  type CliqFormSubmission,
+} from "./forms.js";
 
 /**
  * Minimal slice of `api.runtime` that the inbound dispatch path needs. Kept
@@ -182,6 +187,20 @@ export interface CliqWebhookPayload {
    * part of the documented Message Object but tolerated when present.
    */
   attachments?: Array<{ id?: string; name?: string; type?: string }>;
+  /**
+   * Cliq platform **Form** submission (Phase 3). When the bot's Form Handler
+   * Deluge script forwards a submission to our webhook, the payload carries
+   * `handler: "form"` and/or a `values` / `form.values` / `form_data` /
+   * `formvalues` object of submitted field values (plus an optional `form.name`
+   * / `form_name`). The parser recognizes this before the message-text path
+   * and synthesizes an agent-readable body from the field values. See
+   * `src/forms.ts`.
+   */
+  form?: { name?: string; link_name?: string; values?: Record<string, unknown> };
+  values?: Record<string, unknown>;
+  form_data?: Record<string, unknown>;
+  formvalues?: Record<string, unknown>;
+  form_name?: string;
   params?: {
     message?: { text?: string; id?: string };
     user?: { id?: string; name?: string };
@@ -244,6 +263,18 @@ export interface ParsedCliqInbound {
    * `undefined` for a normal inbound message (the gate, if armed, may apply).
    */
   confirmAction?: "confirm" | "cancel";
+  /**
+   * Cliq platform Form submission (Phase 3): when the inbound payload was a
+   * Cliq Form submission forwarded by the bot's Form Handler, `formName`
+   * carries the form's display name (best-effort) and `formValues` carries the
+   * raw submitted field map. The agent-readable body text is the rendering of
+   * these values (see `formatCliqFormBody`); the raw structured map is also
+   * surfaced on the inbound context as `FormValues` / `FormName` so an agent
+   * tool or downstream flow can read it as structured data. Both are
+   * `undefined` for an ordinary message / mention / welcome event.
+   */
+  formName?: string;
+  formValues?: Record<string, unknown>;
   handler: string;
 }
 
@@ -341,12 +372,22 @@ export function parseCliqWebhookPayload(
   const attachments = extractMessageAttachments(payload);
   const user = payload.user;
   if (!user?.id) return null;
-  // A pure file message may carry no text at all (or only a comment we already
-  // surfaced as text). When there is still no text but an attachment is
-  // present, synthesize a minimal placeholder so the turn has a body to
-  // dispatch; when there is neither text nor an attachment there is nothing
-  // to hand the agent — drop the event.
+  // Cliq platform Form submission (Phase 3): when the payload is a Form
+  // Handler forward (handler="form" or a values object present) and carries
+  // no message text, synthesize the agent-readable body from the submitted
+  // field values. A form that ALSO carries a message text (rare — a Deluge
+  // handler enriching the submission) keeps the text as the body and still
+  // surfaces the raw structured `formValues` on the parsed inbound. A form
+  // submission is a directed action at the bot, so the parser marks it as
+  // an implicit mention (`isMention: true`) below — group form submissions
+  // are admitted without a separate @mention.
+  const formSubmission: CliqFormSubmission | null = isCliqFormPayload(payload)
+    ? parseCliqFormSubmission(payload)
+    : null;
   let bodyText = text;
+  if (!bodyText && formSubmission) {
+    bodyText = formSubmission.body;
+  }
   if (!bodyText && attachments.length > 0) {
     const first = attachments[0];
     const kind = first.mimeType?.split("/")[0]?.toLowerCase();
@@ -385,7 +426,10 @@ export function parseCliqWebhookPayload(
     payload.mentions?.some((m) => m.type === "bot"),
   );
   const isMention =
-    handler.includes("mention") || hasBotMention || (isGroup && false);
+    handler.includes("mention") ||
+    hasBotMention ||
+    Boolean(formSubmission) ||
+    (isGroup && false);
 
   const replyTo = parseCliqReplyToContext(payload);
 
@@ -415,6 +459,8 @@ export function parseCliqWebhookPayload(
     threadId: payload.thread?.id,
     replyTo,
     confirmAction: confirmParsed.action,
+    formName: formSubmission?.formName,
+    formValues: formSubmission?.values,
     handler,
   };
 }
@@ -902,6 +948,12 @@ export async function dispatchCliqInbound(params: {
     OriginatingChannel: "cliq",
     OriginatingTo: `cliq:${responseTarget}`,
     ...mediaFields,
+    // Cliq Form submission (Phase 3): surface the raw structured field map +
+    // form name on the inbound context so an agent tool or downstream flow
+    // can read them as structured data, not just the synthesized body text.
+    ...(parsed.formValues
+      ? { FormValues: parsed.formValues, ...(parsed.formName ? { FormName: parsed.formName } : {}) }
+      : {}),
     // Mark a stop-intent turn as an authorized text command so the SDK's
     // fast-abort path cancels the in-flight run + sends the "Stopped." reply.
     ...(isAbort ? cliqAbortCtxFields() : {}),

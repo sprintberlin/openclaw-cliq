@@ -216,6 +216,121 @@ describe("parseCliqWebhookPayload", () => {
     expect(parseCliqWebhookPayload([1, 2])).toBeNull();
   });
 
+  describe("Cliq Form submissions (Phase 3)", () => {
+    it("synthesizes the body from form values + surfaces structured fields", () => {
+      const parsed = parseCliqWebhookPayload({
+        handler: "form",
+        form: { name: "approval_request" },
+        values: {
+          approver: "alice@corp.com",
+          priority: { label: "High", value: "high" },
+          reason: "prod deploy gate",
+        },
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm_chat-B1" },
+      } as CliqWebhookPayload);
+      expect(parsed).not.toBeNull();
+      expect(parsed!.text).toBe(
+        [
+          "Form: approval_request",
+          "approver: alice@corp.com",
+          "priority: High",
+          "reason: prod deploy gate",
+        ].join("\n"),
+      );
+      expect(parsed!.formName).toBe("approval_request");
+      expect(parsed!.formValues).toEqual({
+        approver: "alice@corp.com",
+        priority: { label: "High", value: "high" },
+        reason: "prod deploy gate",
+      });
+      // A form submission is a directed action at the bot → implicit mention.
+      expect(parsed!.isMention).toBe(true);
+      expect(parsed!.handler).toBe("form");
+    });
+
+    it("recognizes a form submission via values-only payload (no handler marker)", () => {
+      const parsed = parseCliqWebhookPayload({
+        values: { x: "1", y: "2" },
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm" },
+      } as CliqWebhookPayload);
+      expect(parsed).not.toBeNull();
+      expect(parsed!.text).toBe("x: 1\ny: 2");
+      expect(parsed!.formValues).toEqual({ x: "1", y: "2" });
+      expect(parsed!.isMention).toBe(true);
+    });
+
+    it("marks a group form submission as an implicit mention (admitted without @mention)", () => {
+      const parsed = parseCliqWebhookPayload({
+        handler: "form",
+        form: { name: "param_capture" },
+        values: { model: "gpt-4" },
+        user: { id: "u2", name: "Bob" },
+        chat: {
+          id: "CT_channel_chat",
+          type: "channel",
+          chat_type: "channel",
+          channel_unique_name: "dev-team",
+          title: "#dev-team",
+        },
+      } as CliqWebhookPayload);
+      expect(parsed).not.toBeNull();
+      expect(parsed!.isGroup).toBe(true);
+      expect(parsed!.channelUniqueName).toBe("dev-team");
+      expect(parsed!.isMention).toBe(true);
+      expect(parsed!.formValues).toEqual({ model: "gpt-4" });
+    });
+
+    it("unwraps a params-wrapped form payload", () => {
+      const parsed = parseCliqWebhookPayload({
+        params: {
+          form: { name: "wrapped" },
+          values: { a: "1" },
+          user: { id: "u1", name: "Alice" },
+          chat: { id: "CT_dm" },
+        },
+      } as CliqWebhookPayload);
+      expect(parsed).not.toBeNull();
+      expect(parsed!.text).toBe("Form: wrapped\na: 1");
+      expect(parsed!.formName).toBe("wrapped");
+    });
+
+    it("returns null when a form payload carries no values", () => {
+      expect(
+        parseCliqWebhookPayload({
+          handler: "form",
+          form: { name: "empty" },
+          user: { id: "u1", name: "Alice" },
+          chat: { id: "CT_dm" },
+        } as CliqWebhookPayload),
+      ).toBeNull();
+    });
+
+    it("returns null when a form has only empty field values", () => {
+      expect(
+        parseCliqWebhookPayload({
+          handler: "form",
+          form: { name: "f" },
+          values: { a: "", b: null },
+          user: { id: "u1", name: "Alice" },
+          chat: { id: "CT_dm" },
+        } as CliqWebhookPayload),
+      ).toBeNull();
+    });
+
+    it("still requires a user id for a form submission", () => {
+      expect(
+        parseCliqWebhookPayload({
+          handler: "form",
+          values: { a: "1" },
+          user: {},
+          chat: { id: "CT_dm" },
+        } as CliqWebhookPayload),
+      ).toBeNull();
+    });
+  });
+
   it("parses a file attachment (type=file) with caption and synthesizes text", () => {
     const parsed = parseCliqWebhookPayload({
       handler: "message",
@@ -652,6 +767,49 @@ describe("dispatchCliqInbound context fields", () => {
       parsed: parsed!,
     });
     expect(capture.ctxPayload?.From).toBe("cliq:group:CT_channel_chat");
+  });
+
+  it("surfaces FormValues / FormName on the context for a form submission (Phase 3)", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload({
+      handler: "form",
+      form: { name: "approval_request" },
+      values: {
+        approver: "alice@corp.com",
+        priority: "high",
+      },
+      user: { id: "u1", name: "Alice" },
+      chat: { id: "CT_dm" },
+    } as CliqWebhookPayload);
+    expect(parsed).not.toBeNull();
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account(),
+      parsed: parsed!,
+    });
+    expect(capture.ctxPayload?.FormName).toBe("approval_request");
+    expect(capture.ctxPayload?.FormValues).toEqual({
+      approver: "alice@corp.com",
+      priority: "high",
+    });
+    // The synthesized body is what the agent envelope receives.
+    expect(String(capture.ctxPayload?.Body)).toContain("Form: approval_request");
+    expect(String(capture.ctxPayload?.Body)).toContain("approver: alice@corp.com");
+  });
+
+  it("omits FormValues / FormName for an ordinary message", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    expect(parsed).not.toBeNull();
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account(),
+      parsed: parsed!,
+    });
+    expect(capture.ctxPayload?.FormValues).toBeUndefined();
+    expect(capture.ctxPayload?.FormName).toBeUndefined();
   });
 });
 
