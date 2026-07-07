@@ -7,6 +7,7 @@ import {
   V3_MAX_BUTTON_LABEL_LENGTH,
   V3_MAX_TITLE_LENGTH,
   type CliqV3CardInput,
+  type V3PromptCard,
 } from "./v3-card.js";
 import type { CliqButton } from "./presentation.js";
 
@@ -237,5 +238,137 @@ describe("cliqCardToV3MessageCard", () => {
     const out = cliqCardToV3MessageCard(card, { defaultTitle: "Custom" })!;
     expect(out.card.title).toBe("body");
     expect(out.slides).toBeUndefined();
+  });
+});
+
+describe("cliqCardToV3MessageCard — prompt theme", () => {
+  const promptButtons: CliqButton[] = [
+    { label: "Approve", type: "+", action: "invoke", data: "/approve" },
+    { label: "Reject", type: "+", action: "invoke", data: "/reject" },
+    { label: "View", type: "+", action: "openurl", url: "https://example.com" },
+  ];
+
+  it("emits a prompt card with theme/title/buttons when theme === 'prompt'", () => {
+    const card: CliqV3CardInput = {
+      text: "Approve deploy?",
+      buttons: promptButtons,
+      theme: "prompt",
+    };
+    const out = cliqCardToV3MessageCard(card, { botId: "bot" });
+    expect(out).not.toBeNull();
+    expect(out!.card.theme).toBe("prompt");
+    const prompt = out!.card as V3PromptCard;
+    expect(prompt.theme).toBe("prompt");
+    expect(prompt.title).toBe("Approve deploy?");
+    expect(prompt.buttons).toHaveLength(3);
+    // prompt has NO sections / thumbnail fields.
+    expect("sections" in prompt).toBe(false);
+    expect("thumbnail" in prompt).toBe(false);
+    // Full text kept as the top-level fallback.
+    expect(out!.text).toBe("Approve deploy?");
+    // Single-line text → no remainder → no slides.
+    expect(out!.slides).toBeUndefined();
+  });
+
+  it("honors opts.theme as a fallback when card.theme is absent", () => {
+    const card: CliqV3CardInput = { text: "Pick", buttons: promptButtons };
+    const out = cliqCardToV3MessageCard(card, { botId: "bot", theme: "prompt" });
+    expect(out!.card.theme).toBe("prompt");
+  });
+
+  it("card.theme takes precedence over opts.theme", () => {
+    const card: CliqV3CardInput = {
+      text: "Pick",
+      buttons: promptButtons,
+      theme: "modern-inline",
+    };
+    const out = cliqCardToV3MessageCard(card, { botId: "bot", theme: "prompt" });
+    expect(out!.card.theme).toBe("modern-inline");
+  });
+
+  it("splits the first line into the title and the rest into a text slide", () => {
+    const card: CliqV3CardInput = {
+      text: "Approve deploy?\nExtra context line.",
+      buttons: promptButtons,
+      theme: "prompt",
+    };
+    const out = cliqCardToV3MessageCard(card, { botId: "bot" })!;
+    expect(out.card.title).toBe("Approve deploy?");
+    expect(out.text).toBe("Approve deploy?\nExtra context line.");
+    expect(out.slides).toEqual([
+      { type: "text", data: "Extra context line." },
+    ]);
+  });
+
+  it("uses the default title when text is empty (buttons-only prompt)", () => {
+    const card: CliqV3CardInput = {
+      buttons: promptButtons,
+      theme: "prompt",
+    };
+    const out = cliqCardToV3MessageCard(card, {
+      botId: "bot",
+      defaultTitle: "Choose an option",
+    })!;
+    expect(out.card.title).toBe("Choose an option");
+    expect(out.text).toBeUndefined();
+    expect(out.slides).toBeUndefined();
+  });
+
+  it("returns null when no buttons survive conversion (prompt requires ≥1)", () => {
+    // All invoke buttons dropped (no botId) → no convertible buttons → null.
+    const card: CliqV3CardInput = {
+      text: "Approve?",
+      buttons: [{ label: "OK", type: "+", action: "invoke", data: "/ok" }],
+      theme: "prompt",
+    };
+    expect(cliqCardToV3MessageCard(card)).toBeNull();
+  });
+
+  it("returns null for a buttonless prompt even when text is present", () => {
+    const card: CliqV3CardInput = {
+      text: "Just a question",
+      buttons: [],
+      theme: "prompt",
+    };
+    expect(cliqCardToV3MessageCard(card)).toBeNull();
+  });
+
+  it("returns null for a buttonless prompt with no text either", () => {
+    const card: CliqV3CardInput = { theme: "prompt" };
+    expect(cliqCardToV3MessageCard(card)).toBeNull();
+  });
+
+  it("caps prompt buttons at 5 (v3 limit)", () => {
+    const many: CliqButton[] = Array.from({ length: 8 }, (_, i) => ({
+      label: `B${i}`,
+      type: "+" as const,
+      action: "openurl" as const,
+      url: `https://example.com/${i}`,
+    }));
+    const card: CliqV3CardInput = { text: "Pick", buttons: many, theme: "prompt" };
+    const out = cliqCardToV3MessageCard(card)!;
+    expect((out.card as V3PromptCard).buttons).toHaveLength(V3_MAX_BUTTONS_PER_CARD);
+  });
+
+  it("preserves the v2→v3 button action mapping for prompt buttons", () => {
+    const card: CliqV3CardInput = {
+      text: "Pick",
+      buttons: promptButtons,
+      theme: "prompt",
+    };
+    const out = cliqCardToV3MessageCard(card, { botId: "bot" })!;
+    const buttons = (out.card as V3PromptCard).buttons;
+    // invoke → invoke.bot carrying bot_name + message.
+    expect(buttons[0].action.type).toBe("invoke.bot");
+    expect(buttons[0].action.data).toEqual({ bot_name: "bot", message: "/approve" });
+    // openurl → open.url carrying web.
+    expect(buttons[2].action.type).toBe("open.url");
+    expect(buttons[2].action.data).toEqual({ web: "https://example.com" });
+  });
+
+  it("falls back to modern-inline (the default) when theme is absent", () => {
+    const card: CliqV3CardInput = { text: "Pick", buttons: promptButtons };
+    const out = cliqCardToV3MessageCard(card, { botId: "bot" })!;
+    expect(out.card.theme).toBe("modern-inline");
   });
 });

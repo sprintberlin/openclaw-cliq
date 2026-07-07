@@ -554,6 +554,13 @@ export interface SendCardMessageOptions {
   text?: string;
   isDm?: boolean;
   buttons: CliqButton[];
+  /**
+   * v3 Message Card theme to render when `apiVersion === "v3"`. Defaults to
+   * `modern-inline`. `prompt` renders a focused quick-reply card (title +
+   * 1–5 buttons, no sections); the v2 path ignores this field (v2 always
+   * sends the raw `buttons` array at the top level).
+   */
+  theme?: "modern-inline" | "prompt";
 }
 
 export interface NormalizedCliqTarget {
@@ -1142,8 +1149,9 @@ export class CliqClient {
    * **channel** (non-DM) post, the card routes through the v3 Message Card
    * endpoint `POST /api/v3/channels/{name}/message` (note: `channels`, not
    * `channelsbyname`, and singular `message`) with scope
-   * `ZohoCliq.Channels.CREATE` and a `modern-inline` Message Card body
-   * (header + optional text slide + action buttons) rendered by
+   * `ZohoCliq.Channels.CREATE` and a Message Card body (theme selected by
+   * `opts.theme`, default `modern-inline`; `prompt` renders a focused
+   * quick-reply card) rendered by
    * `cliqCardToV3MessageCard`. When `apiVersion === "v3"` AND the send is a
    * **DM**, the card routes through the v3 "Send a bot message" endpoint
    * `POST /api/v3/bots/{botId}/messages` (the SAME endpoint the v3 DM text
@@ -1255,7 +1263,7 @@ export class CliqClient {
     result?: { messageId?: string; chatId?: string };
   }> {
     const payload = cliqCardToV3MessageCard(
-      { text: opts.text, buttons: opts.buttons },
+      { text: opts.text, buttons: opts.buttons, theme: opts.theme },
       { botId: this.botId },
     );
     if (!payload) return { handled: false };
@@ -1265,7 +1273,7 @@ export class CliqClient {
     );
     const url = `${this.apiBase}/api/v3/channels/${encodeURIComponent(opts.to)}/message`;
     this.logger.info?.(
-      `[cliq] send card: channel id=${opts.to} buttons=${opts.buttons.length}${opts.text ? ` textLen=${opts.text.length}` : ""} api=v3`,
+      `[cliq] send card: channel id=${opts.to} buttons=${opts.buttons.length}${opts.text ? ` textLen=${opts.text.length}` : ""}${opts.theme ? ` theme=${opts.theme}` : ""} api=v3`,
     );
     let attempt = 0;
     const res = await withSendRetry(
@@ -1332,7 +1340,7 @@ export class CliqClient {
     result?: { messageId?: string; chatId?: string };
   }> {
     const card = cliqCardToV3MessageCard(
-      { text: opts.text, buttons: opts.buttons },
+      { text: opts.text, buttons: opts.buttons, theme: opts.theme },
       { botId: this.botId },
     );
     if (!card) return { handled: false };
@@ -1347,7 +1355,7 @@ export class CliqClient {
       sync_message: true,
     };
     this.logger.info?.(
-      `[cliq] send card: dm id=${opts.to} buttons=${opts.buttons.length}${opts.text ? ` textLen=${opts.text.length}` : ""} api=v3`,
+      `[cliq] send card: dm id=${opts.to} buttons=${opts.buttons.length}${opts.text ? ` textLen=${opts.text.length}` : ""}${opts.theme ? ` theme=${opts.theme}` : ""} api=v3`,
     );
     let attempt = 0;
     const res = await withSendRetry(

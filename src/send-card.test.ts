@@ -319,4 +319,88 @@ describe("CliqClient.sendCard", () => {
       expect(body.card.buttons[0].action.data.message).toBe("yes");
     });
   });
+
+  describe("apiVersion: v3 prompt theme", () => {
+    it("renders a prompt Message Card on the v3 channel path when theme === 'prompt'", async () => {
+      const captured: { url: string; method: string; body: string; auth: string }[] = [];
+      mockFetch({
+        captured,
+        oauthBody: { access_token: "RT-TOK", expires_in: 3600 },
+        sendBody: JSON.stringify({ data: { id: "prompt-v3" } }),
+      });
+
+      const client = makeClient({ refreshToken: "rt", apiVersion: "v3" });
+      const result = await client.sendCard({
+        to: "dev-team",
+        isDm: false,
+        text: "Approve deploy?",
+        theme: "prompt",
+        buttons,
+      });
+      expect(result.messageId).toBe("prompt-v3");
+
+      const req = captured[0];
+      expect(req.url).toContain("/api/v3/channels/dev-team/message");
+      const body = JSON.parse(req.body) as {
+        card: { theme: string; title: string; buttons: unknown[] };
+        text?: string;
+      };
+      expect(body.card.theme).toBe("prompt");
+      expect(body.card.title).toBe("Approve deploy?");
+      expect(body.card.buttons).toHaveLength(2);
+      expect(body.text).toBe("Approve deploy?");
+    });
+
+    it("renders a prompt Message Card on the v3 DM path when theme === 'prompt'", async () => {
+      const captured: { url: string; method: string; body: string; auth: string }[] = [];
+      mockFetch({
+        captured,
+        sendBody: JSON.stringify({ data: { message_id: "prompt-dm-v3", chat_id: "CT_p" } }),
+      });
+
+      const client = makeClient({ apiVersion: "v3" });
+      const result = await client.sendCard({
+        to: "user-7",
+        isDm: true,
+        text: "Approve deploy?",
+        theme: "prompt",
+        buttons,
+      });
+      expect(result.messageId).toBe("prompt-dm-v3");
+      expect(result.chatId).toBe("CT_p");
+
+      const req = captured[0];
+      expect(req.url).toContain("/api/v3/bots/bot/messages");
+      const body = JSON.parse(req.body) as {
+        card: { theme: string; title: string; buttons: unknown[] };
+        user_ids: string;
+        sync_message: boolean;
+      };
+      expect(body.card.theme).toBe("prompt");
+      expect(body.card.title).toBe("Approve deploy?");
+      expect(body.card.buttons).toHaveLength(2);
+      expect(body.user_ids).toBe("user-7");
+      expect(body.sync_message).toBe(true);
+    });
+
+    it("falls back to v2 when theme === 'prompt' but no buttons survive (buttonless prompt is invalid)", async () => {
+      const captured: { url: string; method: string; body: string; auth: string }[] = [];
+      mockFetch({
+        captured,
+        oauthBody: { access_token: "RT-TOK", expires_in: 3600 },
+        sendBody: JSON.stringify({ id: "prompt-fb" }),
+      });
+
+      const client = makeClient({ refreshToken: "rt", apiVersion: "v3" });
+      const result = await client.sendCard({
+        to: "dev-team",
+        isDm: false,
+        text: "Approve?",
+        theme: "prompt",
+        buttons: [{ label: "X", type: "+", action: "api", url: "https://x.com" }],
+      });
+      expect(result.messageId).toBe("prompt-fb");
+      expect(captured[0].url).toContain("/api/v2/channelsbyname/dev-team/message");
+    });
+  });
 });

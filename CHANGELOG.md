@@ -13,6 +13,32 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
+- REST API v3 `prompt` Message Card theme (issue #63): a second v3 Message
+  Card theme (alongside the existing `modern-inline`) per
+  <https://www.zoho.com/cliq/help/restapi/v3/messagecards/>. The `prompt`
+  theme renders a focused quick-reply card — a `title` (the question / alert
+  text, ≤200 chars, same first-line split as `modern-inline`) plus 1–5
+  action buttons (no `sections` / `thumbnail`, which are `modern-inline`-
+  only). `buttons` is REQUIRED for a `prompt` (min 1) per the v3 docs, so the
+  renderer returns `null` for a buttonless prompt and the caller falls back
+  to the v2 / plain-text path (never emits an invalid card). The same
+  v2→v3 button action mapping (`openurl` → `open.url`, `invoke` →
+  `invoke.bot` carrying `{ bot_name, message }`), v3 limits (title ≤200
+  chars, max 5 buttons, label ≤30 chars), top-level `text` fallback, and
+  `slides` (a `text` slide carries the body remainder) apply. Wired behind
+  `apiVersion: "v3"` in `CliqClient.sendCard` for BOTH the channel
+  (`POST /api/v3/channels/{name}/message`, scope `ZohoCliq.Channels.CREATE`)
+  and DM (`POST /api/v3/bots/{botId}/messages`, scope
+  `ZohoCliq.Webhooks.CREATE`) v3 paths via a new optional `theme` field on
+  `SendCardMessageOptions` / `CliqRenderedCard` (`"modern-inline"` default).
+  The slash-command quick-reply buttons emitted by `src/commands.ts`
+  (`/models`, `/model`) now set `theme: "prompt"` on their `cliqCard`
+  channel-data marker so they render as a Cliq quick-reply prompt under v3
+  (the v2 path ignores the field and keeps the raw `buttons` array — no
+  behavior change on the default). No new OAuth scope (the `prompt` theme
+  reuses the same scopes as `modern-inline`: `Channels.CREATE` for channel
+  cards, `Webhooks.CREATE` for DM cards). See README §4.
+
 - REST API v3 opt-in for DM card/button posts (issue #60): the v3 path for
   sending interactive cards (buttons) to a **DM** recipient. Under
   `apiVersion: "v3"`, `CliqClient.sendCard` routes a DM card through the v3

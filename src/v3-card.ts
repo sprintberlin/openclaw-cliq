@@ -1,16 +1,23 @@
 /**
  * v3 Message Cards renderer — converts the plugin's existing card/button
- * shape (`CliqButton` / rendered-card input) into a v3 `modern-inline`
- * Message Card payload per
- * <https://www.zoho.com/cliq/help/restapi/v3/messagecards/>.
+ * shape (`CliqButton` / rendered-card input) into a v3 Message Card payload
+ * per <https://www.zoho.com/cliq/help/restapi/v3/messagecards/>.
  *
  * v3 Message Cards replace the v2 bot-message `buttons` field (which the v3
  * message-post endpoints do not support) with a structured `card` object
- * whose `theme` selects the rendering template. The `modern-inline` theme
- * renders a header (title), optional labeled field sections, and action
- * buttons. Supporting structured content (tables / lists / label rows /
- * images / text blocks) is attached via the top-level `slides` array that
- * sits alongside `card` in the payload (NOT nested inside it).
+ * whose `theme` selects the rendering template. The plugin renders two of
+ * the three documented themes:
+ *  - `modern-inline` — header (`title`), optional labeled field `sections`,
+ *    and action `buttons`. The default; used for agent-emitted
+ *    presentations and the `message(action=send, buttons=[...])` tool.
+ *  - `prompt` — a focused quick-reply card: `title` + 1–5 action buttons
+ *    (no sections). Used for the slash-command quick-reply buttons emitted
+ *    by `src/commands.ts` (`/models`, `/model`); `buttons` is REQUIRED for a
+ *    prompt (a buttonless prompt is invalid → the renderer returns `null`).
+ *  - `poll` (voting options) is not yet rendered.
+ * Supporting structured content (tables / lists / label rows / images / text
+ * blocks) is attached via the top-level `slides` array that sits alongside
+ * `card` in the payload (NOT nested inside it).
  *
  * Button action mapping (v2 → v3):
  *  - v2 `action: "openurl"` + `url` → v3 `{ type: "open.url", data: { web: url } }`
@@ -81,6 +88,23 @@ export interface V3ModernInlineCard {
   buttons?: V3CardButton[];
 }
 
+/**
+ * A v3 `prompt` Message Card body (the `card` object). A focused quick-reply
+ * card: just a `title` (the question / alert text) and 1–5 action buttons
+ * the user taps to respond. Has NO `sections` / `thumbnail` (those are
+ * `modern-inline`-only). `buttons` is REQUIRED (min 1) per the Message Cards
+ * docs — a prompt with no buttons is invalid, so the renderer returns `null`
+ * rather than emitting a buttonless prompt.
+ */
+export interface V3PromptCard {
+  theme: "prompt";
+  title: string;
+  buttons: V3CardButton[];
+}
+
+/** A v3 Message Card `card` object (theme-discriminated). */
+export type V3MessageCard = V3ModernInlineCard | V3PromptCard;
+
 /** A v3 Message Card slide (top-level supporting content, alongside `card`). */
 export interface V3MessageCardSlide {
   type: "table" | "list" | "label" | "images" | "text";
@@ -91,9 +115,12 @@ export interface V3MessageCardSlide {
 /** A v3 Message Card message payload (posted as the request body). */
 export interface V3MessageCardPayload {
   text?: string;
-  card: V3ModernInlineCard;
+  card: V3MessageCard;
   slides?: V3MessageCardSlide[];
 }
+
+/** v3 Message Card theme the plugin can render. */
+export type V3CardTheme = "modern-inline" | "prompt";
 
 /**
  * The plugin's rendered card input shape (structural; matches
@@ -105,6 +132,8 @@ export interface V3MessageCardPayload {
 export interface CliqV3CardInput {
   text?: string;
   buttons?: CliqButton[];
+  /** Card theme to render; defaults to `modern-inline`. `prompt` requires ≥1 button. */
+  theme?: V3CardTheme;
 }
 
 /** Clamp a label to the v3 limit, suffixing with an ellipsis. */
@@ -183,28 +212,47 @@ function splitTitleAndRemainder(
 }
 
 /**
- * Convert the plugin's rendered card shape into a v3 `modern-inline` Message
- * Card payload. The card `text` (when present) is split into a title (first
- * line, ≤200 chars) and an optional remainder that becomes a `text` slide;
- * the full text is also kept as the top-level `text` fallback so clients
- * that don't render cards still show something. Buttons convert per
+ * Convert the plugin's rendered card shape into a v3 Message Card payload.
+ * The `theme` (from `card.theme` or `opts.theme`, default `modern-inline`)
+ * selects the v3 rendering template:
+ *  - `modern-inline`: header (`title`, first line of the card text, ≤200
+ *    chars) + optional `text` slide carrying the remainder + action
+ *    buttons (optional; capped at 5).
+ *  - `prompt`: a focused quick-reply card — `title` + 1–5 action buttons.
+ *    `buttons` is REQUIRED (min 1) per the Message Cards docs; a prompt with
+ *    no convertible buttons returns `null` (the caller falls back to v2 /
+ *    plain text). Has no `sections` / `thumbnail` (those are
+ *    `modern-inline`-only); the text remainder still becomes a `text` slide.
+ *
+ * The full card `text` is always kept as the top-level `text` fallback so
+ * clients that don't render cards still show something. Buttons convert per
  * {@link cliqButtonToV3CardButton} (capped at 5). Returns `null` when the
- * card has neither text nor convertible buttons (nothing to render).
+ * card has neither text nor convertible buttons, OR when `theme === "prompt"`
+ * and no convertible buttons survive (a buttonless prompt is invalid).
  */
 export function cliqCardToV3MessageCard(
   card: CliqV3CardInput,
-  opts: { botId?: string; defaultTitle?: string } = {},
+  opts: { botId?: string; defaultTitle?: string; theme?: V3CardTheme } = {},
 ): V3MessageCardPayload | null {
+  const theme: V3CardTheme = card.theme ?? opts.theme ?? "modern-inline";
   const text = card.text?.trim() ?? "";
   const buttons = (card.buttons ?? [])
     .slice(0, V3_MAX_BUTTONS_PER_CARD)
     .map((b) => cliqButtonToV3CardButton(b, opts.botId))
     .filter((b): b is V3CardButton => b !== null);
-  if (!text && buttons.length === 0) return null;
+  if (theme === "prompt") {
+    // prompt REQUIRES ≥1 button; a buttonless prompt is invalid → null.
+    if (buttons.length === 0) return null;
+  } else if (!text && buttons.length === 0) {
+    return null;
+  }
   const defaultTitle = opts.defaultTitle ?? V3_DEFAULT_CARD_TITLE;
   const { title, remainder } = splitTitleAndRemainder(text, defaultTitle);
   const payload: V3MessageCardPayload = {
-    card: { theme: "modern-inline", title },
+    card:
+      theme === "prompt"
+        ? { theme: "prompt", title, buttons }
+        : { theme: "modern-inline", title },
   };
   if (text) {
     // Always include the full text as the top-level fallback (renders in
@@ -214,8 +262,8 @@ export function cliqCardToV3MessageCard(
   if (remainder) {
     payload.slides = [{ type: "text", data: remainder }];
   }
-  if (buttons.length > 0) {
-    payload.card.buttons = buttons;
+  if (theme === "modern-inline" && buttons.length > 0) {
+    (payload.card as V3ModernInlineCard).buttons = buttons;
   }
   return payload;
 }

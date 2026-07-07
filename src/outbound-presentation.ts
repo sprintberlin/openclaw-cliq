@@ -51,6 +51,8 @@ const CLIQ_CARD_CHANNEL_DATA_KEY = "cliqCard";
 export interface CliqRenderedCard {
   text?: string;
   buttons?: CliqButton[];
+  /** v3 Message Card theme (v3 opt-in only; v2 ignores this). */
+  theme?: "modern-inline" | "prompt";
 }
 
 /** Type guard for the `cliqCard` marker on `payload.channelData`. */
@@ -140,6 +142,7 @@ export async function sendCliqPayload(
     ? (payload.channelData[CLIQ_CARD_CHANNEL_DATA_KEY] as CliqRenderedCard)
     : null;
   const buttons = card?.buttons;
+  const theme = card?.theme;
 
   const rawText = payload.text ?? "";
   const richText = rawText ? markdownToCliq(rawText) : "";
@@ -153,6 +156,7 @@ export async function sendCliqPayload(
       isDm: target.isDm,
       ...(firstText ? { text: firstText } : {}),
       buttons,
+      ...(theme ? { theme } : {}),
     });
     for (let i = 1; i < chunks.length; i++) {
       await client.sendMessage({

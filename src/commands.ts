@@ -80,7 +80,15 @@ function toCardChannelData(
   buttons: CliqButton[],
 ): ReplyPayload["channelData"] | null {
   if (!buttons || buttons.length === 0) return null;
-  return { [CLIQ_CARD_CHANNEL_DATA_KEY]: { buttons } } as unknown as ReplyPayload["channelData"];
+  // These are quick-reply command buttons (each posts a slash command back
+  // to the bot). Under `apiVersion: "v3"` the v3 Message Card renderer
+  // emits a `prompt` theme card (question + quick-reply buttons) — the
+  // focused Cliq quick-reply surface — instead of the default
+  // `modern-inline` card. The v2 path ignores the `theme` field and sends
+  // the raw `buttons` array at the top level (unchanged behavior).
+  return {
+    [CLIQ_CARD_CHANNEL_DATA_KEY]: { buttons, theme: "prompt" },
+  } as unknown as ReplyPayload["channelData"];
 }
 
 /**
