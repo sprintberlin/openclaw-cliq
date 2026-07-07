@@ -177,31 +177,84 @@ jobs:
       - name: Extract changelog notes
         run: bash scripts/extract-changelog.sh "${{ needs.verify.outputs.version }}" > /tmp/notes.md
 
-      - name: Publish to ClawHub (OIDC, falls back to token)
+      - name: Publish to ClawHub (retry on transient pending-response)
+        # ClawHub sometimes accepts the upload ASYNCHRONOUSLY: the first call
+        # returns {ok:true, status:"pending"} and the published CLI then throws
+        #   "API response: packageId: invalid value; releaseId: invalid value"
+        # (a CLI↔server response-schema mismatch) even though the attempt was
+        # accepted. A follow-up publish returns the synchronous {packageId,
+        # releaseId} and the release goes live. So we retry and treat
+        # "version already live" as success. See RELEASING.md →
+        # "ClawHub publish: known failure modes".
         run: |
           set -euo pipefail
+          VERSION="${{ needs.verify.outputs.version }}"
+          PKG_NAME="$(node -p "require('./package.json').name")"
           DRY=""
           if [ "${{ needs.verify.outputs.dry_run }}" = "true" ]; then
             DRY="--dry-run"
             echo "[publish] DRY RUN — no upload"
           fi
-          # ClawHub's release-notes field rejects an oversized changelog
-          # ("releaseId: invalid value"), so cap what we send it. The full notes
-          # still go to the GitHub Release and the repo CHANGELOG.md.
+
+          # Size guard for the release-notes field (NOT the fix for the
+          # "invalid value" error above — that is retried). Full notes still go
+          # to the GitHub Release and the repo CHANGELOG.md.
           head -c 3500 /tmp/notes.md > /tmp/notes-clawhub.md
           if [ "$(wc -c < /tmp/notes.md)" -gt 3500 ]; then
             printf '\n\n… truncated — full changelog: https://github.com/%s/blob/%s/CHANGELOG.md\n' \
               "${{ github.repository }}" "${{ github.ref_name }}" >> /tmp/notes-clawhub.md
           fi
-          clawhub package publish sprintcx-openclaw-cliq-*.tgz \
-            --family code-plugin \
-            --version "${{ needs.verify.outputs.version }}" \
-            --source-repo "${{ github.repository }}" \
-            --source-commit "${{ github.sha }}" \
-            --source-ref "${{ github.ref_name }}" \
-            --changelog "$(cat /tmp/notes-clawhub.md)" \
-            --json \
-            $DRY
+
+          # True when $VERSION is the published "latest" on ClawHub (idempotent
+          # re-runs + recovery when the CLI errored on a publish that landed).
+          version_is_live() {
+            clawhub package inspect "$PKG_NAME" --json 2>/dev/null \
+              | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const p=(JSON.parse(s).package)||{};process.exit(p.latestVersion===process.argv[1]?0:1)}catch(e){process.exit(1)}})' "$VERSION"
+          }
+
+          do_publish() {
+            clawhub package publish sprintcx-openclaw-cliq-*.tgz \
+              --family code-plugin \
+              --version "$VERSION" \
+              --source-repo "${{ github.repository }}" \
+              --source-commit "${{ github.sha }}" \
+              --source-ref "${{ github.ref_name }}" \
+              --changelog "$(cat /tmp/notes-clawhub.md)" \
+              --json \
+              $DRY
+          }
+
+          # Dry-run: single shot, no idempotency/retry masking — a failure is a
+          # real failure and must surface.
+          if [ -n "$DRY" ]; then
+            do_publish
+            exit 0
+          fi
+
+          ATTEMPTS=6
+          DELAY=15
+          for i in $(seq 1 "$ATTEMPTS"); do
+            if version_is_live; then
+              echo "[publish] $PKG_NAME@$VERSION is live on ClawHub ✓ (checked before attempt $i)"
+              exit 0
+            fi
+            echo "[publish] publish attempt $i/$ATTEMPTS…"
+            if do_publish; then
+              echo "[publish] publish call succeeded on attempt $i"
+              exit 0
+            fi
+            echo "[publish] attempt $i failed (likely transient 'pending' response); waiting ${DELAY}s…"
+            sleep "$DELAY"
+          done
+
+          # Final reconciliation: the last attempt's response may have errored
+          # while the release actually landed.
+          if version_is_live; then
+            echo "[publish] $PKG_NAME@$VERSION landed despite a CLI response error ✓"
+            exit 0
+          fi
+          echo "::error::ClawHub publish failed after $ATTEMPTS attempts for $PKG_NAME@$VERSION"
+          exit 1
 
       - name: Create GitHub Release (real publishes only)
         if: github.event_name == 'push' && needs.verify.outputs.dry_run != 'true'
