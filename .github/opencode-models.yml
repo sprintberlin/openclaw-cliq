@@ -1,4 +1,4 @@
-default_tier: tier-3
+default_tier: tier-4
 verification:
   alias: minimax-m2.7
   max_log_chars: 128000
