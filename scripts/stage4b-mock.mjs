@@ -63,8 +63,15 @@ const server = createServer(async (req, res) => {
     }
 
     // --- Zoho Cliq bot-message send (cliq.zoho.eu) ------------------------
-    // POST /api/v2/bots/{botId}/message  (bot DM)
-    const botMatch = req.method === "POST" && /^\/api\/v2\/bots\/([^/]+)\/message$/.exec(path);
+    // POST /api/v2/bots/{botId}/message  (v2 bot DM)
+    // POST /api/v3/bots/{botId}/messages (v3 bot DM — dmPost defaults to v3
+    //   since issue #85; the manifest no longer injects a "v2" default, so the
+    //   smoke's round-trip hits this v3 route. The v3 body is
+    //   { text, userids, sync_message: true } and the response carries
+    //   { message_details: { <userId>: { chat_id, message_id } } }.)
+    const botMatch =
+      (req.method === "POST" &&
+        /^\/api\/v[23]\/bots\/([^/]+)\/messages?$/.exec(path));
     if (botMatch) {
       const botId = decodeURIComponent(botMatch[1]);
       let payload = {};

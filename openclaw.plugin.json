@@ -114,7 +114,10 @@
           "confirmText": { "type": "string", "default": "⚠️ Confirm action?" },
           "confirmLabel": { "type": "string", "default": "Confirm" },
           "cancelLabel": { "type": "string", "default": "Cancel" },
-          "cancelledText": { "type": "string", "default": "🚫 Cancelled." }
+          "cancelledText": { "type": "string", "default": "🚫 Cancelled." },
+          "animate": { "type": "string", "enum": ["off", "dots", "spinner", "custom"], "default": "off" },
+          "animateFrames": { "type": "array", "items": { "type": "string" } },
+          "animateIntervalMs": { "type": "number" }
         }
       },
       "welcome": {
@@ -141,9 +144,19 @@
       "apiBase": { "type": "string" },
       "oauthBase": { "type": "string" },
       "apiVersion": {
-        "type": "string",
-        "enum": ["v2", "v3"],
-        "default": "v2"
+        "oneOf": [
+          { "type": "string", "enum": ["v2", "v3"] },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "dmPost": { "type": "string", "enum": ["v2", "v3"] },
+              "channelPost": { "type": "string", "enum": ["v2", "v3"] },
+              "channelCard": { "type": "string", "enum": ["v2", "v3"] },
+              "delete": { "type": "string", "enum": ["v2", "v3"] }
+            }
+          }
+        ]
       }
     }
   },
@@ -259,7 +272,10 @@
               "confirmText": { "type": "string", "default": "⚠️ Confirm action?" },
               "confirmLabel": { "type": "string", "default": "Confirm" },
               "cancelLabel": { "type": "string", "default": "Cancel" },
-              "cancelledText": { "type": "string", "default": "🚫 Cancelled." }
+              "cancelledText": { "type": "string", "default": "🚫 Cancelled." },
+              "animate": { "type": "string", "enum": ["off", "dots", "spinner", "custom"], "default": "off" },
+              "animateFrames": { "type": "array", "items": { "type": "string" } },
+              "animateIntervalMs": { "type": "number" }
             }
           },
           "welcome": {
@@ -286,9 +302,19 @@
           "apiBase": { "type": "string" },
           "oauthBase": { "type": "string" },
           "apiVersion": {
-            "type": "string",
-            "enum": ["v2", "v3"],
-            "default": "v2"
+            "oneOf": [
+              { "type": "string", "enum": ["v2", "v3"] },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "dmPost": { "type": "string", "enum": ["v2", "v3"] },
+                  "channelPost": { "type": "string", "enum": ["v2", "v3"] },
+                  "channelCard": { "type": "string", "enum": ["v2", "v3"] },
+                  "delete": { "type": "string", "enum": ["v2", "v3"] }
+                }
+              }
+            ]
           }
         },
         "required": ["clientId", "clientSecret", "botId"]
@@ -315,7 +341,7 @@
         "pairing": { "label": "Pairing-approval card (post an Approve/Deny card to the bot owner when dmPolicy is pairing)" },
         "oauthBase": { "label": "OAuth base URL (data center — defaults to EU https://accounts.zoho.eu)" },
         "apiBase": { "label": "Cliq API base URL (data center — defaults to EU https://cliq.zoho.eu)" },
-        "apiVersion": { "label": "REST API generation for channel text posts + bot DMs (v2 default; v3 opt-in uses Webhooks.CREATE scope, no refresh token needed)", "options": ["v2", "v3"] }
+        "apiVersion": { "label": "REST API generation per family — string \"v2\"/\"v3\" (global override) OR object { dmPost?, channelPost?, channelCard?, delete? }. dmPost defaults to v3 (returns message id → thinking placeholder + DM live-edit); the other families default to v2. Leave unset for the built-in per-family defaults.", "options": ["v2", "v3"] }
       }
     }
   }

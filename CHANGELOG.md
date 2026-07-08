@@ -13,6 +13,48 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **The `apiVersion` manifest schema no longer forces a `"v2"` default that
+  silently overrode the per-family code defaults (issue #86).** The manifest
+  declared `apiVersion` as a string with `"default": "v2"`; OpenClaw injects
+  manifest config-schema defaults at runtime, so the resolved config got
+  `apiVersion: "v2"` even when the operator set nothing — which
+  `normalizeCliqApiVersionConfig` then read as a GLOBAL `"v2"` override,
+  defeating the `dmPost: "v3"` code default shipped in #85. Net effect: the
+  v3 bot-DM path (and the thinking-placeholder + DM live-edit-in-place it
+  unlocks) was dead unless the operator manually set `apiVersion: "v3"`. The
+  schema now accepts BOTH the string global override AND the per-family
+  object `{ dmPost?, channelPost?, channelCard?, delete? }` (each
+  `enum ["v2","v3"]`), and declares **no default** — so an omitted
+  `apiVersion` stays `undefined` through resolution and the code's
+  `CLIQ_API_FAMILY_DEFAULTS` apply (`dmPost → "v3"`, the rest `"v2"`). The
+  temporary global `apiVersion: "v3"` override on the live bot can now be
+  removed so the channel-card / channel-post families fall back to v2
+  correctly.
+
+### Added
+
+- **Animated "thinking" placeholder (issue #86).** A new `thinking.animate`
+  config optionally cycles the placeholder through text frames on an interval
+  while the agent turn runs (Cliq has no native typing indicator — this
+  simulates one via periodic edits), then edits it into the final reply when
+  the reply arrives. `"off"` (default) is a static placeholder; `"dots"`
+  cycles `💭 .` → `💭 ..` → `💭 ...`; `"spinner"` cycles braille-spinner frames
+  prefixed with a fixed `thinking…` label; `"custom"` cycles
+  `thinking.animateFrames` (a string array — needs ≥2 non-empty entries or it
+  degrades to the static placeholder). The interval is
+  `thinking.animateIntervalMs` (default 1200 ms, **hard-floored to 800 ms** to
+  protect the Cliq edit rate limit) and the total animation duration is capped
+  (default 60 s — past the cap the animation stops and holds the last frame).
+  The animation reuses the existing `editMessage` path (`Messages.UPDATE`,
+  same `refreshToken` precondition as the placeholder itself); a failed frame
+  edit stops the animation but never breaks the turn (the reply is still
+  delivered). Only one animation runs per in-flight message — it is stopped
+  the moment the reply (or failure text) arrives so a late frame edit can
+  never clobber the reply. New config fields under `channels.cliq.thinking`:
+  `animate`, `animateFrames`, `animateIntervalMs`. No new OAuth scope.
+
+### Fixed
+
 - **The v3 bot-DM send path no longer 400s, and DMs now return the sent
   message id (issue #85).** The v3 "Send a bot message" endpoint
   (`POST /api/v3/bots/{botId}/messages`) requires the recipient key

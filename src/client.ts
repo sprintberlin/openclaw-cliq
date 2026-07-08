@@ -408,6 +408,26 @@ export type CliqThinkingConfig = {
   cancelLabel?: string;
   /** Reply posted when the user cancels a gated action (default `🚫 Cancelled.`). */
   cancelledText?: string;
+  /**
+   * Optional lightweight animation for the "thinking" placeholder (issue #86).
+   * While the agent turn runs, the placeholder is edited on an interval through
+   * a set of text frames (cycling), then edited into the final reply when the
+   * reply arrives. Cliq has no native typing indicator; this simulates one via
+   * periodic edits. The interval is hard-floored (≥ 800 ms) and the total
+   * animation duration is capped (default 60 s) so a long turn does not hammer
+   * the edit endpoint. A failed frame edit stops the animation but never
+   * breaks the turn (the reply is still delivered).
+   *  - `"off"` (default): no animation (static placeholder).
+   *  - `"dots"`: cycle `💭 .` → `💭 ..` → `💭 …` (loop).
+   *  - `"spinner"`: cycle braille-spinner frames prefixed with a fixed label
+   *    (e.g. `⠋ thinking…`).
+   *  - `"custom"`: cycle `animateFrames` (ignored when empty / unset → static).
+   */
+  animate?: CliqThinkingAnimateMode;
+  /** Custom frame list for `animate: "custom"` (ignored otherwise). */
+  animateFrames?: string[];
+  /** Interval between frames in ms (default 1200, hard-floored to 800). */
+  animateIntervalMs?: number;
 };
 
 /** Default placeholder text posted when `thinking.mode === "placeholder"`. */
@@ -427,6 +447,16 @@ export const DEFAULT_CLIQ_CONFIRM_LABEL = "Confirm";
 export const DEFAULT_CLIQ_CANCEL_LABEL = "Cancel";
 /** Default reply posted when the user cancels a gated action. */
 export const DEFAULT_CLIQ_CANCELLED_TEXT = "🚫 Cancelled.";
+
+/** Animation mode for the "thinking" placeholder (issue #86). */
+export type CliqThinkingAnimateMode = "off" | "dots" | "spinner" | "custom";
+
+/** Default interval between animation frames (ms). */
+export const DEFAULT_CLIQ_THINKING_ANIMATE_INTERVAL_MS = 1200;
+/** Hard floor for the animation interval (ms) — protects the Cliq edit rate limit. */
+export const MIN_CLIQ_THINKING_ANIMATE_INTERVAL_MS = 800;
+/** Hard cap on total animation duration (ms) — a longer turn holds the last frame. */
+export const MAX_CLIQ_THINKING_ANIMATE_DURATION_MS = 60_000;
 
 /**
  * Welcome-message-on-subscribe config (under `channels.cliq.welcome`). The
@@ -545,6 +575,9 @@ export interface ResolvedCliqAccount {
     confirmLabel?: string;
     cancelLabel?: string;
     cancelledText?: string;
+    animate?: CliqThinkingAnimateMode;
+    animateFrames?: string[];
+    animateIntervalMs?: number;
   };
   /**
    * Resolved welcome-on-subscribe config. `enabled` defaults to `false`
@@ -647,6 +680,27 @@ export function resolveCliqConfig(
         section?.thinking?.cancelLabel ?? DEFAULT_CLIQ_CANCEL_LABEL,
       cancelledText:
         section?.thinking?.cancelledText ?? DEFAULT_CLIQ_CANCELLED_TEXT,
+      animate:
+        section?.thinking?.animate === "dots"
+          ? "dots"
+          : section?.thinking?.animate === "spinner"
+            ? "spinner"
+            : section?.thinking?.animate === "custom"
+              ? "custom"
+              : "off",
+      animateFrames: Array.isArray(section?.thinking?.animateFrames)
+        ? section!.thinking!.animateFrames!.filter(
+            (f): f is string => typeof f === "string" && f.length > 0,
+          )
+        : [],
+      animateIntervalMs:
+        typeof section?.thinking?.animateIntervalMs === "number" &&
+        Number.isFinite(section.thinking.animateIntervalMs)
+          ? Math.max(
+              MIN_CLIQ_THINKING_ANIMATE_INTERVAL_MS,
+              Math.floor(section.thinking.animateIntervalMs),
+            )
+          : DEFAULT_CLIQ_THINKING_ANIMATE_INTERVAL_MS,
     },
     welcome: {
       enabled: section?.welcome?.enabled === true,

@@ -15,6 +15,7 @@ import { DEFAULT_CLIQ_CONFIRM_TEXT, DEFAULT_CLIQ_CANCELLED_TEXT } from "./client
 import { stripCliqMentions } from "./mentions.js";
 import { resolveCliqClient } from "./runtime-api.js";
 import { createLiveEditDeliver, getLiveEditPlaceholderConsumed, editStatusCardPhase } from "./live-edit.js";
+import { startThinkingAnimation, type ThinkingAnimation } from "./thinking-animate.js";
 import {
   isSensitiveInbound,
   buildConfirmCardButtons,
@@ -1093,6 +1094,10 @@ export async function dispatchCliqInbound(params: {
   // `createLiveEditDeliver` resolves it lazily on the first edit (cached per
   // account).
   let initialDraft: { messageId: string; chatId?: string } | undefined;
+  // Animated "thinking" placeholder (issue #86): held so the reply deliver
+  // and the no-reply cleanup can stop a late frame edit before the final
+  // edit-into-reply. `null` when no animation is running.
+  let thinkingAnimation: ThinkingAnimation | null = null;
   if (
     (account.thinking?.mode === "placeholder" ||
       account.thinking?.mode === "card") &&
@@ -1153,6 +1158,26 @@ export async function dispatchCliqInbound(params: {
             onError: (err, info) => onError?.(err, info),
           });
         }
+        // Animated "thinking" placeholder (issue #86): cycle the placeholder
+        // through text frames on an interval while the turn runs. Stopped the
+        // moment the reply (or failure text) arrives so a late frame edit can
+        // never clobber the reply. The interval is hard-floored and the total
+        // duration capped (see `thinking-animate.ts`). A failed frame edit
+        // stops the animation but never breaks the turn. Only runs when the
+        // preconditions for the placeholder are already met (a message id, a
+        // refreshToken, streaming preview off) — the gate above enforces those.
+        if (account.thinking?.animate && account.thinking.animate !== "off") {
+          thinkingAnimation = startThinkingAnimation({
+            client,
+            draft: initialDraft,
+            to: deliverTo,
+            isDm: !parsed.isGroup,
+            mode: account.thinking.animate,
+            frames: account.thinking.animateFrames,
+            intervalMs: account.thinking.animateIntervalMs,
+            onError: (err, info) => onError?.(err, info),
+          });
+        }
       }
     } catch (err) {
       // Swallow + log: a failed placeholder post must never break the turn.
@@ -1191,6 +1216,9 @@ export async function dispatchCliqInbound(params: {
   // `finally` so a throwing `inbound.run` still cleans up. A failed cleanup
   // is swallowed + reported — it must never break or delay the turn.
   const cleanupStrayPlaceholder = async (): Promise<void> => {
+    // Stop the animation first so a late frame edit cannot clobber the
+    // cleanup edit/delete (or race with the reply deliver).
+    thinkingAnimation?.stop();
     if (!initialDraft) return;
     if (getLiveEditPlaceholderConsumed(deliver)) return;
     const chatId =
@@ -1241,6 +1269,9 @@ export async function dispatchCliqInbound(params: {
             runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher,
           delivery: {
             deliver: async (replyPayload: { text?: string }) => {
+              // Stop the animation the moment the reply arrives so a late
+              // frame edit cannot clobber the final edit-into-reply.
+              thinkingAnimation?.stop();
               await deliver({ text: replyPayload?.text });
             },
             onError: handleOnError,

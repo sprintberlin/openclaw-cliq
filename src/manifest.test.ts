@@ -2,7 +2,11 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { resolveCliqConfig } from "./client.js";
+import { resolveCliqConfig, resolveCliqApiVersion } from "./client.js";
+import {
+  DEFAULT_CLIQ_THINKING_ANIMATE_INTERVAL_MS,
+  MIN_CLIQ_THINKING_ANIMATE_INTERVAL_MS,
+} from "./client.js";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -19,6 +23,8 @@ interface JsonSchema {
   properties?: Record<string, JsonSchema>;
   enum?: unknown[];
   required?: string[];
+  default?: unknown;
+  oneOf?: JsonSchema[];
 }
 
 function cfgWith(section: Record<string, unknown>): OpenClawConfig {
@@ -36,6 +42,22 @@ function validate(
   path = "$",
 ): string[] {
   const errors: string[] = [];
+  if (schema.oneOf) {
+    // A value is valid against `oneOf` if it matches EXACTLY one sub-schema.
+    const perBranch = schema.oneOf.map((sub) => validate(sub, value, path));
+    const matches = perBranch.filter((e) => e.length === 0).length;
+    if (matches === 1) return [];
+    if (matches === 0) {
+      // No branch matched — surface every branch's errors so the caller can
+      // see WHY (e.g. "must not have additional properties: bogus").
+      for (const errs of perBranch) errors.push(...errs);
+      return errors;
+    }
+    errors.push(
+      `${path}: value matched ${matches} of ${schema.oneOf.length} oneOf branches (must match exactly one)`,
+    );
+    return errors;
+  }
   if (schema.type === "object") {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
       errors.push(`${path}: expected object, got ${Array.isArray(value) ? "array" : typeof value}`);
@@ -310,6 +332,16 @@ describe("cliq thinking config schema (issue #47)", () => {
     expect(uiHints?.thinking).toBeDefined();
     expect(uiHints?.thinking?.options).toEqual(["off", "placeholder", "card"]);
   });
+
+  it("declares thinking.animate + animateFrames + animateIntervalMs (issue #86)", () => {
+    const t = schema.properties?.thinking?.properties;
+    expect(t?.animate?.enum).toEqual(["off", "dots", "spinner", "custom"]);
+    expect(t?.animate?.default).toBe("off");
+    expect(t?.animateFrames?.type).toBe("array");
+    expect(t?.animateIntervalMs?.type).toBe("number");
+    const tt = manifest.configSchema.properties?.thinking?.properties;
+    expect(tt?.animate?.enum).toEqual(["off", "dots", "spinner", "custom"]);
+  });
 });
 
 describe("cliq resolveCliqConfig reads thinking (issue #47)", () => {
@@ -367,4 +399,121 @@ describe("cliq resolveCliqConfig reads thinking (issue #47)", () => {
     expect(account.thinking.mode).toBe("card");
     expect(account.thinking.text).toBe("Working…");
   });
+
+  it("defaults thinking.animate to 'off' and the interval to the default when unset (issue #86)", () => {
+    const cfg = cfgWith({ clientId: "id", clientSecret: "s", botId: "b" });
+    const account = resolveCliqConfig(cfg);
+    expect(account.thinking.animate).toBe("off");
+    expect(account.thinking.animateFrames).toEqual([]);
+    expect(account.thinking.animateIntervalMs).toBe(DEFAULT_CLIQ_THINKING_ANIMATE_INTERVAL_MS);
+  });
+
+  it("resolves thinking.animate='dots' / 'spinner' / 'custom' and a floored interval (issue #86)", () => {
+    for (const m of ["dots", "spinner", "custom"] as const) {
+      const cfg = cfgWith({
+        clientId: "id", clientSecret: "s", botId: "b",
+        thinking: {
+          mode: "placeholder",
+          animate: m,
+          animateFrames: m === "custom" ? ["a", "b", "c"] : undefined,
+          animateIntervalMs: 100,
+        },
+      });
+      const account = resolveCliqConfig(cfg);
+      expect(account.thinking.animate).toBe(m);
+      // 100 is below the 800 ms floor → clamped.
+      expect(account.thinking.animateIntervalMs).toBe(MIN_CLIQ_THINKING_ANIMATE_INTERVAL_MS);
+    }
+    expect(
+      resolveCliqConfig(cfgWith({
+        clientId: "id", clientSecret: "s", botId: "b",
+        thinking: { mode: "placeholder", animate: "custom", animateFrames: ["x", "y"] },
+      })).thinking.animateFrames,
+    ).toEqual(["x", "y"]);
+  });
+
+  it("drops non-string / empty custom animateFrames (issue #86)", () => {
+    const cfg = cfgWith({
+      clientId: "id", clientSecret: "s", botId: "b",
+      thinking: { mode: "placeholder", animate: "custom", animateFrames: ["ok", "", 5, null] },
+    });
+    const account = resolveCliqConfig(cfg);
+    expect(account.thinking.animateFrames).toEqual(["ok"]);
+  });
 });
+
+describe("cliq apiVersion manifest schema (issue #86)", () => {
+  // The bug: the manifest declared `apiVersion` as a string with
+  // `"default": "v2"`. OpenClaw injects manifest config-schema defaults at
+  // runtime, so the resolved config got `apiVersion: "v2"` even when the
+  // operator set nothing — which `normalizeCliqApiVersionConfig` then read as
+  // a GLOBAL "v2" override, silently defeating the code's `dmPost: "v3"`
+  // default. The fix: the schema accepts BOTH the string and the per-family
+  // object, and declares NO default (so the code's per-family defaults apply).
+  const channelSchema = manifest.channelConfigs.cliq.schema;
+  const topLevelSchema = manifest.configSchema;
+
+  it("does NOT declare a manifest `default` for apiVersion (so the runtime cannot inject v2)", () => {
+    expect(channelSchema.properties?.apiVersion?.default).toBeUndefined();
+    expect(topLevelSchema.properties?.apiVersion?.default).toBeUndefined();
+  });
+
+  it("accepts the string global override (v2 / v3)", () => {
+    for (const v of ["v2", "v3"]) {
+      const errors = validate(channelSchema, {
+        clientId: "id", clientSecret: "s", botId: "b",
+        apiVersion: v,
+      });
+      expect(errors).toEqual([]);
+    }
+  });
+
+  it("accepts the per-family object form", () => {
+    const errors = validate(channelSchema, {
+      clientId: "id", clientSecret: "s", botId: "b",
+      apiVersion: { dmPost: "v3", channelPost: "v2", channelCard: "v2", delete: "v2" },
+    });
+    expect(errors).toEqual([]);
+  });
+
+  it("accepts a partial per-family object (only one family set)", () => {
+    const errors = validate(channelSchema, {
+      clientId: "id", clientSecret: "s", botId: "b",
+      apiVersion: { channelPost: "v3" },
+    });
+    expect(errors).toEqual([]);
+  });
+
+  it("rejects an unknown family key in the per-family object (additionalProperties:false)", () => {
+    const errors = validate(channelSchema, {
+      clientId: "id", clientSecret: "s", botId: "b",
+      apiVersion: { dmPost: "v3", bogus: "v2" },
+    });
+    expect(
+      errors.some((e) => e.includes('must not have additional properties: "bogus"')),
+    ).toBe(true);
+  });
+
+  it("rejects an unknown apiVersion string value", () => {
+    const errors = validate(channelSchema, {
+      clientId: "id", clientSecret: "s", botId: "b",
+      apiVersion: "v4",
+    });
+    expect(errors.some((e) => e.includes("not one of"))).toBe(true);
+  });
+
+  it("omitted apiVersion resolves dmPost→v3 and the rest→v2 through the full config-resolution path", () => {
+    // This is the regression that was broken when the manifest injected a "v2"
+    // default: the runtime-resolved config differed from the raw one. With the
+    // manifest `default` removed, an omitted `apiVersion` stays `undefined`
+    // through resolution → the code's CLIQ_API_FAMILY_DEFAULTS apply.
+    const cfg = cfgWith({ clientId: "id", clientSecret: "s", botId: "b" });
+    const resolved = resolveCliqConfig(cfg);
+    expect(resolved.apiVersion).toBeUndefined();
+    expect(resolveCliqApiVersion(resolved.apiVersion, "dmPost")).toBe("v3");
+    expect(resolveCliqApiVersion(resolved.apiVersion, "channelPost")).toBe("v2");
+    expect(resolveCliqApiVersion(resolved.apiVersion, "channelCard")).toBe("v2");
+    expect(resolveCliqApiVersion(resolved.apiVersion, "delete")).toBe("v2");
+  });
+});
+

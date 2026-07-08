@@ -1761,6 +1761,50 @@ describe("dispatchCliqInbound — thinking placeholder (issue #47)", () => {
     expect(client.deletes).toHaveLength(0);
   });
 
+  it("animated placeholder (issue #86): starts the animation but stops it on reply — no frame edit clobbers the reply", async () => {
+    // The mock deliver runs SYNCHRONOUSLY inside `inbound.run`, so the
+    // animation's first frame (scheduled via setTimeout, interval ≥ 800 ms)
+    // never fires before `deliver` calls `stop()`. The placeholder is edited
+    // into the reply exactly once — the animation wiring does not double-edit.
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    await dispatchCliqInbound({
+      runtime: mockRuntimeWithDeliver("the final reply"),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "💭 …", animate: "dots" },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    // One placeholder post + one edit replacing it (the reply). No frame edit
+    // fired because the reply stopped the animation before the first tick.
+    expect(client.sends).toHaveLength(1);
+    expect(client.sends[0].text).toBe("💭 …");
+    expect(client.edits).toHaveLength(1);
+    expect(client.edits[0].text).toBe("the final reply");
+  });
+
+  it("animated placeholder (issue #86): degrades to the static placeholder when animate is 'off'", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    await dispatchCliqInbound({
+      runtime: mockRuntimeWithDeliver("the final reply"),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "💭 …", animate: "off" },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    expect(client.edits).toHaveLength(1);
+    expect(client.edits[0].text).toBe("the final reply");
+  });
+
   it("is a no-op when streaming preview is on (live-edit already shows progress)", async () => {
     const client = makeMockClient({ placeholderChatId: "chat-u1" });
     const parsed = parseCliqWebhookPayload(dmPayload());
