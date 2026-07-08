@@ -105,7 +105,7 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "mode": { "type": "string", "enum": ["off", "placeholder", "card"], "default": "off" },
+          "mode": { "type": "string", "enum": ["off", "placeholder", "card"], "default": "placeholder" },
           "text": { "type": "string", "default": "💭 …" },
           "thinkingText": { "type": "string", "default": "💭 thinking…" },
           "failureText": { "type": "string" },
@@ -115,7 +115,7 @@
           "confirmLabel": { "type": "string", "default": "Confirm" },
           "cancelLabel": { "type": "string", "default": "Cancel" },
           "cancelledText": { "type": "string", "default": "🚫 Cancelled." },
-          "animate": { "type": "string", "enum": ["off", "dots", "spinner", "custom"], "default": "off" },
+          "animate": { "type": "string", "enum": ["off", "dots", "spinner", "custom"], "default": "dots" },
           "animateFrames": { "type": "array", "items": { "type": "string" } },
           "animateIntervalMs": { "type": "number" }
         }
@@ -263,7 +263,7 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "mode": { "type": "string", "enum": ["off", "placeholder", "card"], "default": "off" },
+              "mode": { "type": "string", "enum": ["off", "placeholder", "card"], "default": "placeholder" },
               "text": { "type": "string", "default": "💭 …" },
               "thinkingText": { "type": "string", "default": "💭 thinking…" },
               "failureText": { "type": "string" },
@@ -273,7 +273,7 @@
               "confirmLabel": { "type": "string", "default": "Confirm" },
               "cancelLabel": { "type": "string", "default": "Cancel" },
               "cancelledText": { "type": "string", "default": "🚫 Cancelled." },
-              "animate": { "type": "string", "enum": ["off", "dots", "spinner", "custom"], "default": "off" },
+              "animate": { "type": "string", "enum": ["off", "dots", "spinner", "custom"], "default": "dots" },
               "animateFrames": { "type": "array", "items": { "type": "string" } },
               "animateIntervalMs": { "type": "number" }
             }

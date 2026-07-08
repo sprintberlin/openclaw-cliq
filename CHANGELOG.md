@@ -11,6 +11,17 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Changed
+
+- **Animated thinking placeholder is now the default for new installs (issue #89).**
+  `thinking.mode` defaults to `"placeholder"` and `thinking.animate` defaults to
+  `"dots"` (cycles `💭 .` → `💭 ..` → `💭 ...` while the agent works) instead of
+  `"off"`. New installs get an animated "working…" indicator out of the box — the
+  Cliq-appropriate substitute for a typing indicator. To disable, set
+  `thinking.mode: "off"` or `thinking.animate: "off"`. There are no foreign
+  installations yet, so the default change is safe. Existing installs that
+  explicitly set `thinking.mode: "off"` are unaffected.
+
 ### Fixed
 
 - **Inbound image/file DM no longer aborts or leaves an orphaned placeholder (issue #88).**

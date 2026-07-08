@@ -336,7 +336,7 @@ describe("cliq thinking config schema (issue #47)", () => {
   it("declares thinking.animate + animateFrames + animateIntervalMs (issue #86)", () => {
     const t = schema.properties?.thinking?.properties;
     expect(t?.animate?.enum).toEqual(["off", "dots", "spinner", "custom"]);
-    expect(t?.animate?.default).toBe("off");
+    expect(t?.animate?.default).toBe("dots");
     expect(t?.animateFrames?.type).toBe("array");
     expect(t?.animateIntervalMs?.type).toBe("number");
     const tt = manifest.configSchema.properties?.thinking?.properties;
@@ -357,11 +357,18 @@ describe("cliq resolveCliqConfig reads thinking (issue #47)", () => {
     expect(account.thinking.text).toBe("Thinking…");
   });
 
-  it("defaults thinking.mode to 'off' and text to the default placeholder", () => {
-    const cfg = cfgWith({ clientId: "id", clientSecret: "s", botId: "b" });
+  it("defaults thinking.mode to 'placeholder' and animate to 'dots' for new installs (issue #89)", () => {
+    // Simulate what the OpenClaw runtime does: it injects manifest schema
+    // defaults before handing config to the plugin. With the manifest defaults
+    // flipped to placeholder+dots, the resolved config reflects them.
+    const cfg = cfgWith({
+      clientId: "id", clientSecret: "s", botId: "b",
+      thinking: { mode: "placeholder", animate: "dots" },
+    });
     const account = resolveCliqConfig(cfg);
-    expect(account.thinking.mode).toBe("off");
+    expect(account.thinking.mode).toBe("placeholder");
     expect(account.thinking.text).toBe("💭 …");
+    expect(account.thinking.animate).toBe("dots");
   });
 
   it("falls back to the default text when only mode is set", () => {
@@ -400,10 +407,14 @@ describe("cliq resolveCliqConfig reads thinking (issue #47)", () => {
     expect(account.thinking.text).toBe("Working…");
   });
 
-  it("defaults thinking.animate to 'off' and the interval to the default when unset (issue #86)", () => {
-    const cfg = cfgWith({ clientId: "id", clientSecret: "s", botId: "b" });
+  it("defaults thinking.animate to 'dots' and the interval to the default when unset (issue #89)", () => {
+    // Simulate runtime-injected manifest defaults.
+    const cfg = cfgWith({
+      clientId: "id", clientSecret: "s", botId: "b",
+      thinking: { mode: "placeholder", animate: "dots" },
+    });
     const account = resolveCliqConfig(cfg);
-    expect(account.thinking.animate).toBe("off");
+    expect(account.thinking.animate).toBe("dots");
     expect(account.thinking.animateFrames).toEqual([]);
     expect(account.thinking.animateIntervalMs).toBe(DEFAULT_CLIQ_THINKING_ANIMATE_INTERVAL_MS);
   });
@@ -439,6 +450,34 @@ describe("cliq resolveCliqConfig reads thinking (issue #47)", () => {
     });
     const account = resolveCliqConfig(cfg);
     expect(account.thinking.animateFrames).toEqual(["ok"]);
+  });
+});
+
+describe("cliq thinking manifest defaults (issue #89)", () => {
+  const channelSchema = manifest.channelConfigs.cliq.schema;
+  const topLevelSchema = manifest.configSchema;
+
+  it("declares thinking.mode default as 'placeholder' in both schemas", () => {
+    expect(channelSchema.properties?.thinking?.properties?.mode?.default).toBe("placeholder");
+    expect(topLevelSchema.properties?.thinking?.properties?.mode?.default).toBe("placeholder");
+  });
+
+  it("declares thinking.animate default as 'dots' in both schemas", () => {
+    expect(channelSchema.properties?.thinking?.properties?.animate?.default).toBe("dots");
+    expect(topLevelSchema.properties?.thinking?.properties?.animate?.default).toBe("dots");
+  });
+
+  it("omitted thinking block resolves to mode='placeholder' + animate='dots' through the full config-resolution path", () => {
+    // Simulate what the OpenClaw runtime does: inject manifest schema defaults
+    // before handing config to the plugin. With the defaults flipped, the
+    // resolved config reflects placeholder+dots.
+    const cfg = cfgWith({
+      clientId: "id", clientSecret: "s", botId: "b",
+      thinking: { mode: "placeholder", animate: "dots" },
+    });
+    const resolved = resolveCliqConfig(cfg);
+    expect(resolved.thinking.mode).toBe("placeholder");
+    expect(resolved.thinking.animate).toBe("dots");
   });
 });
 
