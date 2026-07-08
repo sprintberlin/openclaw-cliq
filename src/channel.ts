@@ -39,7 +39,7 @@ import {
   notifyCliqPairingApproval,
 } from "./pairing.js";
 
-export { resolveCliqConfig, CliqClient, chunkMessage, loadCliqMediaAttachment, normalizeCliqRouteTarget, readEffectiveCliqSection, CLIQ_DEFAULT_ACCOUNT_ID, type CliqChannelConfig, type ResolvedCliqAccount, type CliqMediaAttachment, type NormalizedCliqTarget, type CliqDirectoryEntry, type CliqUserRecord, type CliqChannelRecord, type CliqReactionGuidanceConfig, type EffectiveCliqSection } from "./client.js";
+export { resolveCliqConfig, CliqClient, chunkMessage, loadCliqMediaAttachment, normalizeCliqRouteTarget, readEffectiveCliqSection, CLIQ_DEFAULT_ACCOUNT_ID, resolveCliqApiVersion, CLIQ_API_FAMILY_DEFAULTS, type CliqChannelConfig, type ResolvedCliqAccount, type CliqApiFamily, type CliqApiVersion, type CliqApiVersionConfig, type CliqMediaAttachment, type NormalizedCliqTarget, type CliqDirectoryEntry, type CliqUserRecord, type CliqChannelRecord, type CliqReactionGuidanceConfig, type EffectiveCliqSection } from "./client.js";
 export { buildCliqMentionRegexes, stripCliqMentions } from "./mentions.js";
 export { markdownToCliq } from "./markdown.js";
 export { cliqHeartbeatAdapter, probeCliqHeartbeat, type CliqHeartbeatProbeResult } from "./heartbeat.js";

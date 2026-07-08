@@ -53,7 +53,7 @@ describe("CliqClient.sendCard", () => {
     };
   }
 
-  function makeClient(opts?: { refreshToken?: string; apiVersion?: "v2" | "v3" }) {
+  function makeClient(opts?: { refreshToken?: string; apiVersion?: "v2" | "v3" | Record<string, "v2" | "v3"> }) {
     return new CliqClient(
       "id",
       "secret",
@@ -72,11 +72,11 @@ describe("CliqClient.sendCard", () => {
     { label: "Confirm", type: "+", action: "invoke", data: "yes" },
   ];
 
-  it("posts a DM card to /bots/{botId}/message with userids + buttons", async () => {
+  it("posts a DM card to /bots/{botId}/message with userids + buttons (v2 path)", async () => {
     const captured: { url: string; method: string; body: string; auth: string }[] = [];
     mockFetch({ captured });
 
-    const client = makeClient();
+    const client = makeClient({ apiVersion: "v2" });
     const result = await client.sendCard({ to: "user-7", isDm: true, text: "Pick", buttons });
     expect(result.messageId).toBe("card-1");
 
@@ -109,11 +109,11 @@ describe("CliqClient.sendCard", () => {
     expect(body.buttons).toEqual(buttons);
   });
 
-  it("omits text from the payload when none is supplied (buttons-only card)", async () => {
+  it("omits text from the payload when none is supplied (buttons-only card, v2 path)", async () => {
     const captured: { url: string; method: string; body: string; auth: string }[] = [];
     mockFetch({ captured });
 
-    const client = makeClient();
+    const client = makeClient({ apiVersion: "v2" });
     await client.sendCard({ to: "user-1", isDm: true, buttons });
     const body = JSON.parse(captured[0].body) as Record<string, unknown>;
     expect(body.text).toBeUndefined();
@@ -121,13 +121,13 @@ describe("CliqClient.sendCard", () => {
     expect(body.userids).toBe("user-1");
   });
 
-  it("parses a bot-DM response shape ({message_details:{...}}) into chatId+messageId", async () => {
+  it("parses a bot-DM response shape ({message_details:{...}}) into chatId+messageId (v2 path)", async () => {
     mockFetch({
       sendBody: JSON.stringify({
         message_details: { "user-7": { chat_id: "CT_dm", message_id: "m-dm" } },
       }),
     });
-    const client = makeClient();
+    const client = makeClient({ apiVersion: "v2" });
     const result = await client.sendCard({ to: "user-7", isDm: true, buttons });
     expect(result.messageId).toBe("m-dm");
     expect(result.chatId).toBe("CT_dm");
@@ -215,12 +215,15 @@ describe("CliqClient.sendCard", () => {
   });
 
   describe("apiVersion: v3 DM card send", () => {
-    it("posts a DM card to /api/v3/bots/{botId}/messages with a modern-inline Message Card body + user_ids + sync_message", async () => {
+    it("posts a DM card to /api/v3/bots/{botId}/messages with a modern-inline Message Card body + userids + sync_message", async () => {
       const captured: { url: string; method: string; body: string; auth: string }[] = [];
       mockFetch({
         captured,
         // No refreshToken — the v3 DM card path uses client_credentials.
-        sendBody: JSON.stringify({ data: { message_id: "card-dm-v3", chat_id: "CT_dm_v3" } }),
+        // Live v3 bot-DM sync_message response shape (message_details.<uid>).
+        sendBody: JSON.stringify({
+          message_details: { "user-7": { chat_id: "CT_dm_v3", message_id: "card-dm-v3" } },
+        }),
       });
 
       const client = makeClient({ apiVersion: "v3" });
@@ -247,7 +250,10 @@ describe("CliqClient.sendCard", () => {
       expect(card.theme).toBe("modern-inline");
       expect(card.title).toBe("Pick an option");
       expect(card.buttons).toHaveLength(2);
-      expect(body.user_ids).toBe("user-7");
+      // Recipient key is `userids` (v2-style, NO underscore) — a `user_ids`
+      // key is rejected by the live v3 bot-DM endpoint with `extra_key_found`.
+      expect(body.userids).toBe("user-7");
+      expect(body.user_ids).toBeUndefined();
       expect(body.sync_message).toBe(true);
       // Full text kept as the top-level fallback.
       expect(body.text).toBe("Pick an option");
@@ -355,7 +361,9 @@ describe("CliqClient.sendCard", () => {
       const captured: { url: string; method: string; body: string; auth: string }[] = [];
       mockFetch({
         captured,
-        sendBody: JSON.stringify({ data: { message_id: "prompt-dm-v3", chat_id: "CT_p" } }),
+        sendBody: JSON.stringify({
+          message_details: { "user-7": { chat_id: "CT_p", message_id: "prompt-dm-v3" } },
+        }),
       });
 
       const client = makeClient({ apiVersion: "v3" });
@@ -373,13 +381,13 @@ describe("CliqClient.sendCard", () => {
       expect(req.url).toContain("/api/v3/bots/bot/messages");
       const body = JSON.parse(req.body) as {
         card: { theme: string; title: string; buttons: unknown[] };
-        user_ids: string;
+        userids: string;
         sync_message: boolean;
       };
       expect(body.card.theme).toBe("prompt");
       expect(body.card.title).toBe("Approve deploy?");
       expect(body.card.buttons).toHaveLength(2);
-      expect(body.user_ids).toBe("user-7");
+      expect(body.userids).toBe("user-7");
       expect(body.sync_message).toBe(true);
     });
 

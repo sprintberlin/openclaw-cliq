@@ -13,6 +13,43 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **The v3 bot-DM send path no longer 400s, and DMs now return the sent
+  message id (issue #85).** The v3 "Send a bot message" endpoint
+  (`POST /api/v3/bots/{botId}/messages`) requires the recipient key
+  **`userids`** (v2-style, no underscore) — the plugin was sending `user_ids`,
+  which the endpoint rejected with `extra_key_found`. With `sync_message: true`
+  the response carries the sent `message_id` + `chat_id` under
+  `message_details.<userId>` (URL-encoded — `…995%20…547`, `%20` = a space);
+  the parser now decodes it once so the v2 edit/delete URL builder encodes it
+  exactly once (no double-encode / stray `%2520`). This is what the
+  `thinking.mode: "placeholder"` acknowledgement and DM live-edit-in-place
+  need to edit the placeholder into the final reply; on the broken path they
+  silently left an orphaned `💭 …`.
+
+### Changed
+
+- **`apiVersion` is now per-family, and the bot-DM family defaults to v3
+  (issue #85).** `apiVersion` now accepts EITHER a string global override
+  (`"v2"` / `"v3"` — forces all migratable families) OR a per-family object
+  `{ dmPost?, channelPost?, channelCard?, delete? }`. The built-in defaults
+  now flip **`dmPost` → `"v3"`** (the sole family where v3 is strictly
+  better: it returns the sent message id, unlocking the thinking placeholder
+  + DM live-edit-in-place that v2 DM cannot support); `channelPost`,
+  `channelCard`, and `delete` stay `"v2"` (v3 channel text post returns no
+  message id; v3 channel card posts as the authenticated user, not the bot;
+  v3 delete offers no functional win). The bot-DM v3 path uses the *same*
+  `ZohoCliq.Webhooks.CREATE` scope as v2 DMs (`client_credentials`, **no
+  refresh token needed**), though some orgs may additionally require
+  `ZohoCliq.BotMessages.CREATE` — if yours does, restore the v2 path with
+  `apiVersion: { dmPost: "v2" }`. Locked families (message edit, reactions,
+  media posts, directory listing, file download, channel-chat-id resolution,
+  message list) stay on `/api/v2/...` regardless — v3 has no endpoint for
+  them (a v3-posted DM is edited via the v2 edit endpoint; that hybrid is
+  intended). See README §4 for the full per-family table. There are no
+  foreign installations yet, so the default change is safe.
+
+### Fixed
+
 - **Inbound file / image messages sent to the bot no longer fail (issue #84).**
   A Zoho Cliq bot **Message handler** delivers `attachments` as an array of bare
   file-name strings (no file id, no MIME) — unlike the rich *message object*

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { cliqPlugin } from "./channel.js";
-import { chunkMessage, normalizeCliqRouteTarget, resolveCliqConfig } from "./client.js";
+import { chunkMessage, normalizeCliqRouteTarget, resolveCliqConfig, resolveCliqApiVersion } from "./client.js";
 import { setCliqClientRegistry } from "./runtime-api.js";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { createCliqTestConfig as cfgWith } from "./test-api.js";
@@ -891,10 +891,12 @@ describe("CliqClient.sendMessage v3 channel post (apiVersion==='v3')", () => {
   });
 });
 
-describe("CliqClient.sendMessage v3 bot DM post (apiVersion==='v3')", () => {
-  it("POSTs to /api/v3/bots/{botId}/messages with user_ids + sync_message, Webhooks.CREATE scope (no refresh token)", async () => {
+describe("CliqClient.sendMessage v3 bot DM post (dmPost resolves to v3)", () => {
+  it("POSTs to /api/v3/bots/{botId}/messages with userids + sync_message, Webhooks.CREATE scope (no refresh token), and parses message_details into a message ref", async () => {
     setCliqClientRegistry(null);
     const { CliqClient } = await import("./client.js");
+    // v3 DM opts in via the 9th constructor param. The default (unset) also
+    // resolves dmPost to v3, but the explicit string keeps this test focused.
     const client = new CliqClient("id", "secret", "bot", undefined, undefined, undefined, undefined, undefined, "v3");
     const seen: { url: string; method?: string; body?: string; scope?: string | null }[] = [];
     const original = globalThis.fetch;
@@ -906,9 +908,19 @@ describe("CliqClient.sendMessage v3 bot DM post (apiVersion==='v3')", () => {
         return new Response(JSON.stringify({ access_token: "v3-dm-tok", expires_in: 3600 }), { status: 200 });
       }
       seen.push({ url: urlStr, method: init?.method, body: init?.body as string });
-      // v3 bot DM with sync_message:true returns { data: { message_id, chat_id } }.
+      // Captured live v3 bot-DM sync_message response: the message_id is
+      // URL-encoded (`%20` = a space) and nested under message_details.<uid>.
       return new Response(
-        JSON.stringify({ data: { message_id: "v3-dm-msg", chat_id: "CT_dm" } }),
+        JSON.stringify({
+          user_ids: ["20098819618"],
+          message_details: {
+            "20098819618": {
+              chat_id: "CT_dm-B2",
+              message_id: "1783489987995%20224416859547",
+            },
+          },
+          users: ["20098819618"],
+        }),
         { status: 200 },
       );
     }) as typeof fetch;
@@ -925,22 +937,57 @@ describe("CliqClient.sendMessage v3 bot DM post (apiVersion==='v3')", () => {
     const post = seen.find((s) => s.method === "POST" && s.url.includes("/bots/bot/messages"));
     expect(post).toBeDefined();
     expect(post!.url).toContain("/api/v3/bots/bot/messages");
-    // The body is the v3 shape: { text, user_ids, sync_message: true } (NOT v2's `userids`).
-    expect(JSON.parse(post!.body!)).toEqual({ text: "hi v3 dm", user_ids: "20098819618", sync_message: true });
-    // The v3 sync_message response (wrapped under `data`) is parsed into a message ref.
-    expect(result).toEqual({ messageId: "v3-dm-msg", chatId: "CT_dm" });
+    // The body uses `userids` (v2-style, NO underscore) — a `user_ids` key is
+    // rejected by the live endpoint with `extra_key_found`.
+    expect(JSON.parse(post!.body!)).toEqual({ text: "hi v3 dm", userids: "20098819618", sync_message: true });
+    // The v3 sync_message response (message_details.<uid>) is parsed into a
+    // message ref, with the URL-encoded message_id decoded once.
+    expect(result).toEqual({
+      messageId: "1783489987995 224416859547",
+      chatId: "CT_dm-B2",
+    });
   });
 
-  it("defaults to v2 bot DM when apiVersion is unset (v2 userids + /api/v2/bots/{botId}/message)", async () => {
+  it("defaults to v3 bot DM when apiVersion is unset (dmPost default = v3)", async () => {
     setCliqClientRegistry(null);
     const { CliqClient } = await import("./client.js");
     const client = new CliqClient("id", "secret", "bot");
-    const seen: { url: string; method?: string; body?: string; scope?: string | null }[] = [];
+    const seen: { url: string; method?: string; body?: string }[] = [];
     const original = globalThis.fetch;
     globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
       const urlStr = typeof url === "string" ? url : url.toString();
       if (urlStr.includes("/oauth/v2/token")) {
-        seen.push({ url: "oauth", scope: new URL(urlStr).searchParams.get("scope") });
+        return new Response(JSON.stringify({ access_token: "t", expires_in: 3600 }), { status: 200 });
+      }
+      seen.push({ url: urlStr, method: init?.method, body: init?.body as string });
+      return new Response(
+        JSON.stringify({ message_details: { "u1": { chat_id: "CT_d", message_id: "m1" } } }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+    let result;
+    try {
+      result = await client.sendMessage({ to: "u1", isDm: true, text: "hi" });
+    } finally {
+      globalThis.fetch = original;
+    }
+    // Default dmPost = v3 → v3 bot-message endpoint + userids + sync_message.
+    const post = seen.find((s) => s.method === "POST" && s.url.includes("/bots/bot/messages"));
+    expect(post).toBeDefined();
+    expect(post!.url).toContain("/api/v3/bots/bot/messages");
+    expect(JSON.parse(post!.body!)).toEqual({ text: "hi", userids: "u1", sync_message: true });
+    expect(result).toEqual({ messageId: "m1", chatId: "CT_d" });
+  });
+
+  it("opts back to v2 bot DM via apiVersion { dmPost: 'v2' } (v2 userids + /api/v2/bots/{botId}/message)", async () => {
+    setCliqClientRegistry(null);
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, undefined, undefined, undefined, { dmPost: "v2" });
+    const seen: { url: string; method?: string; body?: string }[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
         return new Response(JSON.stringify({ access_token: "t", expires_in: 3600 }), { status: 200 });
       }
       seen.push({ url: urlStr, method: init?.method, body: init?.body as string });
@@ -1215,6 +1262,154 @@ describe("CliqClient.deleteMessage v3 (apiVersion==='v3')", () => {
     } finally {
       globalThis.fetch = original;
     }
+  });
+});
+
+describe("resolveCliqApiVersion — per-family resolution + locked v2 families", () => {
+  it("applies built-in defaults when config is unset (dmPost=v3, others v2)", () => {
+    expect(resolveCliqApiVersion(undefined, "dmPost")).toBe("v3");
+    expect(resolveCliqApiVersion(undefined, "channelPost")).toBe("v2");
+    expect(resolveCliqApiVersion(undefined, "channelCard")).toBe("v2");
+    expect(resolveCliqApiVersion(undefined, "delete")).toBe("v2");
+  });
+
+  it("a string 'v3' forces ALL migratable families to v3 (global override)", () => {
+    for (const fam of ["dmPost", "channelPost", "channelCard", "delete"] as const) {
+      expect(resolveCliqApiVersion("v3", fam)).toBe("v3");
+    }
+  });
+
+  it("a string 'v2' forces ALL migratable families to v2", () => {
+    expect(resolveCliqApiVersion("v2", "dmPost")).toBe("v2");
+    expect(resolveCliqApiVersion("v2", "channelPost")).toBe("v2");
+  });
+
+  it("a per-family object overrides only the named families (others keep defaults)", () => {
+    const cfg = { dmPost: "v2", channelPost: "v3" } as const;
+    expect(resolveCliqApiVersion(cfg, "dmPost")).toBe("v2");
+    expect(resolveCliqApiVersion(cfg, "channelPost")).toBe("v3");
+    // channelCard + delete unset → built-in defaults (v2).
+    expect(resolveCliqApiVersion(cfg, "channelCard")).toBe("v2");
+    expect(resolveCliqApiVersion(cfg, "delete")).toBe("v2");
+  });
+
+  it("an unknown per-family value falls back to the family default (never throws)", () => {
+    const cfg = { dmPost: "v9" as unknown as "v3" };
+    expect(resolveCliqApiVersion(cfg, "dmPost")).toBe("v3");
+  });
+});
+
+describe("CliqClient locked-v2 families — never route to v3 (issue #85)", () => {
+  // The edit / chat-id-resolution / message-list families have NO v3 endpoint
+  // (confirmed against the v3 REST docs). They never consult `resolveApiVersion`
+  // and stay on `/api/v2/...` regardless of the apiVersion config — locked so a
+  // future change can't accidentally route them to a non-existent v3 path.
+
+  it("editMessage stays on /api/v2/chats/{chatId}/messages/{messageId} even when apiVersion==='v3'", async () => {
+    setCliqClientRegistry(null);
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient(
+      "id", "secret", "bot", undefined, undefined,
+      { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1, sleep: async () => {}, random: () => 0 },
+      undefined, "rt-secret", "v3",
+    );
+    const seen: { url: string; method?: string }[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(JSON.stringify({ access_token: "t", expires_in: 3600 }), { status: 200 });
+      }
+      seen.push({ url: urlStr, method: init?.method });
+      return new Response(JSON.stringify({ id: "edited" }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      await client.editMessage({ chatId: "CT_c", messageId: "m1", text: "edited" });
+    } finally {
+      globalThis.fetch = original;
+    }
+    const put = seen.find((s) => s.method === "PUT");
+    expect(put).toBeDefined();
+    expect(put!.url).toContain("/api/v2/chats/CT_c/messages/m1");
+    expect(put!.url).not.toContain("/api/v3/");
+  });
+
+  it("resolveChannelChatId stays on /api/v2/channelsbyname/{name} even when apiVersion==='v3'", async () => {
+    setCliqClientRegistry(null);
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient(
+      "id", "secret", "bot", undefined, undefined,
+      { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1, sleep: async () => {}, random: () => 0 },
+      undefined, "rt-secret", "v3",
+    );
+    const seen: { url: string }[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      seen.push({ url: urlStr });
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(JSON.stringify({ access_token: "t", expires_in: 3600 }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ channel_id: "CT_chan" }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      await client.resolveChannelChatId("dev-team");
+    } catch {
+      // resolveChannelChatId never throws; ignore.
+    } finally {
+      globalThis.fetch = original;
+    }
+    const get = seen.find((s) => s.url.includes("/channelsbyname/dev-team"));
+    expect(get).toBeDefined();
+    expect(get!.url).toContain("/api/v2/channelsbyname/dev-team");
+    expect(get!.url).not.toContain("/api/v3/");
+  });
+});
+
+describe("v3 DM message_id → v2 edit URL round-trip (issue #85, %20 handling)", () => {
+  // The v3 bot-DM sync_message response URL-encodes the message_id (e.g.
+  // `1783489987995%20224416859547` — `%20` = a space). parseCliqMessageRef
+  // decodes it once; the v2 edit URL builder (editMessage) re-encodes it
+  // exactly once via encodeURIComponent — no double-encode / stray `%2520`.
+
+  it("a v3 DM send returns a decoded message_id, and editMessage encodes it exactly once", async () => {
+    setCliqClientRegistry(null);
+    const { CliqClient } = await import("./client.js");
+    // dmPost defaults to v3 — no apiVersion needed.
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, undefined, undefined, "rt-secret");
+    let sendResponse = "";
+    const seenUrls: string[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(JSON.stringify({ access_token: "t", expires_in: 3600 }), { status: 200 });
+      }
+      seenUrls.push(urlStr);
+      sendResponse = JSON.stringify({
+        message_details: { "u1": { chat_id: "CT_dm-B2", message_id: "1783489987995%20224416859547" } },
+      });
+      // First POST = the DM send; subsequent PUT = the edit.
+      if (init?.method === "PUT") {
+        return new Response(JSON.stringify({ id: "edited" }), { status: 200 });
+      }
+      return new Response(sendResponse, { status: 200 });
+    }) as typeof fetch;
+    let ref;
+    try {
+      ref = await client.sendMessage({ to: "u1", isDm: true, text: "draft" });
+      // The decoded message_id (space, not %20).
+      expect(ref.messageId).toBe("1783489987995 224416859547");
+      expect(ref.chatId).toBe("CT_dm-B2");
+      await client.editMessage({ chatId: ref.chatId!, messageId: ref.messageId!, text: "final" });
+    } finally {
+      globalThis.fetch = original;
+    }
+    // The edit URL must encode the message_id exactly once (`%20`, NOT `%2520`).
+    const editUrl = seenUrls.find((u) => u.includes("/api/v2/chats/CT_dm-B2/messages/"));
+    expect(editUrl).toBeDefined();
+    expect(editUrl!).toContain("/api/v2/chats/CT_dm-B2/messages/1783489987995%20224416859547");
+    expect(editUrl!).not.toContain("%2520");
   });
 });
 

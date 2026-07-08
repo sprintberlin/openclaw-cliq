@@ -3,6 +3,9 @@ import { hasConfiguredSecretInput } from "openclaw/plugin-sdk/secret-input-runti
 import {
   readEffectiveCliqSection,
   resolveCliqConfig,
+  resolveCliqApiVersion,
+  type CliqApiFamily,
+  type CliqApiVersion,
   type CliqChannelConfig,
   type ResolvedCliqAccount,
 } from "./client.js";
@@ -63,8 +66,8 @@ export interface InspectedCliqAccountConfig {
   ackPolicy: "after_dispatch" | "immediate";
   /** Whether progressive (block-streaming) reply delivery is opted-in. */
   streamingPreview: "on" | "off";
-  /** Resolved REST API generation for the endpoint families with a v3 equivalent (channel text posts + bot DMs + message delete). */
-  apiVersion: "v2" | "v3";
+  /** Per-family resolved REST API generation (dmPost / channelPost / channelCard / delete). */
+  apiVersion: Record<CliqApiFamily, CliqApiVersion>;
 }
 
 export interface InspectedCliqAccount {
@@ -184,7 +187,12 @@ export function inspectCliqAccount(params: {
       ackPolicy: resolved?.ackPolicy ?? "after_dispatch",
       streamingPreview:
         (section?.streaming?.preview === "on" ? "on" : "off"),
-      apiVersion: resolved?.apiVersion ?? "v2",
+      apiVersion: {
+        dmPost: resolveCliqApiVersion(resolved?.apiVersion, "dmPost"),
+        channelPost: resolveCliqApiVersion(resolved?.apiVersion, "channelPost"),
+        channelCard: resolveCliqApiVersion(resolved?.apiVersion, "channelCard"),
+        delete: resolveCliqApiVersion(resolved?.apiVersion, "delete"),
+      },
     },
   };
 }

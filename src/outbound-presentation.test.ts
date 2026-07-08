@@ -15,6 +15,10 @@ const baseCfg = cfgWith({
   clientId: "id",
   clientSecret: "secret",
   botId: "bot",
+  // Pin the v2 card path so these routing/chunking tests stay focused on the
+  // presentation layer (the v3 default DM-card path posts a `card` body, not
+  // top-level `buttons` — covered by src/send-card.test.ts).
+  apiVersion: "v2",
 });
 
 function mockFetch(opts: {

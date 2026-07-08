@@ -4,6 +4,7 @@ import {
   resolveCliqConfig,
   readEffectiveCliqSection,
   CLIQ_DEFAULT_ACCOUNT_ID,
+  resolveCliqApiVersion,
 } from "./channel.js";
 import { inspectCliqAccount } from "./account-inspect.js";
 import {
@@ -165,16 +166,22 @@ describe("resolveCliqConfig — per-account resolution", () => {
     expect(account.allowFrom).toEqual(["u1"]);
   });
 
-  it("defaults apiVersion to v2 when unset (single-account)", () => {
+  it("defaults dmPost to v3 (and the other families to v2) when apiVersion is unset (single-account)", () => {
     const cfg = {
       channels: {
         cliq: { clientId: "id", clientSecret: "secret", botId: "bot" },
       },
     } as unknown as OpenClawConfig;
-    expect(resolveCliqConfig(cfg).apiVersion).toBe("v2");
+    const resolved = resolveCliqConfig(cfg);
+    // Unset → raw config is undefined; per-family defaults apply.
+    expect(resolved.apiVersion).toBeUndefined();
+    expect(resolveCliqApiVersion(resolved.apiVersion, "dmPost")).toBe("v3");
+    expect(resolveCliqApiVersion(resolved.apiVersion, "channelPost")).toBe("v2");
+    expect(resolveCliqApiVersion(resolved.apiVersion, "channelCard")).toBe("v2");
+    expect(resolveCliqApiVersion(resolved.apiVersion, "delete")).toBe("v2");
   });
 
-  it("reads a top-level apiVersion=v3 (single-account opt-in)", () => {
+  it("reads a top-level apiVersion=v3 string as a global override (all migratable families → v3)", () => {
     const cfg = {
       channels: {
         cliq: {
@@ -183,10 +190,31 @@ describe("resolveCliqConfig — per-account resolution", () => {
         },
       },
     } as unknown as OpenClawConfig;
-    expect(resolveCliqConfig(cfg).apiVersion).toBe("v3");
+    const resolved = resolveCliqConfig(cfg);
+    expect(resolved.apiVersion).toBe("v3");
+    expect(resolveCliqApiVersion(resolved.apiVersion, "dmPost")).toBe("v3");
+    expect(resolveCliqApiVersion(resolved.apiVersion, "channelPost")).toBe("v3");
+    expect(resolveCliqApiVersion(resolved.apiVersion, "channelCard")).toBe("v3");
+    expect(resolveCliqApiVersion(resolved.apiVersion, "delete")).toBe("v3");
   });
 
-  it("applies a per-account apiVersion override (one account pilots v3)", () => {
+  it("reads a per-family apiVersion object (one family pilots v3, others keep defaults)", () => {
+    const cfg = {
+      channels: {
+        cliq: {
+          clientId: "id", clientSecret: "secret", botId: "bot",
+          apiVersion: { channelPost: "v3" },
+        },
+      },
+    } as unknown as OpenClawConfig;
+    const resolved = resolveCliqConfig(cfg);
+    expect(resolveCliqApiVersion(resolved.apiVersion, "dmPost")).toBe("v3");
+    expect(resolveCliqApiVersion(resolved.apiVersion, "channelPost")).toBe("v3");
+    expect(resolveCliqApiVersion(resolved.apiVersion, "channelCard")).toBe("v2");
+    expect(resolveCliqApiVersion(resolved.apiVersion, "delete")).toBe("v2");
+  });
+
+  it("applies a per-account apiVersion override (one account pilots v3, another stays default)", () => {
     const cfg = {
       channels: {
         cliq: {
@@ -198,11 +226,17 @@ describe("resolveCliqConfig — per-account resolution", () => {
         },
       },
     } as unknown as OpenClawConfig;
-    expect(resolveCliqConfig(cfg, "alpha").apiVersion).toBe("v3");
-    expect(resolveCliqConfig(cfg, "beta").apiVersion).toBe("v2");
+    const alpha = resolveCliqConfig(cfg, "alpha");
+    const beta = resolveCliqConfig(cfg, "beta");
+    // alpha: global v3 override → all migratable families v3.
+    expect(resolveCliqApiVersion(alpha.apiVersion, "dmPost")).toBe("v3");
+    expect(resolveCliqApiVersion(alpha.apiVersion, "channelPost")).toBe("v3");
+    // beta: unset → defaults (dmPost v3, others v2).
+    expect(resolveCliqApiVersion(beta.apiVersion, "dmPost")).toBe("v3");
+    expect(resolveCliqApiVersion(beta.apiVersion, "channelPost")).toBe("v2");
   });
 
-  it("rejects an unknown apiVersion value (falls back to v2)", () => {
+  it("rejects an unknown apiVersion string value (falls back to defaults)", () => {
     const cfg = {
       channels: {
         cliq: {
@@ -211,7 +245,11 @@ describe("resolveCliqConfig — per-account resolution", () => {
         },
       },
     } as unknown as OpenClawConfig;
-    expect(resolveCliqConfig(cfg).apiVersion).toBe("v2");
+    const resolved = resolveCliqConfig(cfg);
+    // Unknown string → normalized to undefined → defaults apply.
+    expect(resolved.apiVersion).toBeUndefined();
+    expect(resolveCliqApiVersion(resolved.apiVersion, "dmPost")).toBe("v3");
+    expect(resolveCliqApiVersion(resolved.apiVersion, "channelPost")).toBe("v2");
   });
 
   it("throws on a per-account section missing required credentials", () => {

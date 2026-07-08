@@ -63,7 +63,7 @@ One line per durable learning; full fact + tags in the linked file. `rg` this fo
 - [REST API v3 `prompt` Message Card theme (issue #63)](059-rest-api-v3-prompt-message-card-theme-issue.md)  — files: src/commands.ts
 - [REST API v3 `poll` Message Card theme (issue #64)](060-rest-api-v3-poll-message-card-theme-issue.md)
 - [REST API v3 message delete (the third v3 migration family)](061-rest-api-v3-message-delete-the-third-v3.md)  — apis: /api/v2/chats/{chatId}/messages,/api/v2/chats/{chatId}/messages/{messageId},/api/v3/chats/{CHAT_ID}/messagess
-- [REST API v3 bot DM post (the second v3 migration family)](062-rest-api-v3-bot-dm-post-the-second.md)  — files: src/v3-card.ts · apis: /api/v2/bots/{botId}/message,/api/v3/bots/{BOT_UNIQUE_NAME}/messages,/api/v3/channelsbyname/{name}/messages
+- [REST API v3 bot DM post (the second v3 migration family)](062-rest-api-v3-bot-dm-post-the-second.md)  — files: src/v3-card.ts,src/client.ts · apis: /api/v2/bots/{botId}/message,/api/v3/bots/{BOT_UNIQUE_NAME}/messages,/api/v3/channelsbyname/{name}/messages,ZohoCliq.Webhooks.CREATE,ZohoCliq.BotMessages.CREATE
 - [REST API v3 reactions / file-download / channel-chat-id-resolution are v3 DEAD ENDS (confirmed against the v3 OpenAPI / REST docs)](063-rest-api-v3-reactions-file-download-channel-chat.md)  — files: src/reactions.test.ts · apis: /api/v2/...,/api/v2/channelsbyname/{name},/api/v2/chats/{chatId}/messages/{messageId}/reactions
 - [Multi-account config resolution (`readEffectiveCliqSection` + `resolveCliqConfig`)](064-multi-account-config-resolution-readeffectivecliqsection-res.md)
 - [`CliqClient.getAccessToken` caches per-scope](065-cliqclient-getaccesstoken-caches-per-scope.md)  — apis: ZohoCliq.Users.READ,ZohoCliq.Webhooks.CREATE
