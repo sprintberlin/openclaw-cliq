@@ -51,8 +51,24 @@
  */
 import { chunkMessage, type CliqClient } from "./client.js";
 import { markdownToCliq } from "./markdown.js";
+import {
+  isCliqCardChannelData,
+  type CliqRenderedCard,
+} from "./outbound-presentation.js";
 
 const DEFAULT_CHAR_LIMIT = 5000;
+
+/**
+ * Minimal marker the "thinking" placeholder is edited to when a card reply
+ * arrives through the live-edit path with no accompanying body text (e.g. a
+ * bare `/models` button menu). A Cliq bot message can't be edited to ADD
+ * buttons and Zoho rejects DELETE for bot messages, so the card is sent as a
+ * NEW message; the placeholder must then be finalized to something that is
+ * neither the lingering `💭 …` nor the stray-placeholder failure notice. A
+ * single space keeps the now-redundant placeholder bubble minimal (the card
+ * carries the real content right below).
+ */
+const CLIQ_CARD_PLACEHOLDER_FINAL = " ";
 
 export interface LiveEditDeliverOptions {
   client: Pick<
@@ -62,6 +78,7 @@ export interface LiveEditDeliverOptions {
     | "resolveChannelChatId"
     | "listChatMessages"
     | "deleteMessage"
+    | "sendCard"
   >;
   /** Raw Cliq id the message is addressed to (user id for DMs, chatid/channel id for groups). */
   to: string;
@@ -107,7 +124,7 @@ export type LiveEditPlaceholderConsumed = boolean;
  */
 export function createLiveEditDeliver(
   opts: LiveEditDeliverOptions,
-): (payload: { text?: string; mediaUrl?: string }) => Promise<void> {
+): (payload: { text?: string; mediaUrl?: string; channelData?: unknown }) => Promise<void> {
   const limit = opts.charLimit ?? DEFAULT_CHAR_LIMIT;
   const client = opts.client;
   const to = opts.to;
@@ -123,7 +140,7 @@ export function createLiveEditDeliver(
    */
   let placeholderConsumed = !opts.initialDraft;
 
-  const attach = <F extends (payload: { text?: string; mediaUrl?: string }) => Promise<void>>(
+  const attach = <F extends (payload: { text?: string; mediaUrl?: string; channelData?: unknown }) => Promise<void>>(
     fn: F,
   ): F => {
     (fn as unknown as { __stats: LiveEditDeliverStats }).__stats = stats;
@@ -246,6 +263,91 @@ export function createLiveEditDeliver(
     }
   };
 
+  /**
+   * Deliver a card reply (`payload.channelData.cliqCard`) through the
+   * live-edit path. Cliq bot messages can't be edited to ADD buttons and
+   * Zoho rejects DELETE for bot messages, so the card is sent as a NEW
+   * message via `client.sendCard`; when a "thinking" placeholder is active
+   * (`initialDraft`), it is then edited to the card's body text (or a minimal
+   * marker) so it isn't left as `💭 …` and does NOT trigger the
+   * stray-placeholder failure notice. `placeholderConsumed` is set true so the
+   * inbound cleanup skips the placeholder. The draft is sealed (no further
+   * in-place edits this turn) — a Cliq bot message either carries buttons OR
+   * is editable text, not both, so the card is never an editable draft.
+   *
+   * Mirrors the card branch of `outbound-presentation.sendCliqPayload` (the
+   * non-placeholder path) so the two delivery routes render identically: the
+   * first text chunk rides with the card, any overflow chunks go as plain
+   * messages.
+   */
+  const deliverCard = async (
+    payload: { text?: string; channelData?: unknown },
+  ): Promise<boolean> => {
+    const card = isCliqCardChannelData(payload.channelData)
+      ? (payload.channelData["cliqCard"] as CliqRenderedCard)
+      : null;
+    const buttons = card?.buttons;
+    const theme = card?.theme;
+    const pollOptions = card?.pollOptions;
+    const hasCard =
+      (buttons && buttons.length > 0) ||
+      (theme === "poll" && pollOptions && pollOptions.length > 0);
+    if (!hasCard) return false; // not a card — fall through to the text path
+
+    // The card body text lives on `payload.text` for agent-presentation
+    // cards (rendered there by `renderCliqPresentation`) and may live on
+    // `card.text` for command cards that set a title/body directly. Prefer
+    // the payload text (the runtime-combined reply text) and fall back to
+    // the card's own body so a title-only card still ships its text.
+    const rawText = payload.text ?? card?.text ?? "";
+    const richText = rawText ? markdownToCliq(rawText) : "";
+    const chunks = richText ? chunkMessage(richText, limit) : [];
+    const firstText = chunks[0] || undefined;
+
+    await client.sendCard({
+      to,
+      isDm,
+      ...(firstText ? { text: firstText } : {}),
+      ...(buttons && buttons.length > 0 ? { buttons } : {}),
+      ...(theme ? { theme } : {}),
+      ...(pollOptions && pollOptions.length > 0 ? { pollOptions } : {}),
+    });
+    stats.sends++;
+    // Overflow chunks (text beyond the 5000-char cap) go as plain messages.
+    for (let i = 1; i < chunks.length; i++) {
+      await client.sendMessage({ to, text: chunks[i], isDm });
+      stats.sends++;
+    }
+
+    // Reconcile the placeholder (if any): edit it to the card's body text or
+    // a minimal marker so it doesn't linger as `💭 …` nor trigger the
+    // stray-placeholder → failure-notice cleanup.
+    if (opts.initialDraft && draftMessageId) {
+      placeholderConsumed = true;
+      const chatId = await resolveDraftChatId();
+      if (chatId) {
+        const finalText = firstText ?? CLIQ_CARD_PLACEHOLDER_FINAL;
+        try {
+          await client.editMessage({
+            chatId,
+            messageId: draftMessageId,
+            text: finalText,
+          });
+          stats.edits++;
+        } catch {
+          // Best-effort: the card is already delivered; a lingering
+          // placeholder here is preferable to a misleading failure notice
+          // (and consumed=true keeps the cleanup from firing it).
+        }
+      }
+      // Seal the draft — the card is a new message and can't be re-edited.
+      draftMessageId = undefined;
+      draftChatId = undefined;
+      accumulated = "";
+    }
+    return true;
+  };
+
   if (!opts.enabled) {
     // Legacy: each block (or the single final reply) is its own message.
     // Chunk against the limit so a long single reply isn't rejected by Cliq.
@@ -254,6 +356,12 @@ export function createLiveEditDeliver(
     // placeholder); subsequent delivers (rare in legacy mode) send fresh.
     let firstDeliverDone = false;
     return attach(async (payload) => {
+      // A card reply (channelData.cliqCard) bypasses the text path — Cliq
+      // cards carry buttons and must be sent via sendCard, not edited in
+      // place. Without this a command menu (/model, /models) with little/no
+      // top-level text would be dropped (empty-text no-op) and the
+      // placeholder would then be turned into the failure notice.
+      if (await deliverCard(payload)) return;
       const text = payload.text;
       if (!text) return;
       const rich = markdownToCliq(text);
@@ -300,7 +408,14 @@ export function createLiveEditDeliver(
   const returned = async (payload: {
     text?: string;
     mediaUrl?: string;
+    channelData?: unknown;
   }) => {
+    // A card reply (channelData.cliqCard) bypasses the in-place text-edit
+    // loop — see `deliverCard`. Commands (/model, /models) emit a card with
+    // little/no top-level text; without this branch the empty-text guard
+    // below would drop it and the placeholder would become the failure
+    // notice.
+    if (await deliverCard(payload)) return;
     const text = payload.text;
     if (!text) return;
 

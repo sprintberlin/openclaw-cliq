@@ -14,6 +14,14 @@ interface FakeClient {
   deletes: { chatId: string; messageId: string }[];
   chatIdResolves: { name: string; chatId: string | undefined }[];
   messageListCalls: { chatId: string; limit?: number }[];
+  cardSends: {
+    to: string;
+    text?: string;
+    isDm?: boolean;
+    buttons?: unknown[];
+    theme?: string;
+    pollOptions?: string[];
+  }[];
   sendMessage: (opts: { to: string; text: string; isDm?: boolean }) => Promise<{
     messageId?: string;
     chatId?: string;
@@ -29,6 +37,14 @@ interface FakeClient {
     opts?: { limit?: number },
   ) => Promise<{ messageId: string; chatId: string; text?: string }[]>;
   deleteMessage: (opts: { chatId: string; messageId: string }) => Promise<boolean>;
+  sendCard: (opts: {
+    to: string;
+    text?: string;
+    isDm?: boolean;
+    buttons?: unknown[];
+    theme?: string;
+    pollOptions?: string[];
+  }) => Promise<{ messageId?: string; chatId?: string }>;
 }
 
 function makeFakeClient(opts: {
@@ -39,21 +55,32 @@ function makeFakeClient(opts: {
   channelResolveFails?: boolean;
   deleteFails?: boolean;
   dmSendFails?: boolean;
+  cardSendFails?: boolean;
+  cardChatId?: string;
 } = {}): FakeClient & Pick<
   CliqClient,
-  "sendMessage" | "editMessage" | "resolveChannelChatId" | "listChatMessages" | "deleteMessage"
+  "sendMessage" | "editMessage" | "resolveChannelChatId" | "listChatMessages" | "deleteMessage" | "sendCard"
 > {
   const sends: { to: string; text: string; isDm?: boolean }[] = [];
   const edits: { chatId: string; messageId: string; text: string }[] = [];
   const deletes: { chatId: string; messageId: string }[] = [];
   const chatIdResolves: { name: string; chatId: string | undefined }[] = [];
   const messageListCalls: { chatId: string; limit?: number }[] = [];
+  const cardSends: {
+    to: string;
+    text?: string;
+    isDm?: boolean;
+    buttons?: unknown[];
+    theme?: string;
+    pollOptions?: string[];
+  }[] = [];
   const fake: FakeClient = {
     sends,
     edits,
     deletes,
     chatIdResolves,
     messageListCalls,
+    cardSends,
     sendMessage: vi.fn(async (o: { to: string; text: string; isDm?: boolean }) => {
       if (opts.dmSendFails) throw new Error("send rejected");
       sends.push(o);
@@ -81,6 +108,14 @@ function makeFakeClient(opts: {
       deletes.push(o);
       if (opts.deleteFails) throw new Error("delete rejected");
       return true;
+    }),
+    sendCard: vi.fn(async (o) => {
+      if (opts.cardSendFails) throw new Error("card send rejected");
+      cardSends.push(o);
+      // A card post returns the same shape as a bot-message send.
+      return o.isDm
+        ? { messageId: `c${cardSends.length}`, chatId: opts.cardChatId ?? opts.dmChatId ?? `chat-${o.to}` }
+        : { messageId: `c${cardSends.length}` };
     }),
   };
   return fake;
@@ -636,6 +671,199 @@ describe("getLiveEditPlaceholderConsumed", () => {
       initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
     });
     await deliver({ text: "first" });
+    expect(getLiveEditPlaceholderConsumed(deliver)).toBe(true);
+  });
+});
+
+describe("createLiveEditDeliver — card replies via channelData.cliqCard (issue #90)", () => {
+  /** Buttons-only prompt card like /models emits (no top-level text). */
+  const modelsCard = {
+    cliqCard: {
+      buttons: [
+        { label: "anthropic (3)", type: "+", action: "invoke", data: "/models anthropic" },
+      ],
+      theme: "prompt",
+    },
+  };
+
+  it("live-edit mode: sends the card via sendCard and marks the placeholder consumed (no failure-notice edit)", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+    });
+    await deliver({ channelData: modelsCard });
+    // The card was sent as a NEW message (sendCard), not edited in place.
+    expect(fake.cardSends).toHaveLength(1);
+    expect(fake.cardSends[0].to).toBe("u1");
+    expect(fake.cardSends[0].isDm).toBe(true);
+    expect(fake.cardSends[0].buttons).toEqual(modelsCard.cliqCard.buttons);
+    expect(fake.cardSends[0].theme).toBe("prompt");
+    // The placeholder was finalized to the card text (none here → minimal
+    // marker), never left as the raw 💳 placeholder, never the failure notice.
+    expect(fake.edits).toHaveLength(1);
+    expect(fake.edits[0].messageId).toBe("ph-1");
+    expect(fake.edits[0].chatId).toBe("chat-u1");
+    // No plain sendMessage for the card itself (no overflow chunks).
+    expect(fake.sends).toHaveLength(0);
+    // Placeholder consumed → the inbound cleanup would NOT fire the notice.
+    expect(getLiveEditPlaceholderConsumed(deliver)).toBe(true);
+    const stats = getLiveEditDeliverStats(deliver);
+    expect(stats?.sends).toBe(1);
+    expect(stats?.edits).toBe(1);
+  });
+
+  it("live-edit mode: a card with body text edits the placeholder to that text", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+    });
+    const card = {
+      cliqCard: {
+        text: "Pick a provider",
+        buttons: [
+          { label: "anthropic", type: "+", action: "invoke", data: "/models anthropic" },
+        ],
+      },
+    };
+    await deliver({ channelData: card });
+    expect(fake.cardSends).toHaveLength(1);
+    // First text chunk rides with the card.
+    expect(fake.cardSends[0].text).toBe("Pick a provider");
+    // Placeholder edited to the card's body text.
+    expect(fake.edits).toHaveLength(1);
+    expect(fake.edits[0].text).toBe("Pick a provider");
+    expect(getLiveEditPlaceholderConsumed(deliver)).toBe(true);
+  });
+
+  it("legacy (disabled) mode: sends the card + finalizes the placeholder", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: false,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+    });
+    await deliver({ channelData: modelsCard });
+    expect(fake.cardSends).toHaveLength(1);
+    expect(fake.edits).toHaveLength(1);
+    expect(fake.edits[0].messageId).toBe("ph-1");
+    expect(getLiveEditPlaceholderConsumed(deliver)).toBe(true);
+  });
+
+  it("does not double-deliver text: a card payload's text is NOT also sent as a plain message", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+    });
+    const card = {
+      cliqCard: {
+        text: "menu title",
+        buttons: [
+          { label: "x", type: "+", action: "invoke", data: "/models x" },
+        ],
+      },
+    };
+    await deliver({ text: "menu title", channelData: card });
+    expect(fake.cardSends).toHaveLength(1);
+    expect(fake.cardSends[0].text).toBe("menu title");
+    // No separate plain sendMessage for the same text.
+    expect(fake.sends).toHaveLength(0);
+  });
+
+  it("a follow-up text block after a card sends a fresh message (draft is sealed)", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+    });
+    await deliver({ channelData: modelsCard });
+    await deliver({ text: "after the card" });
+    expect(fake.cardSends).toHaveLength(1);
+    expect(fake.sends).toHaveLength(1);
+    expect(fake.sends[0].text).toBe("after the card");
+  });
+
+  it("without a placeholder: sends the card as a new message (no placeholder edit)", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+    });
+    await deliver({ channelData: modelsCard });
+    expect(fake.cardSends).toHaveLength(1);
+    expect(fake.edits).toHaveLength(0);
+    expect(getLiveEditPlaceholderConsumed(deliver)).toBe(true);
+  });
+
+  it("a text-only reply (no cliqCard) still routes through the normal text path", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+    });
+    await deliver({ text: "just text" });
+    expect(fake.cardSends).toHaveLength(0);
+    expect(fake.edits).toHaveLength(1);
+    expect(fake.edits[0].text).toBe("just text");
+    expect(getLiveEditPlaceholderConsumed(deliver)).toBe(true);
+  });
+
+  it("swallows a placeholder-finalize edit failure (card already delivered, no failure notice)", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1", editFails: true });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+    });
+    await deliver({ channelData: modelsCard });
+    // Card was still delivered.
+    expect(fake.cardSends).toHaveLength(1);
+    // The finalize edit threw, but it's swallowed — consumed still true so
+    // the inbound cleanup does NOT turn the placeholder into the notice.
+    expect(getLiveEditPlaceholderConsumed(deliver)).toBe(true);
+    const stats = getLiveEditDeliverStats(deliver);
+    expect(stats?.sends).toBe(1);
+  });
+
+  it("group post: resolves the chat id before finalizing the placeholder", async () => {
+    const fake = makeFakeClient({ channelChatId: "CT_dev_team" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "dev-team",
+      isDm: false,
+      enabled: true,
+      initialDraft: { messageId: "ph-1" },
+    });
+    await deliver({ channelData: modelsCard });
+    expect(fake.cardSends).toHaveLength(1);
+    expect(fake.cardSends[0].isDm).toBe(false);
+    expect(fake.chatIdResolves).toHaveLength(1);
+    expect(fake.chatIdResolves[0].name).toBe("dev-team");
+    expect(fake.edits).toHaveLength(1);
+    expect(fake.edits[0].chatId).toBe("CT_dev_team");
     expect(getLiveEditPlaceholderConsumed(deliver)).toBe(true);
   });
 });

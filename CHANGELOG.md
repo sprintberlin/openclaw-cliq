@@ -24,6 +24,23 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **Slash-command card replies (`/model`, `/models`) are no longer dropped when the thinking placeholder is active (issue #90).**
+  With `thinking.mode: "placeholder"` (the default since #89), command replies
+  that carry an interactive card (`channelData.cliqCard` — the `/models` and
+  `/model` button menus) produced no visible output: the live-edit delivery
+  path only handled `payload.text` and ignored `channelData`, so an
+  empty/short-text card was a no-op, and the stray-placeholder cleanup then
+  edited the `💭 …` into the misleading `⚠️ Couldn't process that message.`
+  notice. The live-edit `deliver` now detects `channelData.cliqCard` and routes
+  the reply through `CliqClient.sendCard` (buttons survive), reusing the same
+  card-render path as the non-placeholder `sendPayload` adapter. Because a Cliq
+  bot message can't be edited to add buttons and Zoho rejects DELETE for bot
+  messages, the card is sent as a new message; the placeholder is then finalized
+  to the card's body text (or a minimal marker) so it isn't left as `💭 …` and
+  does not trigger the failure notice. `placeholderConsumed` is set so the
+  inbound cleanup skips the placeholder. Text-only replies and `/new`
+  confirmations are unchanged.
+
 - **Inbound image/file DM no longer aborts or leaves an orphaned placeholder (issue #88).**
   Three bugs that caused a real Cliq bot-DM image to show `💭 …` then nothing:
 

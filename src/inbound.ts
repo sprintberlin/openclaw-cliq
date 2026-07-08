@@ -75,7 +75,7 @@ export interface CliqRuntime {
         ctx: unknown;
         cfg: OpenClawConfig;
         dispatcherOptions: {
-          deliver: (payload: { text?: string; mediaUrl?: string }) => Promise<void>;
+          deliver: (payload: { text?: string; mediaUrl?: string; channelData?: unknown }) => Promise<void>;
           onError: (err: unknown, info: { kind: string }) => void;
         };
       }) => Promise<unknown>;
@@ -1297,11 +1297,19 @@ export async function dispatchCliqInbound(params: {
           dispatchReplyWithBufferedBlockDispatcher:
             runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher,
           delivery: {
-            deliver: async (replyPayload: { text?: string }) => {
+            deliver: async (replyPayload: { text?: string; channelData?: unknown }) => {
               // Stop the animation the moment the reply arrives so a late
               // frame edit cannot clobber the final edit-into-reply.
               thinkingAnimation?.stop();
-              await deliver({ text: replyPayload?.text });
+              // Forward the FULL reply payload — `channelData.cliqCard`
+              // carries interactive command menus (/model, /models); the
+              // live-edit deliver routes cards through `sendCard`. Stripping
+              // it here (the pre-fix behavior) dropped command card replies
+              // whenever the thinking placeholder was active (issue #90).
+              await deliver({
+                text: replyPayload?.text,
+                channelData: replyPayload?.channelData,
+              });
             },
             onError: handleOnError,
           },
