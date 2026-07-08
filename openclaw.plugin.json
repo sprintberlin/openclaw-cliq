@@ -336,7 +336,7 @@
         "groups": { "label": "Per-group config (keyed by channel unique name)" },
         "streaming": { "label": "Streaming preview", "options": ["off", "on"] },
         "reactions": { "label": "Agent reaction guidance", "options": ["minimal", "extensive", "off"] },
-        "thinking": { "label": "Instant acknowledgement (thinking placeholder)", "options": ["off", "placeholder", "card"] },
+        "thinking": { "label": "Instant acknowledgement (default: animated dots placeholder; set mode or animate to \"off\" to disable)", "options": ["off", "placeholder", "card"] },
         "welcome": { "label": "Welcome message on subscribe (greeting DM on first contact)" },
         "pairing": { "label": "Pairing-approval card (post an Approve/Deny card to the bot owner when dmPolicy is pairing)" },
         "oauthBase": { "label": "OAuth base URL (data center — defaults to EU https://accounts.zoho.eu)" },

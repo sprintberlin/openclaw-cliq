@@ -468,12 +468,20 @@ describe("cliq thinking manifest defaults (issue #89)", () => {
   });
 
   it("omitted thinking block resolves to mode='placeholder' + animate='dots' through the full config-resolution path", () => {
-    // Simulate what the OpenClaw runtime does: inject manifest schema defaults
-    // before handing config to the plugin. With the defaults flipped, the
-    // resolved config reflects placeholder+dots.
+    // Simulate what the OpenClaw runtime does (learning 104): when the operator
+    // omits a thinking block, the runtime reads `default` values from the
+    // manifest schema properties and injects them before handing config to the
+    // plugin. We derive the injected block from the schema rather than
+    // hard-coding it, so the test catches a manifest-default drift.
+    const thinkingProps = channelSchema.properties?.thinking?.properties ?? {};
+    const thinkingDefaults = Object.fromEntries(
+      Object.entries(thinkingProps)
+        .filter(([, v]) => (v as JsonSchema).default !== undefined)
+        .map(([k, v]) => [k, (v as JsonSchema).default]),
+    );
     const cfg = cfgWith({
       clientId: "id", clientSecret: "s", botId: "b",
-      thinking: { mode: "placeholder", animate: "dots" },
+      thinking: thinkingDefaults,
     });
     const resolved = resolveCliqConfig(cfg);
     expect(resolved.thinking.mode).toBe("placeholder");
