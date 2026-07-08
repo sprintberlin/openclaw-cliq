@@ -328,6 +328,16 @@ export default defineChannelPluginEntry({
 
         if (account.ackPolicy === "immediate") {
           dispatchPromise.catch((err) => {
+            // A "reply session initialization conflicted" error is transient
+            // (a Cliq redelivery racing the first dispatch's session init).
+            // Log at warn — not error — so operators don't panic; the dedupe
+            // layer already serialized the redeliveries (issue #84 / #88).
+            if (isCliqSessionConflictError(err)) {
+              api.logger.warn?.(
+                `[cliq] inbound dispatch conflicted (session init) — acking to stop retry: ${String(err)}`,
+              );
+              return;
+            }
             api.logger.error?.(
               `[cliq] inbound dispatch failed: ${String(err)}`,
             );

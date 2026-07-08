@@ -171,4 +171,34 @@ describe("claimCliqMessage / commit / release", () => {
     const p = parsed({ messageId: "", text: "", attachments: [{ fileName: "" }] });
     expect(buildCliqDedupeKey(p, account)).toBeNull();
   });
+
+  it("uses the synthetic id (syn:...) as the dedupe key when parseCliqWebhookPayload generated one (issue #88)", async () => {
+    // After issue #88, parseCliqWebhookPayload generates a synthetic
+    // messageId for empty-id attachment messages. The dedupe layer uses
+    // that synthetic id directly as the key (the `mid:` path).
+    const syntheticId = "syn:a1b2c3d4e5f60718";
+    const p = parsed({
+      messageId: syntheticId,
+      text: "<file: photo.png>",
+      attachments: [{ fileName: "photo.png" }],
+    });
+    const c1 = await claimCliqMessage(p, account);
+    expect(c1).not.toBeNull();
+    expect(c1!.kind).toBe("claimed");
+    expect(c1!.key).toBe(`cliq:default:mid:${syntheticId}`);
+    await commitCliqMessage(c1!.key);
+    // Redelivery with the same synthetic id → deduped (no self-conflict).
+    const c2 = await claimCliqMessage(p, account);
+    expect(c2!.kind).toBe("duplicate");
+  });
+
+  it("a synthetic-id message is deduped independently from a real-id message", async () => {
+    const synthetic = parsed({ messageId: "syn:abc123" });
+    const real = parsed({ messageId: "real-msg-id" });
+    const c1 = await claimCliqMessage(synthetic, account);
+    const c2 = await claimCliqMessage(real, account);
+    expect(c1!.kind).toBe("claimed");
+    expect(c2!.kind).toBe("claimed");
+    expect(c1!.key).not.toBe(c2!.key);
+  });
 });

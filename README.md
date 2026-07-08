@@ -146,6 +146,15 @@ Each scope's grant is shown in parentheses — *client_credentials* is fetched a
 - **`ZohoCliq.messageactions.CREATE`** *(refresh token)* — Add / remove message reactions (the `message(action=react)` tool).
 - **`ZohoCliq.Attachments.READ`** *(refresh token)* — Download inbound file / image / voice attachments (`GET /api/v2/files/{id}`) so they reach the agent.
 
+> **Image analysis requires a vision-capable model.** Plugin channels (like Cliq) route
+> inbound images through the runtime's `media-understanding` describe pipeline, which
+> needs a vision-capable model to produce a text description. If your primary model is
+> text-only (e.g. `mimo-v2.5-pro`), configure either (a) a vision-capable model as your
+> primary, (b) an explicit `tools.media.image` provider, or (c) a vision-capable fallback
+> model the runtime can auto-discover. Without this, the agent receives the image file
+> path but cannot analyze its contents. The turn degrades gracefully (no orphaned
+> placeholder) — but the image content is not described to the agent.
+
 > If you previously consented with only the original three scopes, you must re-consent (generate a fresh self-client token) with `ZohoCliq.Channels.UPDATE` and `ZohoCliq.Messages.UPDATE` added — channel replies will be rejected with `invalid_scope` / 401 until you do. `ZohoCliq.Messages.DELETE` and `ZohoCliq.Channels.CREATE` are only needed when you opt the corresponding family into v3 (`delete` / `channelCard` — see [§4](#4-openclaw-configuration)); the v2 paths reuse `Messages.UPDATE` / `Channels.UPDATE` respectively, so if you keep those families on the `"v2"` default you can skip them. The v3 bot-DM endpoint (the `dmPost` default) uses the *same* `ZohoCliq.Webhooks.CREATE` scope as v2 DMs (`client_credentials`, no extra scope) — though some orgs may additionally require `ZohoCliq.BotMessages.CREATE`; if yours does, fall back with `apiVersion: { dmPost: "v2" }`. Reactions (`ZohoCliq.messageactions.CREATE`) are optional — skip the scope if you don't need the `react` action, and the plugin will simply not advertise reaction support. `ZohoCliq.Messages.READ` is only needed for **inbound image / file attachments** (resolving a bot-handler file name to a downloadable id) and the quote/reply parent-text fetch — skip it for a text-only bot and those features degrade gracefully. Likewise `ZohoCliq.Attachments.READ` is only needed for **inbound media** (downloading the resolved images / files / voice a user sends) — skip it for a text-only bot and the plugin degrades to "no media" for those messages.
 
 #### 3c. Obtain the user-context refresh token (required for channel posts + edits)

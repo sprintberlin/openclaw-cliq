@@ -382,6 +382,43 @@ function buildUserName(user: NonNullable<CliqWebhookPayload["user"]>): string {
 }
 
 /**
+ * Derive a stable synthetic message id when the Deluge bot handler omits the
+ * real `message.id` (issue #84 / #88). A Cliq bot Message handler delivers
+ * `message` as a plain string, so `messageId` is empty for image/file
+ * messages. Without a stable id the dedupe layer falls back to a composite
+ * key but `MessageSid` stays empty, which can trigger "reply session
+ * initialization conflicted" on retries (no stable key to serialize
+ * concurrent or retried deliveries).
+ *
+ * The synthetic id is a deterministic SHA-256 hash of sender + chat +
+ * attachment names/ids + (optionally) the payload timestamp, prefixed with
+ * `syn:` so it is visually distinct from a real Cliq message id. The
+ * timestamp is only included when the payload explicitly provides one
+ * (`message.time`); when absent, the hash is stable across Cliq
+ * redeliveries (which call `new Date().toISOString()` fresh each time).
+ */
+function buildSyntheticMessageId(
+  senderId: string,
+  chatId: string,
+  attachments: CliqInboundAttachment[],
+  payloadTime: string,
+): string {
+  const parts = [
+    senderId,
+    chatId,
+    // Only include the timestamp when the payload explicitly provides one
+    // (stable across redeliveries). When absent, `new Date().toISOString()`
+    // changes on each delivery → omit it so the hash is deterministic.
+    ...(payloadTime ? [payloadTime] : []),
+    ...attachments.map((a) => a.fileId ?? a.fileName ?? ""),
+  ];
+  const hash = createHash("sha256").update(parts.join("\0")).digest("hex");
+  return `syn:${hash.slice(0, 16)}`;
+}
+
+import { createHash } from "node:crypto";
+
+/**
  * Parse a raw Cliq webhook payload into a normalized inbound message.
  * Returns null when the payload is missing required fields (text or sender id).
  */
@@ -517,10 +554,22 @@ export function parseCliqWebhookPayload(
   const finalText =
     pairingParsed.kind ? pairingParsed.text : confirmParsed.text;
 
+  const resolvedTimestamp = time || new Date().toISOString();
+  // Derive a stable synthetic message id when the Deluge bot handler omits
+  // the real `message.id` (issue #88). Without a stable id, `MessageSid` is
+  // empty and the dispatch path can self-conflict on retries. Pass the raw
+  // `time` from the payload (not the resolved timestamp) so the hash is
+  // stable across Cliq redeliveries (which generate fresh timestamps).
+  const resolvedMessageId =
+    messageId ||
+    (attachments.length > 0 || bodyText
+      ? buildSyntheticMessageId(user.id, chatId, attachments, time)
+      : "");
+
   return {
     text: finalText,
-    messageId: messageId || "",
-    timestamp: time || new Date().toISOString(),
+    messageId: resolvedMessageId,
+    timestamp: resolvedTimestamp,
     senderId: user.id,
     senderName: userName,
     senderEmail: user.email_id ?? user.email,
@@ -1191,14 +1240,15 @@ export async function dispatchCliqInbound(params: {
   // When a thinking placeholder was posted, clean it up if the agent turn
   // ended WITHOUT touching it (the dispatcher flushed no blocks — e.g. the
   // turn threw, or the model produced no reply). An untouched placeholder
-  // would otherwise linger as a stray `💭 …`. When `thinking.failureText` is
-  // configured, edit the placeholder into that failure indicator; otherwise
-  // delete it (the "no stray placeholder" contract). The cleanup runs in a
-  // `finally` so a throwing `inbound.run` still cleans up. A failed cleanup
-  // is swallowed + reported — it must never break or delay the turn.
+  // would otherwise linger as a stray `💭 …`. Always EDIT the placeholder
+  // into a user-visible notice (never delete — Zoho rejects DELETE for bot
+  // messages with HTTP 400 `message_delete_failed`, leaving the placeholder
+  // orphaned). The cleanup runs in a `finally` so a throwing `inbound.run`
+  // still cleans up. A failed cleanup is swallowed + reported — it must
+  // never break or delay the turn.
   const cleanupStrayPlaceholder = async (): Promise<void> => {
     // Stop the animation first so a late frame edit cannot clobber the
-    // cleanup edit/delete (or race with the reply deliver).
+    // cleanup edit (or race with the reply deliver).
     thinkingAnimation?.stop();
     if (!initialDraft) return;
     if (getLiveEditPlaceholderConsumed(deliver)) return;
@@ -1206,20 +1256,18 @@ export async function dispatchCliqInbound(params: {
       initialDraft.chatId ??
       (!parsed.isGroup ? undefined : await client.resolveChannelChatId(deliverTo).catch(() => undefined));
     if (!chatId) {
-      // No chat id to edit/delete with — best-effort skip. The placeholder
+      // No chat id to edit with — best-effort skip. The placeholder
       // may linger, but we cannot safely address it without a chat id.
       return;
     }
-    const failureText = account.thinking?.failureText;
+    const noticeText =
+      account.thinking?.failureText ?? "⚠️ Couldn't process that message.";
     try {
-      if (failureText) {
-        const edited = await client
-          .editMessage({ chatId, messageId: initialDraft.messageId, text: failureText })
-          .then(() => true)
-          .catch(() => false);
-        if (edited) return;
-      }
-      await client.deleteMessage({ chatId, messageId: initialDraft.messageId });
+      await client.editMessage({
+        chatId,
+        messageId: initialDraft.messageId,
+        text: noticeText,
+      });
     } catch (err) {
       onError?.(err, { kind: "thinking-placeholder-cleanup" });
     }

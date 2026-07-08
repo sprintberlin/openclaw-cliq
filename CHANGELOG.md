@@ -13,6 +13,45 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **Inbound image/file DM no longer aborts or leaves an orphaned placeholder (issue #88).**
+  Three bugs that caused a real Cliq bot-DM image to show `💭 …` then nothing:
+
+  1. **Placeholder cleanup now edits instead of deleting.** Zoho rejects
+     `DELETE /api/v2/chats/{chatId}/messages/{messageId}` for bot messages with
+     HTTP 400 `message_delete_failed`, so the old cleanup path left an orphaned
+     `💭 …`. The cleanup now always edits the placeholder into a user-visible
+     notice (`thinking.failureText` or the default `⚠️ Couldn't process that
+     message.`); no delete is attempted. The `thinking.failureText` field is
+     unchanged — if set, it is used; otherwise the default notice is used.
+
+  2. **`ackPolicy: "immediate"` now handles session-init conflicts gracefully.**
+     The `after_dispatch` branch already treated `"reply session initialization
+     conflicted"` as a benign transient (warn, ack 200, stop retrying). The
+     `immediate` branch logged it as an error. Now both branches handle it the
+     same way: warn-level log, no scary error state.
+
+  3. **Empty-id image/file messages now get a stable synthetic message id.** A
+     Cliq bot Message handler delivers `message` as a plain string, so
+     `message.id` is empty for image/file messages. Without a stable id,
+     `MessageSid` was empty and the dispatch path could self-conflict on retries
+     (`"reply session initialization conflicted"`). The parser now derives a
+     deterministic `syn:<hash>` id from sender + chat + attachments + timestamp
+     when the real id is absent, so dedupe and session init are robust. The
+     dedupe layer uses the synthetic id directly as the key (the `mid:` path),
+     so duplicate/retied deliveries are suppressed instead of self-conflicting.
+
+- **Inbound image analysis requires a vision-capable model or explicit
+  `tools.media.image` provider (issue #88, documented limitation).** Plugin
+  channels (like Cliq) attach images via `MediaPath` flat fields, which the
+  runtime routes through the `media-understanding` describe pipeline. Bundled
+  channels (Telegram/Discord) can pass images inline to the LLM directly. When
+  the primary model is text-only and no `tools.media.image` provider is
+  configured, the describe pipeline fails with `"Model does not support images"`.
+  The turn now degrades gracefully (placeholder edited to a notice, no orphan)
+  instead of aborting. To get image analysis, configure a vision-capable primary
+  model, a `tools.media.image` provider, or ensure a vision-capable model is in
+  the fallback chain. See `docs/learnings/106-*.md` for the technical details.
+
 - **Inbound bot-DM image/file upload now works end-to-end (issue #87).** Three
   latent bugs from #84 only surfaced on a real image send:
   1. `listChatMessages` sent an invalid `from=0` query param that Zoho rejects

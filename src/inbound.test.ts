@@ -557,6 +557,107 @@ describe("parseCliqWebhookPayload", () => {
     expect(parsed!.attachments[0].fileId).toBe("att-1");
   });
 
+  describe("Synthetic message id for empty-id image/file messages (issue #88)", () => {
+    it("derives a synthetic id (syn:...) when messageId is empty and attachments are present", () => {
+      const parsed = parseCliqWebhookPayload({
+        handler: "message",
+        message: "look at this",
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm" },
+        attachments: ["photo.png"],
+      } as CliqWebhookPayload);
+      expect(parsed).not.toBeNull();
+      expect(parsed!.messageId).toMatch(/^syn:[0-9a-f]{16}$/);
+    });
+
+    it("derives a synthetic id for a caption-less file message (empty text + attachment)", () => {
+      const parsed = parseCliqWebhookPayload({
+        handler: "message",
+        message: "",
+        user: { id: "20098819618", name: "Alice" },
+        chat: { id: "CT_dm-B2", type: "bot" },
+        attachments: ["2020_03.png"],
+      } as CliqWebhookPayload);
+      expect(parsed).not.toBeNull();
+      expect(parsed!.messageId).toMatch(/^syn:[0-9a-f]{16}$/);
+    });
+
+    it("produces a deterministic id for the same payload", () => {
+      const payload = {
+        handler: "message",
+        message: "look at this",
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm" },
+        attachments: ["photo.png"],
+      } as CliqWebhookPayload;
+      const a = parseCliqWebhookPayload(payload);
+      const b = parseCliqWebhookPayload(payload);
+      expect(a!.messageId).toBe(b!.messageId);
+    });
+
+    it("produces different ids for different senders", () => {
+      const a = parseCliqWebhookPayload({
+        handler: "message",
+        message: "hi",
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm" },
+        attachments: ["photo.png"],
+      } as CliqWebhookPayload);
+      const b = parseCliqWebhookPayload({
+        handler: "message",
+        message: "hi",
+        user: { id: "u2", name: "Bob" },
+        chat: { id: "CT_dm" },
+        attachments: ["photo.png"],
+      } as CliqWebhookPayload);
+      expect(a!.messageId).not.toBe(b!.messageId);
+    });
+
+    it("produces different ids for different attachment names", () => {
+      const a = parseCliqWebhookPayload({
+        handler: "message",
+        message: "",
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm" },
+        attachments: ["photo.png"],
+      } as CliqWebhookPayload);
+      const b = parseCliqWebhookPayload({
+        handler: "message",
+        message: "",
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm" },
+        attachments: ["other.png"],
+      } as CliqWebhookPayload);
+      expect(a!.messageId).not.toBe(b!.messageId);
+    });
+
+    it("also synthesizes an id for text-only messages without a real messageId", () => {
+      const parsed = parseCliqWebhookPayload({
+        handler: "message",
+        message: "just text",
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm" },
+      } as CliqWebhookPayload);
+      expect(parsed).not.toBeNull();
+      // Text messages from the Deluge handler always have message.id set in
+      // practice, but when it's missing we still derive a synthetic id so
+      // dedupe + session init are robust.
+      expect(parsed!.messageId).toMatch(/^syn:[0-9a-f]{16}$/);
+    });
+
+    it("prefers a real messageId over the synthetic one", () => {
+      const parsed = parseCliqWebhookPayload({
+        handler: "message",
+        message: { text: "see this", id: "real-id-123" },
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm" },
+        attachments: [{ id: "att-1", name: "slide.png", type: "image/png" }],
+      } as CliqWebhookPayload);
+      expect(parsed).not.toBeNull();
+      expect(parsed!.messageId).toBe("real-id-123");
+    });
+  });
+
   it("parses replyTo from message.reply_to (string id)", () => {
     const parsed = parseCliqWebhookPayload(
       dmPayload({
@@ -2721,7 +2822,7 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
     return client;
   }
 
-  it("deletes the untouched placeholder when no reply is produced (default, no failureText)", async () => {
+  it("edits the untouched placeholder to a default notice when no reply is produced (no failureText) (issue #88)", async () => {
     const client = makeMockClient({ placeholderChatId: "chat-u1" });
     const parsed = parseCliqWebhookPayload(dmPayload());
     await dispatchCliqInbound({
@@ -2735,13 +2836,14 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
       parsed: parsed!,
       client,
     });
-    // Placeholder posted, never edited → deleted on turn end.
+    // Placeholder posted, never edited → edited to default notice on turn end.
+    // (Zoho rejects DELETE for bot messages with HTTP 400, so we always edit.)
     expect(client.sends).toHaveLength(1);
     expect(client.sends[0].text).toBe("💭 …");
-    expect(client.edits).toHaveLength(0);
-    expect(client.deletes).toHaveLength(1);
-    expect(client.deletes[0].messageId).toBe("ph-1");
-    expect(client.deletes[0].chatId).toBe("chat-u1");
+    expect(client.edits).toHaveLength(1);
+    expect(client.edits[0].messageId).toBe("ph-1");
+    expect(client.edits[0].text).toBe("⚠️ Couldn't process that message.");
+    expect(client.deletes).toHaveLength(0);
   });
 
   it("edits the untouched placeholder to failureText when no reply is produced", async () => {
@@ -2766,8 +2868,9 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
     expect(client.deletes).toHaveLength(0);
   });
 
-  it("falls back to deleting the placeholder when failureText edit fails", async () => {
+  it("reports the error when the cleanup edit fails (no delete fallback) (issue #88)", async () => {
     const client = makeMockClient({ placeholderChatId: "chat-u1", editFails: true });
+    const onError = vi.fn();
     const parsed = parseCliqWebhookPayload(dmPayload());
     await dispatchCliqInbound({
       runtime: mockRuntimeNoReply(),
@@ -2779,11 +2882,15 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
       }),
       parsed: parsed!,
       client,
+      onError,
     });
-    // failureText edit rejected → fallback delete so no stray placeholder.
+    // Edit attempted (failureText), rejected → error reported, no delete fallback.
     expect(client.edits).toHaveLength(1);
-    expect(client.deletes).toHaveLength(1);
-    expect(client.deletes[0].messageId).toBe("ph-1");
+    expect(client.deletes).toHaveLength(0);
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "edit rejected" }),
+      { kind: "thinking-placeholder-cleanup" },
+    );
   });
 
   it("does not clean up when a reply was produced (placeholder consumed)", async () => {
@@ -2827,9 +2934,11 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
         client,
       }),
     ).rejects.toThrow("agent turn crashed");
-    // The throw propagated, but the finally still deleted the stray placeholder.
-    expect(client.deletes).toHaveLength(1);
-    expect(client.deletes[0].messageId).toBe("ph-1");
+    // The throw propagated, but the finally still edited the stray placeholder.
+    expect(client.edits).toHaveLength(1);
+    expect(client.edits[0].messageId).toBe("ph-1");
+    expect(client.edits[0].text).toBe("⚠️ Couldn't process that message.");
+    expect(client.deletes).toHaveLength(0);
   });
 
   it("resolves the group chat id lazily before cleaning up a channel placeholder", async () => {
@@ -2848,9 +2957,10 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
     });
     // Group send response carries no chatId → resolved lazily for the cleanup.
     expect(client.resolveChannelChatId).toHaveBeenCalled();
-    expect(client.deletes).toHaveLength(1);
-    expect(client.deletes[0].chatId).toBe("CT_dev_team");
-    expect(client.deletes[0].messageId).toBe("ph-1");
+    expect(client.edits).toHaveLength(1);
+    expect(client.edits[0].chatId).toBe("CT_dev_team");
+    expect(client.edits[0].messageId).toBe("ph-1");
+    expect(client.deletes).toHaveLength(0);
   });
 
   it("card mode: deletes the untouched status card when no reply is produced", async () => {
@@ -2868,13 +2978,13 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
       client,
     });
     // Card posted (with the "thinking" phase title), transitioned to the
-    // "generating" phase title, never edited into a reply → deleted on turn end.
+    // "generating" phase title, never edited into a reply → edited to notice.
     expect(client.cardSends).toHaveLength(1);
-    expect(client.edits).toHaveLength(1);
+    expect(client.edits).toHaveLength(2);
     expect(client.edits[0].text).toBe("Generating…");
-    expect(client.deletes).toHaveLength(1);
-    expect(client.deletes[0].messageId).toBe("card-1");
-    expect(client.deletes[0].chatId).toBe("chat-u1");
+    expect(client.edits[1].text).toBe("⚠️ Couldn't process that message.");
+    expect(client.edits[1].messageId).toBe("card-1");
+    expect(client.deletes).toHaveLength(0);
   });
 });
 
