@@ -1,14 +1,37 @@
-import { describe, it, expect, vi } from "vitest";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+const { saveMediaBufferMock } = vi.hoisted(() => ({
+  saveMediaBufferMock: vi.fn(async (
+    _buffer: Buffer,
+    contentType?: string,
+    _subdir?: string,
+    _maxBytes?: number,
+    originalFilename?: string,
+  ) => ({
+    id: `mock-${originalFilename ?? "file"}`,
+    path: `/mocked/media-store/inbound/${originalFilename ?? "file"}`,
+    size: 4,
+    contentType,
+  })),
+}));
+
+vi.mock("openclaw/plugin-sdk/media-store", () => ({
+  saveMediaBuffer: saveMediaBufferMock,
+}));
+
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   prepareInboundMedia,
   resolveInboundAttachmentFileIds,
   mediaKindFromMime,
-  sanitizeFileName,
   type CliqInboundAttachment,
 } from "./inbound-media.js";
+
+vi.mock("openclaw/plugin-sdk/media-store", () => ({
+  saveMediaBuffer: saveMediaBufferMock,
+}));
+
+beforeEach(() => {
+  saveMediaBufferMock.mockClear();
+});
 
 describe("mediaKindFromMime", () => {
   it("classifies image/video/audio and falls back to document/unknown", () => {
@@ -24,128 +47,118 @@ describe("mediaKindFromMime", () => {
   });
 });
 
-describe("sanitizeFileName", () => {
-  it("strips path separators and trims underscore/dash edges", () => {
-    expect(sanitizeFileName("photo.png")).toBe("photo.png");
-    // Path separators are neutralized so the name cannot escape the media dir.
-    expect(sanitizeFileName("../../etc/passwd")).toBe(".._.._etc_passwd");
-    expect(sanitizeFileName("__leading")).toBe("leading");
-    expect(sanitizeFileName("trailing__")).toBe("trailing");
-    expect(sanitizeFileName("")).toBe("attachment");
-    expect(sanitizeFileName(undefined)).toBe("attachment");
-  });
-});
-
 describe("prepareInboundMedia", () => {
-  it("downloads, writes, and returns media facts with a per-file path", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "cliq-media-unit-"));
-    try {
-      const downloadAttachment = vi.fn(async (fileId: string) => ({
-        bytes: new Uint8Array([10, 20, 30]),
-        contentType: fileId === "voice-1" ? "audio/mpeg" : "image/png",
-      }));
-      const attachments: CliqInboundAttachment[] = [
-        { fileId: "img-1", fileName: "photo.png", mimeType: "image/png" },
-        { fileId: "voice-1", fileName: "voice.mp3", mimeType: "audio/mpeg" },
-      ];
-      const { media, paths } = await prepareInboundMedia({
-        attachments,
-        client: { downloadAttachment },
-        mediaDir: dir,
-        messageId: "m1",
-      });
-      expect(downloadAttachment).toHaveBeenCalledTimes(2);
-      expect(media).toHaveLength(2);
-      expect(paths).toHaveLength(2);
-      expect(media[0].contentType).toBe("image/png");
-      expect(media[0].kind).toBe("image");
-      expect(media[0].transcribed).toBeUndefined();
-      expect(media[0].messageId).toBe("m1");
-      expect(media[1].contentType).toBe("audio/mpeg");
-      expect(media[1].kind).toBe("audio");
-      expect(media[1].transcribed).toBe(false);
-      // Bytes actually on disk.
-      const buf = await readFile(paths[0]);
-      expect(Array.from(buf)).toEqual([10, 20, 30]);
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
+  it("downloads, stages via saveMediaBuffer, and returns media facts", async () => {
+    const downloadAttachment = vi.fn(async (fileId: string) => ({
+      bytes: new Uint8Array([10, 20, 30]),
+      contentType: fileId === "voice-1" ? "audio/mpeg" : "image/png",
+    }));
+    const attachments: CliqInboundAttachment[] = [
+      { fileId: "img-1", fileName: "photo.png", mimeType: "image/png" },
+      { fileId: "voice-1", fileName: "voice.mp3", mimeType: "audio/mpeg" },
+    ];
+    const { media, paths } = await prepareInboundMedia({
+      attachments,
+      client: { downloadAttachment },
+      messageId: "m1",
+    });
+    expect(downloadAttachment).toHaveBeenCalledTimes(2);
+    expect(saveMediaBufferMock).toHaveBeenCalledTimes(2);
+    // First call: image
+    expect(saveMediaBufferMock.mock.calls[0][0]).toBeInstanceOf(Buffer);
+    expect(saveMediaBufferMock.mock.calls[0][1]).toBe("image/png");
+    expect(saveMediaBufferMock.mock.calls[0][2]).toBe("inbound");
+    expect(saveMediaBufferMock.mock.calls[0][4]).toBe("photo.png");
+    // Second call: audio
+    expect(saveMediaBufferMock.mock.calls[1][1]).toBe("audio/mpeg");
+    expect(saveMediaBufferMock.mock.calls[1][4]).toBe("voice.mp3");
+    expect(media).toHaveLength(2);
+    expect(paths).toHaveLength(2);
+    expect(media[0].contentType).toBe("image/png");
+    expect(media[0].kind).toBe("image");
+    expect(media[0].transcribed).toBeUndefined();
+    expect(media[0].messageId).toBe("m1");
+    expect(media[0].path).toBe("/mocked/media-store/inbound/photo.png");
+    expect(media[1].contentType).toBe("audio/mpeg");
+    expect(media[1].kind).toBe("audio");
+    expect(media[1].transcribed).toBe(false);
   });
 
   it("swallows a per-file download failure and continues with the rest", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "cliq-media-unit-"));
-    try {
-      const calls: string[] = [];
-      const downloadAttachment = vi.fn(async (fileId: string) => {
-        calls.push(fileId);
-        if (fileId === "bad") throw new Error("nope");
-        return { bytes: new Uint8Array([1]), contentType: "image/png" };
-      });
-      const reported: { kind: string; fileId: string }[] = [];
-      const { media, paths } = await prepareInboundMedia({
-        attachments: [
-          { fileId: "bad", fileName: "x.png" },
-          { fileId: "good", fileName: "y.png" },
-        ],
-        client: { downloadAttachment },
-        mediaDir: dir,
-        onError: (err, info) => {
-          reported.push(info);
-          expect(String(err)).toContain("nope");
-        },
-      });
-      expect(calls).toEqual(["bad", "good"]);
-      expect(media).toHaveLength(1);
-      expect(paths).toHaveLength(1);
-      expect(reported).toEqual([{ kind: "inbound-media-download", fileId: "bad" }]);
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
+    const calls: string[] = [];
+    const downloadAttachment = vi.fn(async (fileId: string) => {
+      calls.push(fileId);
+      if (fileId === "bad") throw new Error("nope");
+      return { bytes: new Uint8Array([1]), contentType: "image/png" };
+    });
+    const reported: { kind: string; fileId: string }[] = [];
+    const { media, paths } = await prepareInboundMedia({
+      attachments: [
+        { fileId: "bad", fileName: "x.png" },
+        { fileId: "good", fileName: "y.png" },
+      ],
+      client: { downloadAttachment },
+      onError: (err, info) => {
+        reported.push(info);
+        expect(String(err)).toContain("nope");
+      },
+    });
+    expect(calls).toEqual(["bad", "good"]);
+    expect(media).toHaveLength(1);
+    expect(paths).toHaveLength(1);
+    expect(reported).toEqual([{ kind: "inbound-media-download", fileId: "bad" }]);
+    // saveMediaBuffer called only for the successful download.
+    expect(saveMediaBufferMock).toHaveBeenCalledTimes(1);
   });
 
   it("uses the response Content-Type over the payload mime when both are present", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "cliq-media-unit-"));
-    try {
-      const downloadAttachment = vi.fn(async () => ({
-        bytes: new Uint8Array([0]),
-        contentType: "image/webp",
-      }));
-      const { media } = await prepareInboundMedia({
-        attachments: [{ fileId: "f", mimeType: "application/octet-stream" }],
-        client: { downloadAttachment },
-        mediaDir: dir,
-      });
-      expect(media[0].contentType).toBe("image/webp");
-      expect(media[0].kind).toBe("image");
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
+    const downloadAttachment = vi.fn(async () => ({
+      bytes: new Uint8Array([0]),
+      contentType: "image/webp",
+    }));
+    const { media } = await prepareInboundMedia({
+      attachments: [{ fileId: "f", mimeType: "application/octet-stream" }],
+      client: { downloadAttachment },
+    });
+    expect(media[0].contentType).toBe("image/webp");
+    expect(media[0].kind).toBe("image");
+    // saveMediaBuffer receives the response content-type.
+    expect(saveMediaBufferMock.mock.calls[0][1]).toBe("image/webp");
+  });
+
+  it("falls back to the attachment mimeType when the download has no content-type", async () => {
+    const downloadAttachment = vi.fn(async () => ({
+      bytes: new Uint8Array([0]),
+      contentType: undefined,
+    }));
+    const { media } = await prepareInboundMedia({
+      attachments: [{ fileId: "f", mimeType: "image/gif" }],
+      client: { downloadAttachment },
+    });
+    expect(media[0].contentType).toBe("image/gif");
+    // saveMediaBuffer receives the resolved contentType (fetched ?? attachment).
+    expect(saveMediaBufferMock.mock.calls[0][1]).toBe("image/gif");
   });
 
   it("skips a name-only attachment (no fileId) without a download attempt", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "cliq-media-unit-"));
-    try {
-      const downloadAttachment = vi.fn(async () => ({
-        bytes: new Uint8Array([0]),
-        contentType: "image/png",
-      }));
-      const reported: { kind: string; fileId: string }[] = [];
-      const { media, paths } = await prepareInboundMedia({
-        attachments: [{ fileName: "2020_03.png" }],
-        client: { downloadAttachment },
-        mediaDir: dir,
-        onError: (err, info) => {
-          reported.push(info);
-          expect(String(err)).toMatch(/no resolvable file id/);
-        },
-      });
-      expect(downloadAttachment).not.toHaveBeenCalled();
-      expect(media).toHaveLength(0);
-      expect(paths).toHaveLength(0);
-      expect(reported).toEqual([{ kind: "inbound-media-no-fileid", fileId: "" }]);
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
+    const downloadAttachment = vi.fn(async () => ({
+      bytes: new Uint8Array([0]),
+      contentType: "image/png",
+    }));
+    const reported: { kind: string; fileId: string }[] = [];
+    const { media, paths } = await prepareInboundMedia({
+      attachments: [{ fileName: "2020_03.png" }],
+      client: { downloadAttachment },
+      onError: (err, info) => {
+        reported.push(info);
+        expect(String(err)).toMatch(/no resolvable file id/);
+      },
+    });
+    expect(downloadAttachment).not.toHaveBeenCalled();
+    expect(saveMediaBufferMock).not.toHaveBeenCalled();
+    expect(media).toHaveLength(0);
+    expect(paths).toHaveLength(0);
+    expect(reported).toEqual([{ kind: "inbound-media-no-fileid", fileId: "" }]);
   });
 });
 

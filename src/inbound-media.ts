@@ -1,6 +1,4 @@
-import { promises as fs } from "node:fs";
-import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { saveMediaBuffer } from "openclaw/plugin-sdk/media-store";
 import type { CliqChatMessageRef, CliqClient } from "./client.js";
 
 /**
@@ -71,56 +69,9 @@ export function mediaKindFromMime(mimeType?: string): CliqInboundMediaKind {
   return "unknown";
 }
 
-/** Sanitize an arbitrary user-supplied file name into a safe on-disk basename. */
-export function sanitizeFileName(name?: string): string {
-  if (!name) return "attachment";
-  const base = name.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^[_-]+|[_-]+$/g, "");
-  const trimmed = base.slice(0, 64);
-  return trimmed || "attachment";
-}
-
-const MIME_TO_EXT: Record<string, string> = {
-  "image/png": ".png",
-  "image/jpeg": ".jpg",
-  "image/gif": ".gif",
-  "image/webp": ".webp",
-  "audio/mpeg": ".mp3",
-  "audio/wav": ".wav",
-  "audio/ogg": ".ogg",
-  "video/mp4": ".mp4",
-  "video/webm": ".webm",
-  "application/pdf": ".pdf",
-  "text/plain": ".txt",
-  "application/json": ".json",
-  "text/csv": ".csv",
-  "application/zip": ".zip",
-};
-
-/**
- * Pick a sensible file extension from a MIME type, falling back to the
- * extension of the original file name (when the MIME type is unknown / generic).
- * Returns `""` (no extension) when neither yields one.
- */
-function inferExt(mimeType?: string, fileName?: string): string {
-  if (mimeType) {
-    const m = mimeType.toLowerCase().split(";")[0].trim();
-    if (MIME_TO_EXT[m]) return MIME_TO_EXT[m];
-  }
-  if (fileName) {
-    const dot = fileName.lastIndexOf(".");
-    if (dot >= 0 && dot < fileName.length - 1) {
-      const ext = fileName.slice(dot).toLowerCase();
-      if (/^\.[a-z0-9]{1,8}$/.test(ext)) return ext;
-    }
-  }
-  return "";
-}
-
 export interface PrepareInboundMediaParams {
   attachments: CliqInboundAttachment[];
   client: Pick<CliqClient, "downloadAttachment">;
-  /** Directory to write downloaded attachments into (must already exist). */
-  mediaDir: string;
   /** The inbound message id (attached to each media fact for correlation). */
   messageId?: string;
   /** Per-attachment failure sink — never throws; a failed download degrades to no media for that attachment. */
@@ -134,9 +85,10 @@ export interface PreparedInboundMedia {
 }
 
 /**
- * Download each inbound attachment via the Cliq Files API, write the bytes to
- * `mediaDir`, and build {@link CliqInboundMediaFacts} for each. A per-attachment
- * failure (download rejected, write error) is swallowed and reported via
+ * Download each inbound attachment via the Cliq Files API, stage the bytes
+ * into the media-store `inbound` bucket via {@link saveMediaBuffer}, and
+ * build {@link CliqInboundMediaFacts} for each. A per-attachment failure
+ * (download rejected, staging error) is swallowed and reported via
  * `onError` — the turn always proceeds with whatever attachments did download.
  * Voice (`audio/*`) entries are marked `transcribed: false`; the runtime media
  * understanding pipeline (when configured) handles transcription.
@@ -164,15 +116,17 @@ export async function prepareInboundMedia(
       const fetched = await params.client.downloadAttachment(fileId);
       const contentType = fetched.contentType ?? attachment.mimeType;
       const kind = mediaKindFromMime(contentType);
-      const ext = inferExt(contentType, attachment.fileName);
-      const baseName = sanitizeFileName(attachment.fileName);
-      const fileName = `${baseName}-${randomUUID()}${ext}`;
-      const filePath = join(params.mediaDir, fileName);
-      await fs.writeFile(filePath, fetched.bytes);
-      paths.push(filePath);
-      media.push({
-        path: filePath,
+      const saved = await saveMediaBuffer(
+        Buffer.from(fetched.bytes),
         contentType,
+        "inbound",
+        undefined,
+        attachment.fileName ?? undefined,
+      );
+      paths.push(saved.path);
+      media.push({
+        path: saved.path,
+        contentType: saved.contentType ?? contentType,
         kind,
         transcribed: kind === "audio" ? false : undefined,
         messageId: params.messageId,

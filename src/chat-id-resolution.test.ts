@@ -156,18 +156,18 @@ describe("CliqClient.listChatMessages — recent chat messages (edit-recovery)",
     // GET used the refreshed token.
     const get = requests.find((r) => r.url.includes("/api/v2/chats/CT_chat1/messages"));
     expect(get?.auth).toBe("Zoho-oauthtoken refreshed-tok");
-    expect(get?.url).toContain("from=0");
+    expect(get?.url).not.toContain("from=");
     expect(get?.url).toContain("limit=50");
   });
 
-  it("parses { messages: [...] } into message refs", async () => {
+  it("parses { messages: [...] } into message refs (fallback chatId from request)", async () => {
     const { CliqClient } = await import("./client.js");
     installFetch({
       messagesBody: {
         messages: [
           { message_id: "m-1", chat_id: "CT_c", text: "hello" },
           { id: "m-2", chat_id: "CT_c" },
-          { message_id: "m-3" /* missing chat_id → skipped */ },
+          { message_id: "m-3" /* no chat_id in body → falls back to request chatId "CT_c" */ },
         ],
       },
     });
@@ -182,9 +182,80 @@ describe("CliqClient.listChatMessages — recent chat messages (edit-recovery)",
       "refresh-tok",
     );
     const refs = await client.listChatMessages("CT_c");
-    expect(refs).toHaveLength(2);
+    expect(refs).toHaveLength(3);
     expect(refs[0]).toEqual({ messageId: "m-1", chatId: "CT_c", text: "hello" });
     expect(refs[1]).toEqual({ messageId: "m-2", chatId: "CT_c" });
+    expect(refs[2]).toEqual({ messageId: "m-3", chatId: "CT_c" });
+  });
+
+  it("uses the request chatId as fallback when messages lack chat_id (issue #87)", async () => {
+    const { CliqClient } = await import("./client.js");
+    // Live-captured shape from a real org: messages have id + content.file but
+    // NO chat_id per message — the chat id is only in the request URL.
+    installFetch({
+      messagesBody: {
+        data: [
+          {
+            id: "1783502114151_267378657650",
+            type: "file",
+            sender: { name: "Gregor", id: "20098819618" },
+            time: 1783502114151,
+            content: {
+              file: {
+                name: "2020_03.png",
+                type: "image/png",
+                dimensions: { height: 400, width: 400, size: 8045 },
+                id: "a_01016700908717835021141080_1_20098818989",
+              },
+              comment: "siehst du das Bild hier?",
+            },
+          },
+        ],
+      },
+    });
+    const client = new CliqClient(
+      "id",
+      "secret",
+      "bot",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "refresh-tok",
+    );
+    const refs = await client.listChatMessages("CT_request_chat");
+    expect(refs).toHaveLength(1);
+    expect(refs[0].chatId).toBe("CT_request_chat");
+    expect(refs[0].messageId).toBe("1783502114151_267378657650");
+    expect(refs[0].file).toEqual({
+      id: "a_01016700908717835021141080_1_20098818989",
+      name: "2020_03.png",
+      type: "image/png",
+    });
+  });
+
+  it("prefers the message's own chat_id over the request fallback", async () => {
+    const { CliqClient } = await import("./client.js");
+    installFetch({
+      messagesBody: {
+        messages: [
+          { message_id: "m-own", chat_id: "CT_from_message", text: "has own chat_id" },
+        ],
+      },
+    });
+    const client = new CliqClient(
+      "id",
+      "secret",
+      "bot",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "refresh-tok",
+    );
+    const refs = await client.listChatMessages("CT_request");
+    expect(refs).toHaveLength(1);
+    expect(refs[0].chatId).toBe("CT_from_message");
   });
 
   it("parses a bare array response", async () => {

@@ -13,6 +13,23 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **Inbound bot-DM image/file upload now works end-to-end (issue #87).** Three
+  latent bugs from #84 only surfaced on a real image send:
+  1. `listChatMessages` sent an invalid `from=0` query param that Zoho rejects
+     with HTTP 400 (`extra_param_found`). Removed — `?limit=N` alone returns 200.
+  2. `parseCliqChatMessages` required a `chat_id` on each message object, but
+     `GET /api/v2/chats/{chatId}/messages` returns no per-message `chat_id`
+     (the chat id is only in the request URL). The parser now accepts the
+     request-context chat id as a fallback, so file messages are no longer
+     silently discarded.
+  3. Downloaded media was written to a plugin-chosen temp dir (`/tmp`) that the
+     agent's image tool refused as "not under an allowed directory". The
+     download now stages into the media-store `inbound` bucket via
+     `saveMediaBuffer` (the SDK's canonical pattern), producing a `media://`
+     path the runtime trusts automatically. The vestigial `mediaDir` plumbing
+     and dead helpers (`sanitizeFileName`, `inferExt`, `MIME_TO_EXT`) were
+     removed.
+
 - **The `apiVersion` manifest schema no longer forces a `"v2"` default that
   silently overrode the per-family code defaults (issue #86).** The manifest
   declared `apiVersion` as a string with `"default": "v2"`; OpenClaw injects

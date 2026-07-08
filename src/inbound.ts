@@ -5,10 +5,6 @@ import type {
   InboundImplicitMentionKind,
 } from "openclaw/plugin-sdk/channel-mention-gating";
 import type { IncomingMessage } from "node:http";
-import { promises as fs } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { randomUUID } from "node:crypto";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import type { CliqClient, ResolvedCliqAccount } from "./client.js";
 import { DEFAULT_CLIQ_CONFIRM_TEXT, DEFAULT_CLIQ_CANCELLED_TEXT } from "./client.js";
@@ -806,14 +802,7 @@ export async function dispatchCliqInbound(params: {
      | "listChatMessages"
      | "deleteMessage"
      | "downloadAttachment"
-   >;
-  /**
-   * Directory to write downloaded inbound attachments into. Defaults to a
-   * per-turn subdirectory under the OS temp dir. The runtime media
-   * understanding pipeline reads from the local `MediaPath` we set on the
-   * inbound context.
-   */
-  mediaDir?: string;
+    >;
 }): Promise<void> {
   const { runtime, cfg, account, parsed, onError } = params;
   const peerKind = parsed.isGroup ? "group" : "dm";
@@ -994,13 +983,6 @@ export async function dispatchCliqInbound(params: {
   // breaks the turn; the file name still surfaces in the body.
   let inboundMedia: CliqInboundMediaFacts[] = [];
   if (parsed.attachments.length > 0) {
-    const mediaDir =
-      params.mediaDir ?? join(tmpdir(), "openclaw-cliq-media", randomUUID());
-    try {
-      await fs.mkdir(mediaDir, { recursive: true });
-    } catch (err) {
-      onError?.(err, { kind: "inbound-media-mkdir" });
-    }
     const resolvedAttachments = await resolveInboundAttachmentFileIds({
       attachments: parsed.attachments,
       client,
@@ -1011,7 +993,6 @@ export async function dispatchCliqInbound(params: {
     const prepared = await prepareInboundMedia({
       attachments: resolvedAttachments,
       client,
-      mediaDir,
       messageId: parsed.messageId || undefined,
       onError: (err, info) => onError?.(err, { kind: info.kind }),
     });

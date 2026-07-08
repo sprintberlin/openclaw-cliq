@@ -1045,7 +1045,7 @@ export interface CliqChatMessageRef {
  * `content.file` descriptor for `type: "file"` messages. Records missing
  * a resolvable id are skipped, never thrown on.
  */
-function parseCliqChatMessages(data: unknown): CliqChatMessageRef[] {
+function parseCliqChatMessages(data: unknown, fallbackChatId?: string): CliqChatMessageRef[] {
   if (!data || typeof data !== "object") return [];
   const obj = data as Record<string, unknown>;
   const list = obj.messages ?? obj.data ?? data;
@@ -1061,7 +1061,7 @@ function parseCliqChatMessages(data: unknown): CliqChatMessageRef[] {
     const chatId =
       typeof rec.chat_id === "string" ? rec.chat_id
         : typeof rec.chatId === "string" ? rec.chatId
-        : undefined;
+        : fallbackChatId;
     if (!messageId || !chatId) continue;
     const text = typeof rec.text === "string" ? rec.text : undefined;
     let file: CliqChatMessageRef["file"];
@@ -2143,9 +2143,9 @@ export class CliqClient {
     opts: { limit?: number } = {},
   ): Promise<CliqChatMessageRef[]> {
     const limit = Math.max(1, Math.min(opts.limit ?? 50, 200));
-    const path = `/api/v2/chats/${encodeURIComponent(chatId)}/messages?from=0&limit=${limit}`;
+    const path = `/api/v2/chats/${encodeURIComponent(chatId)}/messages?limit=${limit}`;
     const data = await this.getJsonUserContext(path);
-    return parseCliqChatMessages(data);
+    return parseCliqChatMessages(data, chatId);
   }
 
   /**
