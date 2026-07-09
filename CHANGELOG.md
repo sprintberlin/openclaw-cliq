@@ -11,35 +11,29 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
-### Changed
-
-- **Animated thinking placeholder is now the default for new installs (issue #89).**
-  `thinking.mode` defaults to `"placeholder"` and `thinking.animate` defaults to
-  `"dots"` (cycles `💭 .` → `💭 ..` → `💭 ...` while the agent works) instead of
-  `"off"`. New installs get an animated "working…" indicator out of the box — the
-  Cliq-appropriate substitute for a typing indicator. To disable, set
-  `thinking.mode: "off"` or `thinking.animate: "off"`. There are no foreign
-  installations yet, so the default change is safe. Existing installs that
-  explicitly set `thinking.mode: "off"` are unaffected.
-
 ### Fixed
 
-- **Slash-command card replies (`/model`, `/models`) are no longer dropped when the thinking placeholder is active (issue #90).**
-  With `thinking.mode: "placeholder"` (the default since #89), command replies
-  that carry an interactive card (`channelData.cliqCard` — the `/models` and
-  `/model` button menus) produced no visible output: the live-edit delivery
-  path only handled `payload.text` and ignored `channelData`, so an
-  empty/short-text card was a no-op, and the stray-placeholder cleanup then
-  edited the `💭 …` into the misleading `⚠️ Couldn't process that message.`
-  notice. The live-edit `deliver` now detects `channelData.cliqCard` and routes
-  the reply through `CliqClient.sendCard` (buttons survive), reusing the same
-  card-render path as the non-placeholder `sendPayload` adapter. Because a Cliq
-  bot message can't be edited to add buttons and Zoho rejects DELETE for bot
-  messages, the card is sent as a new message; the placeholder is then finalized
-  to the card's body text (or a minimal marker) so it isn't left as `💭 …` and
-  does not trigger the failure notice. `placeholderConsumed` is set so the
-  inbound cleanup skips the placeholder. Text-only replies and `/new`
-  confirmations are unchanged.
+- **Slash commands (`/model`, `/models`, `/commands`) now work in Cliq DMs with the thinking placeholder active (issue #91).**
+  The SDK's `resolveCommandTurnContext` requires `CommandSource: "native"` and
+  `CommandAuthorized: true` on the inbound context to route a message through the
+  native command handler (which calls `build*ChannelData` and produces interactive
+  buttons). The Cliq plugin only set `CommandBody` — the SDK defaulted to
+  `kind: "normal"`, treating `/model` as plain text. The native command handler
+  never fired, `deliver` was never called with `channelData`, and the placeholder
+  was cleaned up to `⚠️ Couldn't process that message.` The context now sets
+  `CommandSource: "native"` + `CommandAuthorized: true` for all `/`-prefixed
+  messages (except abort intents, which keep `CommandSource: "text"`).
+
+- **A no-block turn no longer wedges the DM session (issue #91, Part 2).**
+  When a turn produced no reply block (agent error, empty response, or a
+  mis-routed command), the thinking placeholder was edited to the failure notice
+  via a raw `client.editMessage` call that bypassed the live-edit deliver path.
+  The SDK's delivery lifecycle never saw a `deliver` call for the turn, leaving
+  the session in `state=processing` and queuing all subsequent messages until
+  stuck-session recovery (~127 s). The cleanup now routes through the live-edit
+  `deliver` callback, which (a) sets `placeholderConsumed`, (b) handles edit
+  failures gracefully (delete placeholder + fresh send fallback), and (c)
+  completes the delivery lifecycle so the session is released promptly.
 
 - **Inbound image/file DM no longer aborts or leaves an orphaned placeholder (issue #88).**
   Three bugs that caused a real Cliq bot-DM image to show `💭 …` then nothing:

@@ -1106,6 +1106,24 @@ export async function dispatchCliqInbound(params: {
     // Mark a stop-intent turn as an authorized text command so the SDK's
     // fast-abort path cancels the in-flight run + sends the "Stopped." reply.
     ...(isAbort ? cliqAbortCtxFields() : {}),
+    // Native slash-command authorization (issue #91): when the inbound text
+    // starts with "/" (and is not an abort intent), signal to the SDK that
+    // this is an authorized native command. Without these fields the SDK's
+    // `resolveCommandTurnContext` defaults to `kind: "normal"` — the message
+    // is treated as plain text, the native command handler never fires,
+    // `build*ChannelData` is never called, and `deliver` is never invoked.
+    // The result: no reply block, the thinking placeholder is cleaned up to
+    // the failure notice, and the DM session wedges until stuck-session
+    // recovery (~127 s). Setting `CommandSource: "native"` +
+    // `CommandAuthorized: true` makes the SDK resolve the turn as
+    // `{ kind: "native", authorized: true }`, which bypasses the plugin
+    // binding and routes through the native command handler — the
+    // `build*ChannelData` builders produce interactive buttons and the reply
+    // flows through `deliver` → `sendCard`.
+    ...(!isAbort && cleanText.startsWith("/") ? {
+      CommandSource: "native" as const,
+      CommandAuthorized: true,
+    } : {}),
   });
   // Instant acknowledgement / "thinking" placeholder (issue #47): when
   // opted in (`thinking.mode` is `"placeholder"` OR `"card"`), streaming
@@ -1240,34 +1258,30 @@ export async function dispatchCliqInbound(params: {
   // When a thinking placeholder was posted, clean it up if the agent turn
   // ended WITHOUT touching it (the dispatcher flushed no blocks — e.g. the
   // turn threw, or the model produced no reply). An untouched placeholder
-  // would otherwise linger as a stray `💭 …`. Always EDIT the placeholder
-  // into a user-visible notice (never delete — Zoho rejects DELETE for bot
-  // messages with HTTP 400 `message_delete_failed`, leaving the placeholder
-  // orphaned). The cleanup runs in a `finally` so a throwing `inbound.run`
-  // still cleans up. A failed cleanup is swallowed + reported — it must
-  // never break or delay the turn.
+  // would otherwise linger as a stray `💭 …`. Route the failure notice
+  // through the live-edit `deliver` callback (not a raw `editMessage`) so
+  // that (a) `placeholderConsumed` is set and (b) the delivery lifecycle
+  // completes — without this, a no-block turn leaves the DM session stuck
+  // because the SDK's dispatch machinery never sees a deliver call for the
+  // turn (issue #91, Part 2). The live-edit deliver handles chatId
+  // resolution, edit failure → delete + fresh send fallback, and chunking
+  // transparently. A failed cleanup is swallowed + reported — it must never
+  // break or delay the turn.
   const cleanupStrayPlaceholder = async (): Promise<void> => {
     // Stop the animation first so a late frame edit cannot clobber the
     // cleanup edit (or race with the reply deliver).
     thinkingAnimation?.stop();
     if (!initialDraft) return;
     if (getLiveEditPlaceholderConsumed(deliver)) return;
-    const chatId =
-      initialDraft.chatId ??
-      (!parsed.isGroup ? undefined : await client.resolveChannelChatId(deliverTo).catch(() => undefined));
-    if (!chatId) {
-      // No chat id to edit with — best-effort skip. The placeholder
-      // may linger, but we cannot safely address it without a chat id.
-      return;
-    }
     const noticeText =
       account.thinking?.failureText ?? "⚠️ Couldn't process that message.";
     try {
-      await client.editMessage({
-        chatId,
-        messageId: initialDraft.messageId,
-        text: noticeText,
-      });
+      // Route through deliver so the live-edit path edits the placeholder
+      // into the failure notice (or deletes + re-sends on edit failure),
+      // `placeholderConsumed` is set true, and the delivery lifecycle
+      // completes. This prevents the DM session from wedging when the
+      // turn produced no reply block.
+      await deliver({ text: noticeText });
     } catch (err) {
       onError?.(err, { kind: "thinking-placeholder-cleanup" });
     }

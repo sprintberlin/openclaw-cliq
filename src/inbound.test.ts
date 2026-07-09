@@ -1225,6 +1225,164 @@ describe("dispatchCliqInbound — stop / abort intent (issue #51)", () => {
   });
 });
 
+describe("dispatchCliqInbound — native slash command authorization (issue #91)", () => {
+  function mockRuntime(capture: {
+    ctxPayload?: Record<string, unknown>;
+  }): CliqRuntime {
+    return {
+      channel: {
+        routing: {
+          resolveAgentRoute: () => ({
+            agentId: "agent-1",
+            sessionKey: "sess-1",
+            accountId: "default",
+          }),
+        },
+        session: {
+          resolveStorePath: () => "/tmp/store",
+          readSessionUpdatedAt: () => undefined,
+          recordInboundSession: () => undefined,
+        },
+        reply: {
+          resolveEnvelopeFormatOptions: () => ({}),
+          formatAgentEnvelope: (p: Record<string, unknown>) => String(p.body ?? ""),
+          finalizeInboundContext: (fields: Record<string, unknown>) => {
+            capture.ctxPayload = fields;
+            return fields;
+          },
+          dispatchReplyWithBufferedBlockDispatcher: async () => undefined,
+        },
+        inbound: {
+          run: async () => undefined,
+        },
+        pairing: {
+          buildPairingReply: () => "",
+          upsertPairingRequest: async () => ({ code: "CODE", created: true }),
+        },
+      },
+    };
+  }
+
+  function makeClient() {
+    return {
+      sendMessage: vi.fn(async () => ({ messageId: "out-1" })),
+      sendCard: vi.fn(async () => ({ messageId: "out-1" })),
+      editMessage: vi.fn(async (o: { chatId: string; messageId: string; text: string }) => ({
+        messageId: o.messageId,
+        chatId: o.chatId,
+      })),
+      resolveChannelChatId: vi.fn(async () => undefined),
+      listChatMessages: vi.fn(async () => []),
+      deleteMessage: vi.fn(async () => true),
+      downloadAttachment: vi.fn(async () => {
+        throw new Error("not mocked");
+      }),
+    };
+  }
+
+  it("marks a DM `/model` turn as an authorized native command", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload(dmPayload({ message: "/model" }))!;
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account(),
+      parsed,
+      client: makeClient(),
+    });
+    expect(capture.ctxPayload?.CommandSource).toBe("native");
+    expect(capture.ctxPayload?.CommandAuthorized).toBe(true);
+  });
+
+  it("marks a DM `/models` turn as an authorized native command", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload(dmPayload({ message: "/models" }))!;
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account(),
+      parsed,
+      client: makeClient(),
+    });
+    expect(capture.ctxPayload?.CommandSource).toBe("native");
+    expect(capture.ctxPayload?.CommandAuthorized).toBe(true);
+  });
+
+  it("marks a DM `/models openai` turn with arguments as an authorized native command", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload(dmPayload({ message: "/models openai" }))!;
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account(),
+      parsed,
+      client: makeClient(),
+    });
+    expect(capture.ctxPayload?.CommandSource).toBe("native");
+    expect(capture.ctxPayload?.CommandAuthorized).toBe(true);
+  });
+
+  it("marks a DM `/commands` turn as an authorized native command", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload(dmPayload({ message: "/commands" }))!;
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account(),
+      parsed,
+      client: makeClient(),
+    });
+    expect(capture.ctxPayload?.CommandSource).toBe("native");
+    expect(capture.ctxPayload?.CommandAuthorized).toBe(true);
+  });
+
+  it("marks a group `/model` mention as an authorized native command", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload(
+      groupPayload({ message: "@bot /model" }),
+    )!;
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account(),
+      parsed,
+      client: makeClient(),
+    });
+    expect(capture.ctxPayload?.CommandSource).toBe("native");
+    expect(capture.ctxPayload?.CommandAuthorized).toBe(true);
+  });
+
+  it("does NOT mark a normal conversational DM as a native command", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload(dmPayload({ message: "hello bot" }))!;
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account(),
+      parsed,
+      client: makeClient(),
+    });
+    expect(capture.ctxPayload?.CommandSource).toBeUndefined();
+    expect(capture.ctxPayload?.CommandAuthorized).toBeUndefined();
+  });
+
+  it("prefers abort intent (CommandSource: text) over native for /stop", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload(dmPayload({ message: "/stop" }))!;
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account(),
+      parsed,
+      client: makeClient(),
+    });
+    // Abort intent sets CommandSource: "text", not "native" — the native
+    // slash-command fields must NOT override the abort fields.
+    expect(capture.ctxPayload?.CommandSource).toBe("text");
+    expect(capture.ctxPayload?.CommandAuthorized).toBe(true);
+  });
+});
+
 describe("dispatchCliqInbound — inbound quote / reply context (issue #49)", () => {
   function mockRuntime(capture: {
     ctxPayload?: Record<string, unknown>;
@@ -2868,7 +3026,7 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
     expect(client.deletes).toHaveLength(0);
   });
 
-  it("reports the error when the cleanup edit fails (no delete fallback) (issue #88)", async () => {
+  it("deletes placeholder and re-sends when cleanup edit fails (issue #91)", async () => {
     const client = makeMockClient({ placeholderChatId: "chat-u1", editFails: true });
     const onError = vi.fn();
     const parsed = parseCliqWebhookPayload(dmPayload());
@@ -2884,13 +3042,18 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
       client,
       onError,
     });
-    // Edit attempted (failureText), rejected → error reported, no delete fallback.
+    // Edit attempted (failureText), rejected → live-edit deliver falls back
+    // to delete + fresh send. The error is caught internally by the deliver
+    // function (not reported via onError) — the user sees the failure notice
+    // as a fresh message instead of a lingering placeholder.
     expect(client.edits).toHaveLength(1);
-    expect(client.deletes).toHaveLength(0);
-    expect(onError).toHaveBeenCalledWith(
-      expect.objectContaining({ message: "edit rejected" }),
-      { kind: "thinking-placeholder-cleanup" },
-    );
+    expect(client.deletes).toHaveLength(1);
+    expect(client.deletes[0].messageId).toBe("ph-1");
+    // Fresh send with the failure text (the placeholder was deleted).
+    expect(client.sends).toHaveLength(2);
+    expect(client.sends[1].text).toBe("⚠️ No reply generated.");
+    // The error is caught inside the live-edit deliver, not propagated to onError.
+    expect(onError).not.toHaveBeenCalled();
   });
 
   it("does not clean up when a reply was produced (placeholder consumed)", async () => {
