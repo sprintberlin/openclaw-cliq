@@ -83,9 +83,6 @@ Mostly v3-independent; **dynamic agents** in particular is high-value and can be
   `openclaw status`) before hitting Zoho's rate limits; pairs naturally with the v3 consistent
   errors from Phase 2. Ref: v3 rate limits
   <https://www.zoho.com/cliq/help/restapi/v3/introduction/>. (Prior art: wecom.)
-- **Egress proxy support.** Route outbound API / OAuth requests through a configured proxy for
-  locked-down enterprise networks. `apiBase` / `oauthBase` are already configurable, but there is
-  no proxy hop. (Prior art: wecom `network.egressProxyUrl`.)
 - **`/btw` bypass Q&A.** A side-answer path that bypasses the main session lock so a quick question
   gets an isolated fast reply without disturbing the running conversation. (Prior art: dingtalk.)
 - **`write-secret` pattern.** Let a user store a secret (e.g. an API key) into a file by alias
