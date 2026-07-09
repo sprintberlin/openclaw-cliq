@@ -11,6 +11,8 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-07-09
+
 ### Fixed
 
 - **DM messages are no longer wrongly dropped as duplicates (intermittent "bot went silent" / "command did nothing").**
@@ -928,7 +930,8 @@ publish workflow extracts the matching section as the release notes (see
   lookup, plugin doctor, interactive setup wizard, SecretRef-backed credentials,
   security audit collector, session binding, multi-account, lifecycle hooks.
 
-[Unreleased]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.3...v0.1.4
