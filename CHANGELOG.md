@@ -35,6 +35,21 @@ publish workflow extracts the matching section as the release notes (see
   failures gracefully (delete placeholder + fresh send fallback), and (c)
   completes the delivery lifecycle so the session is released promptly.
 
+- **Command menus (`/model`, `/models`) now deliver as plain text instead of failing the send.**
+  Follow-up to #91: with native routing fixed, the model-menu *card* still failed
+  live with HTTP 400 — the Cliq REST API rejects the `invoke.bot` button action
+  the quick-reply menus rely on (`Unidentified value passed for the 'type' key`
+  on both the bot-message and chat endpoints; nested `card.buttons` is rejected
+  as `extra_key_found`). `invoke.bot` is the only action that re-posts a slash
+  command back to the bot, so an interactive menu is not deliverable on this
+  Cliq API — the failed card send left the placeholder as
+  `⚠️ Couldn't process that message.` The `cliqCommandsAdapter` now returns `null`
+  for the model-menu builders, so the runtime delivers the command's own reply
+  **text** (which lists the `/model <provider>/<model>` refs to type) — model
+  switching works without the interactive menu. The button builders + their tests
+  are retained to restore the menus if Cliq starts accepting `invoke.bot`. See
+  `docs/learnings/109-*`.
+
 - **Inbound image/file DM no longer aborts or leaves an orphaned placeholder (issue #88).**
   Three bugs that caused a real Cliq bot-DM image to show `💭 …` then nothing:
 

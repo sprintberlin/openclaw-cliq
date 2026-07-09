@@ -249,14 +249,44 @@ function isCurrentModelMatch(
 /**
  * Cliq `commands` adapter surface. Spread onto `base` of
  * `createChatChannelPlugin` (it forwards `commands` via `{ ...params.base }`).
+ *
+ * ## Command menus deliver as PLAIN TEXT, not interactive button cards
+ *
+ * The `buildModels*` / `buildModelBrowse` menu builders below are wired to
+ * `() => null` on purpose: Cliq's live REST API **rejects** the `invoke.bot`
+ * button action these quick-reply menus depend on. Verified directly against
+ * the live Cliq API (2026-07-09):
+ *
+ * - a button with `action.type: "invoke.bot"` → HTTP 400
+ *   `input_pattern_mismatch: "Unidentified value passed for the 'type' key"`
+ *   on BOTH the bot-message endpoint (`/api/v3/bots/{bot}/messages`) and the
+ *   chat endpoint (`/api/v3/chats/{chatId}/messages`);
+ * - a card carrying nested `card.buttons` → HTTP 400
+ *   `extra_key_found: "'buttons' is an extra key in the JSON Object"`.
+ *
+ * `invoke.bot` is the ONLY button action that re-posts a slash command back to
+ * the bot's message handler (the others — `invoke.function` / `open.url` /
+ * `system.api` / … — cannot post free text back). So an interactive
+ * command menu is not deliverable on this Cliq org's API, and every attempt
+ * failed the send → the thinking placeholder was cleaned up to
+ * "⚠️ Couldn't process that message."
+ *
+ * Returning `null` for each menu builder makes the runtime deliver the
+ * command's own reply **text** instead (the same degraded-but-usable path as
+ * `buildCommandsListChannelData`) — that text already lists the
+ * `/model <provider>/<model>` refs the user can type to switch. The fully
+ * implemented `buildCliq*ChannelData` builders (and their unit tests) are
+ * retained so the interactive menus can be restored the moment Cliq accepts
+ * `invoke.bot` (or a Deluge button-action handler is added): just point these
+ * fields back at the builders. See `docs/learnings` + the button probe results.
  */
 export const cliqCommandsAdapter: ChannelCommandAdapter = {
   nativeCommandsAutoEnabled: true,
   nativeSkillsAutoEnabled: true,
   buildCommandsListChannelData: buildCliqCommandsListChannelData,
-  buildModelsMenuChannelData: buildCliqModelsMenuChannelData,
-  buildModelsProviderChannelData: buildCliqModelsProviderChannelData,
-  buildModelsAddProviderChannelData: buildCliqModelsAddProviderChannelData,
-  buildModelsListChannelData: buildCliqModelsListChannelData,
-  buildModelBrowseChannelData: buildCliqModelBrowseChannelData,
+  buildModelsMenuChannelData: () => null,
+  buildModelsProviderChannelData: () => null,
+  buildModelsAddProviderChannelData: () => null,
+  buildModelsListChannelData: () => null,
+  buildModelBrowseChannelData: () => null,
 };
