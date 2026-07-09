@@ -13,6 +13,21 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **DM messages are no longer wrongly dropped as duplicates (intermittent "bot went silent" / "command did nothing").**
+  A Cliq bot Message handler delivers `message` as a bare string with no
+  `message.id` **and** no `message.time`, so the plugin derives a synthetic
+  message id. That id hashed only `sender + chat + (time?) + attachments` — for a
+  text DM (no time, no attachment) it reduced to a **constant** `hash(sender +
+  chat)`, identical for every message a user sent in that chat. With the 30-min
+  dedupe TTL, the first message was processed and **every subsequent message was
+  dropped as a "duplicate" for 30 minutes** (until a gateway restart cleared the
+  in-memory cache) — which looked like random flakiness: `/model` worked once,
+  then a follow-up `hallo`/`/model`/`/models` "did nothing" and the bot appeared
+  dead. The synthetic id now includes the message **text**, so distinct messages
+  get distinct ids and are all processed; a genuine Cliq redelivery of the same
+  message still hashes identically and is still correctly deduped. See
+  `docs/learnings/110-*`.
+
 - **Slash commands (`/model`, `/models`, `/commands`) now work in Cliq DMs with the thinking placeholder active (issue #91).**
   The SDK's `resolveCommandTurnContext` requires `CommandSource: "native"` and
   `CommandAuthorized: true` on the inbound context to route a message through the

@@ -402,6 +402,7 @@ function buildSyntheticMessageId(
   chatId: string,
   attachments: CliqInboundAttachment[],
   payloadTime: string,
+  text: string,
 ): string {
   const parts = [
     senderId,
@@ -410,6 +411,18 @@ function buildSyntheticMessageId(
     // (stable across redeliveries). When absent, `new Date().toISOString()`
     // changes on each delivery → omit it so the hash is deterministic.
     ...(payloadTime ? [payloadTime] : []),
+    // Include the message text so two DIFFERENT messages from the same
+    // sender + chat do not hash to the same id and get wrongly dropped as
+    // duplicates. A Cliq bot Message handler delivers `message` as a bare
+    // string with no `message.id` AND no `message.time`, so without the text
+    // every one of a user's DM messages hashed to the SAME constant id
+    // (`sender + chat`) — and, with the 30-min dedupe TTL, every message after
+    // the first was silently dropped as a "duplicate" until a gateway restart
+    // cleared the in-memory cache. This made slash commands and follow-up
+    // messages appear to work only intermittently. A genuine Cliq redelivery
+    // of the same message carries identical text → identical id → still
+    // correctly deduped.
+    text,
     ...attachments.map((a) => a.fileId ?? a.fileName ?? ""),
   ];
   const hash = createHash("sha256").update(parts.join("\0")).digest("hex");
@@ -563,7 +576,7 @@ export function parseCliqWebhookPayload(
   const resolvedMessageId =
     messageId ||
     (attachments.length > 0 || bodyText
-      ? buildSyntheticMessageId(user.id, chatId, attachments, time)
+      ? buildSyntheticMessageId(user.id, chatId, attachments, time, bodyText)
       : "");
 
   return {

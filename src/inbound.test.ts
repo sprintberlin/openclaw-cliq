@@ -645,6 +645,30 @@ describe("parseCliqWebhookPayload", () => {
       expect(parsed!.messageId).toMatch(/^syn:[0-9a-f]{16}$/);
     });
 
+    it("produces different ids for different message text (same sender + chat, no real id/time)", () => {
+      // Regression: a Cliq bot Message handler delivers `message` as a bare
+      // string with no `message.id` and no `message.time`. Before including the
+      // text in the synthetic id, every DM message from the same sender hashed
+      // to one constant id → the 30-min dedupe TTL dropped every message after
+      // the first (e.g. "hallo" worked, a following "/model" was skipped as a
+      // duplicate) until a gateway restart cleared the cache.
+      const a = parseCliqWebhookPayload({
+        handler: "message",
+        message: "/model",
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm" },
+      } as CliqWebhookPayload);
+      const b = parseCliqWebhookPayload({
+        handler: "message",
+        message: "hallo",
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm" },
+      } as CliqWebhookPayload);
+      expect(a!.messageId).toMatch(/^syn:[0-9a-f]{16}$/);
+      expect(b!.messageId).toMatch(/^syn:[0-9a-f]{16}$/);
+      expect(a!.messageId).not.toBe(b!.messageId);
+    });
+
     it("prefers a real messageId over the synthetic one", () => {
       const parsed = parseCliqWebhookPayload({
         handler: "message",
