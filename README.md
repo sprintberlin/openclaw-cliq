@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/sprintberlin/openclaw-cliq/v0.1.6/assets/zoho-cliq-128.png" alt="Zoho Cliq" width="96" height="96">
+  <img src="https://raw.githubusercontent.com/sprintberlin/openclaw-cliq/v0.1.8/assets/zoho-cliq-128.png" alt="Zoho Cliq" width="96" height="96">
 </p>
 
 <h1 align="center">Zoho Cliq Channel for OpenClaw</h1>
@@ -72,7 +72,7 @@ Everything that must be configured **on the Zoho side** so the `cliq` channel pl
 Open the bot builder: click your **profile picture** (top-right in Zoho Cliq) → under **My Cliq** choose **Bots & Tools**.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/sprintberlin/openclaw-cliq/v0.1.6/assets/cliq-bots-tools-menu.png" alt="Zoho Cliq — profile picture menu → My Cliq → Bots & Tools" width="440">
+  <img src="https://raw.githubusercontent.com/sprintberlin/openclaw-cliq/v0.1.8/assets/cliq-bots-tools-menu.png" alt="Zoho Cliq — profile picture menu → My Cliq → Bots & Tools" width="440">
 </p>
 
 1. In **Bots & Tools**, open the **Bots** section.
@@ -330,7 +330,7 @@ The Cliq bot must forward every mention / message event to the OpenClaw webhook.
 > **Where to find them:** in the Cliq Bot editor open **Edit Handlers**, then click *Edit Code* on **Message Handler** (DMs) and **Mention Handler** (channel @mentions) — the two arrowed below.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/sprintberlin/openclaw-cliq/v0.1.6/assets/cliq-bot-handlers.png" alt="Zoho Cliq bot Edit Handlers page — Message Handler and Mention Handler highlighted" width="820">
+  <img src="https://raw.githubusercontent.com/sprintberlin/openclaw-cliq/v0.1.8/assets/cliq-bot-handlers.png" alt="Zoho Cliq bot Edit Handlers page — Message Handler and Mention Handler highlighted" width="820">
 </p>
 
 ```deluge
@@ -680,15 +680,11 @@ OAuth flow.
 {
   "channels": {
     "cliq": {
-      "accounts": {
-        "default": {
-          "clientId": "<from the .com API Console>",
-          "clientSecret": "<from the .com API Console>",
-          "botId": "openclaw_agent",
-          "oauthBase": "https://accounts.zoho.com",
-          "apiBase": "https://cliq.zoho.com"
-        }
-      }
+      "clientId": "<from the .com API Console>",
+      "clientSecret": "<from the .com API Console>",
+      "botId": "openclaw_agent",
+      "oauthBase": "https://accounts.zoho.com",
+      "apiBase": "https://cliq.zoho.com"
     }
   }
 }
