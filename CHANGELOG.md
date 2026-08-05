@@ -11,6 +11,23 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Fixed
+
+- Missing `channels.cliq.thinking` objects now resolve to the documented
+  animated placeholder defaults (`mode: "placeholder"`, `animate: "dots"`).
+  OpenClaw applies defaults to fields inside an existing object but does not
+  create an omitted parent object, so existing single-account configs silently
+  fell back to `off` despite the manifest defaults.
+
+### Documentation
+
+- Corrected the single-account example: the default account belongs directly
+  under `channels.cliq`, not under `channels.cliq.accounts.default`.
+- Added an agent-assisted Zoho MCP onboarding and verification workflow, while
+  documenting that OAuth credentials and the webhook secret still need to be
+  supplied separately.
+- Removed a duplicated/corrupted REST API compatibility sentence.
+
 ## [0.1.7] - 2026-07-09
 
 ### Fixed

@@ -2108,7 +2108,7 @@ describe("dispatchCliqInbound — thinking placeholder (issue #47)", () => {
     expect(client.edits).toHaveLength(0);
   });
 
-  it("is a no-op when thinking.mode is off (default)", async () => {
+  it("is a no-op when thinking.mode is explicitly off", async () => {
     const client = makeMockClient({ placeholderChatId: "chat-u1" });
     const parsed = parseCliqWebhookPayload(dmPayload());
     await dispatchCliqInbound({

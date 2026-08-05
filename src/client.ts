@@ -246,8 +246,9 @@ export interface CliqChannelConfig {
    * and a `refreshToken` is configured and streaming preview is OFF, the
    * inbound path posts a lightweight placeholder message (e.g. `💭 …`) the
    * moment a message is accepted, then edits it in place into the final
-   * agent reply — exactly one message, no duplicate. Default `"off"` (opt-in;
-   * avoids a surprise extra API call per turn). See issue #47.
+   * agent reply — exactly one message, no duplicate. Defaults to an animated
+   * placeholder (`mode: "placeholder"`, `animate: "dots"`); operators can set
+   * either field to `"off"`. See issues #47 and #89.
    */
   thinking?: CliqThinkingConfig;
   /**
@@ -557,7 +558,7 @@ export interface ResolvedCliqAccount {
    */
   apiVersion?: CliqApiVersionConfig;
   /**
-   * Resolved instant-acknowledgement config. `mode` defaults to `"off"`; `text`
+   * Resolved instant-acknowledgement config. `mode` defaults to `"placeholder"`; `text`
    * defaults to {@link DEFAULT_CLIQ_THINKING_TEXT} when `mode === "placeholder"`
    * and to {@link DEFAULT_CLIQ_THINKING_CARD_TEXT} when `mode === "card"`.
    * The inbound path only acts when `mode` is `"placeholder"` OR `"card"` AND a
@@ -651,11 +652,11 @@ export function resolveCliqConfig(
     oauthBase: section?.oauthBase || undefined,
     apiVersion: normalizeCliqApiVersionConfig(section?.apiVersion),
     thinking: {
-      mode: section?.thinking?.mode === "placeholder"
-        ? "placeholder"
+      mode: section?.thinking?.mode === "off"
+        ? "off"
         : section?.thinking?.mode === "card"
           ? "card"
-          : "off",
+          : "placeholder",
       text: section?.thinking?.text
         ?? (section?.thinking?.mode === "card"
           ? DEFAULT_CLIQ_THINKING_CARD_TEXT
@@ -681,13 +682,13 @@ export function resolveCliqConfig(
       cancelledText:
         section?.thinking?.cancelledText ?? DEFAULT_CLIQ_CANCELLED_TEXT,
       animate:
-        section?.thinking?.animate === "dots"
-          ? "dots"
+        section?.thinking?.animate === "off"
+          ? "off"
           : section?.thinking?.animate === "spinner"
             ? "spinner"
             : section?.thinking?.animate === "custom"
               ? "custom"
-              : "off",
+              : "dots",
       animateFrames: Array.isArray(section?.thinking?.animateFrames)
         ? section!.thinking!.animateFrames!.filter(
             (f): f is string => typeof f === "string" && f.length > 0,

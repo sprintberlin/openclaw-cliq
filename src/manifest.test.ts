@@ -358,12 +358,8 @@ describe("cliq resolveCliqConfig reads thinking (issue #47)", () => {
   });
 
   it("defaults thinking.mode to 'placeholder' and animate to 'dots' for new installs (issue #89)", () => {
-    // Simulate what the OpenClaw runtime does: it injects manifest schema
-    // defaults before handing config to the plugin. With the manifest defaults
-    // flipped to placeholder+dots, the resolved config reflects them.
     const cfg = cfgWith({
       clientId: "id", clientSecret: "s", botId: "b",
-      thinking: { mode: "placeholder", animate: "dots" },
     });
     const account = resolveCliqConfig(cfg);
     expect(account.thinking.mode).toBe("placeholder");
@@ -408,10 +404,9 @@ describe("cliq resolveCliqConfig reads thinking (issue #47)", () => {
   });
 
   it("defaults thinking.animate to 'dots' and the interval to the default when unset (issue #89)", () => {
-    // Simulate runtime-injected manifest defaults.
     const cfg = cfgWith({
       clientId: "id", clientSecret: "s", botId: "b",
-      thinking: { mode: "placeholder", animate: "dots" },
+      thinking: { mode: "placeholder" },
     });
     const account = resolveCliqConfig(cfg);
     expect(account.thinking.animate).toBe("dots");
@@ -468,24 +463,22 @@ describe("cliq thinking manifest defaults (issue #89)", () => {
   });
 
   it("omitted thinking block resolves to mode='placeholder' + animate='dots' through the full config-resolution path", () => {
-    // Simulate what the OpenClaw runtime does (learning 104): when the operator
-    // omits a thinking block, the runtime reads `default` values from the
-    // manifest schema properties and injects them before handing config to the
-    // plugin. We derive the injected block from the schema rather than
-    // hard-coding it, so the test catches a manifest-default drift.
-    const thinkingProps = channelSchema.properties?.thinking?.properties ?? {};
-    const thinkingDefaults = Object.fromEntries(
-      Object.entries(thinkingProps)
-        .filter(([, v]) => (v as JsonSchema).default !== undefined)
-        .map(([k, v]) => [k, (v as JsonSchema).default]),
-    );
     const cfg = cfgWith({
       clientId: "id", clientSecret: "s", botId: "b",
-      thinking: thinkingDefaults,
     });
     const resolved = resolveCliqConfig(cfg);
     expect(resolved.thinking.mode).toBe("placeholder");
     expect(resolved.thinking.animate).toBe("dots");
+  });
+
+  it("preserves explicit thinking mode and animation opt-outs", () => {
+    const cfg = cfgWith({
+      clientId: "id", clientSecret: "s", botId: "b",
+      thinking: { mode: "off", animate: "off" },
+    });
+    const resolved = resolveCliqConfig(cfg);
+    expect(resolved.thinking.mode).toBe("off");
+    expect(resolved.thinking.animate).toBe("off");
   });
 });
 
@@ -563,4 +556,3 @@ describe("cliq apiVersion manifest schema (issue #86)", () => {
     expect(resolveCliqApiVersion(resolved.apiVersion, "delete")).toBe("v2");
   });
 });
-
