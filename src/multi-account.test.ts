@@ -428,13 +428,13 @@ describe("config.listAccountIds — multi-account discovery", () => {
     ).toEqual(["alpha", "beta"]);
   });
 
-  it("returns no account ids for the single-account (top-level) convention", () => {
+  it("lists the implicit default id for the single-account (top-level) convention", () => {
     const cfg = {
       channels: {
         cliq: { clientId: "id", clientSecret: "s", botId: "b" },
       },
     } as unknown as OpenClawConfig;
-    expect(cliqPlugin.config.listAccountIds(cfg)).toEqual([]);
+    expect(cliqPlugin.config.listAccountIds(cfg)).toEqual(["default"]);
   });
 });
 

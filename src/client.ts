@@ -418,8 +418,8 @@ export type CliqThinkingConfig = {
    * animation duration is capped (default 60 s) so a long turn does not hammer
    * the edit endpoint. A failed frame edit stops the animation but never
    * breaks the turn (the reply is still delivered).
-   *  - `"off"` (default): no animation (static placeholder).
-   *  - `"dots"`: cycle `💭 .` → `💭 ..` → `💭 …` (loop).
+   *  - `"off"`: no animation (static placeholder).
+   *  - `"dots"` (default): cycle `💭 .` → `💭 ..` → `💭 …` (loop).
    *  - `"spinner"`: cycle braille-spinner frames prefixed with a fixed label
    *    (e.g. `⠋ thinking…`).
    *  - `"custom"`: cycle `animateFrames` (ignored when empty / unset → static).

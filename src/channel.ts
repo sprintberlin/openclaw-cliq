@@ -6,6 +6,7 @@ import type {
 } from "openclaw/plugin-sdk/channel-core";
 import {
   chunkMessage,
+  CLIQ_DEFAULT_ACCOUNT_ID,
   loadCliqMediaAttachment,
   normalizeCliqRouteTarget,
   resolveCliqConfig,
@@ -193,9 +194,22 @@ function listAccountIds(cfg: OpenClawConfig): string[] {
   const channels = (cfg as unknown as { channels?: Record<string, unknown> }).channels;
   const section = channels?.["cliq"];
   if (!section || typeof section !== "object") return [];
-  const accounts = (section as { accounts?: Record<string, unknown> }).accounts;
-  if (!accounts || typeof accounts !== "object") return [];
-  return Object.keys(accounts);
+  const typed = section as {
+    clientId?: unknown;
+    clientSecret?: unknown;
+    botId?: unknown;
+    accounts?: Record<string, unknown>;
+  };
+  const accountIds = new Set<string>();
+  if (typed.clientId || typed.clientSecret || typed.botId) {
+    accountIds.add(CLIQ_DEFAULT_ACCOUNT_ID);
+  }
+  if (typed.accounts && typeof typed.accounts === "object") {
+    for (const accountId of Object.keys(typed.accounts)) {
+      if (accountId) accountIds.add(accountId);
+    }
+  }
+  return [...accountIds];
 }
 
 function resolveAccount(

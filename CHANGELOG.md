@@ -18,6 +18,9 @@ publish workflow extracts the matching section as the release notes (see
   OpenClaw applies defaults to fields inside an existing object but does not
   create an omitted parent object, so existing single-account configs silently
   fell back to `off` despite the manifest defaults.
+- Top-level single-account configurations are now discovered as the implicit
+  `default` account, so deep health checks no longer report Cliq as
+  "not configured" while the channel is active and replying normally.
 
 ### Documentation
 
