@@ -21,6 +21,9 @@ publish workflow extracts the matching section as the release notes (see
 - Top-level single-account configurations are now discovered as the implicit
   `default` account, so deep health checks no longer report Cliq as
   "not configured" while the channel is active and replying normally.
+- Status snapshots now accept OpenClaw's redacted `inspectAccount` shape as
+  well as the runtime account shape; the previous resolver looked for secret
+  credentials in the redacted snapshot and incorrectly marked it disabled.
 
 ### Documentation
 

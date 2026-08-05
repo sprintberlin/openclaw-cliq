@@ -115,14 +115,30 @@ export const cliqStatusAdapter: ChannelStatusAdapter<
   probeAccount: async ({ account, timeoutMs }) =>
     probeCliqStatus(account, timeoutMs),
   resolveAccountSnapshot: ({ account, probe }) => {
-    const configured = isConfiguredAccount(account);
+    // OpenClaw's health builder passes the redacted result of `inspectAccount`
+    // into this hook, while direct status calls pass `ResolvedCliqAccount`.
+    // Support both shapes: the inspected shape carries explicit
+    // enabled/configured/name fields but intentionally omits clientSecret.
+    const inspected = account as unknown as {
+      accountId?: string | null;
+      name?: string;
+      botId?: string;
+      enabled?: boolean;
+      configured?: boolean;
+    };
+    const configured = typeof inspected.configured === "boolean"
+      ? inspected.configured
+      : isConfiguredAccount(account);
+    const enabled = typeof inspected.enabled === "boolean"
+      ? inspected.enabled
+      : configured;
     return {
-      accountId: account.accountId ?? DEFAULT_ACCOUNT_ID,
-      name: account.botName ?? account.botId,
-      enabled: configured,
+      accountId: inspected.accountId ?? account.accountId ?? DEFAULT_ACCOUNT_ID,
+      name: inspected.name ?? account.botName ?? inspected.botId ?? account.botId,
+      enabled,
       configured,
       extra: {
-        botId: account.botId,
+        botId: inspected.botId ?? account.botId,
         probe: probe ?? null,
       },
     };

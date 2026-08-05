@@ -6,6 +6,7 @@ import {
 } from "./status.js";
 import { resolveCliqConfig, type ResolvedCliqAccount } from "./client.js";
 import { setCliqClientRegistry } from "./runtime-api.js";
+import { inspectCliqAccount } from "./account-inspect.js";
 import { createCliqTestConfig as cfgWith } from "./test-api.js";
 
 const CONFIGURED = cfgWith({
@@ -143,6 +144,20 @@ describe("cliqStatusAdapter", () => {
     expect(snapshot.name).toBe("MyBot");
     expect(snapshot.botId).toBe("bot");
     expect(snapshot.probe).toEqual({ ok: true, reason: "ok", probedAt: 123 });
+  });
+
+  it("buildAccountSnapshot accepts the redacted inspectAccount shape used by gateway health", () => {
+    const inspected = inspectCliqAccount({ cfg: CONFIGURED, accountId: "default" });
+    const snapshot = cliqStatusAdapter.buildAccountSnapshot!({
+      account: inspected as never,
+      cfg: CONFIGURED,
+      probe: { ok: true, reason: "ok", probedAt: 123 },
+    }) as Record<string, unknown>;
+    expect(snapshot.accountId).toBe("default");
+    expect(snapshot.configured).toBe(true);
+    expect(snapshot.enabled).toBe(true);
+    expect(snapshot.name).toBe("MyBot");
+    expect(snapshot.botId).toBe("bot");
   });
 
   it("buildAccountSnapshot reports unconfigured for a partial account", () => {
