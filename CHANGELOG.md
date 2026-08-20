@@ -11,6 +11,8 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-08-20
+
 ### Added
 
 - **OAuth capability profiles with non-destructive validation (issue #93).**
@@ -31,6 +33,20 @@ publish workflow extracts the matching section as the release notes (see
   (reactions, media download, message read, message delete, channel card v3)
   are reported as degraded/skipped when their scopes are missing, not as
   errors that block unrelated messaging.
+- **Real OpenClaw gateway ingress integration coverage (issue #102).** The CI
+  smoke test now loads the built plugin into an isolated gateway, exercises
+  authenticated DM and group webhook delivery, verifies deduplication and
+  outbound routing, and checks that credentials never leak into captured logs.
+
+### Fixed
+
+- **Passive webhook accounts now remain running (issue #98).** The Cliq channel
+  registers a passive gateway lifecycle task, reports `mode: "webhook"` and
+  `/cliq/webhook`, and no longer appears stopped or enters the health monitor's
+  restart loop while its HTTP webhook transport is healthy.
+- **Webhook ingress fails closed without a configured secret (issue #101).** A
+  missing server-side `webhookSecret` returns `503`; a missing or incorrect
+  request secret returns `401`. Neither path parses or dispatches the payload.
 
 ## [0.1.8] - 2026-08-05
 
