@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/sprintberlin/openclaw-cliq/v0.1.8/assets/zoho-cliq-128.png" alt="Zoho Cliq" width="96" height="96">
+  <img src="https://raw.githubusercontent.com/sprintberlin/openclaw-cliq/main/assets/zoho-cliq-128.png" alt="Zoho Cliq" width="96" height="96">
 </p>
 
 <h1 align="center">Zoho Cliq Channel for OpenClaw</h1>
@@ -15,9 +15,14 @@
 </p>
 
 <p align="center">
+  <b>Public open-source repository:</b>
+  <a href="https://github.com/sprintberlin/openclaw-cliq">github.com/sprintberlin/openclaw-cliq</a>
+</p>
+
+<p align="center">
   <b>Channel plugin</b> · OAuth 2.0 · multi-data-center · MIT · verified live on a real gateway
 </p>
-Hallo Dominic
+
 ---
 
 ## ⚡ Quick start
@@ -72,7 +77,7 @@ Everything that must be configured **on the Zoho side** so the `cliq` channel pl
 Open the bot builder: click your **profile picture** (top-right in Zoho Cliq) → under **My Cliq** choose **Bots & Tools**.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/sprintberlin/openclaw-cliq/v0.1.8/assets/cliq-bots-tools-menu.png" alt="Zoho Cliq — profile picture menu → My Cliq → Bots & Tools" width="440">
+  <img src="https://raw.githubusercontent.com/sprintberlin/openclaw-cliq/main/assets/cliq-bots-tools-menu.png" alt="Zoho Cliq — profile picture menu → My Cliq → Bots & Tools" width="440">
 </p>
 
 1. In **Bots & Tools**, open the **Bots** section.
@@ -375,7 +380,7 @@ The Cliq bot must forward every mention / message event to the OpenClaw webhook.
 > **Where to find them:** in the Cliq Bot editor open **Edit Handlers**, then click *Edit Code* on **Message Handler** (DMs) and **Mention Handler** (channel @mentions) — the two arrowed below.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/sprintberlin/openclaw-cliq/v0.1.8/assets/cliq-bot-handlers.png" alt="Zoho Cliq bot Edit Handlers page — Message Handler and Mention Handler highlighted" width="820">
+  <img src="https://raw.githubusercontent.com/sprintberlin/openclaw-cliq/main/assets/cliq-bot-handlers.png" alt="Zoho Cliq bot Edit Handlers page — Message Handler and Mention Handler highlighted" width="820">
 </p>
 
 ```deluge
@@ -738,14 +743,23 @@ OAuth flow.
 ## Contributing
 
 Bug reports, feature requests, and pull requests are welcome — see
-[CONTRIBUTING.md](CONTRIBUTING.md) for local development, conventions, and the PR
-flow, and [SECURITY.md](SECURITY.md) for private vulnerability reporting. Release
-and ClawHub-publish steps live in [RELEASING.md](RELEASING.md); the version
-history is in [CHANGELOG.md](CHANGELOG.md).
+[CONTRIBUTING.md](https://github.com/sprintberlin/openclaw-cliq/blob/main/CONTRIBUTING.md)
+for local development, conventions, and the PR flow, and
+[SECURITY.md](https://github.com/sprintberlin/openclaw-cliq/blob/main/SECURITY.md)
+for private vulnerability reporting. Release and ClawHub-publish steps live in
+[RELEASING.md](https://github.com/sprintberlin/openclaw-cliq/blob/main/RELEASING.md);
+the version history is in
+[CHANGELOG.md](https://github.com/sprintberlin/openclaw-cliq/blob/main/CHANGELOG.md).
 
 ## Development
 
-This plugin is developed iteratively by an autonomous coding agent (OpenCode via GitHub Actions). See `AGENTS.md` for project context and conventions, and `ROADMAP.md` for the open worklist / feature-parity target. **The coding-agent workflow only runs for issues opened by repo maintainers** (owner / member / collaborator) — a public issue will not trigger it.
+This plugin is developed iteratively by an autonomous coding agent (OpenCode via GitHub Actions). See
+[AGENTS.md](https://github.com/sprintberlin/openclaw-cliq/blob/main/AGENTS.md)
+for project context and conventions, and
+[ROADMAP.md](https://github.com/sprintberlin/openclaw-cliq/blob/main/ROADMAP.md)
+for the open worklist / feature-parity target. **The coding-agent workflow only
+runs for issues opened by repo maintainers** (owner / member / collaborator) —
+a public issue will not trigger it.
 
 ## License
 

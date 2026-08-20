@@ -11,6 +11,17 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-08-20
+
+### Documentation
+
+- Added a prominent link identifying the GitHub repository as public and open
+  source on both GitHub and the rendered ClawHub package page.
+- Replaced repository-relative footer links with absolute GitHub URLs so they
+  also work when the README is rendered on ClawHub.
+- Updated README image URLs to follow the public `main` branch and removed an
+  accidental line of unrelated text.
+
 ## [0.1.9] - 2026-08-20
 
 ### Added
