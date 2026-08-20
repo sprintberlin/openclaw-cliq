@@ -72,10 +72,15 @@ function makeScriptedPrompter(
 }
 
 describe("isCliqChannelConfigured", () => {
-  it("returns true when clientId, clientSecret, and botId are set", () => {
+  it("returns true when OAuth credentials, botId, and webhookSecret are set", () => {
     expect(
       isCliqChannelConfigured(
-        cfgWith({ clientId: "id", clientSecret: "secret", botId: "bot" }),
+        cfgWith({
+          clientId: "id",
+          clientSecret: "secret",
+          botId: "bot",
+          webhookSecret: "webhook-secret",
+        }),
       ),
     ).toBe(true);
   });
@@ -85,6 +90,11 @@ describe("isCliqChannelConfigured", () => {
     expect(
       isCliqChannelConfigured(
         cfgWith({ clientId: "id", clientSecret: "secret" }),
+      ),
+    ).toBe(false);
+    expect(
+      isCliqChannelConfigured(
+        cfgWith({ clientId: "id", clientSecret: "secret", botId: "bot" }),
       ),
     ).toBe(false);
     expect(isCliqChannelConfigured(cfgWith({}))).toBe(false);
@@ -148,7 +158,7 @@ describe("applyCliqCredentials", () => {
 });
 
 describe("promptCliqCredentials — fresh setup (no existing config)", () => {
-  it("prompts for the three required fields + optional botName + webhookSecret + refreshToken", async () => {
+  it("prompts for required credentials + webhookSecret and optional botName + refreshToken", async () => {
     // Order: clientId(text), clientSecret(text), botId(text), botName(text), webhookSecret(text), refreshToken(text)
     const { prompter, calls } = makeScriptedPrompter([
       { method: "text", value: "CID" },
@@ -172,19 +182,23 @@ describe("promptCliqCredentials — fresh setup (no existing config)", () => {
     expect(confirms).toHaveLength(0);
   });
 
-  it("allows empty botName and empty webhookSecret and empty refreshToken (become undefined)", async () => {
-    const { prompter } = makeScriptedPrompter([
+  it("requires webhookSecret while botName and refreshToken remain optional", async () => {
+    const { prompter, calls } = makeScriptedPrompter([
       { method: "text", value: "CID" },
       { method: "text", value: "SECRET" },
       { method: "text", value: "bot" },
       { method: "text", value: "" },
-      { method: "text", value: "" },
+      { method: "text", value: "WH" },
       { method: "text", value: "" },
     ]);
     const creds = await promptCliqCredentials(prompter, cfgWith({}));
     expect(creds.botName).toBeUndefined();
-    expect(creds.webhookSecret).toBeUndefined();
+    expect(creds.webhookSecret).toBe("WH");
     expect(creds.refreshToken).toBeUndefined();
+    const webhookPrompt = calls.filter((call) => call.method === "text")[4];
+    const validate = webhookPrompt?.args.validate as ((value: string) => string | undefined);
+    expect(validate("")).toBe("This field is required.");
+    expect(validate("WH")).toBeUndefined();
   });
 });
 
@@ -301,7 +315,12 @@ describe("cliqSetupWizard", () => {
   it("status.resolveConfigured reflects the configured check", async () => {
     expect(
       await cliqSetupWizard.status.resolveConfigured({
-        cfg: cfgWith({ clientId: "id", clientSecret: "s", botId: "b" }),
+        cfg: cfgWith({
+          clientId: "id",
+          clientSecret: "s",
+          botId: "b",
+          webhookSecret: "wh",
+        }),
       }),
     ).toBe(true);
     expect(

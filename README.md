@@ -307,7 +307,7 @@ path); only channel @mention replies and live-edit message edits require the ref
 
 ### 4. OpenClaw Configuration
 
-Add the `cliq` channel to your `openclaw.json` (or via `openclaw setup` / the setup wizard's `applyAccountConfig` step). The required fields are `clientId`, `clientSecret`, and `botId`; `botName`, `webhookSecret`, and `allowFrom` are recommended.
+Add the `cliq` channel to your `openclaw.json` (or via `openclaw setup` / the setup wizard's `applyAccountConfig` step). The required fields are `clientId`, `clientSecret`, `botId`, and `webhookSecret`; `botName` and `allowFrom` are recommended.
 
 ```jsonc
 {
@@ -340,7 +340,7 @@ Every field except the required ones has a sensible default; `groups` / `thinkin
 - **`clientSecret`** *(required)* — OAuth client secret (sensitive).
 - **`botId`** *(required)* — Bot **Unique Name** (the path segment in the bot message API).
 - **`botName`** *(recommended)* — Bot display name. Used to strip the `@botName` mention from the text the agent sees.
-- **`webhookSecret`** *(recommended)* — Shared secret the Deluge handler sends in the `x-cliq-webhook-secret` header. If unset, the webhook accepts all requests (not recommended).
+- **`webhookSecret`** *(required for inbound delivery)* — High-entropy shared secret the Deluge handler sends in the `x-cliq-webhook-secret` header. If unset or unresolved, `/cliq/webhook` fails closed with `503` and never dispatches an agent turn. A missing or wrong request header returns `401`.
 - **`refreshToken`** *(recommended)* — User-context OAuth refresh token (sensitive). Obtained once via the self-client `authorization_code` flow (§3c). **Required for channel @mention replies and live-edit message edits** — without it, those paths fail with `oauthtoken_scope_invalid` (the `client_credentials` grant cannot obtain a usable token for `ZohoCliq.Channels.UPDATE` / `ZohoCliq.Messages.UPDATE`). DM-only setups can leave it unset.
 - **`ackPolicy`** *(optional)* — When the webhook acknowledges Cliq relative to the inbound dispatch. `"after_dispatch"` (default) awaits the full dispatch before sending HTTP 200 — a crash mid-dispatch means Cliq never sees the 200 and redelivers (no lost message). `"immediate"` fires-and-forgets (faster, but a crash between ack and dispatch loses the message). **Deluge timeout gotcha:** Zoho's `invokeUrl` in the bot Message handler has a ~40 s hard timeout. With the default `ackPolicy: "after_dispatch"` the webhook holds the connection until the whole agent turn finishes, so a slow turn (image analysis, cold model) trips Deluge's *"The task has been terminated since the API call is taking too long to respond"* even though the reply is delivered out-of-band. Operators with slow turns should set `ackPolicy: "immediate"` (fire-and-forget ack; documented lost-message-on-crash trade-off). Pairs naturally with `thinking.mode: "placeholder"` (the placeholder posts immediately while the agent works).
 - **`allowFrom`** *(optional)* — Array of Zoho Cliq user ids allowed to DM the bot (only effective when `dmPolicy` is `allowlist` or `pairing`).

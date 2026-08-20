@@ -81,7 +81,7 @@ function collectCliqPreviewWarnings(params: {
   }
   if (!section.webhookSecret) {
     warnings.push(
-      `- channels.cliq: webhookSecret is not set. Inbound Cliq delivery will be rejected with 401 because the plugin cannot verify the x-cliq-webhook-secret header. Run \`openclaw configure\` to set it (or run \`${params.doctorFixCommand}\` if managed).`,
+      `- channels.cliq: webhookSecret is not set. Inbound Cliq delivery is disabled and /cliq/webhook returns 503 without dispatching an agent turn. Run \`openclaw configure\` to set it (or run \`${params.doctorFixCommand}\` if managed).`,
     );
   }
   const dmPolicy =

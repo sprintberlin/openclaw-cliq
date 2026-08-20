@@ -109,10 +109,9 @@ function classifySecretField(
  * Findings emitted:
  *
  *  - **`channels.cliq.webhook_secret.missing`** (critical): no
- *    `webhookSecret` is configured, so `verifyWebhookSecret` short-circuits
- *    to `true` and ANY party that can reach `/cliq/webhook` can forge
- *    inbound Deluge payloads and drive the agent. This is the highest-impact
- *    gap — the webhook is the trust boundary.
+ *    `webhookSecret` is configured, so inbound delivery fails closed with
+ *    503. This is operationally critical because the channel cannot receive
+ *    messages until the webhook trust boundary has a shared secret.
  *
  *  - **`channels.cliq.allow_from.wildcard`** (critical): `allowFrom` contains
  *    `"*"`, admitting every Cliq user. Under `dmPolicy: "open"` this is the
@@ -148,7 +147,7 @@ export function collectCliqSecurityAuditFindings(params: {
       severity: "critical",
       title: "Cliq webhook secret is not configured",
       detail:
-        'channels.cliq.webhookSecret is unset. Without it the plugin treats every inbound request as verified (verifyWebhookSecret returns true for any request), so any party that can reach /cliq/webhook can forge Deluge payloads and drive the agent. The webhook is the trust boundary — it must carry a shared secret.',
+        'channels.cliq.webhookSecret is unset. The plugin fails closed: /cliq/webhook returns 503 and never dispatches an agent turn until a shared secret is configured. The webhook is the trust boundary and inbound Cliq delivery remains disabled without it.',
       remediation:
         "Set channels.cliq.webhookSecret to a high-entropy shared secret (preferably as a SecretRef — run `openclaw secrets apply`), and configure the Deluge bot handler to send it in the x-cliq-webhook-secret header.",
     });

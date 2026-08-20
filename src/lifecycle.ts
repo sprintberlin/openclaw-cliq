@@ -24,8 +24,8 @@ import { detectCliqLegacyStateMigrations } from "./legacy-state-migrations.js";
  * the runtime honest:
  *
  *  - `runStartupMaintenance` (on start): enumerate every configured account,
- *    warn on a missing webhook secret (inbound cannot be verified without
- *    one), log the canonical webhook path operators must wire into the
+ *    warn on a missing webhook secret (inbound fails closed without one),
+ *    log the canonical webhook path operators must wire into the
  *    Deluge handler, and best-effort pre-warm the OAuth access token so the
  *    first inbound message after an idle gap doesn't pay the
  *    `accounts.zoho.eu` round-trip. Failures are swallowed — startup
@@ -171,7 +171,7 @@ export async function runCliqStartupMaintenance(params: {
     }
     if (!account.webhookSecret) {
       log.warn?.(
-        `${prefix}: account "${label}" has no webhook secret — inbound delivery cannot be verified. Set channels.cliq.webhookSecret (recommended).`,
+        `${prefix}: account "${label}" has no webhook secret — inbound delivery is disabled and returns 503 until channels.cliq.webhookSecret is set.`,
       );
     }
     try {

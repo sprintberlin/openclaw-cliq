@@ -104,6 +104,16 @@ export default defineChannelPluginEntry({
           return true;
         }
 
+        if (!account.webhookSecret) {
+          api.logger.error?.(
+            "[cliq] webhook rejected because webhookSecret is not configured",
+          );
+          res.statusCode = 503;
+          res.setHeader("Connection", "close");
+          res.end("cliq webhook secret not configured");
+          return true;
+        }
+
         if (!verifyWebhookSecret(req, account.webhookSecret)) {
           rejectUnauthedWebhook({
             req,

@@ -175,8 +175,9 @@ export interface CliqChannelConfig {
   botName?: string;
   /**
    * Shared secret used to verify `x-cliq-webhook-secret` on inbound delivery.
-   * Plaintext or SecretRef (resolved at runtime). Recommended; when unset (or
-   * when a configured ref cannot be resolved) inbound verification is skipped.
+   * Plaintext or SecretRef (resolved at runtime). Required for inbound
+   * delivery; when unset or when a configured ref cannot be resolved, the
+   * webhook rejects the request with 503 without dispatching an agent turn.
    */
   webhookSecret?: SecretInput;
   allowFrom?: string[];

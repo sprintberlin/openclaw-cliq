@@ -88,8 +88,8 @@ function groupPayload(overrides: Partial<CliqWebhookPayload> = {}): CliqWebhookP
 }
 
 describe("verifyWebhookSecret", () => {
-  it("allows when no secret configured", () => {
-    expect(verifyWebhookSecret(reqWithHeaders({}), undefined)).toBe(true);
+  it("fails closed when no secret is configured", () => {
+    expect(verifyWebhookSecret(reqWithHeaders({}), undefined)).toBe(false);
   });
 
   it("rejects when secret configured but header missing", () => {

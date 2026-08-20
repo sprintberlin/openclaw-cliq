@@ -39,18 +39,18 @@ function asString(value: unknown): string | undefined {
 }
 
 /**
- * A channel is configured iff the three required OAuth/bot fields are set.
- * `clientSecret` uses `hasConfiguredSecretInput` so a SecretRef-configured
- * secret (the form `openclaw secrets apply` produces) still counts as present
- * — otherwise the setup wizard would re-prompt for a plaintext value and
- * clobber the configured ref.
+ * A channel is configured iff the required OAuth/bot fields and the inbound
+ * webhook secret are set. Secret fields use `hasConfiguredSecretInput` so a
+ * SecretRef-configured value (the form `openclaw secrets apply` produces)
+ * still counts as present.
  */
 export function isCliqChannelConfigured(cfg: OpenClawConfig, _accountId?: string): boolean {
   const section = readCliqSection(cfg);
   return Boolean(
     asString(section.clientId) &&
       hasConfiguredSecretInput(section.clientSecret) &&
-      asString(section.botId),
+      asString(section.botId) &&
+      hasConfiguredSecretInput(section.webhookSecret),
   );
 }
 
@@ -78,7 +78,7 @@ export interface CliqSetupCredentials {
 }
 
 /**
- * Prompt for the five core Cliq credentials/fields, reusing existing config
+ * Prompt for the core Cliq credentials/fields, reusing existing config
  * values when the operator confirms "keep". Pure w.r.t. the prompter — no
  * I/O of its own — so it is unit-testable with a fake prompter.
  */
@@ -220,7 +220,7 @@ export async function promptCliqCredentials(
     if (botName.trim() === "") botName = undefined;
   }
 
-  // Webhook secret (optional but recommended)
+  // Webhook secret (required: the inbound webhook fails closed without it)
   let webhookSecret = existingWebhookSecret;
   if (webhookSecret) {
     if (
@@ -238,11 +238,11 @@ export async function promptCliqCredentials(
     } else {
       webhookSecret = await prompter.text({
         message:
-          "Webhook shared secret (sent in x-cliq-webhook-secret by your Deluge handler; recommended)",
+          "Webhook shared secret (sent in x-cliq-webhook-secret by your Deluge handler; required)",
         placeholder: "••••••••••••••••",
         sensitive: true,
+        validate: required,
       });
-      if (webhookSecret.trim() === "") webhookSecret = undefined;
     }
   } else if (
     envWebhookSecret &&
@@ -252,11 +252,11 @@ export async function promptCliqCredentials(
   } else {
     webhookSecret = await prompter.text({
       message:
-        "Webhook shared secret (sent in x-cliq-webhook-secret by your Deluge handler; leave empty to skip)",
+        "Webhook shared secret (sent in x-cliq-webhook-secret by your Deluge handler; required)",
       placeholder: "••••••••••••••••",
       sensitive: true,
+      validate: required,
     });
-    if (webhookSecret.trim() === "") webhookSecret = undefined;
   }
 
   // Refresh token (optional but required for channel posts + message edits).
@@ -425,10 +425,10 @@ export const cliqSetupWizard: ChannelSetupWizard = {
   status: createStandardChannelSetupStatus({
     channelLabel: "Zoho Cliq",
     configuredLabel: "Configured",
-    unconfiguredLabel: "Needs OAuth client + bot",
+    unconfiguredLabel: "Needs OAuth client + bot + webhook secret",
     configuredHint: "Zoho Cliq bot is configured.",
     unconfiguredHint:
-      "Add your Cliq OAuth client id/secret and bot unique name to enable the channel.",
+      "Add your Cliq OAuth client id/secret, bot unique name, and webhook secret to enable inbound delivery.",
     configuredScore: 2,
     unconfiguredScore: 1,
     resolveConfigured: ({ cfg, accountId }) =>

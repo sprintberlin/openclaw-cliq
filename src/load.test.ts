@@ -70,6 +70,54 @@ describe("plugin entry load + /cliq/webhook smoke", () => {
     expect(res.body).toBe("cliq not configured");
   });
 
+  it("POST /cliq/webhook with configured account but no webhook secret → 503 without dispatch", async () => {
+    let dispatches = 0;
+    const { webhook, api } = registerCliqPluginForTest();
+    api.config = createCliqTestConfig({
+      clientId: "id",
+      clientSecret: "***",
+      botId: "bot",
+      botName: "openclaw-bot",
+    });
+    api.runtime = createTestRuntimeChannel(async () => {
+      dispatches += 1;
+    });
+    const res = createMockServerResponse();
+    const result = await webhook.handler(
+      createMockIncomingRequest("POST", createMentionDelugePayload()),
+      res as unknown as any,
+    );
+    expect(result).toBe(true);
+    expect(res.statusCode).toBe(503);
+    expect(res.headers["Connection"]).toBe("close");
+    expect(res.body).toBe("cliq webhook secret not configured");
+    expect(dispatches).toBe(0);
+  });
+
+  it("POST /cliq/webhook with configured secret but missing header → 401 without dispatch", async () => {
+    let dispatches = 0;
+    const { webhook, api } = registerCliqPluginForTest();
+    api.config = createCliqTestConfig({
+      clientId: "id",
+      clientSecret: "***",
+      botId: "bot",
+      botName: "openclaw-bot",
+      webhookSecret: "s3cr3t",
+    });
+    api.runtime = createTestRuntimeChannel(async () => {
+      dispatches += 1;
+    });
+    const res = createMockServerResponse();
+    const result = await webhook.handler(
+      createMockIncomingRequest("POST", createMentionDelugePayload()),
+      res as unknown as any,
+    );
+    expect(result).toBe(true);
+    expect(res.statusCode).toBe(401);
+    expect(res.body).toBe("unauthorized");
+    expect(dispatches).toBe(0);
+  });
+
   it("POST /cliq/webhook with configured account + valid secret + dummy payload → 200 received", async () => {
     const { webhook, api } = registerCliqPluginForTest();
     api.config = createCliqTestConfig({

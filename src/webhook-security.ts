@@ -58,16 +58,16 @@ export function readWebhookSecretHeader(
 }
 
 /**
- * Verify the shared webhook secret. Returns `true` when no secret is
- * configured (optional-but-recommended) or when the
- * `x-cliq-webhook-secret` header matches the configured secret in constant
- * time. Any other header (Authorization, x-webhook-secret, …) is ignored.
+ * Verify the shared webhook secret. Fails closed when no secret is
+ * configured and otherwise requires the `x-cliq-webhook-secret` header to
+ * match the configured secret in constant time. Any other header
+ * (Authorization, x-webhook-secret, …) is ignored.
  */
 export function verifyWebhookSecret(
   req: Pick<IncomingMessage, "headers">,
   expectedSecret: string | undefined,
 ): boolean {
-  if (!expectedSecret) return true;
+  if (!expectedSecret) return false;
   const provided = readWebhookSecretHeader(req);
   if (!provided) return false;
   return constantTimeSecretMatch(provided, expectedSecret);
