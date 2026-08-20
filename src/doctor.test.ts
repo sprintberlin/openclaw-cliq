@@ -75,6 +75,7 @@ describe("collectCliqPreviewWarnings", () => {
         clientId: "id",
         clientSecret: "secret",
         botId: "bot",
+        refreshToken: "rt",
         dmPolicy: "open",
         allowFrom: ["u1"],
       }),
@@ -90,6 +91,7 @@ describe("collectCliqPreviewWarnings", () => {
         clientId: "id",
         clientSecret: "secret",
         botId: "bot",
+        refreshToken: "rt",
         webhookSecret: "s",
         dmPolicy: "open",
         allowFrom: ["*"],
@@ -106,6 +108,7 @@ describe("collectCliqPreviewWarnings", () => {
         clientId: "id",
         clientSecret: "secret",
         botId: "bot",
+        refreshToken: "rt",
         webhookSecret: "s",
         dmPolicy: "allowlist",
         allowFrom: ["*"],
@@ -124,6 +127,7 @@ describe("collectCliqPreviewWarnings", () => {
         clientId: "id",
         clientSecret: "secret",
         botId: "bot",
+        refreshToken: "rt",
         webhookSecret: "s",
         // dmPolicy defaults to "allowlist"
       }),
@@ -139,6 +143,7 @@ describe("collectCliqPreviewWarnings", () => {
         clientId: "id",
         clientSecret: "secret",
         botId: "bot",
+        refreshToken: "rt",
         webhookSecret: "s",
         dmPolicy: "open",
         allowFrom: ["someone"],
@@ -156,6 +161,7 @@ describe("collectCliqPreviewWarnings", () => {
         clientId: "id",
         clientSecret: "secret",
         botId: "bot",
+        refreshToken: "rt",
         webhookSecret: "s",
         dmPolicy: "allowlist",
         allowFrom: ["user@example.com"],
@@ -187,6 +193,7 @@ describe("collectCliqPreviewWarnings — data-center validation (issue #46)", ()
     clientId: "id",
     clientSecret: "secret",
     botId: "bot",
+    refreshToken: "rt",
     webhookSecret: "s",
     dmPolicy: "open" as const,
     allowFrom: ["u1"],
@@ -288,6 +295,81 @@ describe("collectCliqMutableAllowlistWarnings", () => {
       cfg: cfgWith({ allowFrom: [] }),
     });
     expect(warnings).toEqual([]);
+  });
+});
+
+describe("collectCliqPreviewWarnings — capability warnings", () => {
+  it("warns about missing refreshToken when core creds are present", () => {
+    const warnings = collectCliqPreviewWarnings({
+      cfg: cfgWith({
+        clientId: "id",
+        clientSecret: "secret",
+        botId: "bot",
+        webhookSecret: "s",
+        dmPolicy: "open",
+        allowFrom: ["u1"],
+      }),
+      doctorFixCommand: DOCTOR_FIX,
+    });
+    const rtRequired = warnings.find((w) =>
+      w.includes("no refreshToken configured") &&
+      w.includes("Channel send"),
+    );
+    expect(rtRequired).toBeDefined();
+    expect(rtRequired!).toContain("Channel send");
+    expect(rtRequired!).toContain("Message edit / streaming");
+  });
+
+  it("warns about degraded optional features when refreshToken is missing", () => {
+    const warnings = collectCliqPreviewWarnings({
+      cfg: cfgWith({
+        clientId: "id",
+        clientSecret: "secret",
+        botId: "bot",
+        webhookSecret: "s",
+        dmPolicy: "open",
+        allowFrom: ["u1"],
+      }),
+      doctorFixCommand: DOCTOR_FIX,
+    });
+    const degraded = warnings.find((w) =>
+      w.includes("Optional features degraded"),
+    );
+    expect(degraded).toBeDefined();
+    expect(degraded!).toContain("reactions");
+  });
+
+  it("suppresses capability warnings when refreshToken is configured", () => {
+    const warnings = collectCliqPreviewWarnings({
+      cfg: cfgWith({
+        clientId: "id",
+        clientSecret: "secret",
+        botId: "bot",
+        refreshToken: "rt",
+        webhookSecret: "s",
+        dmPolicy: "open",
+        allowFrom: ["u1"],
+      }),
+      doctorFixCommand: DOCTOR_FIX,
+    });
+    const capWarnings = warnings.filter(
+      (w) => w.includes("no refreshToken") || w.includes("Optional features"),
+    );
+    expect(capWarnings).toEqual([]);
+  });
+
+  it("suppresses capability warnings when core creds are missing", () => {
+    const warnings = collectCliqPreviewWarnings({
+      cfg: cfgWith({
+        dmPolicy: "open",
+        allowFrom: ["u1"],
+      }),
+      doctorFixCommand: DOCTOR_FIX,
+    });
+    const capWarnings = warnings.filter(
+      (w) => w.includes("no refreshToken") || w.includes("Optional features"),
+    );
+    expect(capWarnings).toEqual([]);
   });
 });
 

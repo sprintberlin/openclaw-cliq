@@ -9,29 +9,41 @@ import {
   type CliqChannelConfig,
   type ResolvedCliqAccount,
 } from "./client.js";
+import {
+  ALL_CAPABILITY_SCOPES,
+  RUNTIME_SCOPE_STRING,
+  SETUP_SCOPE_STRING,
+  FULL_SCOPE_STRING,
+} from "./capabilities.js";
 
 /**
- * OAuth scopes this plugin requests from Zoho. The webhook/bot-message
- * (DM) surface needs `ZohoCliq.Webhooks.CREATE`; channel posts go through
- * the channelsbyname endpoint and need `ZohoCliq.Channels.UPDATE`; the
- * directory adapter reads `ZohoCliq.Users.READ` + `ZohoCliq.Channels.READ`;
- * live-edit / message-edit uses `ZohoCliq.Messages.UPDATE`; the v3 message
- * delete path (opt-in via `apiVersion: "v3"`) uses `ZohoCliq.Messages.DELETE`
- * (a user-context scope, same grant as `Messages.UPDATE`). Exposed on the
- * inspected account so `openclaw channels inspect` can render what scopes
- * the plugin will mint tokens for (useful when filing the Zoho OAuth client
- * grant — all listed scopes must be consented for the corresponding surface
- * to work).
+ * OAuth scopes this plugin requests from Zoho — derived from the capability
+ * matrix (`src/capabilities.ts`) as the single source of truth.
+ *
+ * Exposed on the inspected account so `openclaw channels inspect` can render
+ * what scopes the plugin will mint tokens for (useful when filing the Zoho
+ * OAuth client grant — all listed scopes must be consented for the
+ * corresponding surface to work).
  */
-export const CLIQ_OAUTH_SCOPES: readonly string[] = [
-  "ZohoCliq.Webhooks.CREATE",
-  "ZohoCliq.Channels.UPDATE",
-  "ZohoCliq.Channels.READ",
-  "ZohoCliq.Users.READ",
-  "ZohoCliq.Messages.UPDATE",
-  "ZohoCliq.Messages.DELETE",
-  "ZohoCliq.messageactions.CREATE",
-] as const;
+export const CLIQ_OAUTH_SCOPES: readonly string[] = ALL_CAPABILITY_SCOPES;
+
+/**
+ * Canonical scope strings for the two capability profiles. These are the
+ * comma-separated strings an operator copies into the Zoho API Console's
+ * "Generate Code" scope field.
+ *
+ * - `RUNTIME` — all scopes needed for normal DM/channel messaging + optional
+ *   features (reactions, media, streaming, message read/delete).
+ * - `SETUP` — scopes needed for bot read + handler provisioning
+ *   (`ZohoCliq.Bots.READ`, `ZohoCliq.Bots.UPDATE`).
+ * - `FULL` — combined (runtime + setup) for a single consent that covers
+ *   everything.
+ */
+export const CLIQ_SCOPE_PROFILES = {
+  runtime: RUNTIME_SCOPE_STRING,
+  setup: SETUP_SCOPE_STRING,
+  full: FULL_SCOPE_STRING,
+} as const;
 
 /** Hard-coded EU endpoints (see AGENTS.md — `.com` would require a code change). */
 export const CLIQ_API_BASE = "https://cliq.zoho.eu";
@@ -81,6 +93,18 @@ export interface InspectedCliqAccount {
   botId?: string;
   /** OAuth scopes the plugin requests. */
   scopes: readonly string[];
+  /**
+   * Canonical scope strings for the two capability profiles. Operators copy
+   * these into the Zoho API Console's "Generate Code" scope field.
+   */
+  scopeProfiles: {
+    /** All runtime scopes (DM, channel, messaging, rich features). */
+    runtime: string;
+    /** Setup/maintenance scopes (bot read, bot update). */
+    setup: string;
+    /** Combined (runtime + setup). */
+    full: string;
+  };
   /** EU REST API base URL. */
   apiBase: string;
   /** EU OAuth base URL. */
@@ -164,6 +188,7 @@ export function inspectCliqAccount(params: {
     name: section?.botName,
     botId: section?.botId,
     scopes: CLIQ_OAUTH_SCOPES,
+    scopeProfiles: CLIQ_SCOPE_PROFILES,
     apiBase: resolved?.apiBase ?? section?.apiBase ?? CLIQ_API_BASE,
     oauthBase: resolved?.oauthBase ?? section?.oauthBase ?? CLIQ_OAUTH_BASE,
     tokenStatus,

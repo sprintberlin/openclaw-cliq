@@ -11,6 +11,27 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Added
+
+- **OAuth capability profiles with non-destructive validation (issue #93).**
+  A centralized capability matrix (`src/capabilities.ts`) defines every OAuth
+  scope the plugin uses, organized into two profiles: **runtime** (DM send,
+  channel send, message edit, user/channel lookup, reactions, media, streaming)
+  and **setup/maintenance** (bot read, bot/handler update). Each capability
+  declares its required grant type (`client_credentials` vs `refresh_token`),
+  whether it is optional (degrades features, not messaging), and a
+  non-destructive API probe for validation. `openclaw doctor` now warns when
+  a configured account is missing `refreshToken` — identifying blocked
+  capabilities by name and degraded optional features — instead of silently
+  failing at delivery time with `oauthtoken_scope_invalid`. Canonical
+  comma-separated scope strings for runtime, setup, and combined profiles are
+  documented in README §3b. The `inspectAccount` output now includes
+  `scopeProfiles` (runtime/setup/full canonical strings). Grant-type
+  requirements are documented for every capability. Optional features
+  (reactions, media download, message read, message delete, channel card v3)
+  are reported as degraded/skipped when their scopes are missing, not as
+  errors that block unrelated messaging.
+
 ## [0.1.8] - 2026-08-05
 
 ### Fixed

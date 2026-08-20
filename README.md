@@ -157,6 +157,51 @@ Each scope's grant is shown in parentheses — *client_credentials* is fetched a
 
 > If you previously consented with only the original three scopes, you must re-consent (generate a fresh self-client token) with `ZohoCliq.Channels.UPDATE` and `ZohoCliq.Messages.UPDATE` added — channel replies will be rejected with `invalid_scope` / 401 until you do. `ZohoCliq.Messages.DELETE` and `ZohoCliq.Channels.CREATE` are only needed when you opt the corresponding family into v3 (`delete` / `channelCard` — see [§4](#4-openclaw-configuration)); the v2 paths reuse `Messages.UPDATE` / `Channels.UPDATE` respectively, so if you keep those families on the `"v2"` default you can skip them. The v3 bot-DM endpoint (the `dmPost` default) uses the *same* `ZohoCliq.Webhooks.CREATE` scope as v2 DMs (`client_credentials`, no extra scope) — though some orgs may additionally require `ZohoCliq.BotMessages.CREATE`; if yours does, fall back with `apiVersion: { dmPost: "v2" }`. Reactions (`ZohoCliq.messageactions.CREATE`) are optional — skip the scope if you don't need the `react` action, and the plugin will simply not advertise reaction support. `ZohoCliq.Messages.READ` is only needed for **inbound image / file attachments** (resolving a bot-handler file name to a downloadable id) and the quote/reply parent-text fetch — skip it for a text-only bot and those features degrade gracefully. Likewise `ZohoCliq.Attachments.READ` is only needed for **inbound media** (downloading the resolved images / files / voice a user sends) — skip it for a text-only bot and the plugin degrades to "no media" for those messages.
 
+#### Capability profiles
+
+The plugin defines two **capability profiles** — each a named set of OAuth scopes
+with a specific grant type. The capability matrix in `src/capabilities.ts` is the
+single source of truth; `openclaw doctor` validates capabilities at setup time.
+
+**Runtime profile** — scopes required for normal DM/channel messaging and optional
+features. Copy this comma-separated string into the Zoho API Console's Generate Code
+scope field:
+
+```
+ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Channels.CREATE,ZohoCliq.Channels.READ,ZohoCliq.Users.READ,ZohoCliq.Messages.UPDATE,ZohoCliq.Messages.READ,ZohoCliq.Messages.DELETE,ZohoCliq.messageactions.CREATE,ZohoCliq.Attachments.READ
+```
+
+| Capability | Scope | Grant | Required |
+|---|---|---|---|
+| DM send | `ZohoCliq.Webhooks.CREATE` | client_credentials | yes |
+| Channel send | `ZohoCliq.Channels.UPDATE` | refresh_token | yes |
+| Message edit / streaming | `ZohoCliq.Messages.UPDATE` | refresh_token | yes |
+| User lookup | `ZohoCliq.Users.READ` | client_credentials | yes |
+| Channel lookup | `ZohoCliq.Channels.READ` | client_credentials | yes |
+| Channel card (v3) | `ZohoCliq.Channels.CREATE` | refresh_token | no |
+| Message read (file-id, quote) | `ZohoCliq.Messages.READ` | refresh_token | no |
+| Message delete (v3) | `ZohoCliq.Messages.DELETE` | refresh_token | no |
+| Reactions | `ZohoCliq.messageactions.CREATE` | refresh_token | no |
+| Media download | `ZohoCliq.Attachments.READ` | refresh_token | no |
+
+**Setup / maintenance profile** — scopes required for bot inspection and handler
+provisioning from `openclaw setup`. These are **not** needed for normal messaging:
+
+```
+ZohoCliq.Bots.READ,ZohoCliq.Bots.UPDATE
+```
+
+| Capability | Scope | Grant |
+|---|---|---|
+| Bot read | `ZohoCliq.Bots.READ` | client_credentials |
+| Bot / handler update | `ZohoCliq.Bots.UPDATE` | client_credentials |
+
+**Combined profile** — runtime + setup in a single consent:
+
+```
+ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Channels.CREATE,ZohoCliq.Channels.READ,ZohoCliq.Users.READ,ZohoCliq.Messages.UPDATE,ZohoCliq.Messages.READ,ZohoCliq.Messages.DELETE,ZohoCliq.messageactions.CREATE,ZohoCliq.Attachments.READ,ZohoCliq.Bots.READ,ZohoCliq.Bots.UPDATE
+```
+
 #### 3c. Obtain the user-context refresh token (required for channel posts + edits)
 
 Channel posts need a **user-context** token, which `client_credentials` cannot provide

@@ -12,6 +12,8 @@ import {
   findCliqDataCenterByApiBase,
   findCliqDataCenterByOauthBase,
 } from "./region.js";
+import { hasConfiguredSecretInput } from "openclaw/plugin-sdk/secret-input-runtime";
+import { CLIQ_CAPABILITIES } from "./capabilities.js";
 
 /**
  * Read the raw (possibly unconfigured) Cliq channel section from cfg. Returns
@@ -121,6 +123,78 @@ function collectCliqPreviewWarnings(params: {
       }
     }
   }
+  // Capability warnings: check whether the configured credentials support
+  // the required capabilities. These are appended after the static config
+  // warnings so operators see the credential issues first.
+  warnings.push(...collectCliqCapabilityWarnings({ cfg: params.cfg }));
+  return warnings;
+}
+
+/**
+ * Collect capability warnings based on the configured credentials.
+ *
+ * Instead of trusting a configured scope string, this checks whether the
+ * required credential fields for each capability profile are present:
+ * - Runtime messaging capabilities require `clientId`, `clientSecret`, `botId`.
+ * - Channel send/edit capabilities additionally require `refreshToken`.
+ * - Setup/maintenance capabilities require the same core creds.
+ *
+ * Missing optional capabilities are reported as degraded features (not errors).
+ *
+ * Only warns when the absence of a credential actually blocks a capability
+ * the operator likely needs (e.g. missing refreshToken blocks channel send).
+ * The setup/maintenance capability hint is only shown when doctor detects
+ * that bot/handler provisioning was attempted or configured.
+ */
+function collectCliqCapabilityWarnings(params: {
+  cfg: OpenClawConfig;
+}): string[] {
+  const section = readCliqSection(params.cfg);
+  if (!section) return [];
+
+  const warnings: string[] = [];
+  const hasClientId = Boolean(section.clientId);
+  const hasClientSecret =
+    section.clientSecret !== undefined &&
+    hasConfiguredSecretInput(section.clientSecret);
+  const hasBotId = Boolean(section.botId);
+  const hasRefreshToken =
+    section.refreshToken !== undefined &&
+    hasConfiguredSecretInput(section.refreshToken);
+
+  // Only check capabilities when core credentials are present.
+  if (!hasClientId || !hasClientSecret || !hasBotId) return [];
+
+  // Warn about missing refreshToken — this blocks channel send, message
+  // edit, and all optional refresh-token features.
+  if (!hasRefreshToken) {
+    const requiredRtCaps = CLIQ_CAPABILITIES.filter(
+      (c) =>
+        c.profile === "runtime" &&
+        c.grantType === "refresh_token" &&
+        !c.optional,
+    );
+    if (requiredRtCaps.length > 0) {
+      const capNames = requiredRtCaps.map((c) => c.label).join(", ");
+      warnings.push(
+        `- channels.cliq: no refreshToken configured. The following runtime capabilities require a user-context refresh token and will fail: ${capNames}. See README §3c to obtain one.`,
+      );
+    }
+
+    const optionalRtCaps = CLIQ_CAPABILITIES.filter(
+      (c) =>
+        c.profile === "runtime" &&
+        c.grantType === "refresh_token" &&
+        c.optional,
+    );
+    if (optionalRtCaps.length > 0) {
+      const capNames = optionalRtCaps.map((c) => c.label).join(", ");
+      warnings.push(
+        `- channels.cliq: no refreshToken configured. Optional features degraded (skipped, not errors): ${capNames}.`,
+      );
+    }
+  }
+
   return warnings;
 }
 
@@ -196,6 +270,7 @@ export const cliqDoctorAdapter: ChannelDoctorAdapter = {
 export {
   collectCliqPreviewWarnings,
   collectCliqMutableAllowlistWarnings,
+  collectCliqCapabilityWarnings,
   readCliqSection as readCliqDoctorSection,
   cliqLegacyConfigRules,
   normalizeCliqCompatibilityConfig,
