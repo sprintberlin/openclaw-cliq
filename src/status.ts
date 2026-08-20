@@ -5,6 +5,7 @@ import type {
 } from "openclaw/plugin-sdk/channel-contract";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import {
+  buildWebhookChannelStatusSummary,
   createComputedAccountStatusAdapter,
   createDefaultChannelRuntimeState,
 } from "openclaw/plugin-sdk/status-helpers";
@@ -109,6 +110,8 @@ export const cliqStatusAdapter: ChannelStatusAdapter<
   CliqStatusProbe
 > = createComputedAccountStatusAdapter<ResolvedCliqAccount, CliqStatusProbe>({
   defaultRuntime: createDefaultChannelRuntimeState(DEFAULT_ACCOUNT_ID, {
+    mode: "webhook",
+    webhookPath: "/cliq/webhook",
     botId: null as string | null,
     probe: null as CliqStatusProbe | null,
   }),
@@ -138,6 +141,8 @@ export const cliqStatusAdapter: ChannelStatusAdapter<
       enabled,
       configured,
       extra: {
+        mode: "webhook",
+        webhookPath: "/cliq/webhook",
         botId: inspected.botId ?? account.botId,
         probe: probe ?? null,
       },
@@ -147,15 +152,15 @@ export const cliqStatusAdapter: ChannelStatusAdapter<
     const probe = (snapshot as ChannelAccountSnapshot & {
       probe?: CliqStatusProbe | null;
     }).probe ?? null;
-    return {
-      configured: snapshot.configured ?? false,
+    return buildWebhookChannelStatusSummary(snapshot, {
+      webhookPath: "/cliq/webhook",
       botId:
         (snapshot as ChannelAccountSnapshot & { botId?: string | null }).botId ??
         null,
       probeOk: probe?.ok ?? null,
       probeReason: probe?.reason ?? null,
       probedAt: probe?.probedAt ?? null,
-    };
+    });
   },
   collectStatusIssues: (accounts) => {
     const issues: ChannelStatusIssue[] = [];

@@ -21,7 +21,7 @@
 //
 // Any other path returns 404 so a misconfigured base URL fails loudly.
 //
-// Usage: node scripts/stage4b-mock.mjs <port> <sendsLogFile>
+// Usage: node scripts/stage4b-mock.mjs <port> <sendsLogFile> [modelRequestsLogFile]
 //
 // Headless: no real Zoho, no real model. Run as a background process from
 // the Stage-4b smoke section of scripts/smoke-gateway.sh.
@@ -31,12 +31,17 @@ import { dirname } from "node:path";
 
 const port = Number.parseInt(process.argv[2] ?? "", 10);
 const sendsLogFile = process.argv[3];
+const modelRequestsLogFile = process.argv[4];
 if (!Number.isFinite(port) || !sendsLogFile) {
-  console.error("usage: node scripts/stage4b-mock.mjs <port> <sendsLogFile>");
+  console.error("usage: node scripts/stage4b-mock.mjs <port> <sendsLogFile> [modelRequestsLogFile]");
   process.exit(2);
 }
 mkdirSync(dirname(sendsLogFile), { recursive: true });
 writeFileSync(sendsLogFile, ""); // reset on start
+if (modelRequestsLogFile) {
+  mkdirSync(dirname(modelRequestsLogFile), { recursive: true });
+  writeFileSync(modelRequestsLogFile, "");
+}
 
 let messageCounter = 0;
 
@@ -51,7 +56,8 @@ const server = createServer(async (req, res) => {
   try {
     // --- Zoho OAuth token endpoint (accounts.zoho.eu) ---------------------
     if (req.method === "POST" && path === "/oauth/v2/token") {
-      log(`oauth token grant (qs=${url.search})`);
+      // Never log the query string: OAuth credentials are form/query values.
+      log("oauth token grant");
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({
         access_token: "stub-access-token",
@@ -72,8 +78,14 @@ const server = createServer(async (req, res) => {
     const botMatch =
       (req.method === "POST" &&
         /^\/api\/v[23]\/bots\/([^/]+)\/messages?$/.exec(path));
-    if (botMatch) {
-      const botId = decodeURIComponent(botMatch[1]);
+    const channelMatch =
+      (req.method === "POST" &&
+        /^\/api\/v[23]\/channelsbyname\/([^/]+)\/messages?$/.exec(path));
+    if (botMatch || channelMatch) {
+      const botId = botMatch
+        ? decodeURIComponent(botMatch[1])
+        : (url.searchParams.get("bot_unique_name") ?? "");
+      const channel = channelMatch ? decodeURIComponent(channelMatch[1]) : "";
       let payload = {};
       try { payload = JSON.parse(rawBody || "{}"); } catch { payload = {}; }
       const to = typeof payload.userids === "string" ? payload.userids : "";
@@ -81,13 +93,13 @@ const server = createServer(async (req, res) => {
       messageCounter += 1;
       const messageId = `stub-msg-${messageCounter}`;
       const chatId = "CT_stub_dm";
-      const record = { botId, to, text, messageId, chatId, ts: Date.now() };
+      const record = { botId, to, channel, text, messageId, chatId, ts: Date.now() };
       try {
         appendFileSync(sendsLogFile, JSON.stringify(record) + "\n");
       } catch (err) {
         log(`WARN: failed to append sends log: ${err}`);
       }
-      log(`bot send botId=${botId} to=${to} textLen=${text.length} -> messageId=${messageId}`);
+      log(`send botId=${botId} target=${channel || to} textLen=${text.length} -> messageId=${messageId}`);
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({
         message_details: {
@@ -101,6 +113,9 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && path === "/v1/chat/completions") {
       let payload = {};
       try { payload = JSON.parse(rawBody || "{}"); } catch { payload = {}; }
+      if (modelRequestsLogFile) {
+        appendFileSync(modelRequestsLogFile, JSON.stringify(payload) + "\n");
+      }
       const messages = Array.isArray(payload.messages) ? payload.messages : [];
       // Echo the latest user message back as the assistant reply, prefixed
       // with a fixed marker so the smoke can assert the round-trip content

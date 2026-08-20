@@ -36,6 +36,9 @@ jobs:
 
       - run: npm test
 
+      - name: Real gateway ingress integration
+        run: npm run smoke:gateway
+
       - run: npm run build
 
       - name: Verify build artifacts

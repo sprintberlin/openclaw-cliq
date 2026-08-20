@@ -34,6 +34,7 @@ import { cliqThreadingAdapter } from "./threading.js";
 import { cliqSecretsAdapter } from "./secret-contract.js";
 import { cliqMessagingAdapter } from "./messaging.js";
 import { cliqLifecycleAdapter } from "./lifecycle.js";
+import { cliqGatewayAdapter } from "./gateway.js";
 import {
   CLIQ_PAIRING_APPROVED_MESSAGE,
   CLIQ_PAIRING_ID_LABEL,
@@ -352,6 +353,7 @@ export const cliqPlugin = createChatChannelPlugin<ResolvedCliqAccount, CliqStatu
     secrets: cliqSecretsAdapter,
     messaging: cliqMessagingAdapter,
     lifecycle: cliqLifecycleAdapter,
+    gateway: cliqGatewayAdapter,
   },
 
   security: {

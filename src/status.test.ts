@@ -110,11 +110,13 @@ describe("cliqStatusAdapter", () => {
   beforeEach(() => setCliqClientRegistry(null));
   afterEach(() => setCliqClientRegistry(null));
 
-  it("exposes a default runtime snapshot for the default account", () => {
+  it("exposes a stopped webhook-mode default runtime snapshot", () => {
     const runtime = cliqStatusAdapter.defaultRuntime;
     expect(runtime).toBeDefined();
     expect(runtime?.accountId).toBe("default");
     expect(runtime?.running).toBe(false);
+    expect(runtime?.mode).toBe("webhook");
+    expect(runtime?.webhookPath).toBe("/cliq/webhook");
   });
 
   it("probeAccount resolves ok for a configured account", async () => {
@@ -143,7 +145,57 @@ describe("cliqStatusAdapter", () => {
     expect(snapshot.enabled).toBe(true);
     expect(snapshot.name).toBe("MyBot");
     expect(snapshot.botId).toBe("bot");
+    expect(snapshot.mode).toBe("webhook");
+    expect(snapshot.webhookPath).toBe("/cliq/webhook");
     expect(snapshot.probe).toEqual({ ok: true, reason: "ok", probedAt: 123 });
+  });
+
+  it("buildAccountSnapshot carries healthy running webhook lifecycle state", () => {
+    const snapshot = cliqStatusAdapter.buildAccountSnapshot!({
+      account: configuredAccount(),
+      cfg: CONFIGURED,
+      runtime: {
+        accountId: "default",
+        running: true,
+        lastStartAt: 100,
+        lastStopAt: null,
+        lastError: null,
+      },
+      probe: { ok: true, reason: "ok", probedAt: 123 },
+    }) as Record<string, unknown>;
+    expect(snapshot).toMatchObject({
+      configured: true,
+      enabled: true,
+      running: true,
+      mode: "webhook",
+      webhookPath: "/cliq/webhook",
+      lastStartAt: 100,
+      lastError: null,
+    });
+  });
+
+  it("buildAccountSnapshot carries degraded lifecycle and probe state", () => {
+    const snapshot = cliqStatusAdapter.buildAccountSnapshot!({
+      account: configuredAccount(),
+      cfg: CONFIGURED,
+      runtime: {
+        accountId: "default",
+        running: false,
+        lastStartAt: 100,
+        lastStopAt: 200,
+        lastError: "transport stopped",
+      },
+      probe: { ok: false, reason: "401 invalid_client", probedAt: 210 },
+    }) as Record<string, unknown>;
+    expect(snapshot).toMatchObject({
+      configured: true,
+      enabled: true,
+      running: false,
+      mode: "webhook",
+      lastStopAt: 200,
+      lastError: "transport stopped",
+      probe: { ok: false, reason: "401 invalid_client", probedAt: 210 },
+    });
   });
 
   it("buildAccountSnapshot accepts the redacted inspectAccount shape used by gateway health", () => {
@@ -158,6 +210,31 @@ describe("cliqStatusAdapter", () => {
     expect(snapshot.enabled).toBe(true);
     expect(snapshot.name).toBe("MyBot");
     expect(snapshot.botId).toBe("bot");
+  });
+
+  it("buildAccountSnapshot reports disabled when the account section is absent", () => {
+    const partial = {
+      accountId: null,
+      clientId: "",
+      clientSecret: "",
+      botId: "",
+      allowFrom: [],
+      dmPolicy: undefined,
+      ackPolicy: "after_dispatch" as const,
+      selfSenderIds: [],
+      blockStreaming: false,
+      thinking: { mode: "off" as const, text: "💭 …" },
+      welcome: { enabled: false, text: "", textRejoin: "" },
+      pairing: { notifyOwnerTarget: null, approveLabel: "Approve", denyLabel: "Deny", approvalTitle: "Pairing request", approvedOwnerText: "Approved.", deniedOwnerText: "Denied." },
+    };
+    const snapshot = cliqStatusAdapter.buildAccountSnapshot!({
+      account: partial,
+      cfg: {} as never,
+    }) as Record<string, unknown>;
+    expect(snapshot.configured).toBe(false);
+    expect(snapshot.enabled).toBe(false);
+    expect(snapshot.running).toBe(false);
+    expect(snapshot.mode).toBe("webhook");
   });
 
   it("buildAccountSnapshot reports unconfigured for a partial account", () => {
@@ -197,6 +274,8 @@ describe("cliqStatusAdapter", () => {
     });
     expect(summary).toMatchObject({
       configured: true,
+      mode: "webhook",
+      webhookPath: "/cliq/webhook",
       botId: "bot",
       probeOk: false,
       probeReason: "401",

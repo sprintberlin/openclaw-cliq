@@ -146,7 +146,6 @@ node -e '
     clientSecret: "smoke-client-secret",
     botId: "openclaw-bot",
     botName: "openclaw-bot",
-    webhookSecret: "smoke-webhook-secret",
     dmPolicy: "open",
     allowFrom: ["*"]
   };
@@ -187,6 +186,49 @@ if [ "$ready" -ne 1 ]; then
   exit 1
 fi
 echo "OK: gateway ready (route responded)"
+
+# A configured account without a webhookSecret must fail closed before parsing
+# or dispatch. Exercise this through the real registered gateway route.
+code="$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 -X POST "$WEBHOOK_URL" \
+  -H "content-type: application/json" --data "$DM_PAYLOAD")"
+if [ "$code" != "503" ]; then
+  echo "FAIL: configured account missing webhookSecret -> HTTP $code, expected 503" >&2
+  cat "$GW_LOG" >&2
+  exit 1
+fi
+echo "OK: configured account missing webhookSecret -> HTTP 503 (no dispatch)"
+if grep -q "lane=session:agent:main:cliq:" "$GW_LOG" 2>/dev/null; then
+  echo "FAIL: missing webhookSecret request reached an agent lane" >&2
+  exit 1
+fi
+
+# Add the secret and restart the isolated gateway for authenticated ingress.
+kill "$GATEWAY_PID" 2>/dev/null || true
+wait "$GATEWAY_PID" 2>/dev/null || true
+GATEWAY_PID=""
+node -e '
+  const fs = require("fs");
+  const p = process.env.OPENCLAW_CONFIG_PATH;
+  const c = JSON.parse(fs.readFileSync(p, "utf8"));
+  c.channels.cliq.webhookSecret = "smoke-webhook-secret";
+  fs.writeFileSync(p, JSON.stringify(c, null, 2));
+'
+GW_LOG="$SMOKE_HOME/gateway-authenticated.log"
+"${OC[@]}" --profile "$PROFILE" --log-level info gateway run \
+  --port "$PORT" --auth none --allow-unconfigured \
+  < /dev/null > "$GW_LOG" 2>&1 &
+GATEWAY_PID=$!
+ready=0
+for _ in $(seq 1 60); do
+  code="$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 -X GET "$WEBHOOK_URL" 2>/dev/null || true)"
+  if [ "$code" = "405" ]; then ready=1; break; fi
+  sleep 0.5
+done
+if [ "$ready" -ne 1 ]; then
+  echo "FAIL: authenticated gateway did not become ready" >&2
+  cat "$GW_LOG" >&2
+  exit 1
+fi
 
 echo "==> [7/12] Probing /cliq/webhook with canonical Deluge payloads"
 
@@ -230,19 +272,32 @@ if [ "$body" != '{"status":"received"}' ]; then
 fi
 echo "OK: valid group+mention body = $body"
 
-# (c) Wrong webhook secret -> 401.
+# (c) Missing webhook request secret -> 401, before dispatch.
+code="$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 -X POST "$WEBHOOK_URL" \
+  -H "content-type: application/json" \
+  --data "$DM_PAYLOAD")"
+assert_status "missing request secret" 401 "$code"
+
+# (d) Wrong webhook secret -> 401.
 code="$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 -X POST "$WEBHOOK_URL" \
   -H "x-cliq-webhook-secret: WRONG" \
   -H "content-type: application/json" \
   --data "$DM_PAYLOAD")"
 assert_status "wrong secret" 401 "$code"
 
-# (d) Malformed (non-JSON) body -> 400.
+# (e) Malformed (non-JSON) body -> 400 without dispatch.
 code="$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 -X POST "$WEBHOOK_URL" \
   -H "x-cliq-webhook-secret: smoke-webhook-secret" \
   -H "content-type: application/json" \
   --data 'not-json-at-all')"
 assert_status "malformed body" 400 "$code"
+
+# (f) Valid JSON with an invalid Deluge shape is rejected before dispatch.
+code="$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 -X POST "$WEBHOOK_URL" \
+  -H "x-cliq-webhook-secret: smoke-webhook-secret" \
+  -H "content-type: application/json" \
+  --data '{"not":"a-cliq-payload"}')"
+assert_status "invalid payload" 400 "$code"
 
 echo "==> [8/12] Asserting the inbound was dispatched to an agent session"
 # The agent turn + outbound OAuth fail (no model / no real Zoho credentials),
@@ -291,7 +346,8 @@ echo "==> [9/12] Starting the Stage-4b mock (OAuth + Cliq send + stub model)"
 MOCK_PORT="$(node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')"
 MOCK_LOG="$SMOKE_HOME/mock.log"
 SENDS_LOG="$SMOKE_HOME/sends.jsonl"
-node "$ROOT/scripts/stage4b-mock.mjs" "$MOCK_PORT" "$SENDS_LOG" < /dev/null > "$MOCK_LOG" 2>&1 &
+MODEL_REQUESTS_LOG="$SMOKE_HOME/model-requests.jsonl"
+node "$ROOT/scripts/stage4b-mock.mjs" "$MOCK_PORT" "$SENDS_LOG" "$MODEL_REQUESTS_LOG" < /dev/null > "$MOCK_LOG" 2>&1 &
 MOCK_PID=$!
 # Poll the mock for readiness (a GET hits the 404 path, proving it's up).
 mock_ready=0
@@ -418,6 +474,70 @@ if [ "$delivered" -ne 1 ]; then
 fi
 echo "OK: agent reply delivered end-to-end (mock bot-send recorded the echo)"
 
+# The real runtime must have normalized the DM into one agent turn. The local
+# model capture is downstream of routing/session/envelope construction, so it
+# proves the normalized sender context reached the actual agent pipeline.
+dm_turns="$(grep -c "$ROUNDTRIP_MARKER" "$MODEL_REQUESTS_LOG" 2>/dev/null || true)"
+if [ "$dm_turns" != "1" ] || ! grep -q "Alice" "$MODEL_REQUESTS_LOG"; then
+  echo "FAIL: expected exactly one normalized DM model request containing sender Alice" >&2
+  cat "$MODEL_REQUESTS_LOG" >&2
+  exit 1
+fi
+echo "OK: valid DM dispatched exactly once with normalized sender context"
+
+# Re-deliver the exact same message id. It is acknowledged but must not create
+# a second model request or outbound send.
+resp="$(curl -s -w "\n%{http_code}" --max-time 30 -X POST "$WEBHOOK_URL" \
+  -H "x-cliq-webhook-secret: smoke-webhook-secret" \
+  -H "content-type: application/json" --data "$DM_PAYLOAD_4B")"
+code="$(printf "%s" "$resp" | tail -n1)"
+assert_status "duplicate DM delivery" 200 "$code"
+sleep 1
+dm_turns="$(grep -c "$ROUNDTRIP_MARKER" "$MODEL_REQUESTS_LOG" 2>/dev/null || true)"
+dm_sends="$(grep -c "$ROUNDTRIP_MARKER" "$SENDS_LOG" 2>/dev/null || true)"
+if [ "$dm_turns" != "1" ] || [ "$dm_sends" != "1" ]; then
+  echo "FAIL: duplicate delivery was not deduplicated (turns=$dm_turns sends=$dm_sends)" >&2
+  exit 1
+fi
+echo "OK: duplicate delivery deduplicated (one model turn, one outbound send)"
+
+# A real group mention follows the same gateway ingress but must route as a
+# group and send through channelsbyname exactly once.
+GROUP_MARKER="stage4b-group-$$"
+GROUP_PAYLOAD_4B='{"message":{"text":"@openclaw-bot '"$GROUP_MARKER"'","id":"group-4b"},"user":{"id":"user-bob","name":"Bob"},"chat":{"id":"CT_group-B","type":"channel"},"channel":{"unique_name":"general"},"mentions":[{"id":"openclaw-bot","type":"bot"}],"handler":"mention"}'
+resp="$(curl -s -w "\n%{http_code}" --max-time 60 -X POST "$WEBHOOK_URL" \
+  -H "x-cliq-webhook-secret: smoke-webhook-secret" \
+  -H "content-type: application/json" --data "$GROUP_PAYLOAD_4B")"
+code="$(printf "%s" "$resp" | tail -n1)"
+assert_status "valid group mention" 200 "$code"
+group_delivered=0
+for _ in $(seq 1 80); do
+  if grep -q "$GROUP_MARKER" "$SENDS_LOG" 2>/dev/null; then group_delivered=1; break; fi
+  sleep 0.5
+done
+group_turns="$(grep -c "$GROUP_MARKER" "$MODEL_REQUESTS_LOG" 2>/dev/null || true)"
+group_sends="$(grep -c "$GROUP_MARKER" "$SENDS_LOG" 2>/dev/null || true)"
+if [ "$group_delivered" -ne 1 ] || [ "$group_turns" != "1" ] || [ "$group_sends" != "1" ]; then
+  echo "FAIL: valid group mention was not dispatched exactly once" >&2
+  exit 1
+fi
+if ! grep -q '"channel":"general"' "$SENDS_LOG"; then
+  echo "FAIL: group reply did not use the channelsbyname target" >&2
+  cat "$SENDS_LOG" >&2
+  exit 1
+fi
+echo "OK: valid group mention dispatched exactly once through channel target"
+
+# Synthetic credentials are deliberately distinctive; neither gateway nor
+# mock logs may contain them. This also catches accidental OAuth query logging.
+for secret in smoke-client-secret smoke-webhook-secret stub-key; do
+  if grep -Fq "$secret" "$GW_LOG" "$MOCK_LOG" 2>/dev/null; then
+    echo "FAIL: secret leaked into integration logs: $secret" >&2
+    exit 1
+  fi
+done
+echo "OK: no configured secrets present in gateway or mock logs"
+
 echo "==> [12/12] Tearing down mock + gateway"
 if [ -n "$MOCK_PID" ]; then kill "$MOCK_PID" 2>/dev/null || true; wait "$MOCK_PID" 2>/dev/null || true; fi
 if [ -n "$GATEWAY_PID" ]; then kill "$GATEWAY_PID" 2>/dev/null || true; wait "$GATEWAY_PID" 2>/dev/null || true; fi
@@ -425,5 +545,5 @@ GATEWAY_PID=""
 
 echo ""
 echo "SMOKE PASSED: plugin loads, registers the cliq channel, a real gateway"
-echo "              dispatches an inbound webhook POST through the agent pipeline,"
-echo "              and a full inbound->agent->outbound round-trip lands the reply"
+echo "              authenticates and validates real HTTP ingress, deduplicates"
+echo "              redelivery, normalizes DM/group turns, and leaks no secrets."
