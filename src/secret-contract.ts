@@ -6,7 +6,11 @@ import {
   type ResolverContext,
   type SecretDefaults,
   type SecretTargetRegistryEntry,
-} from "openclaw/plugin-sdk/channel-secret-runtime";
+  // `openclaw/plugin-sdk/channel-secret-runtime` was dropped from the exports
+  // map in 2026.8.1-beta.3; the basic module exports the same symbols and is
+  // present in every supported version (in 2026.7.x the removed module merely
+  // re-exported them from here).
+} from "openclaw/plugin-sdk/channel-secret-basic-runtime";
 
 /**
  * The three Cliq config fields that carry secret material and are therefore

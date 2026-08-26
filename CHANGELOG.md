@@ -13,6 +13,13 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **OpenClaw 2026.8 load compatibility (issue #116).** Version-dependent SDK
+  pairing approval is resolved dynamically instead of through a static named
+  import, and the secret-contract helpers use the SDK subpath shared by
+  `2026.7.1-2` and `2026.8.1-beta.3`. The plugin now loads and registers the
+  Cliq channel on both versions; where button-based pairing approval is absent,
+  the owner receives the portable `openclaw pairing approve cliq <code>`
+  command instead of a false success.
 - **Repeated identical slash commands no longer disappear for 30 minutes
   (issue #114).** Live Cliq Message Handlers can forward `message` as a bare
   string with no `message.id` or `message.time`, so the plugin derives a

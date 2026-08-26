@@ -84,10 +84,26 @@ trap cleanup EXIT
 run_oc() { "${OC[@]}" --profile "$PROFILE" --log-level warn "$@" < /dev/null; }
 
 echo "==> [1/12] Building plugin (dist/)"
-npm run build --silent
+if [ "${OPENCLAW_SMOKE_SKIP_BUILD:-0}" = "1" ]; then
+  if [ ! -f "$ROOT/dist/index.js" ]; then
+    echo "smoke-gateway: OPENCLAW_SMOKE_SKIP_BUILD=1 but dist/index.js is missing." >&2
+    exit 1
+  fi
+  echo "    Reusing existing artifact"
+else
+  npm run build --silent
+fi
 
 echo "==> [2/12] Linking plugin into isolated profile '$PROFILE'"
-run_oc plugins install . --link
+# Flag support differs across supported OpenClaw versions: 2026.8.1-beta.3
+# refuses a local-path install without --force, while 2026.7.1-2 rejects
+# --force together with --link. Try the plain form first, then the forced one.
+INSTALL_OUT="$(run_oc plugins install . --link 2>&1 || true)"
+echo "$INSTALL_OUT"
+if echo "$INSTALL_OUT" | grep -qi -- "--force"; then
+  echo "    Retrying install with --force (newer CLI requires explicit trust)"
+  run_oc plugins install . --link --force
+fi
 
 echo "==> [3/12] Loading plugin runtime and asserting it registered"
 INSPECT_FILE="$SMOKE_HOME/inspect.json"

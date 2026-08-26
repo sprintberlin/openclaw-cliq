@@ -543,6 +543,35 @@ describe("handleCliqPairingApprovalAction", () => {
     );
   });
 
+  it("reports the portable CLI command when button approval is unavailable", async () => {
+    vi.resetModules();
+    vi.doMock("openclaw/plugin-sdk/conversation-runtime", () => ({}));
+    const { handleCliqPairingApprovalAction: handleWithoutSdkApprove } = await import(
+      "./pairing.js"
+    );
+    const sendClient = {
+      sendMessage: vi.fn(async () => ({ messageId: "ok" })),
+    };
+
+    const res = await handleWithoutSdkApprove({
+      account: account(),
+      action: { kind: "approve", code: "ABC" },
+      ownerTarget: ownerTarget(),
+      client: sendClient,
+    });
+
+    expect(res).toEqual({ admitted: false });
+    expect(sendClient.sendMessage).toHaveBeenCalledOnce();
+    expect(sendClient.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "owner1",
+        text: expect.stringContaining("openclaw pairing approve cliq ABC"),
+      }),
+    );
+    vi.doUnmock("openclaw/plugin-sdk/conversation-runtime");
+    vi.resetModules();
+  });
+
   it("swallows an approve error and still replies to the owner", async () => {
     const sendClient = {
       sendMessage: vi.fn(async () => ({ messageId: "ok" })),
