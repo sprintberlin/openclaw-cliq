@@ -252,45 +252,51 @@ export default defineChannelPluginEntry({
           return true;
         }
 
-        // Form-driven pairing approval (Phase 3, sub-part b): an approval-
-        // card button click arrives as an inbound message carrying a
-        // pairing sentinel (`__cliq_pairing_approve__ <code>` /
-        // `__cliq_pairing_deny__ <code>`). Short-circuit the dispatch path
-        // BEFORE the mention / admission gates — the owner clicking the
-        // card may not themselves be on the allowlist, and this is a
-        // control message, not an agent turn. Approve admits the sender
-        // via the SDK pairing store + notifies them; deny replies to the
-        // owner. The owner target comes from `pairing.notifyOwnerTarget`
-        // (the card originator); when unset the sentinel is ignored
-        // (treated as ordinary text and dispatched normally, so a stray
-        // sentinel is harmless).
+        // Form-driven pairing approval: an approval-card button click
+        // arrives as an inbound message carrying a pairing sentinel
+        // (`__cliq_pairing_approve__ <code>` / `__cliq_pairing_deny__
+        // <code>`). Short-circuit the dispatch path BEFORE the mention /
+        // admission gates — the owner clicking the card may not themselves
+        // be on the allowlist, and this is a control message, not an agent
+        // turn (no LLM call).
+        //
+        // Cliq button clicks carry no proof of who clicked, so the handler
+        // verifies the inbound sender against `pairing.notifyOwnerTarget`
+        // before admitting or denying anything. When no owner target is
+        // configured, the card is never posted, so a sentinel click is
+        // rejected outright rather than dispatched — a sender must not be
+        // able to smuggle a crafted sentinel into an agent turn.
         if (parsed.pairingAction) {
           const ownerTarget = account.pairing?.notifyOwnerTarget ?? null;
-          if (ownerTarget) {
-            try {
-              await handleCliqPairingApprovalAction({
-                account,
-                action: parsed.pairingAction,
-                ownerTarget,
-                onError: (err, info) => {
-                  api.logger.error?.(
-                    `[cliq] ${info.kind} failed: ${String(err)}`,
-                  );
-                },
-              });
-            } catch (err) {
-              api.logger.error?.(
-                `[cliq] pairing ${parsed.pairingAction.kind} failed: ${String(err)}`,
-              );
-            }
-            res.statusCode = 200;
-            res.end("ok");
-            return true;
+          try {
+            await handleCliqPairingApprovalAction({
+              account,
+              action: parsed.pairingAction,
+              actorId: parsed.senderId,
+              onError: (err, info) => {
+                api.logger.error?.(
+                  `[cliq] ${info.kind} failed: ${String(err)}`,
+                );
+              },
+              onUnauthorized: (info) => {
+                api.logger.warn?.(
+                  `[cliq] pairing ${info.kind} rejected: sender ${info.actorId} is not the configured owner`,
+                );
+              },
+            });
+          } catch (err) {
+            api.logger.error?.(
+              `[cliq] pairing ${parsed.pairingAction.kind} failed: ${String(err)}`,
+            );
           }
-          // No owner target configured — fall through to normal dispatch
-          // (the sentinel text will reach the agent as ordinary input,
-          // which is benign — a user manually crafting the sentinel
-          // merely sends that text to the agent).
+          if (!ownerTarget) {
+            api.logger.warn?.(
+              `[cliq] pairing ${parsed.pairingAction.kind} from ${parsed.senderId} rejected: no pairing.notifyOwnerTarget configured`,
+            );
+          }
+          res.statusCode = 200;
+          res.end("ok");
+          return true;
         }
 
         const decision = resolveCliqMentionDecision(parsed, account, {
@@ -303,8 +309,27 @@ export default defineChannelPluginEntry({
           return true;
         }
 
-        const admission = resolveCliqDmAdmission(parsed, account);
         const runtime = (api as unknown as { runtime: CliqRuntime }).runtime;
+        // Honor CLI approvals (`openclaw pairing approve cliq <code>`), which
+        // land in the SDK allow-from store. Only DMs are gated by allowFrom,
+        // so the read is skipped for group messages.
+        let sdkAllowFrom: string[] = [];
+        if (!parsed.isGroup) {
+          try {
+            sdkAllowFrom =
+              (await runtime.channel.pairing?.readAllowFromStore?.({
+                channel: "cliq",
+                accountId: account.accountId ?? "",
+              })) ?? [];
+          } catch (err) {
+            api.logger.warn?.(
+              `[cliq] pairing allow-from store read failed: ${String(err)}`,
+            );
+          }
+        }
+        const admission = resolveCliqDmAdmission(parsed, account, {
+          sdkAllowFrom,
+        });
         if (admission.decision === "deny") {
           api.logger.warn?.(
             `[cliq] inbound from ${parsed.senderId} denied: ${admission.reason}`,

@@ -192,10 +192,13 @@ export function buildCliqWelcomeInbound(
 export function resolveCliqWelcomeGreeting(
   welcome: ParsedCliqWelcome,
   account: ResolvedCliqAccount,
+  options?: { sdkAllowFrom?: Array<string | number>; env?: NodeJS.ProcessEnv },
 ): string | null {
   if (!account.welcome.enabled) return null;
   const parsed = buildCliqWelcomeInbound(welcome);
-  const admission = resolveCliqDmAdmission(parsed, account);
+  // Pass the SDK allow-from entries through so a CLI-approved subscriber is
+  // treated as paired here exactly as on the inbound webhook path.
+  const admission = resolveCliqDmAdmission(parsed, account, options);
   if (admission.decision !== "allow") return null;
   const template = welcome.newUser
     ? account.welcome.text
@@ -215,10 +218,11 @@ export async function handleCliqWelcome(params: {
   account: ResolvedCliqAccount;
   welcome: ParsedCliqWelcome;
   client: Pick<CliqClient, "sendMessage">;
+  sdkAllowFrom?: Array<string | number>;
   onError?: (err: unknown, info: { kind: string }) => void;
 }): Promise<{ messageId?: string; chatId?: string } | null> {
-  const { account, welcome, client, onError } = params;
-  const greeting = resolveCliqWelcomeGreeting(welcome, account);
+  const { account, welcome, client, sdkAllowFrom, onError } = params;
+  const greeting = resolveCliqWelcomeGreeting(welcome, account, { sdkAllowFrom });
   if (greeting === null) return null;
   try {
     return await client.sendMessage({

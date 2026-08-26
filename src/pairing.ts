@@ -24,10 +24,16 @@
  */
 
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
+import { isNormalizedSenderAllowed } from "openclaw/plugin-sdk/allow-from";
 import {
   resolveChannelPairingApprove,
   type ChannelPairingApproveFn,
 } from "./sdk-compat.js";
+import {
+  consumeCliqPairingCode,
+  recordCliqPairingApproval,
+  recordCliqPairingCode,
+} from "./pairing-store.js";
 import {
   CliqClient,
   resolveCliqConfig,
@@ -165,6 +171,8 @@ export interface IssueCliqPairingChallengeParams {
   env?: NodeJS.ProcessEnv;
   /** Override the outbound client (used in tests). Defaults to a fresh CliqClient. */
   client?: Pick<CliqClient, "sendMessage" | "sendCard">;
+  /** Override the plugin approval store path (tests). */
+  storePath?: string;
   onReplyError?: (err: unknown) => void;
   /** Called when the owner approval card post fails (best-effort). */
   onOwnerCardError?: (err: unknown) => void;
@@ -191,7 +199,16 @@ export interface IssueCliqPairingChallengeResult {
 export async function issueCliqPairingChallenge(
   params: IssueCliqPairingChallengeParams,
 ): Promise<IssueCliqPairingChallengeResult> {
-  const { runtime, account, parsed, env, client, onReplyError, onOwnerCardError } = params;
+  const {
+    runtime,
+    account,
+    parsed,
+    env,
+    client,
+    storePath,
+    onReplyError,
+    onOwnerCardError,
+  } = params;
   const accountId = account.accountId ?? "";
 
   const upserted = await runtime.channel.pairing.upsertPairingRequest({
@@ -209,6 +226,22 @@ export async function issueCliqPairingChallenge(
 
   if (!upserted.created) {
     return { created: false };
+  }
+
+  // Persist the `code → senderId` mapping so an Approve click can resolve
+  // which sender the code belongs to without the withdrawn SDK approve
+  // helper. Best-effort: a store failure must not break the challenge (the
+  // CLI approval path does not depend on this mapping).
+  try {
+    recordCliqPairingCode({
+      accountId,
+      code: upserted.code,
+      senderId: parsed.senderId,
+      env,
+      storePath,
+    });
+  } catch (err) {
+    onReplyError?.(err);
   }
 
   const idLine = buildCliqSenderIdLine(parsed);
@@ -308,14 +341,22 @@ export interface HandleCliqPairingApprovalActionParams {
   account: ResolvedCliqAccount;
   /** The parsed approval action (`kind` is `"approve"` or `"deny"`). */
   action: { kind: "approve" | "deny"; code: string };
-  /** The owner target to reply to (the card originator). */
-  ownerTarget: NormalizedCliqTarget;
+  /**
+   * The id of the sender who actually clicked the button, as delivered by the
+   * webhook. Cliq `invoke.bot` clicks carry no proof of clicker identity —
+   * they arrive as ordinary messages — so this is verified against
+   * `account.pairing.notifyOwnerTarget` before anything is admitted or denied.
+   */
+  actorId: string;
   env?: NodeJS.ProcessEnv;
   /** Override the outbound client (tests). Defaults to a fresh CliqClient. */
   client?: Pick<CliqClient, "sendMessage">;
   /** Override the SDK admission call (tests). Defaults to the optional compatibility resolver. */
   approveFn?: ChannelPairingApproveFn;
+  /** Override the plugin approval store path (tests). */
+  storePath?: string;
   onError?: (err: unknown, info: { kind: string }) => void;
+  onUnauthorized?: (info: { actorId: string; kind: "approve" | "deny" }) => void;
 }
 
 export interface HandleCliqPairingApprovalActionResult {
@@ -323,6 +364,38 @@ export interface HandleCliqPairingApprovalActionResult {
   admitted: boolean;
   /** The sender id that was admitted (when available). */
   senderId?: string;
+  /** True when the actor was not the configured owner and was rejected. */
+  unauthorized?: boolean;
+}
+
+/**
+ * Neutral reply sent to an actor who is not the configured owner. It must not
+ * confirm whether the code was valid, nor reveal allowlist state.
+ */
+export const CLIQ_PAIRING_APPROVE_FAILED_OWNER_TEXT =
+  "OpenClaw: that pairing code is invalid, expired, or already used.";
+
+/**
+ * Verify that the clicking actor is the identity the approval card was sent
+ * to. Only a DM owner target can be matched: a channel target names a
+ * channel, not a person, so a click arriving from within it proves nothing
+ * about who clicked. Comparison uses the same normalization as the rest of
+ * the plugin's allowlist handling (`isNormalizedSenderAllowed`).
+ */
+export function isCliqPairingOwnerActor(params: {
+  actorId: string;
+  ownerTarget: NormalizedCliqTarget | null;
+}): boolean {
+  const { actorId, ownerTarget } = params;
+  if (!actorId || !ownerTarget?.isDm || !ownerTarget.to) return false;
+  // An owner is a single principal, so a wildcard target authorizes nobody.
+  // `isNormalizedSenderAllowed` treats `*` as "anyone", which would turn every
+  // clicker into the owner — exactly the bypass this check exists to close.
+  if (ownerTarget.to.trim() === "*") return false;
+  return isNormalizedSenderAllowed({
+    senderId: actorId,
+    allowFrom: [ownerTarget.to],
+  });
 }
 
 /**
@@ -346,16 +419,43 @@ export interface HandleCliqPairingApprovalActionResult {
 export async function handleCliqPairingApprovalAction(
   params: HandleCliqPairingApprovalActionParams,
 ): Promise<HandleCliqPairingApprovalActionResult> {
-  const { account, action, ownerTarget, env, client, approveFn, onError } = params;
+  const {
+    account,
+    action,
+    actorId,
+    env,
+    client,
+    approveFn,
+    storePath,
+    onError,
+    onUnauthorized,
+  } = params;
   const sendClient = client ?? resolveCliqClient(account);
   const accountId = account.accountId ?? undefined;
+  const ownerTarget = account.pairing?.notifyOwnerTarget ?? null;
+
+  // Owner verification. The sentinel is parsed from EVERY inbound message and
+  // the requesting sender is handed their own pairing code, so without this
+  // check any sender could approve themselves. Applies to Deny as well — an
+  // unauthorized user must not be able to deny either.
+  if (!ownerTarget || !isCliqPairingOwnerActor({ actorId, ownerTarget })) {
+    onUnauthorized?.({ actorId, kind: action.kind });
+    // Deliberately silent. The sentinel is forgeable and reaches this path
+    // from ANY sender, before the DM admission gate — replying would let an
+    // unauthorized (or explicitly denied) user make the bot DM them on demand
+    // and would confirm that the bot is listening. The rejection is logged
+    // instead, which is where an operator investigating abuse will look.
+    return { admitted: false, unauthorized: true };
+  }
+
+  const verifiedOwnerTarget = ownerTarget;
 
   if (action.kind === "deny") {
     try {
       await sendClient.sendMessage({
-        to: ownerTarget.to,
+        to: verifiedOwnerTarget.to,
         text: account.pairing?.deniedOwnerText ?? "🚫 Denied.",
-        isDm: ownerTarget.isDm,
+        isDm: verifiedOwnerTarget.isDm,
       });
     } catch (err) {
       onError?.(err, { kind: "pairing-deny-reply" });
@@ -363,36 +463,53 @@ export async function handleCliqPairingApprovalAction(
     return { admitted: false };
   }
 
-  // kind === "approve"
-  const approve = approveFn ?? (await resolveChannelPairingApprove());
-  if (!approve) {
-    try {
-      await sendClient.sendMessage({
-        to: ownerTarget.to,
-        text:
-          "Button-based pairing approval is unavailable on this OpenClaw version. " +
-          `Use \`openclaw pairing approve cliq ${action.code || "<code>"}\` instead.`,
-        isDm: ownerTarget.isDm,
-      });
-    } catch (err) {
-      onError?.(err, { kind: "pairing-approve-unavailable-reply" });
-    }
-    return { admitted: false };
-  }
-
+  // kind === "approve". The plugin's own store is authoritative: it resolves
+  // the code to the requesting sender and records the approval, so button
+  // approval works on every supported OpenClaw version. Codes are single-use
+  // and expire, so a replayed or stale code resolves to nothing.
   let senderId: string | undefined;
   let admitted = false;
   if (action.code) {
     try {
-      const result = await approve({
-        channel: "cliq",
-        code: action.code,
+      const resolved = consumeCliqPairingCode({
         accountId,
+        code: action.code,
         env,
+        storePath,
       });
-      if (result?.id) {
-        senderId = String(result.id);
+      if (resolved) {
+        recordCliqPairingApproval({
+          accountId,
+          senderId: resolved,
+          approvedBy: actorId,
+          env,
+          storePath,
+        });
+        senderId = resolved;
         admitted = true;
+      }
+    } catch (err) {
+      onError?.(err, { kind: "pairing-approve-store" });
+    }
+  }
+
+  // Write through to the SDK allow-from store when the running OpenClaw
+  // version still exposes the helper, so both stores agree and the CLI view
+  // matches. Never fail the approval just because the helper is absent.
+  if (action.code) {
+    try {
+      const approve = approveFn ?? (await resolveChannelPairingApprove());
+      if (approve) {
+        const result = await approve({
+          channel: "cliq",
+          code: action.code,
+          accountId,
+          env,
+        });
+        if (result?.id && !senderId) {
+          senderId = String(result.id);
+          admitted = true;
+        }
       }
     } catch (err) {
       onError?.(err, { kind: "pairing-approve" });
@@ -415,13 +532,16 @@ export async function handleCliqPairingApprovalAction(
     }
   }
 
-  // Reply to the owner with the configured outcome text so the card gets
-  // visible feedback. Best-effort.
+  // Reply to the owner with the outcome. A code that resolved to nobody
+  // (already used, expired, or never recorded) must NOT report success —
+  // otherwise the owner believes they admitted someone who is still blocked.
   try {
     await sendClient.sendMessage({
-      to: ownerTarget.to,
-      text: account.pairing?.approvedOwnerText ?? "✅ Approved.",
-      isDm: ownerTarget.isDm,
+      to: verifiedOwnerTarget.to,
+      text: admitted
+        ? (account.pairing?.approvedOwnerText ?? "✅ Approved.")
+        : CLIQ_PAIRING_APPROVE_FAILED_OWNER_TEXT,
+      isDm: verifiedOwnerTarget.isDm,
     });
   } catch (err) {
     onError?.(err, { kind: "pairing-approve-reply" });

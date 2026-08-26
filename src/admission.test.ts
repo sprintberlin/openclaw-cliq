@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it, expect } from "vitest";
 import {
   isCliqSenderAllowed,
@@ -5,6 +8,10 @@ import {
   resolveCliqDmPolicy,
   type CliqDmPolicy,
 } from "./admission.js";
+import {
+  recordCliqPairingApproval,
+  resetCliqPairingStoreCacheForTests,
+} from "./pairing-store.js";
 import type { ParsedCliqInbound } from "./inbound.js";
 import type { ResolvedCliqAccount } from "./client.js";
 
@@ -195,6 +202,38 @@ describe("resolveCliqDmAdmission", () => {
     );
     expect(adm.decision).toBe("allow");
     expect(adm.reason).toBe("allowlist_match");
+  });
+
+  it("allows DM under pairing when sender is in the SDK allow-from store", () => {
+    const adm = resolveCliqDmAdmission(
+      dmParsed({ senderId: "cli-approved" }),
+      account({ dmPolicy: "pairing", allowFrom: [] }),
+      { sdkAllowFrom: ["CLI-APPROVED"] },
+    );
+    expect(adm.decision).toBe("allow");
+    expect(adm.reason).toBe("allowlist_match");
+  });
+
+  it("allows the next DM after button approval from the plugin store", () => {
+    const dir = mkdtempSync(join(tmpdir(), "cliq-admission-pairing-"));
+    const storePath = join(dir, "pairing.json");
+    recordCliqPairingApproval({
+      accountId: "default",
+      senderId: "button-approved",
+      approvedBy: "owner",
+      storePath,
+    });
+
+    const adm = resolveCliqDmAdmission(
+      dmParsed({ senderId: "BUTTON-APPROVED" }),
+      account({ dmPolicy: "pairing", allowFrom: [] }),
+      { storePath },
+    );
+    expect(adm.decision).toBe("allow");
+    expect(adm.reason).toBe("allowlist_match");
+
+    resetCliqPairingStoreCacheForTests();
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it("emits pairing decision under pairing when sender not in allowFrom", () => {

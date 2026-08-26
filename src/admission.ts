@@ -14,6 +14,7 @@
 import { isNormalizedSenderAllowed } from "openclaw/plugin-sdk/allow-from";
 import type { ResolvedCliqAccount } from "./client.js";
 import type { ParsedCliqInbound } from "./inbound.js";
+import { readCliqApprovedSenders } from "./pairing-store.js";
 
 /** Canonical DM policy values, aligned with the SDK's `DmPolicy` type. */
 export type CliqDmPolicy = "open" | "allowlist" | "pairing" | "disabled";
@@ -62,6 +63,30 @@ export function isCliqSenderAllowed(
 }
 
 /**
+ * Check whether the sender was admitted through a plugin-owned pairing
+ * approval (an owner tapping Approve on the pairing card). A store read
+ * failure is treated as "not approved" — it must never widen access.
+ */
+export function isCliqSenderApproved(
+  senderId: string | undefined,
+  account: Pick<ResolvedCliqAccount, "accountId">,
+  options?: { env?: NodeJS.ProcessEnv; storePath?: string },
+): boolean {
+  if (!senderId) return false;
+  try {
+    const approved = readCliqApprovedSenders({
+      accountId: account.accountId,
+      env: options?.env,
+      storePath: options?.storePath,
+    });
+    if (approved.length === 0) return false;
+    return isNormalizedSenderAllowed({ senderId, allowFrom: approved });
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Decide admission for an inbound Cliq message.
  *
  * - Groups always `allow` (mention gating already filtered them).
@@ -76,6 +101,11 @@ export function isCliqSenderAllowed(
 export function resolveCliqDmAdmission(
   parsed: ParsedCliqInbound,
   account: ResolvedCliqAccount,
+  options?: {
+    env?: NodeJS.ProcessEnv;
+    storePath?: string;
+    sdkAllowFrom?: Array<string | number>;
+  },
 ): CliqDmAdmission {
   const policy = resolveCliqDmPolicy(account);
   if (!parsed.isGroup) {
@@ -95,7 +125,16 @@ export function resolveCliqDmAdmission(
         senderAllowed: false,
       };
     }
-    const senderAllowed = isCliqSenderAllowed(parsed.senderId, account.allowFrom);
+    // Effective allow set = configured `allowFrom` ∪ plugin approval store.
+    // The SDK allow-from store is honored separately by the SDK itself (so
+    // `openclaw pairing approve cliq <code>` keeps working); the plugin store
+    // covers button approvals on versions where the SDK approve helper was
+    // withdrawn. Wildcard, case-insensitivity, and empty-list deny-by-default
+    // semantics are unchanged — a store read only ever adds concrete ids.
+    const senderAllowed =
+      isCliqSenderAllowed(parsed.senderId, account.allowFrom) ||
+      isCliqSenderAllowed(parsed.senderId, options?.sdkAllowFrom) ||
+      isCliqSenderApproved(parsed.senderId, account, options);
     if (policy === "allowlist") {
       return {
         decision: senderAllowed ? "allow" : "deny",
