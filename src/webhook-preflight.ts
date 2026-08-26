@@ -359,7 +359,7 @@ export async function runCliqWebhookPreflight(
       redirect: "manual",
     });
   } catch (err) {
-    const detail = `unauthenticated probe failed to complete: ${String(err)}`;
+    const detail = redact(`unauthenticated probe failed to complete: ${String(err)}`, secret);
     recorder.record("secret", STAGE_LABELS.secret, "fail", detail);
     return fail(detail);
   }
@@ -385,7 +385,7 @@ export async function runCliqWebhookPreflight(
       redirect: "manual",
     });
   } catch (err) {
-    const detail = `wrong-secret probe failed to complete: ${String(err)}`;
+    const detail = redact(`wrong-secret probe failed to complete: ${String(err)}`, secret);
     recorder.record("secret", STAGE_LABELS.secret, "fail", detail);
     return fail(detail);
   }
@@ -419,7 +419,7 @@ export async function runCliqWebhookPreflight(
       redirect: "manual",
     });
   } catch (err) {
-    const detail = `authenticated probe failed to complete: ${String(err)}`;
+    const detail = redact(`authenticated probe failed to complete: ${String(err)}`, secret);
     recorder.record("probe", STAGE_LABELS.probe, "fail", detail);
     return fail(detail);
   }
@@ -431,10 +431,16 @@ export async function runCliqWebhookPreflight(
   }
 
   let dispatched = false;
-  let echoed = "";
+  let echoed: unknown;
+  let channel: unknown;
   try {
-    const parsed = JSON.parse(authedBody) as { probe?: unknown; dispatched?: unknown };
-    echoed = typeof parsed.probe === "string" ? parsed.probe : "";
+    const parsed = JSON.parse(authedBody) as {
+      probe?: unknown;
+      dispatched?: unknown;
+      channel?: unknown;
+    };
+    echoed = parsed.probe;
+    channel = parsed.channel;
     dispatched = parsed.dispatched === true;
   } catch {
     // A 200 with a non-JSON body still proves reachability + auth, but not
@@ -449,8 +455,20 @@ export async function runCliqWebhookPreflight(
     recorder.record("probe", STAGE_LABELS.probe, "fail", detail);
     return fail(detail);
   }
-  if (echoed && echoed !== nonce) {
-    const detail = `the probe echoed a different nonce (${snippet(echoed, secret, 40)}) — the response did not come from this request`;
+  // The echoed nonce is what proves this 200 came from THIS request against the
+  // Cliq plugin, rather than from an unrelated endpoint that happens to answer
+  // 200 (a generic API, a stub, a cached response). Without this check any
+  // JSON-returning service would pass the preflight.
+  if (echoed !== nonce) {
+    const detail =
+      typeof echoed === "string" && echoed.length > 0
+        ? `the probe echoed a different nonce (${snippet(echoed, secret, 40)}) — the response did not come from this request`
+        : `the authenticated probe returned 200 but did not echo the correlation nonce, so the response did not come from the Cliq plugin's probe path: ${snippet(authedBody, secret)}`;
+    recorder.record("probe", STAGE_LABELS.probe, "fail", detail);
+    return fail(detail);
+  }
+  if (channel !== undefined && channel !== "cliq") {
+    const detail = `the probe response reported channel "${snippet(String(channel), secret, 40)}" instead of "cliq"`;
     recorder.record("probe", STAGE_LABELS.probe, "fail", detail);
     return fail(detail);
   }

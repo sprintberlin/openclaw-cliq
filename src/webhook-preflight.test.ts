@@ -325,6 +325,59 @@ describe("runCliqWebhookPreflight (issue #96)", () => {
     expect(stage.detail).toMatch(/older version|probe/i);
   });
 
+  it("fails when a 200 response does not echo the correlation nonce", async () => {
+    const report = await runCliqWebhookPreflight({
+      url: URL_OK,
+      secret,
+      fetchImpl: async (_url, init) => {
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+        if ((init?.method ?? "GET") === "GET") return { status: 405, text: async () => "" };
+        if (!headers["x-cliq-webhook-secret"] || headers["x-cliq-webhook-secret"] !== secret) {
+          return { status: 401, text: async () => "" };
+        }
+        return {
+          status: 200,
+          text: async () => JSON.stringify({ ok: true, channel: "cliq", dispatched: false }),
+        };
+      },
+    });
+    expect(report.ok).toBe(false);
+    expect(stageOf(report, "probe").detail).toMatch(/nonce|expected probe response/i);
+  });
+
+  it("fails when a generic 200 JSON endpoint answers instead of the Cliq probe", async () => {
+    const report = await runCliqWebhookPreflight({
+      url: URL_OK,
+      secret,
+      fetchImpl: async (_url, init) => {
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+        if ((init?.method ?? "GET") === "GET") return { status: 405, text: async () => "" };
+        if (!headers["x-cliq-webhook-secret"] || headers["x-cliq-webhook-secret"] !== secret) {
+          return { status: 401, text: async () => "" };
+        }
+        return { status: 200, text: async () => "{}" };
+      },
+    });
+    expect(report.ok).toBe(false);
+    expect(stageOf(report, "probe").status).toBe("fail");
+  });
+
+  it("redacts the secret if an authenticated network error contains it", async () => {
+    const report = await runCliqWebhookPreflight({
+      url: URL_OK,
+      secret,
+      fetchImpl: async (_url, init) => {
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+        if ((init?.method ?? "GET") === "GET") return { status: 405, text: async () => "" };
+        if (!headers["x-cliq-webhook-secret"]) return { status: 401, text: async () => "" };
+        if (headers["x-cliq-webhook-secret"] !== secret) return { status: 401, text: async () => "" };
+        throw new Error(`request failed after sending ${secret}`);
+      },
+    });
+    expect(report.ok).toBe(false);
+    expect(JSON.stringify(report)).not.toContain(secret);
+  });
+
   it("never includes the secret in any stage detail or the JSON report", async () => {
     const report = await runCliqWebhookPreflight({ url: URL_OK, secret, fetchImpl: healthyFetch });
     const serialized = JSON.stringify(report);
