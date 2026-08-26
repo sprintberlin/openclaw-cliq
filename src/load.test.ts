@@ -1,8 +1,11 @@
-import { describe, expect, it, beforeEach, vi } from "vitest";
-import { readFileSync } from "node:fs";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import cliqEntry from "../index.js";
 import { cliqPlugin } from "./channel.js";
 import { resetCliqDedupeForTest } from "./dedupe.js";
+import { resetCliqPairingStoreCacheForTests } from "./pairing-store.js";
 import { setCliqClientRegistry } from "./runtime-api.js";
 import {
   createCliqTestConfig,
@@ -162,6 +165,153 @@ describe("plugin entry load + /cliq/webhook smoke", () => {
     expect(result).toBe(true);
     expect(res.statusCode).toBe(401);
     expect(res.body).toBe("unauthorized");
+  });
+});
+
+describe("pairing approval sentinel over the webhook (issue #117)", () => {
+  let stateDir: string;
+  let previousStateDir: string | undefined;
+  const sends: Array<{ to: string; text: string }> = [];
+
+  beforeEach(() => {
+    resetCliqDedupeForTest();
+    resetCliqPairingStoreCacheForTests();
+    sends.length = 0;
+    // Isolate the plugin pairing store from the developer's real state dir,
+    // and stub the outbound client so no case can reach a live Zoho endpoint.
+    stateDir = mkdtempSync(join(tmpdir(), "cliq-pairing-webhook-state-"));
+    previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+    setCliqClientRegistry({
+      getOrCreate: () => ({
+        sendMessage: async (opts: { to: string; text: string }) => {
+          sends.push({ to: opts.to, text: opts.text });
+          return { messageId: "stub" };
+        },
+        sendCard: async () => ({ messageId: "stub-card" }),
+      }),
+      setLogger: () => {},
+    } as unknown as Parameters<typeof setCliqClientRegistry>[0]);
+  });
+
+  afterEach(() => {
+    setCliqClientRegistry(null);
+    resetCliqPairingStoreCacheForTests();
+    if (previousStateDir === undefined) delete process.env.OPENCLAW_STATE_DIR;
+    else process.env.OPENCLAW_STATE_DIR = previousStateDir;
+    rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  function pairingRegistration(opts: {
+    inboundRun: () => Promise<unknown>;
+    notifyOwnerTarget?: string;
+  }) {
+    const section: Record<string, unknown> = {
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+      botName: "openclaw-bot",
+      webhookSecret: "s3cr3t",
+      dmPolicy: "pairing",
+      allowFrom: [],
+    };
+    if (opts.notifyOwnerTarget) {
+      section.pairing = { notifyOwnerTarget: opts.notifyOwnerTarget };
+    }
+    return registerCliqPluginForTest({
+      config: createCliqTestConfig(section),
+      runtime: createTestRuntimeChannel(opts.inboundRun),
+    });
+  }
+
+  function sentinelPayload(senderId: string, text: string) {
+    return {
+      handler: "dm",
+      message: { text, id: `sentinel-${senderId}-${text}` },
+      user: { id: senderId, name: senderId },
+      chat: { id: "CT_dm", type: "single" },
+    };
+  }
+
+  it("does not dispatch an agent turn for a sentinel click", async () => {
+    let runCalled = 0;
+    const { webhook } = pairingRegistration({
+      inboundRun: async () => {
+        runCalled += 1;
+        return undefined;
+      },
+      notifyOwnerTarget: "user:owner-1",
+    });
+
+    const res = createMockServerResponse();
+    await webhook.handler(
+      createMockIncomingRequest(
+        "POST",
+        sentinelPayload("owner-1", "__cliq_pairing_approve__ SOMECODE"),
+        { "x-cliq-webhook-secret": "s3cr3t" },
+      ),
+      res as unknown as any,
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(runCalled).toBe(0);
+  });
+
+  it("rejects a non-owner sentinel click and never dispatches it as agent input", async () => {
+    let runCalled = 0;
+    const { webhook, api } = pairingRegistration({
+      inboundRun: async () => {
+        runCalled += 1;
+        return undefined;
+      },
+      notifyOwnerTarget: "user:owner-1",
+    });
+    const warnings: string[] = [];
+    api.logger.warn = (msg: string) => warnings.push(String(msg));
+
+    const res = createMockServerResponse();
+    await webhook.handler(
+      createMockIncomingRequest(
+        "POST",
+        sentinelPayload("attacker", "__cliq_pairing_approve__ SOMECODE"),
+        { "x-cliq-webhook-secret": "s3cr3t" },
+      ),
+      res as unknown as any,
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(runCalled).toBe(0);
+    expect(warnings.join(" ")).toContain("is not the configured owner");
+    // The bot must not answer a forged sentinel: replying would let any
+    // sender make it DM them on demand, ahead of the DM admission gate.
+    expect(sends).toHaveLength(0);
+  });
+
+  it("rejects a sentinel click when no owner target is configured", async () => {
+    let runCalled = 0;
+    const { webhook, api } = pairingRegistration({
+      inboundRun: async () => {
+        runCalled += 1;
+        return undefined;
+      },
+    });
+    const warnings: string[] = [];
+    api.logger.warn = (msg: string) => warnings.push(String(msg));
+
+    const res = createMockServerResponse();
+    await webhook.handler(
+      createMockIncomingRequest(
+        "POST",
+        sentinelPayload("attacker", "__cliq_pairing_approve__ SOMECODE"),
+        { "x-cliq-webhook-secret": "s3cr3t" },
+      ),
+      res as unknown as any,
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(runCalled).toBe(0);
+    expect(warnings.join(" ")).toContain("no pairing.notifyOwnerTarget configured");
+    expect(sends).toHaveLength(0);
   });
 });
 

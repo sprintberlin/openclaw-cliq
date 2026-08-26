@@ -10,6 +10,7 @@ import {
   type ResolvedCliqAccount,
 } from "./client.js";
 import { detectCliqLegacyStateMigrations } from "./legacy-state-migrations.js";
+import { dropCliqPairingAccount } from "./pairing-store.js";
 
 /**
  * Lifecycle hooks for the Cliq channel.
@@ -234,6 +235,14 @@ export function onCliqAccountRemoved(params: {
     });
   }
   evictAccountClients(identities);
+  // Drop the plugin-owned pairing approvals for the removed account too —
+  // otherwise a re-added account would silently inherit access previously
+  // granted through the approval card.
+  try {
+    dropCliqPairingAccount({ accountId: resolved?.accountId ?? acct });
+  } catch {
+    // Best-effort: a store failure must never break account removal.
+  }
 }
 
 /**

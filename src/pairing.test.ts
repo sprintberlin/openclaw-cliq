@@ -1,9 +1,13 @@
-import { describe, it, expect, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, beforeEach, describe, it, expect, vi } from "vitest";
 import {
   CLIQ_PAIRING_APPROVED_MESSAGE,
   CLIQ_PAIRING_APPROVE_SENTINEL,
   CLIQ_PAIRING_DENY_SENTINEL,
   CLIQ_PAIRING_ID_LABEL,
+  CLIQ_PAIRING_APPROVE_FAILED_OWNER_TEXT,
   buildCliqSenderIdLine,
   buildPairingApprovalButtons,
   buildPairingApprovalCardBody,
@@ -12,9 +16,35 @@ import {
   notifyCliqPairingApproval,
   parseCliqPairingApprovalAction,
 } from "./pairing.js";
+import {
+  CLIQ_PAIRING_CODE_TTL_MS,
+  readCliqApprovedSenders,
+  recordCliqPairingCode,
+  resetCliqPairingStoreCacheForTests,
+} from "./pairing-store.js";
 import type { CliqRuntime, ParsedCliqInbound } from "./inbound.js";
-import type { NormalizedCliqTarget, ResolvedCliqAccount } from "./client.js";
+import type { ResolvedCliqAccount, NormalizedCliqTarget } from "./client.js";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
+
+const PAIRING_STORE_TEST_DIR = mkdtempSync(join(tmpdir(), "cliq-pairing-suite-"));
+const PAIRING_STORE_TEST_PATH = join(PAIRING_STORE_TEST_DIR, "pairing.json");
+// Any case that does not inject `approveFn` reaches the real SDK pairing
+// store, so pin the state dir at a throwaway location for the whole suite —
+// a unit test must never touch the developer's or CI runner's ~/.openclaw.
+const PREVIOUS_STATE_DIR = process.env.OPENCLAW_STATE_DIR;
+process.env.OPENCLAW_STATE_DIR = join(PAIRING_STORE_TEST_DIR, "state");
+
+beforeEach(() => {
+  rmSync(PAIRING_STORE_TEST_PATH, { force: true });
+  resetCliqPairingStoreCacheForTests();
+});
+
+afterAll(() => {
+  resetCliqPairingStoreCacheForTests();
+  if (PREVIOUS_STATE_DIR === undefined) delete process.env.OPENCLAW_STATE_DIR;
+  else process.env.OPENCLAW_STATE_DIR = PREVIOUS_STATE_DIR;
+  rmSync(PAIRING_STORE_TEST_DIR, { recursive: true, force: true });
+});
 
 function account(overrides: Partial<ResolvedCliqAccount> = {}): ResolvedCliqAccount {
   return {
@@ -133,6 +163,7 @@ describe("issueCliqPairingChallenge", () => {
     const sendClient = { sendMessage: vi.fn(async () => ({ messageId: "ok" })), sendCard: vi.fn(async () => ({ messageId: "ok" })) };
     const runtime = mockRuntime({ upsert });
     const res = await issueCliqPairingChallenge({
+      storePath: PAIRING_STORE_TEST_PATH,
       runtime,
       account: account(),
       parsed: dmParsed({ senderId: "u9" }),
@@ -149,6 +180,7 @@ describe("issueCliqPairingChallenge", () => {
     const upsert = vi.fn(async (_p: UpsertCall) => ({ code: "ABC", created: true }));
     const runtime = mockRuntime({ upsert });
     await issueCliqPairingChallenge({
+      storePath: PAIRING_STORE_TEST_PATH,
       runtime,
       account: account(),
       parsed: dmParsed({
@@ -171,6 +203,7 @@ describe("issueCliqPairingChallenge", () => {
     const upsert = vi.fn(async (_p: UpsertCall) => ({ code: "ABC", created: true }));
     const runtime = mockRuntime({ upsert });
     await issueCliqPairingChallenge({
+      storePath: PAIRING_STORE_TEST_PATH,
       runtime,
       account: account({ accountId: null }),
       parsed: dmParsed(),
@@ -189,6 +222,7 @@ describe("issueCliqPairingChallenge", () => {
     });
     const sendClient = { sendMessage: vi.fn(async () => ({ messageId: "ok" })), sendCard: vi.fn(async () => ({ messageId: "ok" })) };
     await issueCliqPairingChallenge({
+      storePath: PAIRING_STORE_TEST_PATH,
       runtime,
       account: account(),
       parsed: dmParsed({ senderId: "u9", senderName: "Zoe" }),
@@ -211,6 +245,7 @@ describe("issueCliqPairingChallenge", () => {
     const sendClient = { sendMessage: vi.fn(async () => ({ messageId: "ok" })), sendCard: vi.fn(async () => ({ messageId: "ok" })) };
     const runtime = mockRuntime({ upsert });
     const res = await issueCliqPairingChallenge({
+      storePath: PAIRING_STORE_TEST_PATH,
       runtime,
       account: account(),
       parsed: dmParsed(),
@@ -231,6 +266,7 @@ describe("issueCliqPairingChallenge", () => {
     const onReplyError = vi.fn();
     const runtime = mockRuntime({ upsert });
     const res = await issueCliqPairingChallenge({
+      storePath: PAIRING_STORE_TEST_PATH,
       runtime,
       account: account(),
       parsed: dmParsed(),
@@ -247,6 +283,7 @@ describe("issueCliqPairingChallenge", () => {
     const runtime = mockRuntime({ upsert });
     const env = { OPENCLAW_HOME: "/tmp/oc" } as NodeJS.ProcessEnv;
     await issueCliqPairingChallenge({
+      storePath: PAIRING_STORE_TEST_PATH,
       runtime,
       account: account(),
       parsed: dmParsed(),
@@ -396,6 +433,7 @@ describe("issueCliqPairingChallenge — owner approval card", () => {
     };
     const runtime = mockRuntime({ upsert });
     const res = await issueCliqPairingChallenge({
+      storePath: PAIRING_STORE_TEST_PATH,
       runtime,
       account: ownerAccount("owner1"),
       parsed: dmParsed({ senderId: "u9", senderName: "Zoe" }),
@@ -427,6 +465,7 @@ describe("issueCliqPairingChallenge — owner approval card", () => {
     };
     const runtime = mockRuntime({ upsert });
     const res = await issueCliqPairingChallenge({
+      storePath: PAIRING_STORE_TEST_PATH,
       runtime,
       account: ownerAccount(null),
       parsed: dmParsed(),
@@ -441,6 +480,7 @@ describe("issueCliqPairingChallenge — owner approval card", () => {
     const sendCard = vi.fn(async () => ({ messageId: "card1" }));
     const runtime = mockRuntime({ upsert });
     const res = await issueCliqPairingChallenge({
+      storePath: PAIRING_STORE_TEST_PATH,
       runtime,
       account: ownerAccount("owner1"),
       parsed: dmParsed(),
@@ -461,6 +501,7 @@ describe("issueCliqPairingChallenge — owner approval card", () => {
     const onOwnerCardError = vi.fn();
     const runtime = mockRuntime({ upsert });
     const res = await issueCliqPairingChallenge({
+      storePath: PAIRING_STORE_TEST_PATH,
       runtime,
       account: ownerAccount("owner1"),
       parsed: dmParsed(),
@@ -475,20 +516,350 @@ describe("issueCliqPairingChallenge — owner approval card", () => {
   });
 });
 
+describe("handleCliqPairingApprovalAction — owner verification", () => {
+  function ownerAccount(): ResolvedCliqAccount {
+    return account({
+      pairing: {
+        notifyOwnerTarget: { to: "owner1", isDm: true },
+        approveLabel: "Approve",
+        denyLabel: "Deny",
+        approvalTitle: "🔐 Pairing request",
+        approvedOwnerText: "✅ Approved.",
+        deniedOwnerText: "🚫 Denied.",
+      },
+    });
+  }
+
+  function tempStore(): { dir: string; storePath: string } {
+    const dir = mkdtempSync(join(tmpdir(), "cliq-pairing-owner-"));
+    return { dir, storePath: join(dir, "pairing.json") };
+  }
+
+  it("does not admit a non-owner who replays a valid code", async () => {
+    const { dir, storePath } = tempStore();
+    const sendClient = { sendMessage: vi.fn(async () => ({ messageId: "ok" })) };
+    const approveFn = vi.fn(async () => ({ id: "attacker" }));
+    const onUnauthorized = vi.fn();
+    recordCliqPairingCode({
+      accountId: "acct-1",
+      code: "VALID1",
+      senderId: "attacker",
+      storePath,
+    });
+
+    const res = await handleCliqPairingApprovalAction({
+      account: ownerAccount(),
+      action: { kind: "approve", code: "VALID1" },
+      actorId: "attacker",
+      client: sendClient,
+      approveFn,
+      storePath,
+      onUnauthorized,
+    });
+
+    expect(res.admitted).toBe(false);
+    expect(res.unauthorized).toBe(true);
+    expect(approveFn).not.toHaveBeenCalled();
+    expect(onUnauthorized).toHaveBeenCalledWith({
+      actorId: "attacker",
+      kind: "approve",
+    });
+    expect(readCliqApprovedSenders({ accountId: "acct-1", storePath })).toEqual([]);
+    rmSync(dir, { recursive: true, force: true });
+    resetCliqPairingStoreCacheForTests();
+  });
+
+  it("silently rejects a non-owner without confirming the code", async () => {
+    const { dir, storePath } = tempStore();
+    const sendClient = { sendMessage: vi.fn(async () => ({ messageId: "ok" })) };
+    recordCliqPairingCode({
+      accountId: "acct-1",
+      code: "VALID1",
+      senderId: "requester",
+      storePath,
+    });
+
+    await handleCliqPairingApprovalAction({
+      account: ownerAccount(),
+      action: { kind: "approve", code: "VALID1" },
+      actorId: "requester",
+      client: sendClient,
+      storePath,
+    });
+
+    // No outbound reply at all: the sentinel is forgeable and this path runs
+    // before the DM admission gate, so answering would let any sender make
+    // the bot DM them on demand.
+    expect(sendClient.sendMessage).not.toHaveBeenCalled();
+    expect(
+      readCliqApprovedSenders({ accountId: "acct-1", storePath }),
+    ).toEqual([]);
+    rmSync(dir, { recursive: true, force: true });
+    resetCliqPairingStoreCacheForTests();
+  });
+
+  it("never treats a wildcard owner target as authorizing any clicker", async () => {
+    const { dir, storePath } = tempStore();
+    recordCliqPairingCode({
+      accountId: "acct-1",
+      code: "VALID1",
+      senderId: "requester",
+      storePath,
+    });
+
+    const res = await handleCliqPairingApprovalAction({
+      account: account({
+        pairing: {
+          notifyOwnerTarget: { to: "*", isDm: true },
+          approveLabel: "Approve",
+          denyLabel: "Deny",
+          approvalTitle: "🔐 Pairing request",
+          approvedOwnerText: "✅ Approved.",
+          deniedOwnerText: "🚫 Denied.",
+        },
+      }),
+      action: { kind: "approve", code: "VALID1" },
+      actorId: "anyone",
+      client: { sendMessage: vi.fn(async () => ({ messageId: "ok" })) },
+      storePath,
+    });
+
+    expect(res.unauthorized).toBe(true);
+    expect(readCliqApprovedSenders({ accountId: "acct-1", storePath })).toEqual([]);
+    rmSync(dir, { recursive: true, force: true });
+    resetCliqPairingStoreCacheForTests();
+  });
+
+  it("tells the owner the code failed instead of reporting a false success", async () => {
+    const { dir, storePath } = tempStore();
+    const sendClient = { sendMessage: vi.fn(async () => ({ messageId: "ok" })) };
+
+    const res = await handleCliqPairingApprovalAction({
+      account: ownerAccount(),
+      action: { kind: "approve", code: "NEVER-ISSUED" },
+      actorId: "owner1",
+      client: sendClient,
+      storePath,
+    });
+
+    expect(res.admitted).toBe(false);
+    expect(sendClient.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "owner1",
+        text: CLIQ_PAIRING_APPROVE_FAILED_OWNER_TEXT,
+      }),
+    );
+    const texts = sendClient.sendMessage.mock.calls.map(
+      (c: unknown[]) => (c[0] as { text: string }).text,
+    );
+    expect(texts).not.toContain("✅ Approved.");
+    rmSync(dir, { recursive: true, force: true });
+    resetCliqPairingStoreCacheForTests();
+  });
+
+  it("rejects an expired code at the handler level", async () => {
+    const { dir, storePath } = tempStore();
+    const sendClient = { sendMessage: vi.fn(async () => ({ messageId: "ok" })) };
+    recordCliqPairingCode({
+      accountId: "acct-1",
+      code: "OLD",
+      senderId: "requester",
+      now: Date.now() - (CLIQ_PAIRING_CODE_TTL_MS + 60_000),
+      storePath,
+    });
+
+    const res = await handleCliqPairingApprovalAction({
+      account: ownerAccount(),
+      action: { kind: "approve", code: "OLD" },
+      actorId: "owner1",
+      client: sendClient,
+      storePath,
+    });
+
+    expect(res.admitted).toBe(false);
+    expect(readCliqApprovedSenders({ accountId: "acct-1", storePath })).toEqual([]);
+    rmSync(dir, { recursive: true, force: true });
+    resetCliqPairingStoreCacheForTests();
+  });
+
+  it("rejects a non-owner Deny click without changing state", async () => {
+    const { dir, storePath } = tempStore();
+    const sendClient = { sendMessage: vi.fn(async () => ({ messageId: "ok" })) };
+    recordCliqPairingCode({
+      accountId: "acct-1",
+      code: "VALID1",
+      senderId: "requester",
+      storePath,
+    });
+
+    const res = await handleCliqPairingApprovalAction({
+      account: ownerAccount(),
+      action: { kind: "deny", code: "VALID1" },
+      actorId: "someone-else",
+      client: sendClient,
+      storePath,
+    });
+
+    expect(res.unauthorized).toBe(true);
+    expect(sendClient.sendMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ text: "🚫 Denied." }),
+    );
+    // The code survives an unauthorized deny — only the owner may consume it.
+    const owner = await handleCliqPairingApprovalAction({
+      account: ownerAccount(),
+      action: { kind: "approve", code: "VALID1" },
+      actorId: "owner1",
+      client: { sendMessage: vi.fn(async () => ({ messageId: "ok" })) },
+      storePath,
+    });
+    expect(owner.admitted).toBe(true);
+    rmSync(dir, { recursive: true, force: true });
+    resetCliqPairingStoreCacheForTests();
+  });
+
+  it("rejects sentinel clicks when no owner target is configured", async () => {
+    const { dir, storePath } = tempStore();
+    const sendClient = { sendMessage: vi.fn(async () => ({ messageId: "ok" })) };
+    recordCliqPairingCode({
+      accountId: "acct-1",
+      code: "VALID1",
+      senderId: "requester",
+      storePath,
+    });
+
+    const res = await handleCliqPairingApprovalAction({
+      account: account(),
+      action: { kind: "approve", code: "VALID1" },
+      actorId: "requester",
+      client: sendClient,
+      storePath,
+    });
+
+    expect(res.admitted).toBe(false);
+    expect(res.unauthorized).toBe(true);
+    expect(readCliqApprovedSenders({ accountId: "acct-1", storePath })).toEqual([]);
+    rmSync(dir, { recursive: true, force: true });
+    resetCliqPairingStoreCacheForTests();
+  });
+
+  it("never treats a channel owner target as proof of clicker identity", async () => {
+    const { dir, storePath } = tempStore();
+    const sendClient = { sendMessage: vi.fn(async () => ({ messageId: "ok" })) };
+    recordCliqPairingCode({
+      accountId: "acct-1",
+      code: "VALID1",
+      senderId: "requester",
+      storePath,
+    });
+
+    const res = await handleCliqPairingApprovalAction({
+      account: account({
+        pairing: {
+          notifyOwnerTarget: { to: "ops-channel", isDm: false },
+          approveLabel: "Approve",
+          denyLabel: "Deny",
+          approvalTitle: "🔐 Pairing request",
+          approvedOwnerText: "✅ Approved.",
+          deniedOwnerText: "🚫 Denied.",
+        },
+      }),
+      action: { kind: "approve", code: "VALID1" },
+      actorId: "ops-channel",
+      client: sendClient,
+      storePath,
+    });
+
+    expect(res.unauthorized).toBe(true);
+    rmSync(dir, { recursive: true, force: true });
+    resetCliqPairingStoreCacheForTests();
+  });
+
+  it("matches the owner id case-insensitively", async () => {
+    const { dir, storePath } = tempStore();
+    recordCliqPairingCode({
+      accountId: "acct-1",
+      code: "VALID1",
+      senderId: "requester",
+      storePath,
+    });
+
+    const res = await handleCliqPairingApprovalAction({
+      account: ownerAccount(),
+      action: { kind: "approve", code: "valid1" },
+      actorId: "OWNER1",
+      client: { sendMessage: vi.fn(async () => ({ messageId: "ok" })) },
+      storePath,
+    });
+
+    expect(res.admitted).toBe(true);
+    expect(res.senderId).toBe("requester");
+    rmSync(dir, { recursive: true, force: true });
+    resetCliqPairingStoreCacheForTests();
+  });
+
+  it("does not re-admit on a replayed code after approval", async () => {
+    const { dir, storePath } = tempStore();
+    recordCliqPairingCode({
+      accountId: "acct-1",
+      code: "ONCE",
+      senderId: "requester",
+      storePath,
+    });
+
+    const first = await handleCliqPairingApprovalAction({
+      account: ownerAccount(),
+      action: { kind: "approve", code: "ONCE" },
+      actorId: "owner1",
+      client: { sendMessage: vi.fn(async () => ({ messageId: "ok" })) },
+      storePath,
+    });
+    const second = await handleCliqPairingApprovalAction({
+      account: ownerAccount(),
+      action: { kind: "approve", code: "ONCE" },
+      actorId: "owner1",
+      client: { sendMessage: vi.fn(async () => ({ messageId: "ok" })) },
+      storePath,
+    });
+
+    expect(first.admitted).toBe(true);
+    expect(second.admitted).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
+    resetCliqPairingStoreCacheForTests();
+  });
+});
+
 describe("handleCliqPairingApprovalAction", () => {
-  function ownerTarget(): NormalizedCliqTarget {
-    return { to: "owner1", isDm: true };
+  function ownerAccount(): ResolvedCliqAccount {
+    return account({
+      pairing: {
+        notifyOwnerTarget: { to: "owner1", isDm: true },
+        approveLabel: "Approve",
+        denyLabel: "Deny",
+        approvalTitle: "🔐 Pairing request",
+        approvedOwnerText: "✅ Approved.",
+        deniedOwnerText: "🚫 Denied.",
+      },
+    });
   }
 
   it("admits the sender on approve and notifies them + replies to the owner", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cliq-pairing-handler-"));
+    const storePath = join(dir, "pairing.json");
     const sendClient = {
       sendMessage: vi.fn(async () => ({ messageId: "ok" })),
     };
     const approveFn = vi.fn(async () => ({ id: "u1" }));
+    recordCliqPairingCode({
+      accountId: "acct-1",
+      code: "ABC",
+      senderId: "u1",
+      storePath,
+    });
     const res = await handleCliqPairingApprovalAction({
-      account: account(),
+      account: ownerAccount(),
       action: { kind: "approve", code: "ABC" },
-      ownerTarget: ownerTarget(),
+      actorId: "owner1",
+      storePath,
       client: sendClient,
       approveFn,
     });
@@ -503,6 +874,11 @@ describe("handleCliqPairingApprovalAction", () => {
     );
     expect(texts).toContain(CLIQ_PAIRING_APPROVED_MESSAGE);
     expect(texts).toContain("✅ Approved.");
+    expect(readCliqApprovedSenders({ accountId: "acct-1", storePath })).toEqual([
+      "u1",
+    ]);
+    rmSync(dir, { recursive: true, force: true });
+    resetCliqPairingStoreCacheForTests();
   });
 
   it("replies to the owner on deny without admitting", async () => {
@@ -511,11 +887,12 @@ describe("handleCliqPairingApprovalAction", () => {
     };
     const approveFn = vi.fn(async () => ({ id: "u1" }));
     const res = await handleCliqPairingApprovalAction({
-      account: account(),
+      account: ownerAccount(),
       action: { kind: "deny", code: "ABC" },
-      ownerTarget: ownerTarget(),
+      actorId: "owner1",
       client: sendClient,
       approveFn,
+      storePath: PAIRING_STORE_TEST_PATH,
     });
     expect(res.admitted).toBe(false);
     expect(approveFn).not.toHaveBeenCalled();
@@ -524,55 +901,64 @@ describe("handleCliqPairingApprovalAction", () => {
     );
   });
 
-  it("returns admitted=false when the code is already approved / invalid", async () => {
+  it("reports failure when the code is already approved / invalid", async () => {
     const sendClient = {
       sendMessage: vi.fn(async () => ({ messageId: "ok" })),
     };
     const approveFn = vi.fn(async () => null);
     const res = await handleCliqPairingApprovalAction({
-      account: account(),
+      account: ownerAccount(),
       action: { kind: "approve", code: "GONE" },
-      ownerTarget: ownerTarget(),
+      actorId: "owner1",
       client: sendClient,
       approveFn,
+      storePath: PAIRING_STORE_TEST_PATH,
     });
     expect(res.admitted).toBe(false);
-    // still replied to the owner
     expect(sendClient.sendMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ text: "✅ Approved." }),
+      expect.objectContaining({ text: CLIQ_PAIRING_APPROVE_FAILED_OWNER_TEXT }),
     );
   });
 
-  it("reports the portable CLI command when button approval is unavailable", async () => {
+  it("still admits from the plugin store when the SDK helper is absent", async () => {
     vi.resetModules();
     vi.doMock("openclaw/plugin-sdk/conversation-runtime", () => ({}));
     const { handleCliqPairingApprovalAction: handleWithoutSdkApprove } = await import(
       "./pairing.js"
     );
+    const store = await import("./pairing-store.js");
+    const dir = mkdtempSync(join(tmpdir(), "cliq-pairing-nosdk-"));
+    const storePath = join(dir, "pairing.json");
+    store.recordCliqPairingCode({
+      accountId: "acct-1",
+      code: "ABC",
+      senderId: "requester",
+      storePath,
+    });
     const sendClient = {
       sendMessage: vi.fn(async () => ({ messageId: "ok" })),
     };
 
     const res = await handleWithoutSdkApprove({
-      account: account(),
+      account: ownerAccount(),
       action: { kind: "approve", code: "ABC" },
-      ownerTarget: ownerTarget(),
+      actorId: "owner1",
       client: sendClient,
+      storePath,
     });
 
-    expect(res).toEqual({ admitted: false });
-    expect(sendClient.sendMessage).toHaveBeenCalledOnce();
-    expect(sendClient.sendMessage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        to: "owner1",
-        text: expect.stringContaining("openclaw pairing approve cliq ABC"),
-      }),
-    );
+    expect(res.admitted).toBe(true);
+    expect(res.senderId).toBe("requester");
+    expect(
+      store.readCliqApprovedSenders({ accountId: "acct-1", storePath }),
+    ).toEqual(["requester"]);
+    store.resetCliqPairingStoreCacheForTests();
+    rmSync(dir, { recursive: true, force: true });
     vi.doUnmock("openclaw/plugin-sdk/conversation-runtime");
     vi.resetModules();
   });
 
-  it("swallows an approve error and still replies to the owner", async () => {
+  it("swallows an SDK write-through error and still replies to the owner", async () => {
     const sendClient = {
       sendMessage: vi.fn(async () => ({ messageId: "ok" })),
     };
@@ -580,15 +966,30 @@ describe("handleCliqPairingApprovalAction", () => {
       throw new Error("store locked");
     });
     const onError = vi.fn();
+    const dir = mkdtempSync(join(tmpdir(), "cliq-pairing-sdk-error-"));
+    const storePath = join(dir, "pairing.json");
+    recordCliqPairingCode({
+      accountId: "acct-1",
+      code: "ABC",
+      senderId: "requester",
+      storePath,
+    });
     const res = await handleCliqPairingApprovalAction({
-      account: account(),
+      account: ownerAccount(),
       action: { kind: "approve", code: "ABC" },
-      ownerTarget: ownerTarget(),
+      actorId: "owner1",
       client: sendClient,
       approveFn,
       onError,
+      storePath,
     });
-    expect(res.admitted).toBe(false);
+    expect(res.admitted).toBe(true);
+    expect(res.senderId).toBe("requester");
     expect(onError).toHaveBeenCalled();
+    expect(sendClient.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "✅ Approved." }),
+    );
+    rmSync(dir, { recursive: true, force: true });
+    resetCliqPairingStoreCacheForTests();
   });
 });

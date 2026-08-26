@@ -13,6 +13,14 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **Pairing Approve/Deny buttons now enforce owner identity (issue #117).**
+  Button clicks are short-circuited before the agent turn and may only be
+  performed by the DM identity configured in `pairing.notifyOwnerTarget`;
+  non-owner, self-approval, channel-target, and unconfigured-owner attempts are
+  rejected without revealing whether a code is valid. Approved senders are
+  persisted in a plugin-owned store with single-use, one-hour codes, so button
+  approval works on both `2026.7.1-2` and `2026.8.1-beta.3` while CLI approvals
+  remain honored through the SDK allow-from store.
 - **OpenClaw 2026.8 load compatibility (issue #116).** Version-dependent SDK
   pairing approval is resolved dynamically instead of through a static named
   import, and the secret-contract helpers use the SDK subpath shared by
