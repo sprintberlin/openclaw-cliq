@@ -30,12 +30,12 @@ id). The `[cliq] inbound … skipped as duplicate` line only logs under
 output — indistinguishable from "never reached the gateway".
 
 **Fix:** include the message `text` in the synthetic-id hash. Distinct messages
-(`hallo` ≠ `/model` ≠ `/models`) now get distinct ids and are all processed; a
+(`hallo` ≠ `/model` ≠ `/models`) get distinct ids and are all processed; a
 genuine Cliq redelivery of the *same* message carries identical text → identical
-id → still correctly deduped. (A user re-sending the exact same text within the
-TTL is still deduped — acceptable; the proper long-term fix is for the Deluge
-message handler to forward a real `message.id` or `message.time`, which would
-also distinguish legitimate identical re-sends from redeliveries.)
+id → still correctly deduped. Identical content remains indistinguishable from a
+redelivery, so `syn:` and composite keys use the short redelivery-window TTL;
+real message ids retain the longer replay-protection TTL. The Deluge handler
+cannot supply a real `message.id` or `message.time` for bare-string messages.
 
 Takeaway: any content-hash used as a message identity key for the bot Message
 handler MUST include the message text — sender+chat alone is not unique per

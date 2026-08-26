@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   buildCliqDedupeKey,
   claimCliqMessage,
@@ -6,7 +6,7 @@ import {
   releaseCliqMessage,
   resetCliqDedupeForTest,
 } from "./dedupe.js";
-import type { ParsedCliqInbound } from "./inbound.js";
+import { parseCliqWebhookPayload, type ParsedCliqInbound } from "./inbound.js";
 
 function parsed(overrides: Partial<ParsedCliqInbound> = {}): ParsedCliqInbound {
   return {
@@ -200,5 +200,106 @@ describe("claimCliqMessage / commit / release", () => {
     expect(c1!.kind).toBe("claimed");
     expect(c2!.kind).toBe("claimed");
     expect(c1!.key).not.toBe(c2!.key);
+  });
+});
+
+describe("dedupe TTL by key kind (issue #114)", () => {
+  beforeEach(() => {
+    resetCliqDedupeForTest();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2024-01-01T00:00:00Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    resetCliqDedupeForTest();
+  });
+
+  const REDELIVERY_WINDOW_MS = 20_000;
+  const PAST_CONTENT_TTL_MS = 5 * 60 * 1000;
+
+  it("re-claims an identical slash command sent again well after the redelivery window (synthetic id)", async () => {
+    const payload = {
+      handler: "message",
+      message: "/status",
+      user: { id: "fake-user", name: "Test User" },
+      chat: { id: "fake-chat", type: "dm" },
+    };
+    const command = parseCliqWebhookPayload(payload);
+    expect(command).not.toBeNull();
+    expect(command!.messageId).toMatch(/^syn:/);
+
+    const sameCommandAgain = parseCliqWebhookPayload(payload);
+    expect(sameCommandAgain).not.toBeNull();
+    expect(sameCommandAgain!.messageId).toBe(command!.messageId);
+
+    const first = await claimCliqMessage(command!, account);
+    expect(first!.kind).toBe("claimed");
+    await commitCliqMessage(first!.key);
+
+    vi.advanceTimersByTime(REDELIVERY_WINDOW_MS);
+    const redelivery = await claimCliqMessage(sameCommandAgain!, account);
+    expect(redelivery!.kind).toBe("duplicate");
+
+    vi.advanceTimersByTime(PAST_CONTENT_TTL_MS);
+    const resend = await claimCliqMessage(sameCommandAgain!, account);
+    expect(resend!.kind).toBe("claimed");
+  });
+
+  it("re-claims an identical slash command sent again well after the redelivery window (composite key)", async () => {
+    const command = parsed({ messageId: "", text: "/new" });
+
+    const first = await claimCliqMessage(command, account);
+    expect(first!.kind).toBe("claimed");
+    expect(first!.key).toBe("cliq:default:cmp:u1:CT_dm_chat-B1:/new");
+    await commitCliqMessage(first!.key);
+
+    vi.advanceTimersByTime(REDELIVERY_WINDOW_MS);
+    const redelivery = await claimCliqMessage(command, account);
+    expect(redelivery!.kind).toBe("duplicate");
+
+    vi.advanceTimersByTime(PAST_CONTENT_TTL_MS);
+    const resend = await claimCliqMessage(command, account);
+    expect(resend!.kind).toBe("claimed");
+  });
+
+  it("keeps deduping a redelivered caption-less file message inside the redelivery window (issue #84)", async () => {
+    const upload = parsed({
+      messageId: "",
+      text: "",
+      attachments: [{ fileName: "quarterly.png" }],
+    });
+
+    const first = await claimCliqMessage(upload, account);
+    expect(first!.kind).toBe("claimed");
+    await commitCliqMessage(first!.key);
+
+    vi.advanceTimersByTime(REDELIVERY_WINDOW_MS);
+    const redelivery = await claimCliqMessage(upload, account);
+    expect(redelivery!.kind).toBe("duplicate");
+  });
+
+  it("keeps the long TTL for a real message id, which is unique per message", async () => {
+    const real = parsed({ messageId: "real-msg-1" });
+
+    const first = await claimCliqMessage(real, account);
+    expect(first!.kind).toBe("claimed");
+    await commitCliqMessage(first!.key);
+
+    vi.advanceTimersByTime(PAST_CONTENT_TTL_MS);
+    const redelivery = await claimCliqMessage(real, account);
+    expect(redelivery!.kind).toBe("duplicate");
+  });
+
+  it("keeps the long TTL for the synthetic welcome id so a subscriber is never greeted twice", async () => {
+    const welcome = parsed({ messageId: "welcome:u1", text: "", attachments: [] });
+
+    const first = await claimCliqMessage(welcome, account);
+    expect(first!.kind).toBe("claimed");
+    await commitCliqMessage(first!.key);
+
+    vi.advanceTimersByTime(PAST_CONTENT_TTL_MS);
+    const redelivery = await claimCliqMessage(welcome, account);
+    expect(redelivery!.kind).toBe("duplicate");
   });
 });
