@@ -45,6 +45,7 @@
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
+    "check:sdk-compat": "node scripts/check-sdk-compat.mjs",
     "smoke:gateway": "bash scripts/smoke-gateway.sh"
   },
   "openclaw": {
@@ -66,6 +67,7 @@
     }
   },
   "devDependencies": {
+    "es-module-lexer": "1.7.0",
     "openclaw": "2026.7.1-2",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"

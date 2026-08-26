@@ -1,0 +1,183 @@
+name: OpenClaw compatibility
+
+# ONE built artifact must load on EVERY supported OpenClaw version.
+#
+# The two supported versions are not interchangeable at build time: the beta
+# ships a reduced `.d.ts` surface (no `plugin-sdk/channel-runtime` types, no
+# `agent-core` / `channel-mention-gating` types), while its runtime JS stays
+# usable. Type-only imports are erased by `tsc` and cannot break loading, so
+# chasing a green typecheck on the beta would mean deleting real type imports
+# and degrading type safety for no runtime benefit.
+#
+# The strategy is therefore:
+#   - typecheck + BUILD against the floor version (`build` in
+#     .github/openclaw-compat.json, matching devDependencies.openclaw);
+#   - runtime-verify that identical artifact against EVERY supported version.
+#
+# Typecheck is deliberately NOT run against the beta. `npm run smoke:gateway`
+# is the source of truth for load/registration; reading `.d.ts` files is not
+# an acceptable substitute.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compat-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  versions:
+    name: resolve supported versions
+    runs-on: ubuntu-latest
+    outputs:
+      supported: ${{ steps.read.outputs.supported }}
+      build: ${{ steps.read.outputs.build }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read .github/openclaw-compat.json
+        id: read
+        run: |
+          set -euo pipefail
+          supported="$(node -p 'JSON.stringify(require("./.github/openclaw-compat.json").supported)')"
+          build="$(node -p 'require("./.github/openclaw-compat.json").build')"
+          echo "supported=$supported" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "supported: $supported (build/typecheck floor: $build)"
+
+      - name: Pinned devDependency must match the declared build version
+        run: |
+          set -euo pipefail
+          pinned="$(node -p 'require("./package.json").devDependencies.openclaw')"
+          declared="$(node -p 'require("./.github/openclaw-compat.json").build')"
+          if [ "$pinned" != "$declared" ]; then
+            echo "::error::devDependencies.openclaw ($pinned) != .github/openclaw-compat.json build ($declared)"
+            exit 1
+          fi
+
+  build:
+    name: build against the floor version
+    needs: versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Typecheck runs ONLY here, against the pinned floor version.
+      - run: npm run typecheck
+
+      - run: npm run build
+
+      # Fast pre-check: fail before spending matrix time when a runtime import
+      # resolves to a symbol missing from any supported version.
+      - name: Static SDK export guard
+        run: npm run check:sdk-compat
+
+      # Record a digest so every matrix leg can prove it loaded the same bytes
+      # this job built, rather than trusting artifact transport alone.
+      - name: Record artifact digest
+        run: |
+          set -euo pipefail
+          manifest="$(mktemp)"
+          find dist -type f | sort | xargs sha256sum > "$manifest"
+          mv "$manifest" dist/SHA256SUMS
+
+      - name: Upload the artifact every matrix leg must load
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ needs.versions.outputs.build }}
+          path: dist/
+          retention-days: 7
+          if-no-files-found: error
+
+  smoke:
+    name: smoke ${{ matrix.openclaw }}
+    needs: [versions, build]
+    runs-on: ubuntu-latest
+    strategy:
+      # See both legs when both break, rather than only the first.
+      fail-fast: false
+      matrix:
+        openclaw: ${{ fromJSON(needs.versions.outputs.supported) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Download the artifact built against the floor version
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-${{ needs.versions.outputs.build }}
+          path: dist/
+
+      # The whole point of the matrix is that ONE artifact loads everywhere,
+      # so assert the bytes match the digest recorded by the build job.
+      - name: Verify the artifact is byte-identical to the built one
+        run: |
+          set -euo pipefail
+          test -f dist/SHA256SUMS || { echo "::error::dist/SHA256SUMS missing"; exit 1; }
+          # `--check` ignores files absent from the manifest, so also assert
+          # the file list itself — an extra file would otherwise pass.
+          expected="$(grep -c . dist/SHA256SUMS)"
+          actual="$(find dist -type f ! -name SHA256SUMS | wc -l)"
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::artifact file count changed (expected $expected, found $actual)"
+            exit 1
+          fi
+          grep -v ' dist/SHA256SUMS$' dist/SHA256SUMS | sha256sum --check --strict -
+
+      - name: Install openclaw@${{ matrix.openclaw }} into the smoke environment
+        run: |
+          set -euo pipefail
+          # Verify the published tarball against the registry's own integrity
+          # value BEFORE installing, because this job then executes that
+          # runtime via the gateway.
+          expected="$(npm view "openclaw@${{ matrix.openclaw }}" dist.integrity)"
+          work="$(mktemp -d)"
+          npm pack "openclaw@${{ matrix.openclaw }}" --pack-destination "$work" --silent >/dev/null
+          tarball="$(find "$work" -name '*.tgz' -print -quit)"
+          actual="sha512-$(sha512sum "$tarball" | cut -d' ' -f1 | xxd -r -p | base64 -w0)"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::integrity mismatch for openclaw@${{ matrix.openclaw }}"
+            echo "expected: $expected"
+            echo "actual:   $actual"
+            exit 1
+          fi
+          echo "integrity verified: $expected"
+          npm install --no-save --package-lock=false "$tarball"
+          rm -rf "$work"
+
+      - name: Confirm the runtime under test
+        run: |
+          set -euo pipefail
+          actual="$(node -p 'require("./node_modules/openclaw/package.json").version')"
+          if [ "$actual" != "${{ matrix.openclaw }}" ]; then
+            echo "::error::expected openclaw ${{ matrix.openclaw }}, found $actual"
+            exit 1
+          fi
+          echo "openclaw under test: $actual"
+
+      # OPENCLAW_SMOKE_SKIP_BUILD keeps the downloaded artifact byte-identical
+      # across legs — rebuilding here would defeat the "one artifact" claim.
+      - name: Real gateway load + ingress smoke
+        env:
+          OPENCLAW_SMOKE_SKIP_BUILD: "1"
+        run: npm run smoke:gateway
