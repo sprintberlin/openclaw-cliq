@@ -251,6 +251,45 @@ describe("runCliqWebhookPreflight (issue #96)", () => {
     expect(stageOf(report, "reachability").status).toBe("pass");
   });
 
+  it("does NOT accept a 429 on the unauthenticated POST as proof of secret enforcement", async () => {
+    // An upstream WAF/rate limiter answering 429 to every POST would otherwise
+    // make the secret stage pass without the plugin's check ever running.
+    const report = await runCliqWebhookPreflight({
+      url: URL_OK,
+      secret,
+      fetchImpl: async (_url, init) => {
+        if ((init?.method ?? "GET") === "GET") return { status: 405, text: async () => "" };
+        return { status: 429, text: async () => "too many requests" };
+      },
+    });
+    expect(report.ok).toBe(false);
+    const stage = stageOf(report, "secret");
+    expect(stage.status).toBe("warn");
+    expect(stage.detail).toMatch(/429|rate limit|inconclusive/i);
+    expect(stage.detail).not.toMatch(/both rejected with 401/i);
+  });
+
+  it("reports report.dispatched truthfully when the endpoint self-reports a dispatch", async () => {
+    const report = await runCliqWebhookPreflight({
+      url: URL_OK,
+      secret,
+      fetchImpl: async (_url, init) => {
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+        if ((init?.method ?? "GET") === "GET") return { status: 405, text: async () => "" };
+        if (headers["x-cliq-webhook-secret"] !== secret) return { status: 401, text: async () => "" };
+        const body = JSON.parse(String(init?.body ?? "{}"));
+        return {
+          status: 200,
+          text: async () =>
+            JSON.stringify({ ok: true, channel: "cliq", probe: body.probe, dispatched: true }),
+        };
+      },
+    });
+    expect(report.ok).toBe(false);
+    expect(report.dispatched).toBe(true);
+    expect(stageOf(report, "probe").status).toBe("fail");
+  });
+
   it("fails when the endpoint accepts an unauthenticated POST", async () => {
     const report = await runCliqWebhookPreflight({
       url: URL_OK,

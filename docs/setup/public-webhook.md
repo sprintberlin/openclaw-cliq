@@ -53,8 +53,10 @@ openclaw cliq webhook-preflight https://<public-host>/cliq/webhook --json
 ```
 
 By default the command uses `channels.cliq.webhookSecret` from the resolved
-plugin config. For an unconfigured or external endpoint, provide it explicitly
-with `--secret <value>` (avoid shell history in shared environments).
+plugin config, which is the recommended way to run it. `--secret <value>` is
+available for an endpoint whose secret is not in this config, but note that it
+puts the secret in your shell history — prefer the config default or a shell
+that ignores history-prefixed commands.
 
 It distinguishes DNS, TLS, reverse-proxy, route, secret, and application
 failures, and finishes with an authenticated probe that reaches the plugin
@@ -70,8 +72,10 @@ curl -i https://<public-host>/cliq/webhook
 curl -i -X POST https://<public-host>/cliq/webhook
 ```
 
-Expect `405` on `GET` and `401` on an unauthenticated `POST`. A `200`, a
-redirect, or an HTML page means something else is answering.
+Expect `405` on `GET`. An unauthenticated `POST` returns `401` when a
+`webhookSecret` is configured, and `503` when one is not (the plugin fails
+closed rather than accepting unauthenticated delivery). A `200`, a redirect,
+or an HTML page means something else is answering.
 
 ---
 
@@ -110,7 +114,8 @@ headers (including `x-cliq-webhook-secret`) unchanged.
 
 ```nginx
 server {
-    listen 443 ssl http2;
+    listen 443 ssl;
+    http2 on;
     server_name cliq.example.com;
 
     ssl_certificate     /etc/letsencrypt/live/cliq.example.com/fullchain.pem;
@@ -121,10 +126,11 @@ server {
         proxy_pass http://127.0.0.1:18789;
         proxy_http_version 1.1;
 
-        # Preserve the original host and the client IP.
+        # Preserve the original host and the client IP. Note the use of
+        # $remote_addr (not $proxy_add_x_forwarded_for): see the warning below.
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For   $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
 
         # The agent turn happens while Deluge waits for the response.
@@ -140,6 +146,16 @@ server {
 Do not add `proxy_set_header Authorization ...`, basic auth, or a
 `satisfy any` block on this location — the plugin performs its own
 constant-time secret check and expects the request to arrive unmodified.
+
+> **`X-Forwarded-For` is a trust boundary.** The plugin rate-limits *failed*
+> webhook authentications per client IP and reads that IP from the **first**
+> entry of `X-Forwarded-For`. If your proxy *appends* to a client-supplied
+> header (nginx's `$proxy_add_x_forwarded_for`, or a default Traefik/ALB
+> setup), a caller can send their own `X-Forwarded-For` and control the value
+> the limiter buckets on, evading the brute-force protection. Configure the
+> edge proxy to **replace** the header with the real peer address, as the
+> `$remote_addr` line above does. This does not weaken the shared-secret
+> check itself — that is constant-time and independent of the client IP.
 
 > **Timeouts.** With the default `ackPolicy: "after_dispatch"` the gateway
 > answers only after the agent turn completes, which is what drives Cliq's
@@ -274,9 +290,11 @@ keep the traffic path entirely under your control.
 | TLS error | Certificate hostname mismatch, expired, or incomplete chain |
 | `301` / `302` to another site | A redirect rule in front of the route intercepts the request |
 | HTML page instead of the route | Login page, captcha, or bot-challenge in front of the route |
+| OpenClaw web UI instead of the route | The request reached the gateway, but the plugin route is not registered — install/enable the plugin and configure `channels.cliq` |
 | `404` | Proxy does not forward `/cliq/webhook`, or the channel is not configured (the plugin registers the route only when `channels.cliq` exists) |
 | `503` | `webhookSecret` is not set — the plugin fails closed |
 | `401` | Header missing or the secret does not match |
+| `429` | An upstream rate limiter answered before the plugin — the preflight reports the secret stage as inconclusive rather than passing it |
 | `405` on `POST` | Something upstream rewrote the method |
 | Timeout in the Deluge log | Proxy read timeout shorter than the agent turn |
 

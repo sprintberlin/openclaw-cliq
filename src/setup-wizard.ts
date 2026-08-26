@@ -25,6 +25,7 @@ import {
   resolveCliqInboundReadiness,
   type CliqInboundReadiness,
 } from "./inbound-readiness.js";
+import { resolveCliqSecretString } from "./secret-resolve.js";
 
 const CHANNEL = "cliq" as const;
 const DEFAULT_ACCOUNT_ID = "default";
@@ -437,6 +438,42 @@ export function applyCliqPublicWebhookUrl(
 }
 
 /**
+ * Persist the inbound verification outcome (issue #96).
+ *
+ * Without this, the readiness verdict only exists as a transient wizard note
+ * and every later status surface would still call the channel "Configured"
+ * based on credentials alone. A run that is not ready explicitly CLEARS a
+ * previous timestamp so a formerly working install cannot keep claiming a
+ * stale verification after its endpoint broke.
+ */
+export function applyCliqInboundVerification(
+  cfg: OpenClawConfig,
+  readiness: CliqInboundReadiness,
+  now: Date = new Date(),
+): OpenClawConfig {
+  return patchCliqSection(cfg, {
+    inboundVerifiedAt: readiness.ready ? now.toISOString() : undefined,
+  });
+}
+
+/**
+ * Show a wizard note without ever letting the prompter abort setup. Credentials
+ * are already written by the time inbound is verified, so a prompter failure
+ * (non-TTY / CI run) must not fail finalize.
+ */
+async function noteSafely(
+  prompter: WizardPrompter,
+  message: string,
+  title: string,
+): Promise<void> {
+  try {
+    await prompter.note(message, title);
+  } catch {
+    // Reporting is best-effort; the readiness verdict is still returned.
+  }
+}
+
+/**
  * Verify public inbound delivery during setup and report readiness.
  *
  * This is the gate required by issue #96: setup must not mark inbound Cliq
@@ -456,7 +493,17 @@ export async function verifyCliqInboundDuringSetup(params: {
 }): Promise<CliqInboundReadiness> {
   const section = readCliqSection(params.cfg);
   const configured = isCliqChannelConfigured(params.cfg);
-  const secret = asString(section.webhookSecret);
+  // Resolve through the canonical secret path rather than reading the raw
+  // field: `openclaw secrets apply` stores a structured SecretRef, and a
+  // plain string may be a "$ENV_VAR" shorthand. Reading the raw value would
+  // either skip the probe on a correctly configured install or send the
+  // literal "$ENV_VAR" as the secret.
+  const resolvedSecret = resolveCliqSecretString({
+    cfg: params.cfg,
+    value: section.webhookSecret,
+    path: "channels.cliq.webhookSecret",
+  });
+  const secret = resolvedSecret === "" ? undefined : resolvedSecret;
 
   let preflight: CliqPreflightReport | undefined;
   if (params.url && configured) {
@@ -468,7 +515,7 @@ export async function verifyCliqInboundDuringSetup(params: {
         ready: false,
         reason: `the public webhook preflight failed to run: ${String(err)}`,
       };
-      await params.prompter.note(readiness.reason, "Zoho Cliq inbound");
+      await noteSafely(params.prompter, readiness.reason, "Zoho Cliq inbound");
       return readiness;
     }
   }
@@ -487,7 +534,7 @@ export async function verifyCliqInboundDuringSetup(params: {
         "See docs/setup/public-webhook.md for deployment options and troubleshooting.",
       ];
   if (preflight) lines.push("", ...formatCliqPreflightReport(preflight));
-  await params.prompter.note(lines.join("\n"), "Zoho Cliq inbound");
+  await noteSafely(params.prompter, lines.join("\n"), "Zoho Cliq inbound");
 
   return readiness;
 }
@@ -529,7 +576,14 @@ const cliqFinalize: NonNullable<ChannelSetupWizard["finalize"]> = async ({
   // claim inbound Cliq is ready when the endpoint is unreachable.
   const publicUrl = await promptCliqPublicWebhookUrl(prompter, next);
   next = applyCliqPublicWebhookUrl(next, publicUrl);
-  await verifyCliqInboundDuringSetup({ cfg: next, url: publicUrl, prompter });
+  const readiness = await verifyCliqInboundDuringSetup({
+    cfg: next,
+    url: publicUrl,
+    prompter,
+  });
+  // Persist the verdict so status/doctor keep reporting the truth after the
+  // wizard exits, instead of inferring readiness from credentials alone.
+  next = applyCliqInboundVerification(next, readiness);
 
   return { cfg: next, accountId: DEFAULT_ACCOUNT_ID };
 };
@@ -552,8 +606,23 @@ export const cliqSetupWizard: ChannelSetupWizard = {
       const lines: string[] = [];
       const botId = asString(section.botId);
       if (botId) lines.push(`bot: ${botId}`);
-      const webhookSecret = asString(section.webhookSecret);
-      lines.push(`webhook secret: ${webhookSecret ? "set" : "not set"}`);
+      // Presence check must accept a SecretRef too — `openclaw secrets apply`
+      // rewrites the plaintext into an object, which asString() would report
+      // as "not set" on a correctly configured install.
+      const webhookSecretSet = hasConfiguredSecretInput(section.webhookSecret);
+      lines.push(`webhook secret: ${webhookSecretSet ? "set" : "not set"}`);
+      // Issue #96: credentials alone never mean inbound delivery works, so
+      // report the verification state explicitly instead of letting
+      // "Configured" imply a reachable webhook.
+      const publicUrl = asString(section.publicWebhookUrl);
+      const verifiedAt = asString(section.inboundVerifiedAt);
+      if (verifiedAt && publicUrl) {
+        lines.push(`inbound: verified ${verifiedAt} at ${publicUrl}`);
+      } else if (publicUrl) {
+        lines.push(`inbound: NOT verified (${publicUrl})`);
+      } else {
+        lines.push("inbound: not verified (no public webhook URL configured)");
+      }
       const dcId = detectConfiguredCliqDataCenter(cfg);
       if (dcId) lines.push(`data center: ${dcId}`);
       return lines;

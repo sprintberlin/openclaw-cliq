@@ -369,7 +369,20 @@ export async function runCliqWebhookPreflight(
     recorder.record("secret", STAGE_LABELS.secret, "fail", detail);
     return fail(detail);
   }
-  if (unauthed.status !== 401 && unauthed.status !== 429) {
+  // A 429 means something answered before the plugin's secret check ever ran
+  // (an upstream WAF or rate limiter). It is NOT evidence that the shared
+  // secret is enforced, so the stage is inconclusive rather than a pass.
+  // The plugin's own limiter only returns 429 after many failed attempts in a
+  // window, so a 429 on the first probe is almost always upstream.
+  const rateLimited = (res: CliqPreflightResponse) => res.status === 429;
+  if (rateLimited(unauthed)) {
+    const detail =
+      "inconclusive: the endpoint answered 429 (rate limited) to the unauthenticated probe, so the plugin's secret check was never exercised. Retry later or exempt the preflight source from the upstream rate limiter.";
+    recorder.record("secret", STAGE_LABELS.secret, "warn", detail);
+    skipRemaining(recorder, "not reached: the secret stage was inconclusive");
+    return { ok: false, url: options.url, nonce, dispatched: false, stages: recorder.stages };
+  }
+  if (unauthed.status !== 401) {
     const body = await unauthed.text();
     const detail = `the endpoint accepted a POST without a secret (status ${unauthed.status}) — an unauthenticated caller can reach the webhook: ${snippet(body, secret)}`;
     recorder.record("secret", STAGE_LABELS.secret, "fail", detail);
@@ -389,7 +402,14 @@ export async function runCliqWebhookPreflight(
     recorder.record("secret", STAGE_LABELS.secret, "fail", detail);
     return fail(detail);
   }
-  if (wrongSecret.status !== 401 && wrongSecret.status !== 429) {
+  if (rateLimited(wrongSecret)) {
+    const detail =
+      "inconclusive: the endpoint answered 429 (rate limited) to the wrong-secret probe, so the plugin's secret check was never exercised. Retry later or exempt the preflight source from the upstream rate limiter.";
+    recorder.record("secret", STAGE_LABELS.secret, "warn", detail);
+    skipRemaining(recorder, "not reached: the secret stage was inconclusive");
+    return { ok: false, url: options.url, nonce, dispatched: false, stages: recorder.stages };
+  }
+  if (wrongSecret.status !== 401) {
     const body = await wrongSecret.text();
     const detail = `the endpoint accepted a wrong secret (status ${wrongSecret.status}) — the shared-secret check is not enforced: ${snippet(body, secret)}`;
     recorder.record("secret", STAGE_LABELS.secret, "fail", detail);
@@ -453,7 +473,10 @@ export async function runCliqWebhookPreflight(
   if (dispatched) {
     const detail = "the probe reported that it dispatched an agent turn — the no-dispatch guarantee is broken";
     recorder.record("probe", STAGE_LABELS.probe, "fail", detail);
-    return fail(detail);
+    // Report the endpoint's own claim rather than the constant, so the field
+    // means what its doc comment says.
+    skipRemaining(recorder, "not reached: an earlier stage failed");
+    return { ok: false, url: options.url, nonce, dispatched: true, stages: recorder.stages };
   }
   // The echoed nonce is what proves this 200 came from THIS request against the
   // Cliq plugin, rather than from an unrelated endpoint that happens to answer
