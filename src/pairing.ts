@@ -24,7 +24,10 @@
  */
 
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
-import { approveChannelPairingCode } from "openclaw/plugin-sdk/conversation-runtime";
+import {
+  resolveChannelPairingApprove,
+  type ChannelPairingApproveFn,
+} from "./sdk-compat.js";
 import {
   CliqClient,
   resolveCliqConfig,
@@ -310,8 +313,8 @@ export interface HandleCliqPairingApprovalActionParams {
   env?: NodeJS.ProcessEnv;
   /** Override the outbound client (tests). Defaults to a fresh CliqClient. */
   client?: Pick<CliqClient, "sendMessage">;
-  /** Override the SDK admission call (tests). Defaults to `approveChannelPairingCode`. */
-  approveFn?: typeof approveChannelPairingCode;
+  /** Override the SDK admission call (tests). Defaults to the optional compatibility resolver. */
+  approveFn?: ChannelPairingApproveFn;
   onError?: (err: unknown, info: { kind: string }) => void;
 }
 
@@ -324,7 +327,8 @@ export interface HandleCliqPairingApprovalActionResult {
 
 /**
  * Handle a pairing approve/deny button click re-dispatched as an inbound
- * message. For **approve**: calls the SDK's `approveChannelPairingCode` to
+ * message. For **approve**: resolves the optional SDK pairing-approve helper
+ * through the compatibility layer and, when available, calls it to
  * admit the sender (writing them to the channel allowFrom store), then
  * notifies the now-admitted sender via `notifyCliqPairingApproval` and
  * replies to the owner with the configured `approvedOwnerText`. For
@@ -345,7 +349,6 @@ export async function handleCliqPairingApprovalAction(
   const { account, action, ownerTarget, env, client, approveFn, onError } = params;
   const sendClient = client ?? resolveCliqClient(account);
   const accountId = account.accountId ?? undefined;
-  const approve = approveFn ?? approveChannelPairingCode;
 
   if (action.kind === "deny") {
     try {
@@ -361,6 +364,22 @@ export async function handleCliqPairingApprovalAction(
   }
 
   // kind === "approve"
+  const approve = approveFn ?? (await resolveChannelPairingApprove());
+  if (!approve) {
+    try {
+      await sendClient.sendMessage({
+        to: ownerTarget.to,
+        text:
+          "Button-based pairing approval is unavailable on this OpenClaw version. " +
+          `Use \`openclaw pairing approve cliq ${action.code || "<code>"}\` instead.`,
+        isDm: ownerTarget.isDm,
+      });
+    } catch (err) {
+      onError?.(err, { kind: "pairing-approve-unavailable-reply" });
+    }
+    return { admitted: false };
+  }
+
   let senderId: string | undefined;
   let admitted = false;
   if (action.code) {

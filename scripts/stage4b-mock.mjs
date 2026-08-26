@@ -117,15 +117,24 @@ const server = createServer(async (req, res) => {
         appendFileSync(modelRequestsLogFile, JSON.stringify(payload) + "\n");
       }
       const messages = Array.isArray(payload.messages) ? payload.messages : [];
-      // Echo the latest user message back as the assistant reply, prefixed
-      // with a fixed marker so the smoke can assert the round-trip content
-      // reached the mock send endpoint verbatim.
-      const lastUser = [...messages].reverse().find((m) => m && m.role === "user");
-      const userText = typeof lastUser?.content === "string"
-        ? lastUser.content
-        : Array.isArray(lastUser?.content)
-          ? lastUser.content.map((c) => c?.text ?? "").join("")
-          : "";
+      const isInternalContext = (text) =>
+        text.includes("<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>") ||
+        text.startsWith("OpenClaw runtime context for the immediately preceding");
+      const textOf = (m) =>
+        typeof m?.content === "string"
+          ? m.content
+          : Array.isArray(m?.content)
+            ? m.content.map((c) => c?.text ?? "").join("")
+            : "";
+      // Echo the latest user-authored message, not the runtime-generated
+      // context block OpenClaw 2026.7+ appends as a second `role: user`
+      // message. Matching the last `role: user` verbatim would make the
+      // round-trip reply contain only the internal context, so the smoke
+      // would fail to find the inbound marker in the bot-send log.
+      const lastUser = [...messages]
+        .reverse()
+        .find((m) => m && m.role === "user" && !isInternalContext(textOf(m)));
+      const userText = textOf(lastUser);
       const replyText = `stub-reply: ${userText}`;
       log(`chat completion echo (userTextLen=${userText.length}) -> "${replyText.slice(0, 80)}"`);
       res.writeHead(200, { "content-type": "application/json" });
