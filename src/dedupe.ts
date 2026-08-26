@@ -24,32 +24,42 @@
  *   - On retryable failure → `releaseCliqMessage` so the next redelivery can
  *     re-enter the pipeline (the slot is not recorded).
  *
- * The dedupe key prefers the Cliq `message.id`. When the Deluge handler
- * omits it (rare), we fall back to a composite of sender + chat + text —
- * which means two *distinct* identical messages from the same sender in the
- * same chat within the TTL would be wrongly deduped. This is an acceptable
- * tradeoff because the canonical Deluge handler always sets `message.id`.
+ * The dedupe key prefers the Cliq `message.id`. Content-derived fallback
+ * identities are retained only for Cliq's short practical redelivery window,
+ * while real message ids use the longer replay-protection TTL.
  */
 
 import { createClaimableDedupe } from "openclaw/plugin-sdk/persistent-dedupe";
 import type { ClaimableDedupe } from "openclaw/plugin-sdk/persistent-dedupe";
 import type { ParsedCliqInbound } from "./inbound.js";
 
-/** TTL for the in-memory dedupe cache. Matches Cliq's practical redelivery window. */
+/** TTL for real Cliq message ids and plugin-owned event ids. */
 const CLIQ_DEDUPE_TTL_MS = 30 * 60 * 1000;
-/** Max entries retained in the in-memory dedupe cache. */
+const CLIQ_CONTENT_DEDUPE_TTL_MS = 60 * 1000;
+/** Max entries retained across each in-memory dedupe cache. */
 const CLIQ_DEDUPE_MEMORY_MAX_SIZE = 5000;
 
-let dedupe: ClaimableDedupe | null = null;
+let longLivedDedupe: ClaimableDedupe | null = null;
+let contentDedupe: ClaimableDedupe | null = null;
 
-function getCliqDedupe(): ClaimableDedupe {
-  if (!dedupe) {
-    dedupe = createClaimableDedupe({
+function getLongLivedCliqDedupe(): ClaimableDedupe {
+  if (!longLivedDedupe) {
+    longLivedDedupe = createClaimableDedupe({
       ttlMs: CLIQ_DEDUPE_TTL_MS,
       memoryMaxSize: CLIQ_DEDUPE_MEMORY_MAX_SIZE,
     });
   }
-  return dedupe;
+  return longLivedDedupe;
+}
+
+function getContentCliqDedupe(): ClaimableDedupe {
+  if (!contentDedupe) {
+    contentDedupe = createClaimableDedupe({
+      ttlMs: CLIQ_CONTENT_DEDUPE_TTL_MS,
+      memoryMaxSize: CLIQ_DEDUPE_MEMORY_MAX_SIZE,
+    });
+  }
+  return contentDedupe;
 }
 
 /**
@@ -68,6 +78,11 @@ function getCliqDedupe(): ClaimableDedupe {
  * ~20 s retries of the same upload are deduped as `duplicate`/`inflight`
  * rather than re-dispatched (which would otherwise trip a
  * "reply session initialization conflicted" loop).
+ *
+ * A composite key (and the `syn:` synthetic id built from the same material)
+ * identifies message *content*, not a message: two deliberate `/status`
+ * commands share one key. Such keys are therefore claimed against the
+ * short-TTL guard, so only a redelivery is suppressed (issue #114).
  */
 export function buildCliqDedupeKey(
   parsed: ParsedCliqInbound,
@@ -90,6 +105,20 @@ export function buildCliqDedupeKey(
 
 export type CliqDedupeClaimKind = "claimed" | "duplicate" | "inflight";
 
+const CLIQ_SYNTHETIC_ID_PREFIX = "syn:";
+
+function usesContentDedupe(parsed: ParsedCliqInbound): boolean {
+  return (
+    !parsed.messageId || parsed.messageId.startsWith(CLIQ_SYNTHETIC_ID_PREFIX)
+  );
+}
+
+function resolveCliqDedupe(parsed: ParsedCliqInbound): ClaimableDedupe {
+  return usesContentDedupe(parsed)
+    ? getContentCliqDedupe()
+    : getLongLivedCliqDedupe();
+}
+
 /**
  * Claim a Cliq message for processing. Returns `null` when there is no stable
  * key to dedupe on (caller should proceed without dedupe). The returned
@@ -102,14 +131,14 @@ export async function claimCliqMessage(
 ): Promise<{ kind: CliqDedupeClaimKind; key: string | null } | null> {
   const key = buildCliqDedupeKey(parsed, account);
   if (!key) return null;
-  const result = await getCliqDedupe().claim(key);
+  const result = await resolveCliqDedupe(parsed).claim(key);
   return { kind: result.kind, key };
 }
 
 /** Record a claimed message as processed so future redeliveries are dropped. */
 export async function commitCliqMessage(key: string | null): Promise<void> {
   if (!key) return;
-  await getCliqDedupe().commit(key);
+  await resolveCliqDedupeForKey(key).commit(key);
 }
 
 /**
@@ -118,13 +147,22 @@ export async function commitCliqMessage(key: string | null): Promise<void> {
  */
 export function releaseCliqMessage(key: string | null, error?: unknown): void {
   if (!key) return;
-  getCliqDedupe().release(key, error !== undefined ? { error } : undefined);
+  resolveCliqDedupeForKey(key).release(
+    key,
+    error !== undefined ? { error } : undefined,
+  );
 }
 
-/** Test helper: clear the in-memory dedupe cache between cases. */
+function resolveCliqDedupeForKey(key: string): ClaimableDedupe {
+  const isContentDerived =
+    key.includes(":cmp:") || key.includes(`:mid:${CLIQ_SYNTHETIC_ID_PREFIX}`);
+  return isContentDerived ? getContentCliqDedupe() : getLongLivedCliqDedupe();
+}
+
+/** Test helper: clear the in-memory dedupe caches between cases. */
 export function resetCliqDedupeForTest(): void {
-  if (dedupe) {
-    dedupe.clearMemory();
-    dedupe = null;
-  }
+  longLivedDedupe?.clearMemory();
+  longLivedDedupe = null;
+  contentDedupe?.clearMemory();
+  contentDedupe = null;
 }

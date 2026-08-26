@@ -52,7 +52,7 @@ DM the bot → it answers. To also reply to channel **@mentions** and stream liv
 - **🔐 OAuth 2.0** — `client_credentials` for DMs; a user-context **refresh token** for channel posts / message edits. Works on any Zoho [data center](#data-centers).
 - **🛡️ DM security** — `allowlist` / `pairing` / `open` / `disabled` policies with an approval flow.
 - **🧩 Per-channel policy** — Group admission + per-channel `requireMention`, tool policy, and per-sender tool overrides.
-- **🔁 Reliability** — Durable-before-ack ingest, de-dup on redelivery, bot-loop / self-message protection, outbound retry with error classification (parses the v3 `{"message":"…"}` error envelope).
+- **🔁 Reliability** — Durable-before-ack ingest, de-dup on redelivery, bot-loop / self-message protection, outbound retry with error classification (parses the v3 `{"message":"…"}` error envelope). Real Cliq message ids retain 30-minute replay protection; content-derived ids used when the Message Handler supplies no `message.id` expire after 60 seconds, so retry redeliveries are suppressed without swallowing a deliberate repeated command such as `/status`.
 - **🔒 Hardened webhook** — Constant-time secret compare, single-header auth, failed-auth rate limiting.
 - **🩺 Operations** — `openclaw status` / `channels` health probe, `openclaw directory` lookup, plugin doctor, interactive setup wizard, SecretRef credentials, security audit, session binding, multi-account, lifecycle hooks.
 
@@ -444,6 +444,10 @@ return response;
 > `handler` value: `"message"` in the **Message Handler** (DMs) and `"mention"`
 > in the **Mention Handler** (channel/group @mentions). Group vs DM is detected
 > automatically from the forwarded `chat` object, so no extra mapping is needed.
+> In live Cliq Message Handlers, `message` may be a bare string with no
+> `message.id` or `message.time`. The plugin handles that shape without changing
+> this script: content-derived dedupe identities expire after 60 seconds, so a
+> short redelivery is suppressed but a later identical command is processed.
 
 > **Do not use `parameters: payload.toString()`.** In Deluge, `invokeUrl`'s
 > `parameters:` key serializes the value as form-urlencoded data

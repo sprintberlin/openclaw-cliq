@@ -11,6 +11,17 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Fixed
+
+- **Repeated identical slash commands no longer disappear for 30 minutes
+  (issue #114).** Live Cliq Message Handlers can forward `message` as a bare
+  string with no `message.id` or `message.time`, so the plugin derives a
+  content-based synthetic id. That id now uses a 60-second dedupe TTL, matching
+  Cliq's practical retry window: a short redelivery (including caption-less
+  files) is still suppressed, while a deliberate later `/status`, `/new`, or
+  other identical command starts a new agent turn. Real message ids and
+  plugin-owned event ids retain the 30-minute replay-protection TTL.
+
 ### Added
 
 - **Public HTTPS webhook preflight (issue #96).** A reusable, non-dispatching

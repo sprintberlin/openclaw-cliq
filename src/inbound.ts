@@ -396,6 +396,8 @@ function buildUserName(user: NonNullable<CliqWebhookPayload["user"]>): string {
  * timestamp is only included when the payload explicitly provides one
  * (`message.time`); when absent, the hash is stable across Cliq
  * redeliveries (which call `new Date().toISOString()` fresh each time).
+ * Because identical user messages produce the same synthetic id, the dedupe
+ * layer retains `syn:` ids only for the short redelivery window.
  */
 function buildSyntheticMessageId(
   senderId: string,
@@ -411,17 +413,9 @@ function buildSyntheticMessageId(
     // (stable across redeliveries). When absent, `new Date().toISOString()`
     // changes on each delivery → omit it so the hash is deterministic.
     ...(payloadTime ? [payloadTime] : []),
-    // Include the message text so two DIFFERENT messages from the same
-    // sender + chat do not hash to the same id and get wrongly dropped as
-    // duplicates. A Cliq bot Message handler delivers `message` as a bare
-    // string with no `message.id` AND no `message.time`, so without the text
-    // every one of a user's DM messages hashed to the SAME constant id
-    // (`sender + chat`) — and, with the 30-min dedupe TTL, every message after
-    // the first was silently dropped as a "duplicate" until a gateway restart
-    // cleared the in-memory cache. This made slash commands and follow-up
-    // messages appear to work only intermittently. A genuine Cliq redelivery
-    // of the same message carries identical text → identical id → still
-    // correctly deduped.
+    // Include the message text so two DIFFERENT messages from the same sender
+    // and chat do not hash to the same id: without it every DM from a user in
+    // one chat shared a single constant id.
     text,
     ...attachments.map((a) => a.fileId ?? a.fileName ?? ""),
   ];

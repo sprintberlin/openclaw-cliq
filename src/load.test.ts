@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import cliqEntry from "../index.js";
 import { cliqPlugin } from "./channel.js";
@@ -297,6 +297,65 @@ describe("durable-before-ack ingest (issue #12)", () => {
     expect(res2.statusCode).toBe(200);
     // No second dispatch — deduped as duplicate/inflight.
     expect(runCalled).toBe(1);
+  });
+
+  it("dispatches an identical slash command sent again after the content dedupe window (issue #114)", async () => {
+    let runCalled = 0;
+    const { webhook } = buildDurableRegistration({
+      inboundRun: async () => {
+        runCalled++;
+        return undefined;
+      },
+    });
+    const commandPayload = {
+      handler: "mention",
+      message: "/status",
+      user: { id: "fake-user", name: "Test User" },
+      chat: {
+        id: "CT_channel",
+        type: "channel",
+        chat_type: "channel",
+        channel_unique_name: "dev-team",
+        title: "#dev-team",
+      },
+      mentions: [{ id: "bot", name: "openclaw-bot", type: "bot" }],
+    };
+
+    const first = createMockServerResponse();
+    await webhook.handler(
+      createMockIncomingRequest("POST", commandPayload, {
+        "x-cliq-webhook-secret": "s3cr3t",
+      }),
+      first as unknown as any,
+    );
+    expect(first.statusCode).toBe(200);
+    expect(runCalled).toBe(1);
+
+    const redelivery = createMockServerResponse();
+    await webhook.handler(
+      createMockIncomingRequest("POST", commandPayload, {
+        "x-cliq-webhook-secret": "s3cr3t",
+      }),
+      redelivery as unknown as any,
+    );
+    expect(redelivery.statusCode).toBe(200);
+    expect(runCalled).toBe(1);
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(Date.now() + 5 * 60 * 1000));
+      const resend = createMockServerResponse();
+      await webhook.handler(
+        createMockIncomingRequest("POST", commandPayload, {
+          "x-cliq-webhook-secret": "s3cr3t",
+        }),
+        resend as unknown as any,
+      );
+      expect(resend.statusCode).toBe(200);
+      expect(runCalled).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("acks 200 (not 400) for a caption-less image with attachments forwarded (issue #84)", async () => {
