@@ -39,6 +39,12 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
+- **Declared OpenClaw support range, enforced in CI (issue #118).** The
+  supported versions live in a single file (`.github/openclaw-compat.json`).
+  A compatibility workflow builds once against the pinned floor and loads that
+  identical artifact on every supported version via the real gateway smoke,
+  and `npm run check:sdk-compat` fails when any static runtime SDK import
+  resolves to a module or symbol missing from a supported version.
 - **Public HTTPS webhook preflight (issue #96).** A reusable, non-dispatching
   preflight (`src/webhook-preflight.ts`) validates the whole public path to
   `/cliq/webhook` and reports which boundary failed: URL syntax/HTTPS, public
