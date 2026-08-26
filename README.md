@@ -69,7 +69,7 @@ Everything that must be configured **on the Zoho side** so the `cliq` channel pl
 ### Prerequisites
 
 - A Zoho account with access to **Zoho Cliq** and the **Zoho API Console**.
-- A running OpenClaw gateway reachable from the public internet (so Zoho can call the webhook). A reverse proxy, Cloudflare Tunnel, or `ngrok` all work for development.
+- A running OpenClaw gateway reachable from the public internet (so Zoho can call the webhook). A reverse proxy, Cloudflare Tunnel, or `ngrok` all work — see [Expose the webhook publicly](docs/setup/public-webhook.md).
 - The bot owner must be able to create a bot in Cliq (admin / developer permission).
 
 ### 1. Create a Zoho Cliq Bot
@@ -107,7 +107,15 @@ The plugin registers a single HTTP route at **`POST /cliq/webhook`** on your Ope
 
    The route is registered with `auth: "plugin"`, so no additional gateway-level bearer token is required; the `webhookSecret` is verified by the plugin itself via the `x-cliq-webhook-secret` header.
 
-3. Make sure the gateway host is reachable from the public internet (Zoho's servers POST to it). For local development use a Cloudflare Tunnel / `ngrok` / reverse proxy.
+3. Make sure the gateway host is reachable from the public internet (Zoho's servers POST to it). See **[Expose the webhook publicly](docs/setup/public-webhook.md)** for deployment options (VPS + reverse proxy, Cloudflare Tunnel, existing proxy, dev tunnels, self-hosted tunnel) with secure Caddy and nginx examples.
+
+   Verify the public path before wiring up Zoho — this checks DNS, TLS, the reverse proxy, the route, and the shared secret, and finishes with a probe that reaches the plugin without dispatching an agent turn:
+
+   ```bash
+   openclaw cliq webhook-preflight https://<gateway-host>/cliq/webhook
+   ```
+
+   `openclaw setup` runs the same check and will not report inbound Cliq as ready when it fails.
 
 4. In the Cliq Bot's Deluge editor (see step 5 below), set the webhook URL and the secret header on every `invokeUrl` call.
 
@@ -346,6 +354,7 @@ Every field except the required ones has a sensible default; `groups` / `thinkin
 - **`botId`** *(required)* — Bot **Unique Name** (the path segment in the bot message API).
 - **`botName`** *(recommended)* — Bot display name. Used to strip the `@botName` mention from the text the agent sees.
 - **`webhookSecret`** *(required for inbound delivery)* — High-entropy shared secret the Deluge handler sends in the `x-cliq-webhook-secret` header. If unset or unresolved, `/cliq/webhook` fails closed with `503` and never dispatches an agent turn. A missing or wrong request header returns `401`.
+- **`publicWebhookUrl`** *(optional)* — The public HTTPS URL Zoho posts to, e.g. `https://cliq.example.com/cliq/webhook`. Recorded by `openclaw setup` so it can verify inbound delivery, and reused as the default target for `openclaw cliq webhook-preflight`. It does not change routing (the gateway always serves `/cliq/webhook`); it only tells the tooling which public URL to check. See [Expose the webhook publicly](docs/setup/public-webhook.md).
 - **`refreshToken`** *(recommended)* — User-context OAuth refresh token (sensitive). Obtained once via the self-client `authorization_code` flow (§3c). **Required for channel @mention replies and live-edit message edits** — without it, those paths fail with `oauthtoken_scope_invalid` (the `client_credentials` grant cannot obtain a usable token for `ZohoCliq.Channels.UPDATE` / `ZohoCliq.Messages.UPDATE`). DM-only setups can leave it unset.
 - **`ackPolicy`** *(optional)* — When the webhook acknowledges Cliq relative to the inbound dispatch. `"after_dispatch"` (default) awaits the full dispatch before sending HTTP 200 — a crash mid-dispatch means Cliq never sees the 200 and redelivers (no lost message). `"immediate"` fires-and-forgets (faster, but a crash between ack and dispatch loses the message). **Deluge timeout gotcha:** Zoho's `invokeUrl` in the bot Message handler has a ~40 s hard timeout. With the default `ackPolicy: "after_dispatch"` the webhook holds the connection until the whole agent turn finishes, so a slow turn (image analysis, cold model) trips Deluge's *"The task has been terminated since the API call is taking too long to respond"* even though the reply is delivered out-of-band. Operators with slow turns should set `ackPolicy: "immediate"` (fire-and-forget ack; documented lost-message-on-crash trade-off). Pairs naturally with `thinking.mode: "placeholder"` (the placeholder posts immediately while the agent works).
 - **`allowFrom`** *(optional)* — Array of Zoho Cliq user ids allowed to DM the bot (only effective when `dmPolicy` is `allowlist` or `pairing`).
@@ -371,7 +380,7 @@ Every field except the required ones has a sensible default; `groups` / `thinkin
 
 **Group/channel identity:** the inbound path sets the OpenClaw `From` context field to `cliq:group:<channelUniqueName>` for group messages (and fills `GroupChannel`/`GroupSubject` with the display name as a fallback), so the `groups` adapter resolves per-channel `requireMention` and tool policy by channel unique name. Keys are matched case-insensitively.
 
-**Gateway reachability:** the host running the OpenClaw gateway must be reachable from the public internet at `https://<gateway-host>/cliq/webhook`. If you run the gateway behind a reverse proxy / Cloudflare Tunnel, make sure TLS termination and the `Host` header are preserved.
+**Gateway reachability:** the host running the OpenClaw gateway must be reachable from the public internet at `https://<gateway-host>/cliq/webhook`. If you run the gateway behind a reverse proxy / Cloudflare Tunnel, make sure TLS termination and the `Host` header are preserved. See [Expose the webhook publicly](docs/setup/public-webhook.md) for per-option instructions and the failure catalogue.
 
 ### 5. Deluge Webhook Handler
 

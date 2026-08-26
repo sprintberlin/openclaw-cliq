@@ -16,6 +16,15 @@ import {
   getDefaultCliqDataCenter,
   type CliqDataCenter,
 } from "./region.js";
+import {
+  formatCliqPreflightReport,
+  runCliqWebhookPreflight,
+  type CliqPreflightReport,
+} from "./webhook-preflight.js";
+import {
+  resolveCliqInboundReadiness,
+  type CliqInboundReadiness,
+} from "./inbound-readiness.js";
 
 const CHANNEL = "cliq" as const;
 const DEFAULT_ACCOUNT_ID = "default";
@@ -388,6 +397,101 @@ export function resolveCliqDataCenterOrEu(dcId: string | undefined): CliqDataCen
   return (dcId ? findCliqDataCenterById(dcId) : undefined) ?? getDefaultCliqDataCenter();
 }
 
+/**
+ * Prompt for the public webhook URL (issue #96).
+ *
+ * Zoho Cliq delivers inbound messages by calling the gateway, so setup needs
+ * to know the public URL in order to verify that the path actually works.
+ * Skipping is allowed (the operator may not have deployed the endpoint yet),
+ * but inbound is then not reported as ready.
+ */
+export async function promptCliqPublicWebhookUrl(
+  prompter: WizardPrompter,
+  cfg: OpenClawConfig,
+): Promise<string | undefined> {
+  const existing = asString(readCliqSection(cfg).publicWebhookUrl);
+  if (existing) {
+    const keep = await prompter.confirm({
+      message: `Keep the existing public webhook URL (${existing})?`,
+      initialValue: true,
+    });
+    if (keep) return existing;
+  }
+  const entered = await prompter.text({
+    message:
+      "Public webhook URL Zoho will POST to (https://<host>/cliq/webhook; leave empty to skip verification)",
+    placeholder: "https://cliq.example.com/cliq/webhook",
+    initialValue: existing,
+  });
+  const trimmed = entered.trim();
+  return trimmed === "" ? undefined : trimmed;
+}
+
+/** Persist the public webhook URL so later runs and doctor can reuse it. */
+export function applyCliqPublicWebhookUrl(
+  cfg: OpenClawConfig,
+  url: string | undefined,
+): OpenClawConfig {
+  if (!url) return cfg;
+  return patchCliqSection(cfg, { publicWebhookUrl: url });
+}
+
+/**
+ * Verify public inbound delivery during setup and report readiness.
+ *
+ * This is the gate required by issue #96: setup must not mark inbound Cliq
+ * ready when the public webhook is unreachable or unauthenticated. A failure
+ * is surfaced to the operator with the specific failing boundary rather than
+ * silently downgraded, and a crashing preflight never aborts the wizard —
+ * setup still completes, it just does not claim inbound works.
+ */
+export async function verifyCliqInboundDuringSetup(params: {
+  cfg: OpenClawConfig;
+  url: string | undefined;
+  prompter: WizardPrompter;
+  runPreflight?: (options: {
+    url: string;
+    secret: string | undefined;
+  }) => Promise<CliqPreflightReport>;
+}): Promise<CliqInboundReadiness> {
+  const section = readCliqSection(params.cfg);
+  const configured = isCliqChannelConfigured(params.cfg);
+  const secret = asString(section.webhookSecret);
+
+  let preflight: CliqPreflightReport | undefined;
+  if (params.url && configured) {
+    const run = params.runPreflight ?? runCliqWebhookPreflight;
+    try {
+      preflight = await run({ url: params.url, secret });
+    } catch (err) {
+      const readiness: CliqInboundReadiness = {
+        ready: false,
+        reason: `the public webhook preflight failed to run: ${String(err)}`,
+      };
+      await params.prompter.note(readiness.reason, "Zoho Cliq inbound");
+      return readiness;
+    }
+  }
+
+  const readiness = resolveCliqInboundReadiness({
+    configured,
+    publicUrl: params.url,
+    preflight,
+  });
+
+  const lines = readiness.ready
+    ? [`Inbound Cliq verified: ${readiness.reason}`]
+    : [
+        `Inbound Cliq is NOT ready: ${readiness.reason}`,
+        "",
+        "See docs/setup/public-webhook.md for deployment options and troubleshooting.",
+      ];
+  if (preflight) lines.push("", ...formatCliqPreflightReport(preflight));
+  await params.prompter.note(lines.join("\n"), "Zoho Cliq inbound");
+
+  return readiness;
+}
+
 const cliqFinalize: NonNullable<ChannelSetupWizard["finalize"]> = async ({
   cfg,
   prompter,
@@ -416,7 +520,17 @@ const cliqFinalize: NonNullable<ChannelSetupWizard["finalize"]> = async ({
   );
 
   const creds = await promptCliqCredentials(prompter, cfgWithDc);
-  const next = applyCliqCredentials(cfgWithDc, creds);
+  let next = applyCliqCredentials(cfgWithDc, creds);
+
+  // Issue #96: having credentials proves nothing about inbound delivery —
+  // Zoho has to be able to CALL the gateway. Ask for the public URL and
+  // verify the whole path (DNS, TLS, proxy, route, secret) with a
+  // non-dispatching probe. Setup completes either way, but it must not
+  // claim inbound Cliq is ready when the endpoint is unreachable.
+  const publicUrl = await promptCliqPublicWebhookUrl(prompter, next);
+  next = applyCliqPublicWebhookUrl(next, publicUrl);
+  await verifyCliqInboundDuringSetup({ cfg: next, url: publicUrl, prompter });
+
   return { cfg: next, accountId: DEFAULT_ACCOUNT_ID };
 };
 

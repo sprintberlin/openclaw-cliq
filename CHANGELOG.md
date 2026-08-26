@@ -11,6 +11,47 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Added
+
+- **Public HTTPS webhook preflight (issue #96).** A reusable, non-dispatching
+  preflight (`src/webhook-preflight.ts`) validates the whole public path to
+  `/cliq/webhook` and reports which boundary failed: URL syntax/HTTPS, public
+  DNS, TLS (hostname, validity, chain), route reachability through the reverse
+  proxy, `GET` method handling, and shared-secret enforcement (both a missing
+  and a wrong secret must be rejected). Redirects and HTML challenge pages in
+  front of the route are called out explicitly, because a healthy tunnel does
+  not prove that requests reach the origin. The report has a stable JSON shape
+  for reuse by the staged doctor (#97), and secrets are redacted from every
+  stage detail.
+- **Dedicated webhook probe protocol (`src/webhook-probe.ts`).** The preflight
+  finishes with an authenticated probe carrying `handler: "openclaw-probe"`.
+  The webhook route answers it directly — before welcome/message parsing,
+  dedupe, and dispatch — so a successful probe reaches the plugin but never
+  creates an agent turn, session entry, outbound reply, or user-visible Cliq
+  message. The response echoes a correlation nonce and reports
+  `dispatched: false` so callers can assert the no-dispatch guarantee.
+- **Setup verifies inbound instead of assuming it.** `openclaw setup` now asks
+  for the public webhook URL (stored as `channels.cliq.publicWebhookUrl`) and
+  runs the preflight before finishing. Complete credentials alone no longer
+  count as inbound-ready: when the endpoint is unreachable or unauthenticated,
+  setup reports inbound Cliq as NOT ready and prints the specific failing
+  boundary plus a pointer to the setup guide. A preflight that crashes never
+  aborts the wizard — it just does not claim inbound works.
+- **`openclaw cliq webhook-preflight <url>` CLI command.** Runs the same
+  preflight on demand, defaulting the secret to `channels.cliq.webhookSecret`
+  (`--secret` to override, `--json` for the machine-readable report). Exits
+  non-zero when inbound is not ready, so it works as a deployment gate.
+
+### Documentation
+
+- Added [docs/setup/public-webhook.md](docs/setup/public-webhook.md): how to
+  make the webhook publicly reachable, with five options (VPS + reverse proxy,
+  Cloudflare Tunnel, an existing reverse proxy, temporary dev tunnels, and
+  self-hosted tunnels), secure Caddy and nginx examples with trust-boundary
+  notes, and a symptom/cause troubleshooting table. README now links to it
+  from the prerequisites, the webhook setup step, and the gateway-reachability
+  note.
+
 ## [0.1.10] - 2026-08-20
 
 ### Documentation
