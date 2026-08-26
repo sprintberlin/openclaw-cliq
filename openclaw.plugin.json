@@ -13,6 +13,8 @@
       "botId": { "type": "string" },
       "botName": { "type": "string" },
       "webhookSecret": { "type": "string" },
+      "publicWebhookUrl": { "type": "string" },
+      "inboundVerifiedAt": { "type": "string" },
       "refreshToken": { "type": "string" },
       "allowFrom": {
         "type": "array",
@@ -171,6 +173,8 @@
           "botId": { "type": "string" },
           "botName": { "type": "string" },
           "webhookSecret": { "type": "string" },
+          "publicWebhookUrl": { "type": "string" },
+          "inboundVerifiedAt": { "type": "string" },
           "refreshToken": { "type": "string" },
           "allowFrom": {
             "type": "array",

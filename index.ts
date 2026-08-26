@@ -32,6 +32,10 @@ import {
   buildCliqWelcomeInbound,
 } from "./src/welcome.js";
 import { resolveCliqClient } from "./src/runtime-api.js";
+import {
+  buildCliqProbeResponse,
+  parseCliqProbePayload,
+} from "./src/webhook-probe.js";
 
 /**
  * Per-IP fixed-window limiter for *failed* webhook authentications. Legit
@@ -55,14 +59,37 @@ export default defineChannelPluginEntry({
   registerCliMetadata(api) {
     api.registerCli(
       ({ program }) => {
-        program.command("cliq").description("Zoho Cliq channel management");
+        const cliq = program.command("cliq").description("Zoho Cliq channel management");
+        cliq
+          .command("webhook-preflight")
+          .description(
+            "Verify the public HTTPS webhook (DNS, TLS, proxy, route, secret) without dispatching an agent turn",
+          )
+          .argument("<url>", "Public webhook URL, e.g. https://host.example.com/cliq/webhook")
+          .option("--secret <secret>", "Webhook shared secret (defaults to channels.cliq.webhookSecret)")
+          .option("--json", "Emit the machine-readable report")
+          .action(async (url: string, opts: { secret?: string; json?: boolean }) => {
+            const { runCliqWebhookPreflightCommand } = await import(
+              "./src/webhook-preflight-command.js"
+            );
+            let secret = opts.secret;
+            if (!secret) {
+              try {
+                secret = resolveCliqConfig(api.config as OpenClawConfig, null).webhookSecret;
+              } catch {
+                secret = undefined;
+              }
+            }
+            const code = await runCliqWebhookPreflightCommand({ url, secret, json: opts.json });
+            process.exitCode = code;
+          });
       },
       {
         descriptors: [
           {
             name: "cliq",
             description: "Zoho Cliq channel management",
-            hasSubcommands: false,
+            hasSubcommands: true,
           },
         ],
       },
@@ -128,6 +155,24 @@ export default defineChannelPluginEntry({
         if (!body.ok) {
           res.statusCode = body.error === "payload too large" ? 413 : 400;
           res.end(body.error ?? "invalid payload");
+          return true;
+        }
+
+        const probe = parseCliqProbePayload(body.value);
+        if (probe) {
+          // Dedicated public-preflight protocol (issue #96). This branch must
+          // stay immediately after JSON parsing and BEFORE welcome/message
+          // parsing, dedupe, session creation, and inbound dispatch. A healthy
+          // authenticated probe therefore proves that DNS, TLS, the reverse
+          // proxy/tunnel, this route, and the shared-secret check all work,
+          // without creating an agent turn or a user-visible Cliq message.
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "application/json; charset=utf-8");
+          res.end(
+            JSON.stringify(
+              buildCliqProbeResponse({ nonce: probe.nonce, botId: account.botId }),
+            ),
+          );
           return true;
         }
 

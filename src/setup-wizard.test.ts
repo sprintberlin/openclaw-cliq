@@ -353,6 +353,9 @@ describe("cliqSetupWizard", () => {
       { method: "text", value: "OpenClaw" },
       { method: "text", value: "WH" },
       { method: "text", value: "RT" },
+      // Issue #96: finalize now also asks for the public webhook URL so it can
+      // verify inbound delivery before claiming Cliq is ready. Empty = skip.
+      { method: "text", value: "" },
     ]);
     const result = await cliqSetupWizard.finalize!({
       cfg: cfgWith({}),
@@ -385,6 +388,8 @@ describe("cliqSetupWizard", () => {
       { method: "text", value: "bot" },
       { method: "text", value: "" },
       { method: "text", value: "" },
+      { method: "text", value: "" },
+      // Public webhook URL (empty = setup records inbound as unverified).
       { method: "text", value: "" },
     ]);
     const result = await cliqSetupWizard.finalize!({
