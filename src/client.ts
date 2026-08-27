@@ -2436,6 +2436,49 @@ export class CliqClient {
     return res.json();
   }
 
+  private async writeBotJson(
+    path: string,
+    method: "POST" | "PATCH",
+    body: unknown,
+    scope = "ZohoCliq.Bots.UPDATE",
+  ): Promise<{ ok: true; data: unknown } | { ok: false; code: string; status?: number }> {
+    let token: string;
+    try {
+      token = await this.getAccessToken(scope);
+    } catch {
+      return { ok: false, code: "missing_scope" };
+    }
+    let response: Response;
+    try {
+      response = await fetch(`${this.apiBase}${path}`, {
+        method,
+        headers: {
+          Authorization: `Zoho-oauthtoken ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+    } catch {
+      return { ok: false, code: "transport" };
+    }
+    let data: unknown = null;
+    try {
+      data = await response.json();
+    } catch {
+      data = null;
+    }
+    if (response.ok) return { ok: true, data };
+    const returnedCode =
+      data && typeof data === "object" && typeof (data as { code?: unknown }).code === "string"
+        ? (data as { code: string }).code
+        : "";
+    const code =
+      response.status === 401 || returnedCode.toLowerCase().includes("scope")
+        ? "missing_scope"
+        : returnedCode || (response.status === 403 ? "missing_scope" : "http_error");
+    return { ok: false, code, status: response.status };
+  }
+
   private async readBotJson(path: string): Promise<unknown | CliqBotReadFailure> {
     let token: string;
     try {
@@ -2491,6 +2534,51 @@ export class CliqClient {
       return { kind: "not_found", detail: "Zoho reported that the bot was not found", status: res.status };
     }
     return { kind: "http", detail: `Zoho answered HTTP ${res.status}`, status: res.status };
+  }
+
+  async createBot(name: string): Promise<
+    | { ok: true; bot: CliqBotRecord }
+    | { ok: false; code: string; status?: number }
+  > {
+    return this.writeBotJson("/api/v3/bots", "POST", {
+      name,
+      scope: "organization",
+    }, "ZohoCliq.Bots.CREATE").then((result) => {
+      if (!result.ok) return result;
+      const value = result.data as { data?: unknown } | unknown;
+      const bot = (value && typeof value === "object" && !Array.isArray(value) && "data" in value)
+        ? (value as { data: unknown }).data
+        : value;
+      return bot && typeof bot === "object" && !Array.isArray(bot)
+        ? { ok: true as const, bot: bot as CliqBotRecord }
+        : { ok: false as const, code: "invalid_response" };
+    });
+  }
+
+  async createBotHandler(
+    botId: string,
+    handlerType: string,
+    script: string,
+  ): Promise<{ ok: boolean; code?: string; status?: number }> {
+    const result = await this.writeBotJson(
+      `/api/v3/bots/${encodeURIComponent(botId)}/handlers`,
+      "POST",
+      { type: handlerType, script },
+    );
+    return result.ok ? { ok: true } : result;
+  }
+
+  async updateBotHandler(
+    botId: string,
+    handlerType: string,
+    script: string,
+  ): Promise<{ ok: boolean; code?: string; status?: number }> {
+    const result = await this.writeBotJson(
+      `/api/v3/bots/${encodeURIComponent(botId)}/handlers/${encodeURIComponent(handlerType)}`,
+      "PATCH",
+      { script },
+    );
+    return result.ok ? { ok: true } : result;
   }
 
   async listBots(maxItems = 5_000): Promise<CliqBotRecord[] | CliqBotReadFailure> {

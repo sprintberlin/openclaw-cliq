@@ -13,6 +13,28 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
+- **Idempotent bot and handler provisioning from `openclaw setup` (issue #94).**
+  Setup now inspects the Zoho-held Message and Mention handlers (plus the
+  Welcome handler when the greeting is opted in) and reports a redacted
+  read-only dry-run before offering any change. Missing handlers are created;
+  when Zoho answers the full-script create with a generic `operation_failed`,
+  a minimal handler is created and then completed with `PATCH`, and that
+  fallback stays visible in the report. `execution_handler_update_failed` is
+  reported as a probable script-validity fault rather than retried, because
+  the Mention Handler does not receive the `attachments` parameter. Every
+  mutation needs its own explicit confirmation that defaults to no, and each
+  write is read back and only reported as successful when Zoho stored the
+  configured URL and secret.
+  **"Bot exists, handlers exist, URL matches, secret does NOT" is treated as
+  a first-class conflict**, never as "already configured, nothing to do": a
+  matching unique name is not proof that a bot belongs to this deployment,
+  and that exact state otherwise yields a green preflight while real inbound
+  traffic is rejected with `401`. An unreadable handler, an unrecognised
+  hand-written script, and a bot whose Zoho-derived unique name differs from
+  `channels.cliq.botId` all block instead of being overwritten. Handler
+  bodies, secrets, and OAuth material never reach the plan, the wizard notes,
+  or any report — only SHA-256 fingerprints.
+
 - **Read-only bot/subscription inspection and consented first-contact onboarding
   (issue #99).** `openclaw setup` can now resolve an optional user and channel
   by name, email, id, or handle through the existing directory adapter; show

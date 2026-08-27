@@ -28,6 +28,7 @@ import {
 import { resolveCliqSecretString } from "./secret-resolve.js";
 import { resolveCliqDirectoryAllowlist } from "./setup-directory.js";
 import { runCliqSetupOnboarding } from "./setup-onboarding.js";
+import { runCliqSetupProvisioning } from "./setup-provisioning-flow.js";
 import { describeCliqInboundVerification } from "./inbound-verification.js";
 
 const CHANNEL = "cliq" as const;
@@ -632,6 +633,31 @@ const cliqFinalize: NonNullable<ChannelSetupWizard["finalize"]> = async ({
   next = applyCliqInboundVerification(next, readiness);
 
   next = await promptCliqWelcomeOptIn(prompter, next);
+
+  // Issue #94: inspect the Zoho-held bot/handlers and offer idempotent
+  // provisioning. The dry-run is read-only and always runs first; any
+  // mutation (including repairing a handler whose URL matches but whose
+  // secret does not) needs its own explicit confirmation. Without a public
+  // webhook URL there is no target to provision, and a failure here must
+  // never abort a setup whose credentials are already written.
+  if (publicUrl && isCliqChannelConfigured(next)) {
+    try {
+      await runCliqSetupProvisioning({
+        cfg: next,
+        publicWebhookUrl: publicUrl,
+        prompter,
+        accountId: DEFAULT_ACCOUNT_ID,
+        includeWelcome:
+          (readCliqSection(next).welcome as { enabled?: unknown } | undefined)?.enabled === true,
+      });
+    } catch {
+      await noteSafely(
+        prompter,
+        "Bot and handler provisioning could not be inspected; no Zoho-held handler was changed.",
+        "Zoho Cliq bot/handler provisioning",
+      );
+    }
+  }
 
   await runCliqSetupOnboarding({
     cfg: next,
