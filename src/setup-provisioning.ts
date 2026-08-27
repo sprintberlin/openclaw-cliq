@@ -5,7 +5,11 @@ import {
   type CliqProvisioningPlan,
 } from "./bot-provisioning.js";
 import type { CliqBotIdLister } from "./bot-id.js";
-import type { CliqBotRecord } from "./client.js";
+import { isCliqBotReadFailure, type CliqBotRecord } from "./client.js";
+import {
+  getCapabilityById,
+  type CliqScopeSetEvaluation,
+} from "./capabilities.js";
 
 /**
  * Setup-facing orchestration for issue #94.
@@ -48,15 +52,42 @@ export interface CliqProvisioningRunResult {
   createdBot: boolean;
 }
 
-async function botExists(
+/**
+ * Three-valued bot lookup.
+ *
+ * A failed listing is `"unknown"`, never `"absent"`. Collapsing the two is
+ * what let a token without `ZohoCliq.Bots.READ` (but with `Bots.CREATE`)
+ * conclude "no such bot" and create a duplicate on every setup run — the
+ * exact opposite of idempotent.
+ */
+async function lookupBot(
   service: CliqBotProvisioningService,
   uniqueName: string,
-): Promise<boolean> {
-  const listed = await service.listBots();
-  if (!Array.isArray(listed)) return false;
+): Promise<{ state: "exists" | "absent" } | { state: "unknown"; reason: string }> {
+  let listed: Awaited<ReturnType<CliqBotIdLister>>;
+  try {
+    listed = await service.listBots();
+  } catch {
+    return { state: "unknown", reason: "the bot listing threw an unexpected error" };
+  }
+  if (isCliqBotReadFailure(listed)) {
+    const readHint = getCapabilityById("bot_read")?.missingHint;
+    return {
+      state: "unknown",
+      reason:
+        listed.kind === "missing_scope"
+          ? `the bot listing was refused, so the bot's existence is unknown. ${readHint ?? ""}`.trim()
+          : `the bot listing did not complete (${listed.detail}), so the bot's existence is unknown`,
+    };
+  }
+  if (!Array.isArray(listed)) {
+    return { state: "unknown", reason: "the bot listing returned an unrecognised response" };
+  }
   return listed.some(
     (record) => record.unique_name?.trim().toLowerCase() === uniqueName.trim().toLowerCase(),
-  );
+  )
+    ? { state: "exists" }
+    : { state: "absent" };
 }
 
 export async function provisionCliqBotAndHandlers(params: {
@@ -66,6 +97,15 @@ export async function provisionCliqBotAndHandlers(params: {
   confirmed: boolean;
   /** Include the optional Welcome handler (only when the greeting is opted in). */
   includeWelcome?: boolean;
+  /**
+   * Granted-scope evaluation for the account, when available.
+   *
+   * The gate is deliberately one-directional: a *missing* scope blocks the
+   * mutation, but a *present* scope never authorises it on its own — Zoho
+   * issues tokens that echo scopes the API later rejects (learning 070), so
+   * the real API result still decides.
+   */
+  capabilities?: CliqScopeSetEvaluation;
   service: CliqBotProvisioningService;
 }): Promise<CliqProvisioningRunResult> {
   const uniqueName = params.account.botId.trim();
@@ -73,7 +113,39 @@ export async function provisionCliqBotAndHandlers(params: {
   let createdBot = false;
   let createdBotId: string | undefined;
 
-  if (!(await botExists(params.service, uniqueName))) {
+  const blockedPlan = (evidence: string[]): CliqProvisioningRunResult => ({
+    createdBot: false,
+    plan: {
+      status: "blocked",
+      configuredUniqueName: uniqueName,
+      items: [],
+      evidence,
+    },
+    apply: params.dryRun ? undefined : { ok: false, applied: false, results: [] },
+  });
+
+  // Handler provisioning writes Zoho-held code, so a known-missing
+  // Bots.UPDATE consent must block before anything is planned rather than
+  // surfacing later as a raw oauthtoken_scope_invalid.
+  if (mayMutate && params.capabilities) {
+    const botUpdate = getCapabilityById("bot_update")!;
+    if (!params.capabilities.granted.includes(botUpdate.scope)) {
+      return blockedPlan([botUpdate.missingHint]);
+    }
+  }
+
+  const lookup = await lookupBot(params.service, uniqueName);
+  if (lookup.state === "unknown") {
+    return blockedPlan([lookup.reason]);
+  }
+
+  if (lookup.state === "absent") {
+    if (mayMutate && params.capabilities && !params.capabilities.canCreateBots) {
+      // #110: Bots.READ + Bots.UPDATE is silently insufficient to create a
+      // bot; name the actual missing scope instead of relaying a generic
+      // 401 from Zoho.
+      return blockedPlan([getCapabilityById("bot_create")!.missingHint]);
+    }
     if (!mayMutate) {
       // Report the intent without touching Zoho. The handler planner would
       // only be able to say "the bot could not be resolved", which hides the
@@ -131,9 +203,10 @@ export async function provisionCliqBotAndHandlers(params: {
   const listBots: CliqBotIdLister = createdBotId
     ? async (maxItems) => {
         const listed = await params.service.listBots(maxItems);
-        if (!Array.isArray(listed)) {
-          return [{ id: createdBotId, unique_name: uniqueName }];
-        }
+        // A read failure after the create is still a read failure: pass it
+        // through so the planner blocks, instead of fabricating a record and
+        // planning handlers against unverified state.
+        if (!Array.isArray(listed)) return listed;
         if (listed.some((record) => record.id === createdBotId)) return listed;
         return [{ id: createdBotId, unique_name: uniqueName }, ...listed];
       }

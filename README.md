@@ -308,7 +308,7 @@ exchange for a permanent **refresh token**.
 1. In the **[Zoho API Console](https://api-console.zoho.com)** ([your data center](#data-centers)) → your **Self Client** → tab **Generate Code**.
 2. **Scope** (the Self Client field is comma-separated, no spaces):
    ```
-   ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Channels.CREATE,ZohoCliq.Messages.UPDATE,ZohoCliq.Messages.READ,ZohoCliq.Messages.DELETE,ZohoCliq.Channels.READ,ZohoCliq.Users.READ,ZohoCliq.messageactions.CREATE,ZohoCliq.Attachments.READ
+   ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Channels.CREATE,ZohoCliq.Channels.READ,ZohoCliq.Users.READ,ZohoCliq.Messages.UPDATE,ZohoCliq.Messages.READ,ZohoCliq.Messages.DELETE,ZohoCliq.messageactions.CREATE,ZohoCliq.Attachments.READ,ZohoCliq.Bots.READ,ZohoCliq.Bots.CREATE,ZohoCliq.Bots.UPDATE
    ```
 3. **Time Duration:** 10 minutes. **Scope Description:** anything (e.g. `openclaw`). Pick your **portal/org** if prompted.
 4. Click **Create** and copy the code — it looks like `1000.<hex>.<hex>`.
@@ -765,7 +765,7 @@ Stages, in order:
 1. Config schema and secret resolution
 2. Runtime lifecycle/status (an OAuth-backed status probe; it cannot read the running gateway's route table — stage 6 verifies the live `/cliq/webhook` route)
 3. OAuth `client_credentials` and `refresh_token` grants
-4. Required API capability probes (only the scopes with a safe read-only probe are exercised; `dm_send`, `channel_send`, and `message_edit` have none, so that stage warns and points at `--outbound-test`)
+4. Required API capability probes (only scopes with a safe read-only `GET` are exercised: user lookup, channel lookup, and bot read; `dm_send`, `channel_send`, `message_edit`, and mutation-only capabilities have none, so the stage warns and points at the relevant explicit send test)
 5. Bot existence, state, visibility, and handler inspection
 6. Public DNS, TLS, route, and webhook-secret enforcement
 7. Read-only user/channel discovery
@@ -773,6 +773,8 @@ Stages, in order:
 9. Optional nonce-correlated inbound/agent/reply roundtrip (`--roundtrip`)
 
 Stage 7 is an aid for choosing a target, not a precondition for reaching one: if a directory read fails, the stage warns (the run is `degraded`, exit `1`), target resolution is unavailable, but stages 8 and 9 still run against an explicit `--target`. A failure in any earlier stage does block the consented send.
+
+Capability output keeps three kinds of evidence visibly separate: `pass` means a real read-only API call succeeded; `not verified` means no safe non-destructive probe exists; and `reported from the granted scope set, not proven` means the only real probe would mutate Zoho (for example bot creation). A copied scope string or a token response echoing that scope never upgrades either of the last two states to `pass` — Zoho can issue a token whose API call still fails with `oauthtoken_scope_invalid`.
 
 Stage 5 uses the shared read-only bot inspector. It resolves the configured unique name to Zoho's internal `b-…` id, then reports the documented active status, visibility scope (`organization`, `team`, or `personal`), subscriber count, and handler-secret/URL consistency. Subscriber membership is read separately and is available only to the bot creator or an organization administrator; when Zoho refuses that read, subscription remains explicitly `unknown` while the bot facts that were readable stay known. Missing `ZohoCliq.Bots.READ`, an unrecognised status/scope value, transport failure, or an incomplete subscriber walk also remains `unknown` and makes the stage warn/degrade — it never becomes `unsubscribed` by inference. A missing or inactive bot, or a known handler conflict, fails the stage. Likewise, the required send scopes (`dm_send`, `channel_send`, `message_edit`) have no safe read-only probe, so a read-only run may still be `degraded` — run with `--outbound-test` or `--roundtrip` to exercise the send path.
 

@@ -11,6 +11,37 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Fixed
+
+- **OAuth capability evidence is no longer conflated with consent (issue #93,
+  including #110).** The capability matrix now distinguishes four outcomes
+  instead of three: a capability is `pass` only when a real read-only API call
+  succeeded, `not verified` when no safe non-destructive probe exists, and
+  `reported from the granted scope set, not proven` when the only real proof
+  would mutate Zoho (bot creation). A copied scope string, or a token response
+  that echoes a scope Zoho later rejects, can no longer read as proof. Every
+  unprobeable capability must now state *why* it cannot be probed, which also
+  prevents a destructive "probe" (a real send, a live handler `PATCH`, a bot
+  create) from being added later to make an honest gap look green.
+  `ZohoCliq.Bots.READ` gained a genuine read-only probe
+  (`GET /api/v3/bots?limit=1`).
+- **Bot and handler provisioning now fails closed without capability
+  evidence.** A failed bot listing is treated as "existence unknown" instead
+  of "bot absent", so a token lacking `ZohoCliq.Bots.READ` can no longer
+  conclude the bot is missing and create a duplicate on every setup run. When
+  the granted scope set is known, a missing `ZohoCliq.Bots.CREATE` or
+  `ZohoCliq.Bots.UPDATE` blocks the mutation and names the exact scope and
+  regeneration step rather than surfacing a generic
+  `oauthtoken_scope_invalid` from Zoho. A read failure after a create no
+  longer fabricates a bot record. The gate is one-directional: a missing
+  scope blocks, but a present scope never authorises on its own.
+- **The setup wizard printed an incomplete scope list.** It hardcoded six
+  scopes and omitted `ZohoCliq.Bots.CREATE`, so operators who followed it
+  could not provision a bot. The wizard, README §3c, and the multi-agent guide
+  now all derive from the capability matrix. Missing-capability warnings quote
+  the matrix's per-capability scope and regeneration instructions instead of a
+  generic README pointer.
+
 ### Added
 
 - **Idempotent bot and handler provisioning from `openclaw setup` (issue #94).**

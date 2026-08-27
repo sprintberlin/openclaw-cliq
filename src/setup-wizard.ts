@@ -7,6 +7,7 @@ import {
   type WizardPrompter,
 } from "openclaw/plugin-sdk/setup";
 import { hasConfiguredSecretInput } from "openclaw/plugin-sdk/secret-input-runtime";
+import { FULL_SCOPE_STRING } from "./capabilities.js";
 import {
   CLIQ_DATA_CENTERS,
   CLIQ_DEFAULT_DC_ID,
@@ -602,8 +603,11 @@ const cliqFinalize: NonNullable<ChannelSetupWizard["finalize"]> = async ({
   await prompter.note(
     [
       `Create a self-client at ${dc.consoleUrl} (${dc.label}) with scopes:`,
-      "  ZohoCliq.Webhooks.CREATE, ZohoCliq.Channels.UPDATE, ZohoCliq.Channels.READ,",
-      "  ZohoCliq.Users.READ, ZohoCliq.Bots.READ, ZohoCliq.Messages.UPDATE.",
+      // Derived from the capability matrix so the wizard can never drift from
+      // the documented profile. The previous hardcoded list omitted
+      // ZohoCliq.Bots.CREATE, so operators who followed it could not
+      // provision a bot (issue #110).
+      `  ${FULL_SCOPE_STRING}`,
       "Bot DMs use client_credentials; channel posts + message edits need a",
       "user-context refresh token — obtain one via the self-client",
       "authorization_code flow (see README §3) and set refreshToken below.",

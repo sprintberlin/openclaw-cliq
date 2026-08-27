@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
+import { CLIQ_CAPABILITIES } from "./capabilities.js";
 import {
   CLIQ_DOCTOR_EXIT,
   CLIQ_DOCTOR_SCHEMA_VERSION,
@@ -1078,5 +1079,38 @@ describe("cliq doctor — redaction", () => {
     const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }));
     expect(JSON.stringify(report)).not.toContain("leaky");
     expect(stageOf(report, "oauth").evidence.join(" ")).toBe("request failed with HTTP 401");
+  });
+});
+
+describe("cliq doctor — capability evidence honesty (issue #93)", () => {
+  it("separates consent-reported capabilities from probed ones", async () => {
+    const report = await runDefault();
+    const evidence = stageOf(report, "capabilities").evidence.join(" ");
+    expect(evidence).toMatch(/bot_create/);
+    expect(evidence).toMatch(/consent|granted scope set|not proven/i);
+  });
+
+  it("never reports a capability as passing without probe evidence", async () => {
+    const report = await runDefault();
+    const evidence = stageOf(report, "capabilities").evidence.join(" ");
+    // Only capabilities with a real read-only probe may be marked pass.
+    const passing = evidence.match(/(\w+)=pass/g) ?? [];
+    const probeableIds = CLIQ_CAPABILITIES.filter((c) => c.probePath).map((c) => c.id);
+    for (const entry of passing) {
+      expect(probeableIds).toContain(entry.replace("=pass", ""));
+    }
+  });
+
+  it("degrades the bot stage instead of inspecting when bot_read is refused", async () => {
+    const probeCapability = vi.fn(async (capability) => ({
+      capabilityId: capability.id,
+      scope: capability.scope,
+      status: capability.id === "bot_read" ? ("missing_scope" as const) : ("ok" as const),
+      error: capability.id === "bot_read" ? capability.missingHint : undefined,
+    }));
+    const report = await runDefault(cfgWith(), createDeps({ probeCapability }));
+    const capabilities = stageOf(report, "capabilities");
+    expect(capabilities.evidence.join(" ")).toContain("bot_read=fail");
+    expect(capabilities.remediation.join(" ")).toContain("ZohoCliq.Bots.READ");
   });
 });
