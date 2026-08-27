@@ -83,13 +83,30 @@ run the route check directly against the gateway on the host itself:
 ```bash
 openclaw cliq webhook-route            # defaults to http://127.0.0.1:18789/cliq/webhook
 openclaw cliq webhook-route --port 8080
-openclaw cliq webhook-route --json     # machine-readable; exit 0 only when registered
+openclaw cliq webhook-route --json     # machine-readable
 ```
 
+Exit codes: `0` when the route is proven registered, `1` when the result is
+anything else, and `2` for a bad `--port` (an unusable port is an error, never
+a silent fallback to `18789`, which could report an unrelated gateway as
+healthy).
+
+Prefer the loopback default. Registration is proven by a route-signature
+response header, and a reverse proxy that strips unknown headers will make an
+otherwise healthy `--url https://…` run report `unknown`; querying the gateway
+address directly avoids that.
+
 If this reports the route as registered but the preflight fails, the problem is
-in front of the gateway (DNS, TLS, proxy, tunnel rules). If it reports the route
-as absent, the plugin is not loaded or `channels.cliq` is not configured — a
-channel plugin registers its route only once its channel is configured.
+in front of the gateway (DNS, TLS, proxy, tunnel rules). Registration is only
+claimed on a `405` that also carries the plugin's own route signature header,
+so an unrelated service that happens to reject `GET` cannot pass the check.
+Every other outcome — an unreachable port, a bare `404` (which a proxy can
+generate without ever reaching the gateway), or any unexpected status — is
+reported as inconclusive with a non-zero exit code, never as a confirmed
+verdict. When it is inconclusive, query the gateway address directly: if the
+route is genuinely absent there, the plugin is not loaded or `channels.cliq`
+is not configured — a channel plugin registers its route only once its channel
+is configured.
 
 > **`plugins inspect` cannot answer this question.** `openclaw plugins inspect
 > cliq --runtime --json` prints `"httpRoutes": 0` even on a healthy install

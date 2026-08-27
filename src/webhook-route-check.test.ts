@@ -3,6 +3,8 @@ import {
   buildLocalWebhookUrl,
   checkCliqWebhookRoute,
   formatCliqRouteCheckReport,
+  CLIQ_ROUTE_HEADER,
+  CLIQ_ROUTE_HEADER_VALUE,
   INSPECT_NOTE,
   type CliqRouteCheckFetch,
 } from "./webhook-route-check.js";
@@ -40,6 +42,7 @@ describe("route registration is asserted independently of the inspect field (iss
     // 405 is the signal `checkCliqWebhookRoute` reads as registered.
     expect(res.statusCode).toBe(405);
     expect(res.headers["Allow"]).toBe("POST");
+    expect(res.headers[CLIQ_ROUTE_HEADER]).toBe(CLIQ_ROUTE_HEADER_VALUE);
   });
 });
 
@@ -60,7 +63,10 @@ describe("checkCliqWebhookRoute", () => {
 
   it("reports the route as registered when GET is rejected with 405", async () => {
     const report = await checkCliqWebhookRoute({
-      fetchImpl: fetchStub(async () => ({ status: 405, text: async () => "Method Not Allowed" })),
+      fetchImpl: fetchStub(async () => ({
+        status: 405,
+        headers: { [CLIQ_ROUTE_HEADER]: CLIQ_ROUTE_HEADER_VALUE },
+      })),
     });
     expect(report.ok).toBe(true);
     expect(report.status).toBe("registered");
@@ -69,15 +75,38 @@ describe("checkCliqWebhookRoute", () => {
     expect(report.detail).toMatch(/registered/i);
   });
 
-  it("reports the route as absent on 404", async () => {
+  it("does not trust an unrelated 405 without the Cliq route signature", async () => {
     const report = await checkCliqWebhookRoute({
-      fetchImpl: fetchStub(async () => ({ status: 404, text: async () => "not found" })),
+      fetchImpl: fetchStub(async () => ({
+        status: 405,
+        headers: { allow: "POST" },
+      })),
     });
     expect(report.ok).toBe(false);
-    expect(report.status).toBe("absent");
+    expect(report.status).toBe("unknown");
+    expect(report.detail).toMatch(/route signature/i);
+  });
+
+  it("matches the route signature case-insensitively", async () => {
+    const report = await checkCliqWebhookRoute({
+      fetchImpl: fetchStub(async () => ({
+        status: 405,
+        headers: { "X-OpenClaw-Cliq-Route": CLIQ_ROUTE_HEADER_VALUE },
+      })),
+    });
+    expect(report.ok).toBe(true);
+    expect(report.status).toBe("registered");
+  });
+
+  it("reports an unsigned 404 as unknown because a proxy may have generated it", async () => {
+    const report = await checkCliqWebhookRoute({
+      fetchImpl: fetchStub(async () => ({ status: 404 })),
+    });
+    expect(report.ok).toBe(false);
+    expect(report.status).toBe("unknown");
     expect(report.httpStatus).toBe(404);
-    expect(report.detail).toMatch(/not registered/i);
-    expect(report.detail).toMatch(/channels\.cliq/);
+    expect(report.detail).toMatch(/inconclusive/i);
+    expect(report.detail).toMatch(/proxy|another service/i);
   });
 
   it("never uses a POST or sends a secret, so it cannot dispatch a turn", async () => {
@@ -85,7 +114,10 @@ describe("checkCliqWebhookRoute", () => {
     await checkCliqWebhookRoute({
       fetchImpl: fetchStub(async (_url, init) => {
         methods.push(init?.method ?? "GET");
-        return { status: 405, text: async () => "" };
+        return {
+          status: 405,
+          headers: { [CLIQ_ROUTE_HEADER]: CLIQ_ROUTE_HEADER_VALUE },
+        };
       }),
     });
     expect(methods).toEqual(["GET"]);
@@ -108,7 +140,6 @@ describe("checkCliqWebhookRoute", () => {
     const report = await checkCliqWebhookRoute({
       fetchImpl: fetchStub(async () => ({
         status: 200,
-        text: async () => "<html>gateway ui</html>",
       })),
     });
     expect(report.ok).toBe(false);
@@ -123,7 +154,7 @@ describe("checkCliqWebhookRoute", () => {
       url: "https://example.com/wrong",
       fetchImpl: fetchStub(async () => {
         called = true;
-        return { status: 405, text: async () => "" };
+        return { status: 405 };
       }),
     });
     expect(called).toBe(false);
@@ -134,7 +165,10 @@ describe("checkCliqWebhookRoute", () => {
   it("accepts an explicit https URL for a proxied deployment", async () => {
     const report = await checkCliqWebhookRoute({
       url: "https://cliq.example.com/cliq/webhook",
-      fetchImpl: fetchStub(async () => ({ status: 405, text: async () => "" })),
+      fetchImpl: fetchStub(async () => ({
+        status: 405,
+        headers: { [CLIQ_ROUTE_HEADER]: CLIQ_ROUTE_HEADER_VALUE },
+      })),
     });
     expect(report.ok).toBe(true);
     expect(report.url).toBe("https://cliq.example.com/cliq/webhook");
@@ -143,7 +177,7 @@ describe("checkCliqWebhookRoute", () => {
   it("always carries the explanation for the inspect httpRoutes discrepancy", async () => {
     for (const status of [405, 404, 500]) {
       const report = await checkCliqWebhookRoute({
-        fetchImpl: fetchStub(async () => ({ status, text: async () => "" })),
+        fetchImpl: fetchStub(async () => ({ status })),
       });
       expect(report.inspectNote).toBe(INSPECT_NOTE);
       expect(report.inspectNote).toMatch(/httpRoutes/);
@@ -154,7 +188,10 @@ describe("checkCliqWebhookRoute", () => {
 describe("formatCliqRouteCheckReport", () => {
   it("renders the verdict and the inspect explanation", async () => {
     const report = await checkCliqWebhookRoute({
-      fetchImpl: async () => ({ status: 405, text: async () => "" }),
+      fetchImpl: async () => ({
+        status: 405,
+        headers: { [CLIQ_ROUTE_HEADER]: CLIQ_ROUTE_HEADER_VALUE },
+      }),
     });
     const lines = formatCliqRouteCheckReport(report);
     expect(lines[0]).toContain(LOCAL_URL);
@@ -182,24 +219,6 @@ describe("runCliqWebhookRouteCommand", () => {
     );
     expect(code).toBe(0);
     expect(lines.join("\n")).toContain(LOCAL_URL);
-  });
-
-  it("exits 1 when the route is absent", async () => {
-    const code = await runCliqWebhookRouteCommand(
-      {},
-      {
-        runCheck: async () => ({
-          ok: false,
-          status: "absent",
-          url: LOCAL_URL,
-          httpStatus: 404,
-          detail: "absent",
-          inspectNote: INSPECT_NOTE,
-        }),
-        writeLine: () => {},
-      },
-    );
-    expect(code).toBe(1);
   });
 
   it("exits 1 when the result is inconclusive so it is safe as a deploy gate", async () => {
@@ -240,11 +259,12 @@ describe("runCliqWebhookRouteCommand", () => {
     expect(parsed).toMatchObject({ ok: true, status: "registered", httpStatus: 405 });
   });
 
-  it("passes the port through and ignores a non-numeric one", async () => {
-    const seen: Array<number | undefined> = [];
+  it("passes a valid port through and rejects an invalid one", async () => {
+    const seen: number[] = [];
+    const errors: string[] = [];
     const deps = {
       runCheck: async ({ port }: { url?: string; port?: number }) => {
-        seen.push(port);
+        if (port !== undefined) seen.push(port);
         return {
           ok: true,
           status: "registered" as const,
@@ -255,9 +275,13 @@ describe("runCliqWebhookRouteCommand", () => {
         };
       },
       writeLine: () => {},
+      writeError: (line: string) => errors.push(line),
     };
-    await runCliqWebhookRouteCommand({ port: 9999 }, deps);
-    await runCliqWebhookRouteCommand({ port: Number("abc") }, deps);
-    expect(seen).toEqual([9999, undefined]);
+    expect(await runCliqWebhookRouteCommand({ port: 9999 }, deps)).toBe(0);
+    expect(await runCliqWebhookRouteCommand({ port: Number("abc") }, deps)).toBe(2);
+    expect(await runCliqWebhookRouteCommand({ port: 70000 }, deps)).toBe(2);
+    expect(seen).toEqual([9999]);
+    expect(errors).toHaveLength(2);
+    expect(errors.every((line) => line.includes("Invalid --port"))).toBe(true);
   });
 });

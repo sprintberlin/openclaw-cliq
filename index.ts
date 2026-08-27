@@ -37,6 +37,10 @@ import {
   parseCliqProbePayload,
 } from "./src/webhook-probe.js";
 import { recordCliqActivity } from "./src/activity.js";
+import {
+  CLIQ_ROUTE_HEADER,
+  CLIQ_ROUTE_HEADER_VALUE,
+} from "./src/webhook-route-check.js";
 
 /**
  * Per-IP fixed-window limiter for *failed* webhook authentications. Legit
@@ -101,7 +105,7 @@ export default defineChannelPluginEntry({
             );
             const code = await runCliqWebhookRouteCommand({
               url: opts.url,
-              port: opts.port ? Number(opts.port) : undefined,
+              port: opts.port === undefined ? undefined : Number(opts.port),
               json: opts.json,
             });
             process.exitCode = code;
@@ -137,6 +141,9 @@ export default defineChannelPluginEntry({
         if (req.method !== "POST") {
           res.statusCode = 405;
           res.setHeader("Allow", "POST");
+          // Route signature: lets `openclaw cliq webhook-route` distinguish
+          // THIS route's 405 from an unrelated service that also rejects GET.
+          res.setHeader(CLIQ_ROUTE_HEADER, CLIQ_ROUTE_HEADER_VALUE);
           res.end("Method Not Allowed");
           return true;
         }

@@ -1,8 +1,15 @@
 import { CLIQ_WEBHOOK_PATH } from "./webhook-preflight.js";
 
 export const DEFAULT_GATEWAY_PORT = 18789;
+export const CLIQ_ROUTE_HEADER = "x-openclaw-cliq-route";
+export const CLIQ_ROUTE_HEADER_VALUE = "webhook";
 
-export type CliqRouteCheckStatus = "registered" | "absent" | "unknown";
+/**
+ * `registered` is only claimed on a signed 405. Everything else — including a
+ * 404, which a proxy can generate without ever reaching the gateway — is
+ * `unknown`: this check reports what it can prove, never what it infers.
+ */
+export type CliqRouteCheckStatus = "registered" | "unknown";
 
 export interface CliqRouteCheckReport {
   ok: boolean;
@@ -15,7 +22,6 @@ export interface CliqRouteCheckReport {
 
 export interface CliqRouteCheckResponse {
   status: number;
-  text: () => Promise<string>;
   headers?: Record<string, string>;
 }
 
@@ -59,6 +65,9 @@ function defaultFetch(timeoutMs: number): CliqRouteCheckFetch {
   return async (url, init) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    // Never let a pending deadline keep the process alive: the timer is only
+    // a ceiling, not work of its own.
+    timer.unref?.();
     try {
       const res = await fetch(url, {
         method: init?.method,
@@ -69,7 +78,12 @@ function defaultFetch(timeoutMs: number): CliqRouteCheckFetch {
       res.headers.forEach((value, key) => {
         headers[key.toLowerCase()] = value;
       });
-      return { status: res.status, text: () => res.text(), headers };
+      // The verdict is derived from the status and the route-signature
+      // header only. The body is never read, so a server that sends headers
+      // and then stalls (or streams an unbounded body) cannot hang or
+      // balloon this check.
+      await res.body?.cancel().catch(() => {});
+      return { status: res.status, headers };
     } finally {
       clearTimeout(timer);
     }
@@ -117,42 +131,55 @@ export async function checkCliqWebhookRoute(
   }
 
   if (res.status === 405) {
+    const headers = res.headers ?? {};
+    // Header names are case-insensitive; a custom fetchImpl may preserve the
+    // wire casing, so normalize before looking the signature up.
+    const routeHeader = Object.entries(headers).find(
+      ([key]) => key.toLowerCase() === CLIQ_ROUTE_HEADER,
+    )?.[1];
+    if (routeHeader !== CLIQ_ROUTE_HEADER_VALUE) {
+      return {
+        ok: false,
+        status: "unknown",
+        url,
+        httpStatus: 405,
+        detail: `inconclusive: GET was rejected with 405, but the response did not carry the Cliq route signature ${CLIQ_ROUTE_HEADER}: ${CLIQ_ROUTE_HEADER_VALUE}. Another service may be answering.`,
+        inspectNote: INSPECT_NOTE,
+      };
+    }
     return {
       ok: true,
       status: "registered",
       url,
       httpStatus: 405,
-      detail: `${CLIQ_WEBHOOK_PATH} is registered: GET was rejected with 405 by the plugin's own handler.`,
+      detail: `${CLIQ_WEBHOOK_PATH} is registered: GET was rejected with 405 and the response carried the plugin's route signature.`,
       inspectNote: INSPECT_NOTE,
     };
   }
   if (res.status === 404) {
     return {
       ok: false,
-      status: "absent",
+      status: "unknown",
       url,
       httpStatus: 404,
-      detail: `${CLIQ_WEBHOOK_PATH} is NOT registered: the gateway answered 404. Install and enable the plugin, and configure channels.cliq — a channel plugin registers its route only once its channel is configured.`,
+      detail:
+        "inconclusive: the address answered 404. The Cliq route did not answer, but a proxy or another service may have generated this response; query the gateway address directly to distinguish an absent route.",
       inspectNote: INSPECT_NOTE,
     };
   }
 
-  const body = await res.text().catch(() => "");
-  const snippet = body.replace(/\s+/g, " ").trim().slice(0, 120);
   return {
     status: "unknown",
     ok: false,
     url,
     httpStatus: res.status,
-    detail: `inconclusive: expected 405 (registered) or 404 (absent) on GET, got ${res.status}${
-      snippet ? `: ${snippet}` : ""
-    }. Something other than the plugin route answered — check what is listening on this address.`,
+    detail: `inconclusive: expected 405 with the Cliq route signature, got ${res.status}. Something other than the plugin route answered — check what is listening on this address.`,
     inspectNote: INSPECT_NOTE,
   };
 }
 
 export function formatCliqRouteCheckReport(report: CliqRouteCheckReport): string[] {
-  const icon = report.status === "registered" ? "PASS" : report.status === "absent" ? "FAIL" : "WARN";
+  const icon = report.status === "registered" ? "PASS" : "WARN";
   return [
     `Cliq webhook route check: ${report.url}`,
     `  ${icon}: ${report.detail}`,

@@ -15,12 +15,15 @@ publish workflow extracts the matching section as the release notes (see
 
 - **`openclaw cliq webhook-route` (issue #108).** A local, unauthenticated
   check that asks the running gateway whether `/cliq/webhook` is registered.
-  `GET` → `405` is the live-route contract; `404` means the route is genuinely
-  absent. An unreachable gateway is reported as `unknown`, never as a missing
-  route. The report always explains why `openclaw plugins inspect cliq
-  --runtime --json` prints `"httpRoutes": 0` even for a healthy install: that
-  command loads plugins without activating them, so `registerFull` (the only
-  place the route is registered) never runs for it. Tracked upstream as
+  Registration is only claimed on a `405` that also carries the plugin's own
+  route-signature header, so an unrelated service that rejects `GET` cannot
+  pass; every other outcome (unreachable port, a bare `404` a proxy may have
+  generated, any unexpected status) is reported as inconclusive with a
+  non-zero exit code, so the command is safe as a deploy gate. The report
+  always explains why `openclaw plugins inspect cliq --runtime --json` prints
+  `"httpRoutes": 0` even for a healthy install: that command loads plugins
+  without activating them, so `registerFull` (the only place the route is
+  registered) never runs for it. Tracked upstream as
   [openclaw/openclaw#130773](https://github.com/openclaw/openclaw/issues/130773).
 
 ### Fixed
