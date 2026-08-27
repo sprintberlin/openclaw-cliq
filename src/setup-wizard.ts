@@ -27,6 +27,7 @@ import {
 } from "./inbound-readiness.js";
 import { resolveCliqSecretString } from "./secret-resolve.js";
 import { resolveCliqDirectoryAllowlist } from "./setup-directory.js";
+import { runCliqSetupOnboarding } from "./setup-onboarding.js";
 import { describeCliqInboundVerification } from "./inbound-verification.js";
 
 const CHANNEL = "cliq" as const;
@@ -550,6 +551,40 @@ export async function verifyCliqInboundDuringSetup(params: {
   return readiness;
 }
 
+export async function promptCliqWelcomeOptIn(
+  prompter: WizardPrompter,
+  cfg: OpenClawConfig,
+): Promise<OpenClawConfig> {
+  const section = readCliqSection(cfg);
+  const welcome = section.welcome as Record<string, unknown> | undefined;
+  const alreadyEnabled = welcome?.enabled === true;
+  let enable: boolean;
+  try {
+    enable = await prompter.confirm({
+      message: alreadyEnabled
+        ? "Keep greeting users with a welcome DM when they subscribe to the bot?"
+        : "Greet users with a welcome DM when they subscribe to the bot? (needs the Cliq Welcome Handler)",
+      initialValue: alreadyEnabled,
+    });
+  } catch {
+    return cfg;
+  }
+  if (!enable) {
+    if (!welcome) return cfg;
+    return patchCliqSection(cfg, { welcome: { ...welcome, enabled: false } });
+  }
+  await noteSafely(
+    prompter,
+    [
+      "The greeting only fires once the bot's Welcome Handler forwards subscribe events to",
+      "<gateway>/cliq/webhook (README §5a shows the Deluge script). DM admission still applies:",
+      "a denied or un-paired subscriber is never greeted.",
+    ].join("\n"),
+    "Zoho Cliq welcome",
+  );
+  return patchCliqSection(cfg, { welcome: { ...(welcome ?? {}), enabled: true } });
+}
+
 const cliqFinalize: NonNullable<ChannelSetupWizard["finalize"]> = async ({
   cfg,
   prompter,
@@ -567,7 +602,7 @@ const cliqFinalize: NonNullable<ChannelSetupWizard["finalize"]> = async ({
     [
       `Create a self-client at ${dc.consoleUrl} (${dc.label}) with scopes:`,
       "  ZohoCliq.Webhooks.CREATE, ZohoCliq.Channels.UPDATE, ZohoCliq.Channels.READ,",
-      "  ZohoCliq.Users.READ, ZohoCliq.Messages.UPDATE.",
+      "  ZohoCliq.Users.READ, ZohoCliq.Bots.READ, ZohoCliq.Messages.UPDATE.",
       "Bot DMs use client_credentials; channel posts + message edits need a",
       "user-context refresh token — obtain one via the self-client",
       "authorization_code flow (see README §3) and set refreshToken below.",
@@ -596,9 +631,16 @@ const cliqFinalize: NonNullable<ChannelSetupWizard["finalize"]> = async ({
   // wizard exits, instead of inferring readiness from credentials alone.
   next = applyCliqInboundVerification(next, readiness);
 
+  next = await promptCliqWelcomeOptIn(prompter, next);
+
+  await runCliqSetupOnboarding({
+    cfg: next,
+    prompter,
+    accountId: DEFAULT_ACCOUNT_ID,
+    publicWebhookUrl: publicUrl,
+  });
+
   // Trusted-organization mode is opt-in. Only an existing deliberately open
-  // policy is offered this acknowledgement prompt; fresh setup remains
-  // deny-by-default and upgrades never infer or write this metadata.
   const section = readCliqSection(next);
   const allowFrom = Array.isArray(section.allowFrom)
     ? section.allowFrom.filter((value): value is string => typeof value === "string")

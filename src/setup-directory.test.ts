@@ -1,7 +1,10 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { createCliqTestConfig as cfgWith } from "./test-api.js";
 import { cliqDirectoryAdapter } from "./directory.js";
-import { resolveCliqDirectoryAllowlist } from "./setup-directory.js";
+import {
+  resolveCliqDirectoryAllowlist,
+  promptCliqDirectoryTarget,
+} from "./setup-directory.js";
 
 const CONFIGURED = cfgWith({
   clientId: "id",
@@ -62,5 +65,72 @@ describe("resolveCliqDirectoryAllowlist", () => {
       kind: "user",
     });
     expect(resolved[0].resolved).toBe(false);
+  });
+});
+
+describe("promptCliqDirectoryTarget", () => {
+  function prompter(answers: string[]) {
+    const queue = [...answers];
+    const notes: string[] = [];
+    return {
+      notes,
+      prompter: {
+        text: vi.fn(async () => queue.shift() ?? ""),
+        note: vi.fn(async (message: string) => {
+          notes.push(message);
+        }),
+      } as never,
+    };
+  }
+
+  it("resolves a typed email to the canonical user id", async () => {
+    vi.spyOn(cliqDirectoryAdapter, "listPeers" as never).mockResolvedValue([
+      { kind: "user", id: "112233", name: "Alice", handle: "alice@example.com" },
+    ] as never);
+    const { prompter: p } = prompter(["alice@example.com"]);
+    const target = await promptCliqDirectoryTarget({
+      cfg: CONFIGURED,
+      kind: "user",
+      prompter: p,
+    });
+    expect(target).toMatchObject({ id: "112233", label: "Alice", resolved: true });
+  });
+
+  it("reports an unknown user as unresolved and keeps the typed value", async () => {
+    vi.spyOn(cliqDirectoryAdapter, "listPeers" as never).mockResolvedValue([
+      { kind: "user", id: "112233", name: "Alice", handle: "alice@example.com" },
+    ] as never);
+    const { prompter: p, notes } = prompter(["nobody@example.com"]);
+    const target = await promptCliqDirectoryTarget({
+      cfg: CONFIGURED,
+      kind: "user",
+      prompter: p,
+    });
+    expect(target).toMatchObject({ id: "nobody@example.com", resolved: false });
+    expect(notes.join(" ")).toMatch(/could not|unresolved/i);
+  });
+
+  it("returns null when the operator enters nothing (selection is optional)", async () => {
+    vi.spyOn(cliqDirectoryAdapter, "listPeers" as never).mockResolvedValue([] as never);
+    const { prompter: p } = prompter([""]);
+    const target = await promptCliqDirectoryTarget({
+      cfg: CONFIGURED,
+      kind: "user",
+      prompter: p,
+    });
+    expect(target).toBeNull();
+  });
+
+  it("still completes when the directory read fails entirely", async () => {
+    vi.spyOn(cliqDirectoryAdapter, "listGroups" as never).mockRejectedValue(
+      new Error("scope missing") as never,
+    );
+    const { prompter: p } = prompter(["dev-team"]);
+    const target = await promptCliqDirectoryTarget({
+      cfg: CONFIGURED,
+      kind: "group",
+      prompter: p,
+    });
+    expect(target).toMatchObject({ id: "dev-team", resolved: false });
   });
 });

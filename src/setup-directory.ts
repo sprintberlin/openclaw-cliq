@@ -1,4 +1,5 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
+import type { WizardPrompter } from "openclaw/plugin-sdk/setup";
 import { cliqDirectoryAdapter } from "./directory.js";
 
 /**
@@ -72,4 +73,36 @@ export async function resolveCliqDirectoryAllowlist(params: {
         : (hit.id ?? input);
     return { input, id, label: hit.name, resolved: true };
   });
+}
+
+export async function promptCliqDirectoryTarget(params: {
+  cfg: OpenClawConfig;
+  kind: "user" | "group";
+  prompter: Pick<WizardPrompter, "text" | "note">;
+  accountId?: string;
+}): Promise<CliqResolvedAllowlistEntry | null> {
+  const noun = params.kind === "user" ? "user" : "channel";
+  const value = await params.prompter.text({
+    message:
+      params.kind === "user"
+        ? "Optional first-contact user (name, email, or user id)"
+        : "Optional test channel (name, handle, or channel id)",
+    placeholder: params.kind === "user" ? "person@example.com" : "dev-team",
+  });
+  const input = value.trim();
+  if (!input) return null;
+  const [resolved] = await resolveCliqDirectoryAllowlist({
+    cfg: params.cfg,
+    entries: [input],
+    kind: params.kind,
+    accountId: params.accountId,
+  });
+  if (!resolved) return null;
+  if (!resolved.resolved) {
+    await params.prompter.note(
+      `The Cliq directory could not resolve ${noun} "${input}". The literal value is preserved and no identity is guessed.`,
+      "Zoho Cliq target",
+    );
+  }
+  return resolved;
 }

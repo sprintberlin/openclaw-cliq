@@ -13,6 +13,21 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
+- **Read-only bot/subscription inspection and consented first-contact onboarding
+  (issue #99).** `openclaw setup` can now resolve an optional user and channel
+  by name, email, id, or handle through the existing directory adapter; show
+  the configured bot's documented active state, visibility scope, subscriber
+  count, and handler consistency; and send one clearly labeled first-contact
+  DM only after a separate explicit confirmation. The result exposes only
+  non-reversible redacted chat/message identifiers. Subscriber membership is
+  listed only when Zoho grants the bot-creator/organization-admin read;
+  unavailable, incomplete, unscoped, or unrecognised data is explicitly
+  `unknown` rather than guessed as unsubscribed. The same shared inspector now
+  powers doctor stage 5. Setup also exposes the existing greeting behavior as
+  an explicit Welcome Handler opt-in, preserves custom greeting text, and
+  explains bot discovery/subscription plus channel add, admission, mention,
+  and trusted-organization behavior without mutating any real channel.
+
 - **Explicit trusted-organization admission mode (issues #100, #103).**
   Organization-wide deployments can now be declared deliberately via
   `channels.cliq.trustedOrganization.acknowledged`, which `openclaw setup`
