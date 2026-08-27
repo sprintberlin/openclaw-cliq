@@ -110,9 +110,87 @@ describe("checkCliqHandlerConsistency (issue #124)", () => {
     const reader = createCliqHandlerScriptReader({
       account: { botId: "" },
       readHandlerScript: vi.fn(),
+      listBots: vi.fn(async () => []),
     });
 
     expect(reader).toBeNull();
+  });
+
+  it("resolves a configured unique name to the internal bot id before reading handlers (issue #149)", async () => {
+    const readHandlerScript = vi.fn(
+      async (_type: string, _botId?: string) => ({ script: script() }),
+    );
+    const listBots = vi.fn(async () => [
+      { id: "b-464329000000074001", unique_name: "franzi" },
+    ]);
+    const reader = createCliqHandlerScriptReader({
+      account: { botId: "franzi" },
+      readHandlerScript,
+      listBots,
+    });
+
+    const first = await reader!();
+    const second = await reader!();
+    expect(first.every((record) => typeof record.script === "string")).toBe(true);
+    expect(second.every((record) => typeof record.script === "string")).toBe(true);
+    expect(readHandlerScript).toHaveBeenCalledTimes(4);
+    for (const call of readHandlerScript.mock.calls) {
+      expect(call[1]).toBe("b-464329000000074001");
+    }
+    expect(listBots).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes an already-internal bot id straight through without a lookup", async () => {
+    const readHandlerScript = vi.fn(
+      async (_type: string, _botId?: string) => ({ script: script() }),
+    );
+    const listBots = vi.fn(async () => []);
+    const reader = createCliqHandlerScriptReader({
+      account: { botId: "b-464329000000074001" },
+      readHandlerScript,
+      listBots,
+    });
+
+    await reader!();
+    expect(listBots).not.toHaveBeenCalled();
+    expect(readHandlerScript.mock.calls[0][1]).toBe("b-464329000000074001");
+  });
+
+  it("degrades to a skipped comparison, never a pass, when the bot id cannot be resolved", async () => {
+    const readHandlerScript = vi.fn(async () => ({ script: script() }));
+    const reader = createCliqHandlerScriptReader({
+      account: { botId: "franzi" },
+      readHandlerScript,
+      listBots: vi.fn(async () => []),
+    });
+
+    const records = await reader!();
+    expect(readHandlerScript).not.toHaveBeenCalled();
+    expect(records).toHaveLength(2);
+    expect(records[0].error).toMatch(/unique name/i);
+    const diagnostic = checkCliqHandlerConsistency({
+      handlers: records,
+      configSecret: SECRET,
+      expectedWebhookUrl: HOOK_URL,
+    });
+    expect(diagnostic.status).toBe("skipped");
+  });
+
+  it("never leaks a raw Zoho body when bot id resolution fails", async () => {
+    const leaked = '{"webhookSecret":"live-secret","access_token":"tok-123"}';
+    const reader = createCliqHandlerScriptReader({
+      account: { botId: "franzi" },
+      readHandlerScript: vi.fn(async () => ({ script: script() })),
+      listBots: vi.fn(async () => {
+        throw new Error(`GET /api/v3/bots failed (500): ${leaked}`);
+      }),
+    });
+
+    const records = await reader!();
+    const serialized = JSON.stringify(records);
+    expect(serialized).not.toContain("live-secret");
+    expect(serialized).not.toContain("tok-123");
+    expect(serialized).not.toContain(leaked);
   });
 
   it("skips when the configured secret is unavailable", () => {
@@ -153,6 +231,7 @@ describe("checkCliqHandlerConsistency (issue #124)", () => {
     const reader = createCliqHandlerScriptReader({
       account: { botId: "b-1" },
       readHandlerScript,
+      listBots: vi.fn(async () => []),
     });
 
     const result = await reader!();

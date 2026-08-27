@@ -77,6 +77,16 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **Webhook preflight resolves the configured bot unique name before reading
+  handlers (issue #149).** Zoho handler-management routes require the internal
+  `b-…` bot id, while `channels.cliq.botId` normally stores the unique name
+  required by message delivery. The preflight now uses the complete paginated
+  bot listing to resolve that name, caches the result for the run, and passes
+  an already-internal id through without a lookup. Missing or ambiguous
+  matches, incomplete listings, API failures, and missing
+  `ZohoCliq.Bots.READ` are explicit skipped states rather than false passes;
+  their CLI and JSON diagnostics never expose raw API responses, handler
+  bodies, webhook secrets, or OAuth tokens.
 - **Directory listing no longer sends a query param Zoho rejects, and a failed
   directory read no longer blocks the consented doctor send (issue #146).**
   `GET /api/v2/users` and `GET /api/v2/channels` accept only `limit` (maximum

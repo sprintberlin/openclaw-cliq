@@ -11,6 +11,7 @@ import type {
   ResolvedCliqAccount,
 } from "./client.js";
 import { isCliqBotReadFailure } from "./client.js";
+import { resolveCliqInternalBotId } from "./bot-id.js";
 export type {
   CliqBotReadFailure,
   CliqBotRecord,
@@ -142,31 +143,15 @@ export async function inspectCliqBot(params: {
   reader: CliqBotReader;
 }): Promise<CliqBotInspection> {
   const uniqueName = params.account.botId.trim();
-  let listed: CliqBotRecord[] | CliqBotReadFailure;
-  try {
-    listed = await params.reader.listBots();
-  } catch {
-    listed = { kind: "transport", detail: "the bot listing threw an unexpected error" };
+  const resolved = await resolveCliqInternalBotId({
+    configuredId: uniqueName,
+    listBots: (maxItems) => params.reader.listBots(maxItems),
+  });
+  if (!resolved.ok) {
+    const base = emptyInspection(uniqueName, resolved.reason);
+    return resolved.kind === "not_found" ? { ...base, exists: known(false) } : base;
   }
-  if (isCliqBotReadFailure(listed)) {
-    return emptyInspection(uniqueName, failureReason(listed));
-  }
-  const listedBot = listed.find(
-    (bot) => bot.unique_name?.trim().toLowerCase() === uniqueName.toLowerCase() || bot.id === uniqueName,
-  );
-  if (!listedBot) {
-    return {
-      ...emptyInspection(uniqueName, "the configured bot was absent from the readable bot listing"),
-      exists: known(false),
-    };
-  }
-  const internalId = listedBot.id;
-  if (!internalId) {
-    return {
-      ...emptyInspection(uniqueName, "Zoho listed the bot without its internal b-… id"),
-      exists: known(true),
-    };
-  }
+  const internalId = resolved.botId;
   let record: CliqBotRecord | CliqBotReadFailure;
   try {
     record = await params.reader.getBot(internalId);
