@@ -2343,6 +2343,56 @@ export class CliqClient {
   }
 
   /**
+   * Read one bot handler back from `GET /api/v3/bots/{botId}/handlers/{type}`
+   * (issue #124). The response carries the raw Deluge body on `data.script`.
+   *
+   * The body is a live credential — it contains the webhook secret Zoho
+   * actually signs with (#113) — so it is returned to the caller for
+   * fingerprint comparison and is never logged, never embedded in an error
+   * message, and never surfaced in a diagnostic report. A failure is reduced
+   * to its HTTP status so an error body (which can echo request content)
+   * cannot leak either.
+   */
+  async readBotHandlerScript(handlerType: string): Promise<{ script?: string; error?: string }> {
+    const path = `/api/v3/bots/${encodeURIComponent(this.botId)}/handlers/${encodeURIComponent(handlerType)}`;
+    let token: string;
+    try {
+      token = await this.getAccessToken("ZohoCliq.Bots.READ");
+    } catch {
+      return { error: "could not mint a ZohoCliq.Bots.READ access token" };
+    }
+    let res: { ok: boolean; status: number; json: () => Promise<unknown> };
+    try {
+      res = await fetch(`${this.apiBase}${path}`, {
+        method: "GET",
+        headers: { Authorization: `Zoho-oauthtoken ${token}` },
+      });
+    } catch {
+      return { error: `the request to read the ${handlerType} failed at the transport layer` };
+    }
+    if (!res.ok) {
+      return {
+        error:
+          res.status === 401 || res.status === 403
+            ? `Zoho refused the read with HTTP ${res.status} — the token is probably missing the ZohoCliq.Bots.READ scope`
+            : `Zoho answered HTTP ${res.status}`,
+      };
+    }
+    let data: unknown;
+    try {
+      data = await res.json();
+    } catch {
+      return { error: "the response was not valid JSON" };
+    }
+    const record = data as { data?: { script?: unknown }; script?: unknown } | null;
+    const body = record?.data?.script ?? record?.script;
+    if (typeof body !== "string" || body.length === 0) {
+      return { error: "the response carried no handler body" };
+    }
+    return { script: body };
+  }
+
+  /**
    * List Zoho Cliq users (organization peers) for the directory. Paginates
    * via the v3 `next_token` cursor when the v2 response carries one (v2 used
    * `next_token` as one of its six pagination tokens), falling back to

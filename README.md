@@ -122,7 +122,7 @@ The plugin registers a single HTTP route at **`POST /cliq/webhook`** on your Ope
    openclaw cliq webhook-preflight https://<gateway-host>/cliq/webhook --no-write
    ```
 
-   `openclaw setup` runs the same check and will not report inbound Cliq as ready when it fails. Every preflight request identifies itself as `openclaw-cliq-preflight/<package-version> (+https://github.com/sprintberlin/openclaw-cliq)` so edge/WAF rules can allowlist it deliberately (the version is this package's `package.json` version); use `--user-agent <value>` when you need to reproduce the identity your Zoho/Deluge delivery uses. An HTTP `403` is reported as a probable edge/WAF/bot-rule block with that remediation, not as proof that the route or reverse proxy is broken. For a full staged diagnostic of config, OAuth, capabilities, and inbound, see [`openclaw cliq doctor`](#cliq-doctor).
+   `openclaw setup` runs the same check and will not report inbound Cliq as ready when it fails. When the configured account has `botId`, client credentials, and the `ZohoCliq.Bots.READ` scope, the preflight also reads the bot's Message and Mention handler scripts and compares SHA-256 fingerprints of their `webhookSecret` literals with the resolved config secret, plus each `webhookUrl` with the URL being tested. A mismatch is a failing stage that names the handler without printing either secret. Missing `Bots.READ`, no `botId`, an unreadable bot, or a hand-written script whose assignments cannot be recognised makes that stage **skipped**, never passed; the output then says explicitly that the green network/authentication stages do **not** prove Zoho holds the same secret. Every preflight request identifies itself as `openclaw-cliq-preflight/<package-version> (+https://github.com/sprintberlin/openclaw-cliq)` so edge/WAF rules can allowlist it deliberately (the version is this package's `package.json` version); use `--user-agent <value>` when you need to reproduce the identity your Zoho/Deluge delivery uses. An HTTP `403` is reported as a probable edge/WAF/bot-rule block with that remediation, not as proof that the route or reverse proxy is broken. For a full staged diagnostic of config, OAuth, capabilities, and inbound, see [`openclaw cliq doctor`](#cliq-doctor).
 
    To check only whether the gateway registered the route (no public path, no secret, no agent turn):
 
@@ -522,9 +522,11 @@ return response;
 >   provisioning also grants "can read the inbound webhook secret of every bot
 >   in the org" — treat that consent accordingly.
 > - **The secret lives in two places, so they can drift.** If the handler and
->   the gateway config hold different values, inbound delivery fails while a
->   preflight can still report ready; see
->   [issue #124](https://github.com/sprintberlin/openclaw-cliq/issues/124).
+>   gateway config hold different values, inbound delivery fails. The sixth
+>   `handler_secret` preflight stage reads Message/Mention scripts with
+>   `ZohoCliq.Bots.READ` and compares fingerprints only; when it is skipped, a
+>   green preflight proves the configured secret works against your endpoint
+>   but does **not** prove Zoho holds that same value.
 >
 > The plugin's own tooling never logs handler script bodies or raw provisioning
 > API responses at any log level; this is enforced by a regression test.
@@ -807,7 +809,7 @@ Exit codes:
 
 Secrets, tokens, auth codes, and sensitive Zoho response bodies are redacted from every report.
 
-A green public-webhook stage still cannot see the secret hardcoded in the Zoho Deluge handler. If the handler secret diverges from `channels.cliq.webhookSecret`, inbound delivery 401s even when the preflight is green. Until the bot/handler inspection subsystem can compare those values, treat a mismatch as a remaining operator check.
+The public-webhook stage includes the same optional `handler_secret` comparison as `openclaw cliq webhook-preflight`: with `botId` and `ZohoCliq.Bots.READ`, Message/Mention handler secret fingerprints and webhook URLs are checked against loaded config. A mismatch fails the stage without exposing either secret; an unreadable or unrecognisable handler is reported as skipped, never as evidence of equality.
 
 #### Smoke testing with curl
 

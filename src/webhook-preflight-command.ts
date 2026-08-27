@@ -7,6 +7,7 @@ import {
   persistCliqInboundVerification,
   type PersistCliqInboundVerificationResult,
 } from "./inbound-verification-store.js";
+import type { CliqHandlerScriptRecord } from "./handler-consistency.js";
 
 /**
  * CLI surface for the public webhook preflight (issues #96, #106).
@@ -38,6 +39,11 @@ export interface CliqWebhookPreflightCommandOptions {
   userAgent?: string;
   /** Emit the machine-readable report instead of the human-readable one. */
   json?: boolean;
+  /**
+   * Optional reader of the bot's inbound handler scripts (issue #124).
+   * When absent the handler-secret stage reports `skipped`, never `pass`.
+   */
+  readHandlers?: () => Promise<readonly CliqHandlerScriptRecord[]>;
 }
 
 export interface CliqWebhookPreflightCommandDeps {
@@ -45,6 +51,7 @@ export interface CliqWebhookPreflightCommandDeps {
     url: string;
     secret: string | undefined;
     userAgent?: string;
+    readHandlers?: () => Promise<readonly CliqHandlerScriptRecord[]>;
   }) => Promise<CliqPreflightReport>;
   persistVerification?: (params: {
     targetUrl: string;
@@ -57,8 +64,8 @@ export interface CliqWebhookPreflightCommandDeps {
 }
 
 const defaultDeps: CliqWebhookPreflightCommandDeps = {
-  runPreflight: ({ url, secret, userAgent }) =>
-    runCliqWebhookPreflight({ url, secret, userAgent }),
+  runPreflight: ({ url, secret, userAgent, readHandlers }) =>
+    runCliqWebhookPreflight({ url, secret, userAgent, readHandlers }),
   persistVerification: persistCliqInboundVerification,
   writeLine: (line) => {
     console.log(line);
@@ -74,6 +81,7 @@ export async function runCliqWebhookPreflightCommand(
     url: options.url,
     secret: options.secret,
     userAgent: options.userAgent,
+    readHandlers: options.readHandlers,
   });
   const persistVerification = deps.persistVerification ?? persistCliqInboundVerification;
   const failed = report.stages.some((stage) => stage.status === "fail");
