@@ -7,6 +7,7 @@ import {
   type CliqLogger,
 } from "./logger.js";
 import type { CliqButton } from "./presentation.js";
+import type { CliqTrustedOrganizationConfig } from "./trusted-org.js";
 import { cliqCardToV3MessageCard, type V3CardSectionInput, type V3CardSlideInput } from "./v3-card.js";
 import { resolveCliqSecretString } from "./secret-resolve.js";
 import { paginateList } from "./pagination.js";
@@ -192,6 +193,9 @@ export interface CliqChannelConfig {
   inboundVerificationFailedAt?: string;
   allowFrom?: string[];
   dmPolicy?: string;
+  groupPolicy?: string;
+  groups?: Record<string, unknown>;
+  trustedOrganization?: CliqTrustedOrganizationConfig;
   /**
    * Additional sender ids / names / emails whose inbound messages are
    * silently dropped as "self" (never dispatched to an agent). Use this to
@@ -541,6 +545,9 @@ export interface ResolvedCliqAccount {
   webhookSecret?: string;
   allowFrom: string[];
   dmPolicy: string | undefined;
+  groupPolicy?: string;
+  groups?: Record<string, unknown>;
+  trustedOrganization?: CliqTrustedOrganizationConfig;
   ackPolicy: "after_dispatch" | "immediate";
   selfSenderIds: string[];
   /** Whether progressive (block-streaming) reply delivery is opted-in for this account. */
@@ -653,9 +660,14 @@ export function resolveCliqConfig(
     botId,
     botName: section?.botName,
     webhookSecret: webhookSecret || undefined,
-    allowFrom: section?.allowFrom ?? [],
-    dmPolicy: section?.dmPolicy,
-    ackPolicy,
+     allowFrom: section?.allowFrom ?? [],
+     dmPolicy: section?.dmPolicy,
+     groupPolicy: section?.groupPolicy,
+     groups: section?.groups ?? {},
+     trustedOrganization: section?.trustedOrganization?.acknowledged === true
+       ? section.trustedOrganization
+       : undefined,
+     ackPolicy,
     selfSenderIds: section?.selfSenderIds ?? [],
     blockStreaming,
     refreshToken: refreshToken || undefined,

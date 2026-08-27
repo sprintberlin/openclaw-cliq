@@ -26,6 +26,7 @@ import {
   type CliqInboundReadiness,
 } from "./inbound-readiness.js";
 import { resolveCliqSecretString } from "./secret-resolve.js";
+import { resolveCliqDirectoryAllowlist } from "./setup-directory.js";
 import { describeCliqInboundVerification } from "./inbound-verification.js";
 
 const CHANNEL = "cliq" as const;
@@ -595,6 +596,50 @@ const cliqFinalize: NonNullable<ChannelSetupWizard["finalize"]> = async ({
   // wizard exits, instead of inferring readiness from credentials alone.
   next = applyCliqInboundVerification(next, readiness);
 
+  // Trusted-organization mode is opt-in. Only an existing deliberately open
+  // policy is offered this acknowledgement prompt; fresh setup remains
+  // deny-by-default and upgrades never infer or write this metadata.
+  const section = readCliqSection(next);
+  const allowFrom = Array.isArray(section.allowFrom)
+    ? section.allowFrom.filter((value): value is string => typeof value === "string")
+    : [];
+  const organizationWide =
+    section.dmPolicy === "open" ||
+    allowFrom.some((value) => value.trim() === "*") ||
+    section.groupPolicy === "open";
+  const trustedOrganization = section.trustedOrganization as
+    | { acknowledged?: unknown; label?: unknown }
+    | undefined;
+  if (organizationWide && trustedOrganization?.acknowledged !== true) {
+    await prompter.note(
+      "Trusted-organization mode does not verify Zoho organization membership per request. The enforced boundary is the authenticated private webhook secret plus the installed bot handler. It allows organization-wide DM/group access and exposes the configured agent tools according to the effective tool policy.",
+      "Trusted organization",
+    );
+    const acknowledge = await prompter.confirm({
+      message: "Acknowledge this organization-wide exposure without a cryptographic tenant boundary?",
+      initialValue: false,
+    });
+    if (acknowledge) {
+       const current = trustedOrganization;
+       next = {
+        ...next,
+        channels: {
+          ...(next as { channels?: Record<string, unknown> }).channels,
+          cliq: {
+            ...section,
+            trustedOrganization: {
+              acknowledged: true,
+              ...(typeof current?.label === "string" && current.label
+                ? { label: current.label }
+                : {}),
+              acknowledgedAt: new Date().toISOString(),
+            },
+          },
+        },
+      } as typeof next;
+    }
+  }
+
   return { cfg: next, accountId: DEFAULT_ACCOUNT_ID };
 };
 
@@ -649,6 +694,51 @@ export const cliqSetupWizard: ChannelSetupWizard = {
   },
   credentials: [],
   finalize: cliqFinalize,
+  groupAccess: {
+    label: "Zoho Cliq groups",
+    placeholder: "dev-team, ops",
+    helpTitle: "Zoho Cliq group access",
+    helpLines: [
+      "Groups default to disabled on a fresh generic setup. Allowlist restricts",
+      "the bot to named channels (unique names from `openclaw directory`). Open",
+      "lets any channel the bot is in mention it. This does not verify Zoho",
+      "organization membership; the webhook secret is the trust boundary.",
+    ],
+    currentPolicy: ({ cfg }) => {
+      const raw = readCliqSection(cfg).groupPolicy;
+      return raw === "open" || raw === "allowlist" || raw === "disabled"
+        ? raw
+        : "disabled";
+    },
+    currentEntries: ({ cfg }) => Object.keys(readCliqSection(cfg).groups ?? {}),
+    updatePrompt: ({ cfg }) => Object.keys(readCliqSection(cfg).groups ?? {}).length > 0,
+    setPolicy: ({ cfg, policy }) =>
+      patchCliqSection(cfg, { groupPolicy: policy }),
+    resolveAllowlist: async ({ cfg, entries, prompter }) => {
+      const resolved = await resolveCliqDirectoryAllowlist({
+        cfg,
+        entries,
+        kind: "group",
+      });
+      const unresolved = resolved.filter((entry) => !entry.resolved);
+      if (unresolved.length > 0) {
+        await prompter.note(
+          `Unresolved channel names (kept as entered, not silently broadened): ${unresolved.map((entry) => entry.input).join(", ")}`,
+          "Zoho Cliq groups",
+        );
+      }
+      return resolved.map((entry) => entry.id);
+    },
+    applyAllowlist: ({ cfg, resolved }) => {
+      const ids = Array.isArray(resolved)
+        ? resolved.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        : [];
+      const existing = (readCliqSection(cfg).groups ?? {}) as Record<string, unknown>;
+      const groups: Record<string, unknown> = {};
+      for (const id of ids) groups[id] = existing[id] ?? {};
+      return patchCliqSection(cfg, { groups, groupPolicy: "allowlist" });
+    },
+  },
   dmPolicy: createTopLevelChannelDmPolicy({
     label: "Zoho Cliq",
     channel: CHANNEL,
@@ -662,6 +752,34 @@ export const cliqSetupWizard: ChannelSetupWizard = {
         | "open"
         | "disabled"
         | undefined) ?? "allowlist";
+    },
+    promptAllowFrom: async ({ cfg, prompter }) => {
+      const existing = (readCliqSection(cfg).allowFrom ?? []) as string[];
+      const raw = await prompter.text({
+        message: "Zoho Cliq DM allowlist (comma-separated user ids, emails, or names)",
+        placeholder: "user@example.com, 123456789",
+        ...(existing.length > 0 ? { initialValue: existing.join(", ") } : {}),
+      });
+      const entries = raw
+        .split(/[\n,;]+/g)
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0);
+      if (entries.length === 0) return cfg;
+      const resolved = await resolveCliqDirectoryAllowlist({
+        cfg,
+        entries,
+        kind: "user",
+      });
+      const unresolved = resolved.filter((entry) => !entry.resolved);
+      if (unresolved.length > 0) {
+        await prompter.note(
+          `Unresolved senders (kept exactly as entered, never widened): ${unresolved.map((entry) => entry.input).join(", ")}`,
+          "Zoho Cliq allowlist",
+        );
+      }
+      return patchCliqSection(cfg, {
+        allowFrom: Array.from(new Set(resolved.map((entry) => entry.id))),
+      });
     },
   }),
   disable: (cfg) => setSetupChannelEnabled(cfg, CHANNEL, false),

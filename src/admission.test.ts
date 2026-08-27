@@ -6,6 +6,7 @@ import {
   isCliqSenderAllowed,
   resolveCliqDmAdmission,
   resolveCliqDmPolicy,
+  resolveCliqGroupAdmission,
   type CliqDmPolicy,
 } from "./admission.js";
 import {
@@ -221,10 +222,10 @@ describe("resolveCliqDmAdmission", () => {
       accountId: "default",
       senderId: "button-approved",
       approvedBy: "owner",
-      storePath,
-    });
+       storePath,
+     });
 
-    const adm = resolveCliqDmAdmission(
+     const adm = resolveCliqDmAdmission(
       dmParsed({ senderId: "BUTTON-APPROVED" }),
       account({ dmPolicy: "pairing", allowFrom: [] }),
       { storePath },
@@ -270,5 +271,32 @@ describe("resolveCliqDmAdmission", () => {
     );
     expect(adm.policy).toBe("allowlist");
     expect(adm.decision).toBe("allow");
+  });
+});
+
+describe("resolveCliqGroupAdmission", () => {
+  it("denies groups when explicitly disabled", () => {
+    expect(
+      resolveCliqGroupAdmission(
+        groupParsed(),
+        account({ groupPolicy: "disabled" }),
+      ).decision,
+    ).toBe("deny");
+  });
+
+  it("requires a configured channel in allowlist mode", () => {
+    const accountConfig = account({
+      groupPolicy: "allowlist",
+      groups: { "dev-team": {} },
+    });
+    expect(resolveCliqGroupAdmission(groupParsed(), accountConfig).decision).toBe(
+      "allow",
+    );
+    expect(
+      resolveCliqGroupAdmission(
+        groupParsed({ channelUniqueName: "other" }),
+        accountConfig,
+      ).decision,
+    ).toBe("deny");
   });
 });

@@ -161,6 +161,17 @@ describe("parseCliqWebhookPayload", () => {
     expect(parsed!.isGroup).toBe(false);
     expect(parsed!.isMention).toBe(false);
     expect(parsed!.handler).toBe("message");
+    expect(parsed!.organization?.source).toBe("absent");
+  });
+
+  it("classifies organization_id as unverified handler-forwarded evidence", () => {
+    const parsed = parseCliqWebhookPayload(
+      dmPayload({ user: { id: "u1", name: "Alice", organization_id: "org-1" } }),
+    );
+    expect(parsed!.organization).toMatchObject({
+      organizationId: "org-1",
+      trust: "handler_forwarded_unverified",
+    });
   });
 
   it("parses a group mention payload with object message", () => {

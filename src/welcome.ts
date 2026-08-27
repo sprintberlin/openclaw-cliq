@@ -23,6 +23,7 @@
 import type { CliqClient, ResolvedCliqAccount } from "./client.js";
 import { resolveCliqDmAdmission } from "./admission.js";
 import type { ParsedCliqInbound } from "./inbound.js";
+import { resolveCliqOrganizationIdentity, type CliqOrganizationIdentity } from "./identity.js";
 
 /** A welcome event forwarded by the Deluge Welcome Handler. */
 export interface ParsedCliqWelcome {
@@ -34,6 +35,8 @@ export interface ParsedCliqWelcome {
     last_name?: string;
     email_id?: string;
     email?: string;
+    organization_id?: string;
+    organizationId?: string;
   };
   /** True when the subscriber is new (first subscription); false on re-subscribe. */
   newUser: boolean;
@@ -43,6 +46,7 @@ export interface ParsedCliqWelcome {
   senderName: string;
   /** Resolved subscriber email (for the `{{email}}` placeholder). */
   senderEmail?: string;
+  organization: CliqOrganizationIdentity;
   /** The raw `handler` marker the Deluge script set. */
   handler: string;
 }
@@ -57,6 +61,8 @@ interface CliqWelcomeWebhookPayload {
     last_name?: string;
     email_id?: string;
     email?: string;
+    organization_id?: string;
+    organizationId?: string;
   };
   /** Cliq Welcome Handler attribute: true for first-time subscribers. */
   newuser?: boolean;
@@ -114,6 +120,7 @@ export function parseCliqWelcomePayload(raw: unknown): ParsedCliqWelcome | null 
     senderId: user.id,
     senderName,
     senderEmail: user.email_id ?? user.email,
+    organization: resolveCliqOrganizationIdentity(payload),
     handler: payload.handler ?? "",
   };
 }
@@ -172,6 +179,7 @@ export function buildCliqWelcomeInbound(
     senderId: welcome.senderId,
     senderName: welcome.senderName,
     senderEmail: welcome.senderEmail,
+    organization: welcome.organization,
     chatId: "",
     isGroup: false,
     isMention: false,

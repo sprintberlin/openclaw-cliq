@@ -1,10 +1,16 @@
 /**
- * DM admission for the Cliq channel.
+ * DM and group admission for the Cliq channel.
  *
- * The webhook handler must decide, for each inbound DM, whether to dispatch it
- * to the agent (`allow`), drop it (`deny`), or route the sender through the
- * pairing flow (`pairing`). Groups are not gated here — mention gating already
- * filters groups, and group policy is a separate concern not yet implemented.
+ * The webhook handler must decide, for each inbound message, whether to
+ * dispatch it to the agent (`allow`), drop it (`deny`), or route the sender
+ * through the pairing flow (`pairing`). DMs are gated by `dmPolicy` /
+ * `allowFrom`; groups are gated by `groupPolicy` (`resolveCliqGroupAdmission`)
+ * on top of the mention requirement.
+ *
+ * Neither path verifies the sender's Zoho organization: Cliq webhook payloads
+ * carry no signed tenant claim (see `src/identity.ts`). The organization
+ * boundary that actually holds is the authenticated webhook transport plus
+ * the bot installation context.
  *
  * The decision reuses the SDK's shared allowlist helper
  * (`isNormalizedSenderAllowed`) so wildcard (`*`), case-insensitive, and
@@ -85,6 +91,44 @@ export function isCliqSenderApproved(
     return false;
   }
 }
+
+export function resolveCliqGroupAdmission(
+  parsed: ParsedCliqInbound,
+  account: Pick<ResolvedCliqAccount, "groupPolicy" | "groups">,
+): CliqDmAdmission {
+  const raw = account.groupPolicy?.trim().toLowerCase();
+  if (raw === "disabled") {
+    return {
+      decision: "deny",
+      policy: "disabled",
+      reason: "group_policy_disabled",
+      senderAllowed: false,
+    };
+  }
+  if (raw === "allowlist") {
+    const groupId = (
+      parsed.channelUniqueName ?? parsed.channelId ?? parsed.chatId
+    )
+      .trim()
+      .toLowerCase();
+    const allowed = Object.keys(account.groups ?? {}).some(
+      (entry) => entry.trim().toLowerCase() === groupId || entry.trim() === "*",
+    );
+    return {
+      decision: allowed ? "allow" : "deny",
+      policy: "allowlist",
+      reason: allowed ? "group_allowlist_match" : "group_not_in_allowlist",
+      senderAllowed: allowed,
+    };
+  }
+  return {
+    decision: "allow",
+    policy: "open",
+    reason: "group_policy_open",
+    senderAllowed: true,
+  };
+}
+
 
 /**
  * Decide admission for an inbound Cliq message.

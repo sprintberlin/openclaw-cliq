@@ -1,8 +1,11 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import {
-  isSecretRef,
   coerceSecretRef,
+  isSecretRef,
 } from "openclaw/plugin-sdk/secret-input-runtime";
+import {
+  trustedOrganizationAuditAdjustments,
+} from "./trusted-org.js";
 
 /**
  * A single Cliq security audit finding. Mirrors the SDK's
@@ -154,29 +157,48 @@ export function collectCliqSecurityAuditFindings(params: {
   }
 
   const allowFrom = asStringArray(section.allowFrom);
+  const { downgradeToInfo, extraFindings } = trustedOrganizationAuditAdjustments({
+    cfg: params.cfg,
+  });
   if (isWildcardAllowFrom(allowFrom)) {
     findings.push({
       checkId: "channels.cliq.allow_from.wildcard",
-      severity: "critical",
-      title: "Cliq allowFrom contains a wildcard",
-      detail:
-        'channels.cliq.allowFrom contains "*". Under dmPolicy "open" this is the default-allow footgun; under dmPolicy "allowlist" it silently makes the allowlist a no-op. Any Cliq user can drive the agent (issue commands, run tools, read sessions).',
-      remediation:
-        'Replace "*" with explicit sender ids (Zoho user ids / bot unique names), or switch to dmPolicy "pairing" and approve senders via the pairing flow.',
+      severity: downgradeToInfo ? "info" : "critical",
+      title: downgradeToInfo
+        ? "Cliq allowFrom contains a wildcard (acknowledged trusted-organization deployment)"
+        : "Cliq allowFrom contains a wildcard",
+      detail: downgradeToInfo
+        ? 'channels.cliq.allowFrom contains "*", and trustedOrganization.acknowledged records this as a deliberate trusted-organization deployment. Zoho Cliq webhook payloads carry no signed tenant identifier, so the enforced boundary is the webhookSecret-verified transport plus the bot installation context — not per-request organization verification.'
+        : 'channels.cliq.allowFrom contains "*". Under dmPolicy "open" this is the default-allow footgun; under dmPolicy "allowlist" it silently makes the allowlist a no-op. Any Cliq user can drive the agent (issue commands, run tools, read sessions).',
+      ...(downgradeToInfo
+        ? {}
+        : {
+            remediation:
+              'Replace "*" with explicit sender ids (Zoho user ids / bot unique names), switch to dmPolicy "pairing", or — for an intentionally organization-wide deployment — set channels.cliq.trustedOrganization.acknowledged: true via `openclaw setup`.',
+          }),
     });
   }
+
+  findings.push(...extraFindings);
 
   const dmPolicy =
     typeof section.dmPolicy === "string" ? section.dmPolicy : "allowlist";
   if (dmPolicy === "open") {
     findings.push({
       checkId: "channels.cliq.dm_policy.open",
-      severity: "warn",
-      title: "Cliq DM policy is open",
-      detail:
-        'channels.cliq.dmPolicy is "open". Any Cliq user can DM the bot and drive the agent without an allowlist. This is an explicit operator opt-in — pair it with a tight allowFrom, or switch to "allowlist" / "pairing" if the bot is reachable from outside a trusted workspace.',
-      remediation:
-        'Set channels.cliq.dmPolicy to "allowlist" and populate allowFrom with known sender ids, or to "pairing" to approve senders interactively. Keep "open" only for workspace-internal bots with a hardened allowFrom.',
+      severity: downgradeToInfo ? "info" : "warn",
+      title: downgradeToInfo
+        ? "Cliq DM policy is open (acknowledged trusted-organization deployment)"
+        : "Cliq DM policy is open",
+      detail: downgradeToInfo
+        ? 'channels.cliq.dmPolicy is "open" and trustedOrganization.acknowledged records this as a deliberate organization-wide policy. Zoho Cliq webhook payloads carry no signed tenant identifier; the enforced boundary is the webhookSecret-verified transport plus the bot installation context.'
+        : 'channels.cliq.dmPolicy is "open". Any Cliq user can DM the bot and drive the agent without an allowlist. This is an explicit operator opt-in — pair it with a tight allowFrom, or switch to "allowlist" / "pairing" if the bot is reachable from outside a trusted workspace.',
+      ...(downgradeToInfo
+        ? {}
+        : {
+            remediation:
+              'Set channels.cliq.dmPolicy to "allowlist" and populate allowFrom with known sender ids, or to "pairing" to approve senders interactively. Keep "open" only for workspace-internal bots, and set trustedOrganization.acknowledged: true via `openclaw setup` if that is the intended policy.',
+          }),
     });
   }
 

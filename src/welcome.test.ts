@@ -74,6 +74,18 @@ describe("parseCliqWelcomePayload", () => {
     expect(parsed!.senderEmail).toBe("jane@x.com");
     expect(parsed!.newUser).toBe(true);
     expect(parsed!.handler).toBe("welcome");
+    expect(parsed!.organization.source).toBe("absent");
+  });
+
+  it("classifies organization_id as unverified handler-forwarded evidence", () => {
+    const parsed = parseCliqWelcomePayload({
+      handler: "welcome",
+      user: { id: "u1", organization_id: "org-1" },
+    });
+    expect(parsed!.organization).toMatchObject({
+      organizationId: "org-1",
+      trust: "handler_forwarded_unverified",
+    });
   });
 
   it("treats a returning subscriber (newuser:false) as a re-subscribe", () => {

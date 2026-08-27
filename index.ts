@@ -3,7 +3,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { cliqPlugin } from "./src/channel.js";
 import { resolveCliqConfig } from "./src/client.js";
 import { getCliqClientRegistry } from "./src/runtime-api.js";
-import { resolveCliqDmAdmission } from "./src/admission.js";
+import { resolveCliqDmAdmission, resolveCliqGroupAdmission } from "./src/admission.js";
 import {
   handleCliqPairingApprovalAction,
   issueCliqPairingChallenge,
@@ -422,9 +422,11 @@ export default defineChannelPluginEntry({
             );
           }
         }
-        const admission = resolveCliqDmAdmission(parsed, account, {
-          sdkAllowFrom,
-        });
+         const admission = parsed.isGroup
+           ? resolveCliqGroupAdmission(parsed, account)
+           : resolveCliqDmAdmission(parsed, account, {
+               sdkAllowFrom,
+             });
         if (admission.decision === "deny") {
           api.logger.warn?.(
             `[cliq] inbound from ${parsed.senderId} denied: ${admission.reason}`,

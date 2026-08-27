@@ -68,6 +68,10 @@ v3 adds CRUD endpoints v2 never had (bots, slash commands, message actions, widg
 
 Mostly v3-independent; **dynamic agents** in particular is high-value and can be pulled forward.
 
+- **Live trusted-organization acceptance run.** Confirm on the Pay-Jet organization that one DM
+  user and one group channel still round-trip under the acknowledged trusted-organization
+  configuration, and that `openclaw security audit` reports the deployment as informational
+  rather than critical. Negative tenant cases must stay on fixtures or an isolated setup.
 - **Read-only bot and handler inspection.** Implement the shared #94 inspection service and wire it into
   staged doctor stage 5 so bot existence, active state, organization visibility, Message/Mention
   handler structure, public URL, JSON transport, and the Zoho-held webhook secret can be compared

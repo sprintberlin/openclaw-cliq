@@ -29,6 +29,15 @@
         "type": "string",
         "enum": ["open", "allowlist", "pairing", "disabled"]
       },
+      "trustedOrganization": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "acknowledged": { "type": "boolean" },
+          "label": { "type": "string" },
+          "acknowledgedAt": { "type": "string" }
+        }
+      },
       "ackPolicy": {
         "type": "string",
         "enum": ["after_dispatch", "immediate"],
@@ -189,6 +198,15 @@
           "dmPolicy": {
             "type": "string",
             "enum": ["open", "allowlist", "pairing", "disabled"]
+          },
+          "trustedOrganization": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "acknowledged": { "type": "boolean" },
+              "label": { "type": "string" },
+              "acknowledgedAt": { "type": "string" }
+            }
           },
           "ackPolicy": {
             "type": "string",
