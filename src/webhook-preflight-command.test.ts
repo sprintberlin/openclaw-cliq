@@ -41,7 +41,7 @@ describe("cliq webhook-preflight command (issue #96)", () => {
     );
     expect(code).toBe(0);
     expect(calls).toEqual([
-      { url: "https://x.example/cliq/webhook", secret: "s" },
+      { url: "https://x.example/cliq/webhook", secret: "s", userAgent: undefined },
     ]);
   });
 
@@ -103,6 +103,20 @@ describe("cliq webhook-preflight command (issue #96)", () => {
       }),
     );
     expect(receivedSecret).toBeNull();
+  });
+
+  it("forwards a --user-agent override to the preflight (issue #107)", async () => {
+    let received: string | undefined;
+    await runCliqWebhookPreflightCommand(
+      { url: "https://x.example/cliq/webhook", secret: "s", userAgent: "ZohoCliq" },
+      deps({
+        runPreflight: async (options) => {
+          received = (options as { userAgent?: string }).userAgent;
+          return { ok: true, url: options.url, nonce: "n", dispatched: false, stages: [] };
+        },
+      }),
+    );
+    expect(received).toBe("ZohoCliq");
   });
 });
 

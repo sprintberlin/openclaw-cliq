@@ -85,6 +85,29 @@ Setup status reports three distinct states rather than a blanket "NOT
 verified": `verified <timestamp>`, `last check FAILED <timestamp>`, and `never
 checked`.
 
+Every request — the reachability `GET`, both secret-enforcement `POST`s, and
+the authenticated probe — sends this explicit, honest User-Agent:
+
+```text
+openclaw-cliq-preflight/<package-version> (+https://github.com/sprintberlin/openclaw-cliq)
+```
+
+The `<package-version>` is this plugin's `package.json` version, currently
+`0.1.10`. Edge providers routinely block unfamiliar or missing User-Agents
+before a request reaches the gateway. Allowlist that identity (or the pattern
+`openclaw-cliq-preflight/*`) for the webhook hostname, or override it to
+reproduce the identity your Zoho/Deluge delivery uses:
+
+```bash
+openclaw cliq webhook-preflight https://<public-host>/cliq/webhook \
+  --user-agent 'ZohoCliq'
+```
+
+A `403` at any stage is therefore classified as a **probable edge/WAF/bot-rule
+block**, with advice to allow the preflight identity or the Zoho source. It is
+not reported as a missing route or as proof that a working reverse proxy needs
+to be reconfigured.
+
 It distinguishes DNS, TLS, reverse-proxy, route, secret, and application
 failures, and finishes with an authenticated probe that reaches the plugin
 **without** dispatching an agent turn or producing a Cliq message.
@@ -363,6 +386,7 @@ keep the traffic path entirely under your control.
 | `404` | Proxy does not forward `/cliq/webhook`, or the channel is not configured (the plugin registers the route only when `channels.cliq` exists) |
 | `503` | `webhookSecret` is not set — the plugin fails closed |
 | `401` | Header missing or the secret does not match |
+| `403` | Probable edge/WAF/bot-rule block before the request reached the plugin. Allow `openclaw-cliq-preflight/<package-version> (+https://github.com/sprintberlin/openclaw-cliq)` (or `openclaw-cliq-preflight/*`) or the Zoho source; do **not** reconfigure a working reverse proxy based on this result alone |
 | `429` | An upstream rate limiter answered before the plugin — the preflight reports the secret stage as inconclusive rather than passing it |
 | `405` on `POST` | Something upstream rewrote the method |
 | Timeout in the Deluge log | Proxy read timeout shorter than the agent turn |

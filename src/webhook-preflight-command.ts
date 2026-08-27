@@ -34,6 +34,8 @@ export interface CliqWebhookPreflightCommandOptions {
   foreignSecret?: boolean;
   /** Run as a pure read-only probe and never persist the result. */
   write?: boolean;
+  /** User-Agent sent to the public endpoint. */
+  userAgent?: string;
   /** Emit the machine-readable report instead of the human-readable one. */
   json?: boolean;
 }
@@ -42,6 +44,7 @@ export interface CliqWebhookPreflightCommandDeps {
   runPreflight: (options: {
     url: string;
     secret: string | undefined;
+    userAgent?: string;
   }) => Promise<CliqPreflightReport>;
   persistVerification?: (params: {
     targetUrl: string;
@@ -54,7 +57,8 @@ export interface CliqWebhookPreflightCommandDeps {
 }
 
 const defaultDeps: CliqWebhookPreflightCommandDeps = {
-  runPreflight: ({ url, secret }) => runCliqWebhookPreflight({ url, secret }),
+  runPreflight: ({ url, secret, userAgent }) =>
+    runCliqWebhookPreflight({ url, secret, userAgent }),
   persistVerification: persistCliqInboundVerification,
   writeLine: (line) => {
     console.log(line);
@@ -69,6 +73,7 @@ export async function runCliqWebhookPreflightCommand(
   const report = await deps.runPreflight({
     url: options.url,
     secret: options.secret,
+    userAgent: options.userAgent,
   });
   const persistVerification = deps.persistVerification ?? persistCliqInboundVerification;
   const failed = report.stages.some((stage) => stage.status === "fail");
