@@ -90,7 +90,7 @@ describe("checkCliqHandlerConsistency (issue #124)", () => {
     });
 
     expect(result.status).toBe("skipped");
-    expect(result.detail).toMatch(/could not be compared/i);
+    expect(result.detail).toMatch(/could not be (completely )?compared/i);
     expect(result.detail).toMatch(/Bots\.READ/i);
   });
 
@@ -168,7 +168,7 @@ describe("checkCliqHandlerConsistency (issue #124)", () => {
       configSecret: SECRET,
       expectedWebhookUrl: HOOK_URL,
     });
-    expect(diagnostic.status).toBe("pass");
+    expect(diagnostic.status).toBe("skipped");
     expect(diagnostic.detail).not.toContain(SECRET);
     expect(diagnostic.detail).not.toContain(leaked);
   });

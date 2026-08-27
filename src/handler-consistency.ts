@@ -202,18 +202,20 @@ export function checkCliqHandlerConsistency(
     const trailer = skips.length > 0 ? ` Not compared: ${skips.join("; ")}.` : "";
     return { status: "fail", detail: `${failures.join("; ")}.${trailer}` };
   }
-  if (matched.length === 0) {
+  if (skips.length > 0) {
+    const compared = matched.length > 0
+      ? ` ${matched.join(" and ")} matched, but equality cannot be claimed for every inbound path.`
+      : "";
     return {
       status: "skipped",
-      detail: `the Zoho-held webhook secret could not be compared: ${skips.join("; ")}`,
+      detail: `the Zoho-held webhook secret could not be completely compared: ${skips.join("; ")}.${compared}`,
     };
   }
-  const trailer = skips.length > 0 ? ` Not compared: ${skips.join("; ")}.` : "";
   return {
     status: "pass",
     detail: `${matched.join(" and ")} carry the same webhook secret as the config (${configFingerprint})${
       options.expectedWebhookUrl ? " and post to the configured public webhook URL" : ""
-    }.${trailer}`,
+    }.`,
   };
 }
 
