@@ -207,21 +207,33 @@ ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Channels.CREATE,ZohoC
 | Media download | `ZohoCliq.Attachments.READ` | refresh_token | no |
 
 **Setup / maintenance profile** — scopes required for bot inspection and handler
-provisioning from `openclaw setup`. These are **not** needed for normal messaging:
+provisioning from `openclaw setup`. These are **not** needed for normal messaging.
+Inspect-only consent (`ZohoCliq.Bots.READ`) can *look* at existing bots but cannot
+create or change anything; provisioning consent additionally includes the create and
+update scopes:
 
 ```
-ZohoCliq.Bots.READ,ZohoCliq.Bots.UPDATE
+ZohoCliq.Bots.READ,ZohoCliq.Bots.CREATE,ZohoCliq.Bots.UPDATE
 ```
 
-| Capability | Scope | Grant |
-|---|---|---|
-| Bot read | `ZohoCliq.Bots.READ` | client_credentials |
-| Bot / handler update | `ZohoCliq.Bots.UPDATE` | client_credentials |
+| Capability | Scope | Grant | Consent tier |
+|---|---|---|---|
+| Bot read (inspect existing bots) | `ZohoCliq.Bots.READ` | client_credentials | inspect-only |
+| Bot create | `ZohoCliq.Bots.CREATE` | client_credentials | provisioning |
+| Bot / handler update | `ZohoCliq.Bots.UPDATE` | client_credentials | provisioning |
+
+> **Inspect vs. create is a real difference.** A token consented with only
+> `Bots.READ` + `Bots.UPDATE` is issued happily (the token response even reports
+> both scopes) but `POST /api/v3/bots` fails with
+> `{"code":"oauthtoken_scope_invalid"}` — the error suggests a bad token when the
+> real cause is the missing `ZohoCliq.Bots.CREATE` consent. Bot creation is
+> destructive to probe, so this capability is reported from the granted scope set,
+> never verified by actually creating a bot.
 
 **Combined profile** — runtime + setup in a single consent:
 
 ```
-ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Channels.CREATE,ZohoCliq.Channels.READ,ZohoCliq.Users.READ,ZohoCliq.Messages.UPDATE,ZohoCliq.Messages.READ,ZohoCliq.Messages.DELETE,ZohoCliq.messageactions.CREATE,ZohoCliq.Attachments.READ,ZohoCliq.Bots.READ,ZohoCliq.Bots.UPDATE
+ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Channels.CREATE,ZohoCliq.Channels.READ,ZohoCliq.Users.READ,ZohoCliq.Messages.UPDATE,ZohoCliq.Messages.READ,ZohoCliq.Messages.DELETE,ZohoCliq.messageactions.CREATE,ZohoCliq.Attachments.READ,ZohoCliq.Bots.READ,ZohoCliq.Bots.CREATE,ZohoCliq.Bots.UPDATE
 ```
 
 #### 3c. Obtain the user-context refresh token (required for channel posts + edits)
