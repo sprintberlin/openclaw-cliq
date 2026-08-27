@@ -38,6 +38,8 @@ Get a bot answering **DMs** in four steps (channel @mention replies add one OAut
    ```
 4. **Wire the webhook** — paste the [Deluge handler](#5-deluge-webhook-handler) into the bot's Message/Mention handlers, pointing at `https://<your-gateway>/cliq/webhook`.
 
+To install from a local checkout instead of ClawHub (the path used while developing and rolling this plugin out), see [Install from a local checkout](#install-from-a-local-checkout).
+
 DM the bot → it answers. To also reply to channel **@mentions** and stream live edits, add the one-time refresh token in [§3c](#3c-obtain-the-user-context-refresh-token-required-for-channel-posts--edits).
 
 > **Verified live.** DMs and channel @mentions both round-trip end to end on a real OpenClaw gateway.
@@ -907,6 +909,49 @@ OAuth flow.
     }
   }
 }
+```
+
+## Install from a local checkout
+
+ClawHub is the published path. A local checkout is how this plugin is developed and rolled out today: clone, `npm ci`, typecheck, test, build, then link the working tree into the gateway.
+
+```bash
+git clone https://github.com/sprintberlin/openclaw-cliq.git
+cd openclaw-cliq
+npm ci
+npx tsc --noEmit && npm test && npm run build
+```
+
+Then install. **Which flags you need depends on the OpenClaw version** — a single command does not work on both supported versions:
+
+- **OpenClaw `2026.8.1-beta.3` (and later):** a local path is outside ClawHub review and trust metadata, so a non-interactive install is cancelled unless you pass `--force`. That flag is the documented acknowledgement of the warning, not a way to skip a real safety check.
+
+  ```bash
+  openclaw plugins install --link --force ~/github_repos/openclaw-cliq
+  ```
+
+- **OpenClaw `2026.7.1-2` (the floor):** `--force` still means "overwrite an existing install" and is **rejected** together with `--link`. Omit it:
+
+  ```bash
+  openclaw plugins install --link ~/github_repos/openclaw-cliq
+  ```
+
+Expected output on both versions includes:
+
+```text
+Plugin manifest id "cliq" differs from npm package name "@sprintcx/openclaw-cliq"; using manifest id as the config key.
+Linked plugin path: ~/github_repos/openclaw-cliq
+Restart the gateway to load plugins.
+```
+
+The manifest-id line is expected and correct: the config key is `cliq` (`channels.cliq`, `plugins.entries.cliq`), not the npm package name. Do not rename the package or the manifest to silence it.
+
+`--link` keeps the installation pointed at this working tree, so **every later `git pull` needs a rebuild plus a gateway restart** or the running gateway keeps serving the previous `dist/`:
+
+```bash
+git pull --ff-only
+npm ci && npx tsc --noEmit && npm test && npm run build
+systemctl --user restart openclaw-gateway.service   # or however this host starts the gateway
 ```
 
 ## Contributing

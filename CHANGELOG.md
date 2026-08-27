@@ -62,6 +62,14 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **Local checkout install is documented with the version-specific `--force`
+  rule (issue #126).** `openclaw plugins install --link <path>` is cancelled on
+  OpenClaw `2026.8.1-beta.3` unless `--force` acknowledges that the source is
+  outside ClawHub trust metadata; the same `--force` is rejected with `--link`
+  on the floor version `2026.7.1-2`. The README now states both commands, why
+  the confirmation exists, that the manifest-id / package-name line is
+  expected, and that every later `git pull` on a `--link` install needs a
+  rebuild plus a gateway restart.
 - **`channels.cliq.enabled` is a valid channel switch (issue #125).** The
   schema now accepts the boolean used by every bundled OpenClaw channel and
   already written by this plugin's setup wizard, instead of rejecting it as
