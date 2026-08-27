@@ -624,10 +624,12 @@ async function buildPublicWebhookStage(
     );
   }
   try {
-    const readHandlers = client?.readBotHandlerScript
+    const readHandlers = client?.readBotHandlerScript && client.listBots
       ? createCliqHandlerScriptReader({
           account,
-          readHandlerScript: (handlerType) => client.readBotHandlerScript!(handlerType),
+          readHandlerScript: (handlerType, botId) =>
+            client.readBotHandlerScript!(handlerType, botId),
+          listBots: (maxItems) => client.listBots!(maxItems),
         }) ?? undefined
       : undefined;
     const report = await deps.runPreflight({

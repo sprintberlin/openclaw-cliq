@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ResolvedCliqAccount } from "./client.js";
+import { createCliqBotIdResolver, type CliqBotIdLister } from "./bot-id.js";
 
 /**
  * Zoho-side handler consistency check (issue #124).
@@ -232,18 +233,28 @@ export function checkCliqHandlerConsistency(
  */
 export function createCliqHandlerScriptReader(params: {
   account: Pick<ResolvedCliqAccount, "botId">;
-  readHandlerScript: (handlerType: string) => Promise<{ script?: string; error?: string }>;
+  readHandlerScript: (
+    handlerType: string,
+    botId?: string,
+  ) => Promise<{ script?: string; error?: string }>;
+  listBots: CliqBotIdLister;
 }): (() => Promise<CliqHandlerScriptRecord[]>) | null {
   if (!params.account.botId) return null;
+  const resolver = createCliqBotIdResolver(params.listBots);
   return async () => {
+    const resolved = await resolver.resolve(params.account.botId);
+    if (!resolved.ok) {
+      return CLIQ_INBOUND_HANDLER_TYPES.map((type) => ({
+        type,
+        error: `the bot id could not be resolved: ${resolved.reason}`,
+      }));
+    }
     const records: CliqHandlerScriptRecord[] = [];
     for (const type of CLIQ_INBOUND_HANDLER_TYPES) {
       try {
-        const result = await params.readHandlerScript(type);
+        const result = await params.readHandlerScript(type, resolved.botId);
         records.push({ type, script: result.script, error: result.error });
       } catch {
-        // The message is deliberately generic: a thrown error can carry a
-        // response body, and handler bodies contain the live secret (#113).
         records.push({ type, error: "the handler read threw an unexpected error" });
       }
     }

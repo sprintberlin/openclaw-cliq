@@ -105,7 +105,9 @@ export default defineChannelPluginEntry({
                 const client = resolveCliqClient(account);
                 readHandlers = createCliqHandlerScriptReader({
                   account,
-                  readHandlerScript: (handlerType) => client.readBotHandlerScript(handlerType),
+                  readHandlerScript: (handlerType, botId) =>
+                    client.readBotHandlerScript(handlerType, botId),
+                  listBots: (maxItems) => client.listBots(maxItems),
                 }) ?? undefined;
               } catch {
                 secret = undefined;
