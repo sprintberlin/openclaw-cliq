@@ -29,7 +29,7 @@
 
 Get a bot answering **DMs** in four steps (channel @mention replies add one OAuth step — see [Setup guide](#setup-guide) below):
 
-1. **Create a Cliq bot** — Zoho Cliq → *Bots* → *Create Bot*. Note the **Bot Unique Name** (`botId`) and display name.
+1. **Create a Cliq bot** — Zoho Cliq → *Bots* → *Create Bot*. Note the **Bot Unique Name** (`botId`, not the internal `b-...` bot ID) and display name.
 2. **Get OAuth credentials** — [Zoho API Console](https://api-console.zoho.com) ([use your data center's domain](#data-centers)) → *Self Client* → note **Client ID** + **Client Secret**.
 3. **Install & configure**
    ```bash
@@ -93,7 +93,7 @@ Open the bot builder: click your **profile picture** (top-right in Zoho Cliq) �
 5. **Publish / Activate** the bot (it must be active to receive events).
 6. **Invite the bot into the channel(s)** where it should respond to mentions. In a Cliq channel: ⋯ → **Bots** → add your bot. The bot can always receive DMs without an explicit invite.
 
-> The **Bot Unique Name** you pick here is the `botId` config field. The display name is `botName` (used for @mention stripping in the agent-visible text).
+> The **Bot Unique Name** you pick here is the `botId` config field. The display name is `botName` (used for @mention stripping in the agent-visible text). Do not substitute Zoho's internal `b-...` bot ID: that separate ID is required by bot/handler provisioning CRUD, while runtime message paths and `botId` use the unique name. See the [verified provisioning API contract](https://github.com/sprintberlin/openclaw-cliq/blob/main/docs/setup/provisioning-api-contract.md).
 
 ### 2. Configure the Webhook
 
@@ -229,6 +229,10 @@ ZohoCliq.Bots.READ,ZohoCliq.Bots.CREATE,ZohoCliq.Bots.UPDATE
 > real cause is the missing `ZohoCliq.Bots.CREATE` consent. Bot creation is
 > destructive to probe, so this capability is reported from the granted scope set,
 > never verified by actually creating a bot.
+
+The bot/handler endpoint, method, and body details verified live — including the
+internal `b-...` bot ID requirement — are recorded in the
+[verified provisioning API contract](https://github.com/sprintberlin/openclaw-cliq/blob/main/docs/setup/provisioning-api-contract.md).
 
 **Combined profile** — runtime + setup in a single consent:
 
@@ -372,7 +376,7 @@ Every field except the required ones has a sensible default; `groups` / `thinkin
 
 - **`clientId`** *(required)* — OAuth client id from the Zoho API Console.
 - **`clientSecret`** *(required)* — OAuth client secret (sensitive).
-- **`botId`** *(required)* — Bot **Unique Name** (the path segment in the bot message API).
+- **`botId`** *(required)* — Bot **Unique Name** (the path segment in the bot message API), not Zoho's internal `b-...` bot ID. Bot and handler provisioning CRUD requires that separate internal ID after resolving the unique name; see the [verified provisioning API contract](https://github.com/sprintberlin/openclaw-cliq/blob/main/docs/setup/provisioning-api-contract.md).
 - **`botName`** *(recommended)* — Bot display name. Used to strip the `@botName` mention from the text the agent sees.
 - **`webhookSecret`** *(required for inbound delivery)* — High-entropy shared secret the Deluge handler sends in the `x-cliq-webhook-secret` header. If unset or unresolved, `/cliq/webhook` fails closed with `503` and never dispatches an agent turn. A missing or wrong request header returns `401`.
 - **`publicWebhookUrl`** *(optional)* — The public HTTPS URL Zoho posts to, e.g. `https://cliq.example.com/cliq/webhook`. Recorded by `openclaw setup` so it can verify inbound delivery, and reused as the default target for `openclaw cliq webhook-preflight` and the public-webhook stage of `openclaw cliq doctor`. It does not change routing (the gateway always serves `/cliq/webhook`); it only tells the tooling which public URL to check. See [Expose the webhook publicly](https://github.com/sprintberlin/openclaw-cliq/blob/main/docs/setup/public-webhook.md).
@@ -406,7 +410,7 @@ Every field except the required ones has a sensible default; `groups` / `thinkin
 
 ### 5. Deluge Webhook Handler
 
-The Cliq bot must forward every mention / message event to the OpenClaw webhook. Paste this Deluge script into the bot's **Mention Handler** and **Message Handler** functions in the Cliq Bot editor.
+The Cliq bot must forward every mention / message event to the OpenClaw webhook. The two handlers use **almost** the same script, but they are **not** interchangeable — see the note after the script.
 
 > **Where to find them:** in the Cliq Bot editor open **Edit Handlers**, then click *Edit Code* on **Message Handler** (DMs) and **Mention Handler** (channel @mentions) — the two arrowed below.
 
@@ -436,6 +440,8 @@ payload.put("handler", "message");   // <-- use "mention" in the Mention Handler
 payload.put("message", message);
 payload.put("user", user);
 payload.put("chat", chat);
+// Message Handler only — the Mention Handler does not receive `attachments`,
+// so this block must be removed there (see the note below the script).
 if (attachments != null) {
     payload.put("attachments", attachments);
 }
@@ -461,10 +467,17 @@ response = Map();
 return response;
 ```
 
-> This is the same script for both handlers — the **only** difference is the
-> `handler` value: `"message"` in the **Message Handler** (DMs) and `"mention"`
-> in the **Mention Handler** (channel/group @mentions). Group vs DM is detected
-> automatically from the forwarded `chat` object, so no extra mapping is needed.
+> The script above is for the **Message Handler** (DMs — `handler` value `"message"`).
+> The **Mention Handler** (channel/group @mentions) is the same script **minus the
+> `attachments` block** and with the `handler` value `"mention"` — i.e. in the Mention
+> Handler delete the `if (attachments != null) { ... }` lines and set
+> `payload.put("handler", "mention")`. Group vs DM is detected automatically from the
+> forwarded `chat` object, so no extra mapping is needed.
+> The scripts cannot be byte-identical: the Mention Handler does not provide the
+> `attachments` parameter, and a Mention Handler script that references it fails
+> Zoho's script validation when the handler is saved via the provisioning API
+> (`execution_handler_update_failed` — see the
+> [verified provisioning API contract](https://github.com/sprintberlin/openclaw-cliq/blob/main/docs/setup/provisioning-api-contract.md)).
 > In live Cliq Message Handlers, `message` may be a bare string with no
 > `message.id` or `message.time`. The plugin handles that shape without changing
 > this script: content-derived dedupe identities expire after 60 seconds, so a
