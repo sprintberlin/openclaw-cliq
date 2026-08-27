@@ -180,6 +180,16 @@ export interface CliqChannelConfig {
    * webhook rejects the request with 503 without dispatching an agent turn.
    */
   webhookSecret?: SecretInput;
+  /**
+   * Public HTTPS URL Zoho posts to. Written by setup; used by the tooling to
+   * tell whether a preflight is checking *this* install (see issue #106).
+   * Never used for routing — the gateway always serves `/cliq/webhook`.
+   */
+  publicWebhookUrl?: string;
+  /** ISO timestamp of the last passing public webhook verification. */
+  inboundVerifiedAt?: string;
+  /** ISO timestamp of the last failing public webhook verification. */
+  inboundVerificationFailedAt?: string;
   allowFrom?: string[];
   dmPolicy?: string;
   /**

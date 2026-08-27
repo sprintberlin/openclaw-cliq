@@ -61,6 +61,30 @@ available for an endpoint whose secret is not in this config, but note that it
 puts the secret in your shell history — prefer the config default or a shell
 that ignores history-prefixed commands.
 
+When the checked URL **is** the configured `channels.cliq.publicWebhookUrl`,
+the result is recorded in the config: a passing run writes
+`channels.cliq.inboundVerifiedAt`, a failing run writes
+`channels.cliq.inboundVerificationFailedAt` and clears any stale verification —
+so verifying from the CLI counts exactly like verifying inside the wizard, and
+a formerly working install cannot keep claiming a stale verification after its
+endpoint broke. The write only ever happens for the configured URL (running
+the command against a third-party endpoint never touches your config) and can
+be suppressed for a pure read-only probe:
+
+```bash
+openclaw cliq webhook-preflight https://<public-host>/cliq/webhook --no-write
+```
+
+Nothing is recorded when the run cannot speak for this install: `--secret`
+overrides the configured secret (so the run proves nothing about the secret
+Zoho actually uses), and an inconclusive run — an upstream `429` before the
+plugin's own check, or no resolvable secret — leaves the previous state alone
+rather than destroying a genuine verification.
+
+Setup status reports three distinct states rather than a blanket "NOT
+verified": `verified <timestamp>`, `last check FAILED <timestamp>`, and `never
+checked`.
+
 It distinguishes DNS, TLS, reverse-proxy, route, secret, and application
 failures, and finishes with an authenticated probe that reaches the plugin
 **without** dispatching an agent turn or producing a Cliq message.
