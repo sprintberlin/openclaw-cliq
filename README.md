@@ -118,6 +118,14 @@ The plugin registers a single HTTP route at **`POST /cliq/webhook`** on your Ope
 
    `openclaw setup` runs the same check and will not report inbound Cliq as ready when it fails.
 
+   To check only whether the gateway registered the route (no public path, no secret, no agent turn):
+
+   ```bash
+   openclaw cliq webhook-route          # add --port <port> if the gateway is not on 18789
+   ```
+
+   `405` means the route is registered, `404` means it is not, and an unreachable gateway is reported as inconclusive rather than as a missing route. **Do not use `openclaw plugins inspect cliq --runtime --json` for this** — it reports `"httpRoutes": 0` even when the route is live and serving traffic, because that command loads the plugin without activating it, so the registration step that adds the route never runs for it (upstream: [openclaw/openclaw#130773](https://github.com/openclaw/openclaw/issues/130773)).
+
 4. In the Cliq Bot's Deluge editor (see step 5 below), set the webhook URL and the secret header on every `invokeUrl` call.
 
 ### 3. OAuth / API Credentials

@@ -77,6 +77,28 @@ Expect `405` on `GET`. An unauthenticated `POST` returns `401` when a
 closed rather than accepting unauthenticated delivery). A `200`, a redirect,
 or an HTML page means something else is answering.
 
+To separate "the public path is broken" from "the route was never registered",
+run the route check directly against the gateway on the host itself:
+
+```bash
+openclaw cliq webhook-route            # defaults to http://127.0.0.1:18789/cliq/webhook
+openclaw cliq webhook-route --port 8080
+openclaw cliq webhook-route --json     # machine-readable; exit 0 only when registered
+```
+
+If this reports the route as registered but the preflight fails, the problem is
+in front of the gateway (DNS, TLS, proxy, tunnel rules). If it reports the route
+as absent, the plugin is not loaded or `channels.cliq` is not configured — a
+channel plugin registers its route only once its channel is configured.
+
+> **`plugins inspect` cannot answer this question.** `openclaw plugins inspect
+> cliq --runtime --json` prints `"httpRoutes": 0` even on a healthy install
+> whose route is answering `405`/`401` at that very moment. That command loads
+> plugins *without activating* them, and the route is registered in the
+> activation step, so the count describes a throwaway registry rather than the
+> running gateway. Reported upstream as
+> [openclaw/openclaw#130773](https://github.com/openclaw/openclaw/issues/130773).
+
 ---
 
 ## Option 1 — VPS or server with a public IP

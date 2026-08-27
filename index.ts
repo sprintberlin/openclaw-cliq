@@ -84,6 +84,28 @@ export default defineChannelPluginEntry({
             const code = await runCliqWebhookPreflightCommand({ url, secret, json: opts.json });
             process.exitCode = code;
           });
+        cliq
+          .command("webhook-route")
+          .description(
+            "Check whether the running gateway registered /cliq/webhook (the trustworthy answer that `plugins inspect --runtime` httpRoutes cannot give)",
+          )
+          .option(
+            "--url <url>",
+            "Webhook URL to query (defaults to the local gateway route)",
+          )
+          .option("--port <port>", "Gateway port when no --url is given", "18789")
+          .option("--json", "Emit the machine-readable report")
+          .action(async (opts: { url?: string; port?: string; json?: boolean }) => {
+            const { runCliqWebhookRouteCommand } = await import(
+              "./src/webhook-route-command.js"
+            );
+            const code = await runCliqWebhookRouteCommand({
+              url: opts.url,
+              port: opts.port ? Number(opts.port) : undefined,
+              json: opts.json,
+            });
+            process.exitCode = code;
+          });
       },
       {
         descriptors: [

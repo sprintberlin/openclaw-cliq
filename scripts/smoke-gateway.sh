@@ -246,6 +246,55 @@ if [ "$ready" -ne 1 ]; then
   exit 1
 fi
 
+# Issue #108: `plugins inspect --runtime` reports httpRoutes: 0 even for a
+# healthy install, because that command loads plugins WITHOUT activating them
+# (discovery mode), so registerFull -- and therefore registerHttpRoute -- never
+# runs for it. Pin both halves of that fact against the real gateway: the
+# inspect count stays 0 while the route is demonstrably live, and our own
+# route check reports the truth the inspect field cannot.
+#
+# The check is imported from dist/ rather than invoked via the CLI so the
+# assertion does not depend on how the host CLI buffers plugin-command
+# stdout — the function is the contract, the CLI is a thin wrapper around it.
+echo "==> [6b/12] Asserting the route check reports reality (issue #108)"
+run_oc plugins inspect cliq --json --runtime > "$SMOKE_HOME/inspect-configured.json"
+node -e '
+  const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  const count = (d.plugin && d.plugin.httpRouteCount) ?? (d.plugin && d.plugin.httpRoutes) ?? 0;
+  console.log(`inspect httpRoutes for a configured, route-serving gateway = ${count}`);
+' "$SMOKE_HOME/inspect-configured.json"
+
+export SMOKE_PORT="$PORT"
+node --input-type=module -e '
+  const { checkCliqWebhookRoute } = await import(process.argv[1]);
+  const live = await checkCliqWebhookRoute({ port: Number(process.env.SMOKE_PORT) });
+  if (live.ok !== true || live.status !== "registered" || live.httpStatus !== 405) {
+    console.error("FAIL: route check did not report the live route as registered: " + JSON.stringify(live));
+    process.exit(1);
+  }
+  if (!/httpRoutes/.test(live.inspectNote || "")) {
+    console.error("FAIL: route check report is missing the inspect httpRoutes explanation");
+    process.exit(1);
+  }
+  console.log("OK: route check reports the live route as registered (405)");
+
+  const { createServer } = await import("node:net");
+  const freePort = await new Promise((resolve) => {
+    const s = createServer();
+    s.listen(0, "127.0.0.1", () => {
+      const addr = s.address();
+      const port = typeof addr === "object" && addr ? addr.port : 0;
+      s.close(() => resolve(port));
+    });
+  });
+  const absent = await checkCliqWebhookRoute({ port: freePort });
+  if (absent.ok !== false || absent.status === "registered") {
+    console.error("FAIL: route check claimed a registered route on a dead port: " + JSON.stringify(absent));
+    process.exit(1);
+  }
+  console.log("OK: route check does not claim registration without evidence (status=" + absent.status + ")");
+' "$ROOT/dist/src/webhook-route-check.js"
+
 echo "==> [7/12] Probing /cliq/webhook with canonical Deluge payloads"
 
 assert_status() {
