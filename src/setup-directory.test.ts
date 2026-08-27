@@ -12,13 +12,20 @@ const CONFIGURED = cfgWith({
   botId: "bot",
 });
 
+function spyOnDirectory(method: "listPeers" | "listGroups") {
+  return vi.spyOn(
+    cliqDirectoryAdapter as Required<Pick<typeof cliqDirectoryAdapter, typeof method>>,
+    method,
+  );
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
 describe("resolveCliqDirectoryAllowlist", () => {
   it("resolves a user by email to the canonical Zoho user id", async () => {
-    vi.spyOn(cliqDirectoryAdapter, "listPeers" as never).mockResolvedValue([
+    spyOnDirectory("listPeers").mockResolvedValue([
       { kind: "user", id: "112233", name: "Alice", handle: "alice@example.com" },
     ] as never);
     const resolved = await resolveCliqDirectoryAllowlist({
@@ -32,7 +39,7 @@ describe("resolveCliqDirectoryAllowlist", () => {
   });
 
   it("resolves a channel to its unique name (the group config key)", async () => {
-    vi.spyOn(cliqDirectoryAdapter, "listGroups" as never).mockResolvedValue([
+    spyOnDirectory("listGroups").mockResolvedValue([
       { kind: "group", id: "CT_1", name: "Dev Team", handle: "dev-team" },
     ] as never);
     const resolved = await resolveCliqDirectoryAllowlist({
@@ -44,7 +51,7 @@ describe("resolveCliqDirectoryAllowlist", () => {
   });
 
   it("keeps unresolved entries verbatim instead of widening or dropping them", async () => {
-    vi.spyOn(cliqDirectoryAdapter, "listPeers" as never).mockResolvedValue([] as never);
+    spyOnDirectory("listPeers").mockResolvedValue([] as never);
     const resolved = await resolveCliqDirectoryAllowlist({
       cfg: CONFIGURED,
       entries: ["unknown-person"],
@@ -56,7 +63,7 @@ describe("resolveCliqDirectoryAllowlist", () => {
   });
 
   it("degrades to unresolved when the directory call fails", async () => {
-    vi.spyOn(cliqDirectoryAdapter, "listPeers" as never).mockRejectedValue(
+    spyOnDirectory("listPeers").mockRejectedValue(
       new Error("scope missing") as never,
     );
     const resolved = await resolveCliqDirectoryAllowlist({
@@ -84,7 +91,7 @@ describe("promptCliqDirectoryTarget", () => {
   }
 
   it("resolves a typed email to the canonical user id", async () => {
-    vi.spyOn(cliqDirectoryAdapter, "listPeers" as never).mockResolvedValue([
+    spyOnDirectory("listPeers").mockResolvedValue([
       { kind: "user", id: "112233", name: "Alice", handle: "alice@example.com" },
     ] as never);
     const { prompter: p } = prompter(["alice@example.com"]);
@@ -97,7 +104,7 @@ describe("promptCliqDirectoryTarget", () => {
   });
 
   it("reports an unknown user as unresolved and keeps the typed value", async () => {
-    vi.spyOn(cliqDirectoryAdapter, "listPeers" as never).mockResolvedValue([
+    spyOnDirectory("listPeers").mockResolvedValue([
       { kind: "user", id: "112233", name: "Alice", handle: "alice@example.com" },
     ] as never);
     const { prompter: p, notes } = prompter(["nobody@example.com"]);
@@ -111,7 +118,7 @@ describe("promptCliqDirectoryTarget", () => {
   });
 
   it("returns null when the operator enters nothing (selection is optional)", async () => {
-    vi.spyOn(cliqDirectoryAdapter, "listPeers" as never).mockResolvedValue([] as never);
+    spyOnDirectory("listPeers").mockResolvedValue([] as never);
     const { prompter: p } = prompter([""]);
     const target = await promptCliqDirectoryTarget({
       cfg: CONFIGURED,
@@ -122,7 +129,7 @@ describe("promptCliqDirectoryTarget", () => {
   });
 
   it("still completes when the directory read fails entirely", async () => {
-    vi.spyOn(cliqDirectoryAdapter, "listGroups" as never).mockRejectedValue(
+    spyOnDirectory("listGroups").mockRejectedValue(
       new Error("scope missing") as never,
     );
     const { prompter: p } = prompter(["dev-team"]);

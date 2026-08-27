@@ -1686,7 +1686,11 @@ describe("dispatchCliqInbound — inbound media (issue #48)", () => {
       sendCard: vi.fn(async () => ({ messageId: "out-1" })),
       editMessage: vi.fn(async () => ({ messageId: "x", chatId: "x" })),
       resolveChannelChatId: vi.fn(async () => undefined),
-      listChatMessages: vi.fn(async () => []),
+      listChatMessages: vi.fn<() => Promise<Array<{
+        messageId: string;
+        chatId: string;
+        file?: { id: string; name: string; type: string };
+      }>>>(async () => []),
       deleteMessage: vi.fn(async () => true),
       downloadAttachment: vi.fn(async (fileId: string) => {
         downloads.push(fileId);
