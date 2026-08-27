@@ -443,6 +443,93 @@ describe("cliqSetupWizard", () => {
   });
 });
 
+describe("cliq setup wizard — welcome opt-in", () => {
+  async function runFinalize(
+    responses: Parameters<typeof makeScriptedPrompter>[0],
+    cfg = cfgWith({}),
+  ) {
+    const { prompter, calls } = makeScriptedPrompter(responses);
+    const result = await cliqSetupWizard.finalize!({
+      cfg,
+      accountId: "default",
+      credentialValues: {},
+      runtime: {} as never,
+      prompter,
+      forceAllowFrom: false,
+    });
+    const section = (
+      result!.cfg as unknown as { channels: { cliq: Record<string, unknown> } }
+    ).channels.cliq;
+    return { section, calls };
+  }
+
+  const CREDENTIAL_ANSWERS: Parameters<typeof makeScriptedPrompter>[0] = [
+    { method: "select", value: "eu" },
+    { method: "text", value: "CID" },
+    { method: "text", value: "SECRET" },
+    { method: "text", value: "bot" },
+    { method: "text", value: "OpenClaw" },
+    { method: "text", value: "WH" },
+    { method: "text", value: "RT" },
+    { method: "text", value: "" },
+  ];
+
+  it("writes nothing when the operator declines the greeting", async () => {
+    const { section } = await runFinalize([
+      ...CREDENTIAL_ANSWERS,
+      { method: "confirm", value: false }, // welcome opt-in
+      { method: "confirm", value: false }, // target inspection / first contact
+    ]);
+    expect(section.welcome).toBeUndefined();
+    expect(section.enabled).toBe(true);
+  });
+
+  it("enables the greeting only after an explicit yes and points at the handler", async () => {
+    const { section, calls } = await runFinalize([
+      ...CREDENTIAL_ANSWERS,
+      { method: "confirm", value: true }, // welcome opt-in
+      { method: "confirm", value: false }, // target inspection / first contact
+    ]);
+    expect(section.welcome).toMatchObject({ enabled: true });
+    expect(section.clientId).toBe("CID");
+    const notes = calls
+      .filter((call) => call.method === "note")
+      .map((call) => String(call.args.message))
+      .join(" ");
+    expect(notes).toMatch(/Welcome Handler/i);
+  });
+
+  it("keeps a customized greeting when re-running over an enabled welcome", async () => {
+    const existing = cfgWith({
+      clientId: "CID",
+      clientSecret: "SECRET",
+      botId: "bot",
+      webhookSecret: "WH",
+      welcome: { enabled: true, text: "custom hello", textRejoin: "custom back" },
+    });
+    const { section } = await runFinalize(
+      [
+        { method: "select", value: "eu" },
+        { method: "confirm", value: true }, // keep client id
+        { method: "confirm", value: true }, // keep client secret
+        { method: "confirm", value: true }, // keep bot unique name
+        { method: "text", value: "" }, // bot display name (unset)
+        { method: "confirm", value: true }, // keep webhook secret
+        { method: "text", value: "" }, // refresh token (unset)
+        { method: "text", value: "" }, // public webhook url (skip)
+        { method: "confirm", value: true }, // keep the welcome greeting
+        { method: "confirm", value: false }, // target inspection / first contact
+      ],
+      existing,
+    );
+    expect(section.welcome).toMatchObject({
+      enabled: true,
+      text: "custom hello",
+      textRejoin: "custom back",
+    });
+  });
+});
+
 describe("promptCliqDataCenter — data-center prompt (issue #46)", () => {
   it("prompts with EU as the default when no region is configured", async () => {
     const { prompter, calls } = makeScriptedPrompter([

@@ -10,6 +10,11 @@ import {
   type CliqDirectoryEntry,
   type ResolvedCliqAccount,
 } from "./client.js";
+import {
+  inspectCliqBot,
+  toCliqDoctorBotInspection,
+  type CliqBotReader,
+} from "./bot-inspect.js";
 import { collectCliqPreviewWarnings } from "./doctor.js";
 import { probeCliqStatus } from "./status.js";
 import { resolveCliqClient } from "./runtime-api.js";
@@ -98,7 +103,10 @@ export interface CliqDoctorClient {
   getApiBase(): string;
   listUsers(maxItems?: number): Promise<CliqDirectoryEntry[]>;
   listChannels(maxItems?: number): Promise<CliqDirectoryEntry[]>;
-  readBotHandlerScript?(handlerType: string): Promise<{ script?: string; error?: string }>;
+  readBotHandlerScript?(handlerType: string, botId?: string): Promise<{ script?: string; error?: string }>;
+  listBots?(maxItems?: number): ReturnType<CliqBotReader["listBots"]>;
+  getBot?(botId: string): ReturnType<CliqBotReader["getBot"]>;
+  listBotSubscribers?(botIdOrUniqueName: string, maxItems?: number): ReturnType<CliqBotReader["listSubscribers"]>;
   sendMessage(options: { to: string; text: string; isDm?: boolean }): Promise<{ messageId?: string; chatId?: string }>;
   resolveChannelChatId(channelUniqueName: string): Promise<string | undefined>;
   listChatMessages(chatId: string, options?: { limit?: number }): Promise<CliqChatMessageRef[]>;
@@ -552,18 +560,34 @@ async function buildCapabilitiesStage(
 async function buildBotStage(
   account: ResolvedCliqAccount | null,
   publicWebhookUrl: string | undefined,
+  client: CliqDoctorClient | null,
   deps: CliqDoctorDeps,
   values: readonly string[],
 ): Promise<CliqDoctorStage> {
   if (!account) return skipped("bot_handlers", "not run: config and secret resolution failed");
-  if (!deps.inspectBot) {
+  const inspectBot = deps.inspectBot ?? (
+    client?.listBots && client.getBot && client.listBotSubscribers && client.readBotHandlerScript
+      ? async () => toCliqDoctorBotInspection(await inspectCliqBot({
+          account,
+          publicWebhookUrl,
+          reader: {
+            listBots: (maxItems) => client.listBots!(maxItems),
+            getBot: (botId) => client.getBot!(botId),
+            listSubscribers: (botId, maxItems) => client.listBotSubscribers!(botId, maxItems),
+            readHandlerScript: (handlerType, botId) =>
+              client.readBotHandlerScript!(handlerType, botId),
+          },
+        }))
+      : undefined
+  );
+  if (!inspectBot) {
     return skipped(
       "bot_handlers",
       "bot/handler inspection subsystem is unavailable; bot existence, active state, visibility, handler URL, JSON transport, and Zoho-held webhook-secret equality were not guessed",
     );
   }
   try {
-    const result = await deps.inspectBot({ account, publicWebhookUrl });
+    const result = await inspectBot({ account, publicWebhookUrl });
     return stage(
       "bot_handlers",
       result.status,
@@ -984,7 +1008,7 @@ export async function runCliqDoctor(
     Boolean(options.outboundTest || options.roundtrip),
   ));
   const publicWebhookUrl = readPublicWebhookUrl(cfg, options.accountId);
-  stages.push(await buildBotStage(config.account, publicWebhookUrl, deps, values));
+  stages.push(await buildBotStage(config.account, publicWebhookUrl, client, deps, values));
   stages.push(await buildPublicWebhookStage(
     config.account,
     publicWebhookUrl,

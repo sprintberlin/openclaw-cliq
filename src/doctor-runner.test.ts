@@ -580,6 +580,35 @@ describe("cliq doctor — stage 5 bot and handler inspection", () => {
     const report = await runDefault(cfgWith(), createDeps({ inspectBot }));
     expect(JSON.stringify(stageOf(report, "bot_handlers"))).not.toContain(WEBHOOK_SECRET);
   });
+
+  it("uses the shared inspector from the doctor client when inspectBot is not injected", async () => {
+    const client = createClient({
+      listBots: vi.fn(async () => [{
+        id: "b-1",
+        unique_name: "openclaw-bot",
+        status: "enabled",
+        scope: "organization",
+      }]),
+      getBot: vi.fn(async () => ({
+        id: "b-1",
+        unique_name: "openclaw-bot",
+        status: "enabled",
+        scope: "organization",
+        subscriber_count: 1,
+      })),
+      listBotSubscribers: vi.fn(async () => ({
+        subscribers: [{ user_id: "user-1" }],
+        complete: true,
+      })),
+      readBotHandlerScript: vi.fn(async () => ({
+        script: 'webhookUrl = "https://cliq.example.com/cliq/webhook";\nwebhookSecret = "webhook-secret-value";\n',
+      })),
+    });
+    const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }));
+    const bot = stageOf(report, "bot_handlers");
+    expect(bot.status).not.toBe("skipped");
+    expect(bot.evidence.join(" ")).toMatch(/organization|active/i);
+  });
 });
 
 describe("cliq doctor — stage 6 public webhook preflight", () => {

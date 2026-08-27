@@ -995,6 +995,55 @@ export interface NormalizedCliqTarget {
   isDm: boolean;
 }
 
+export interface CliqBotRecord {
+  id?: string;
+  unique_name?: string;
+  name?: string;
+  status?: string;
+  scope?: string;
+  team_ids?: string[];
+  channel_participation?: string[];
+  handlers?: Array<{ type?: string; [key: string]: unknown }>;
+  execution_type?: string;
+  subscriber_count?: number;
+  [key: string]: unknown;
+}
+
+export interface CliqBotSubscriberRecord {
+  user_id?: string;
+  email_id?: string;
+  name?: string;
+  [key: string]: unknown;
+}
+
+export type CliqBotReadFailureKind =
+  | "missing_scope"
+  | "forbidden"
+  | "not_found"
+  | "url_invalid"
+  | "transport"
+  | "http";
+
+export interface CliqBotReadFailure {
+  kind: CliqBotReadFailureKind;
+  detail: string;
+  status?: number;
+}
+
+export interface CliqBotSubscriberPage {
+  subscribers: CliqBotSubscriberRecord[];
+  complete: boolean;
+}
+
+export function isCliqBotReadFailure(value: unknown): value is CliqBotReadFailure {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      typeof (value as { kind?: unknown }).kind === "string" &&
+      typeof (value as { detail?: unknown }).detail === "string",
+  );
+}
+
 /** A raw Zoho Cliq user record as returned by `GET /api/v2/users`. */
 export interface CliqUserRecord {
   id?: string;
@@ -2387,6 +2436,123 @@ export class CliqClient {
     return res.json();
   }
 
+  private async readBotJson(path: string): Promise<unknown | CliqBotReadFailure> {
+    let token: string;
+    try {
+      token = await this.getAccessToken("ZohoCliq.Bots.READ");
+    } catch {
+      return {
+        kind: "missing_scope",
+        detail: "could not mint a ZohoCliq.Bots.READ access token",
+      };
+    }
+    let res: Response;
+    try {
+      res = await fetch(`${this.apiBase}${path}`, {
+        method: "GET",
+        headers: { Authorization: `Zoho-oauthtoken ${token}` },
+      });
+    } catch {
+      return { kind: "transport", detail: "the bot read failed at the transport layer" };
+    }
+    let data: unknown;
+    try {
+      data = await res.json();
+    } catch {
+      data = null;
+    }
+    if (res.ok) return data;
+    const code =
+      data && typeof data === "object" && typeof (data as { code?: unknown }).code === "string"
+        ? (data as { code: string }).code.toLowerCase()
+        : "";
+    if (code.includes("scope") || res.status === 401) {
+      return {
+        kind: "missing_scope",
+        detail: `Zoho refused the bot read with HTTP ${res.status}; verify ZohoCliq.Bots.READ consent`,
+        status: res.status,
+      };
+    }
+    if (res.status === 403) {
+      return {
+        kind: "forbidden",
+        detail: "Zoho refused the read; bot subscribers are limited to the bot creator or an organization administrator",
+        status: res.status,
+      };
+    }
+    if (res.status === 404 && code.includes("request_url_invalid")) {
+      return {
+        kind: "url_invalid",
+        detail: "Zoho rejected the bot address; bot metadata routes require the internal b-… id",
+        status: res.status,
+      };
+    }
+    if (res.status === 404 || code.includes("bot_not_found")) {
+      return { kind: "not_found", detail: "Zoho reported that the bot was not found", status: res.status };
+    }
+    return { kind: "http", detail: `Zoho answered HTTP ${res.status}`, status: res.status };
+  }
+
+  async listBots(maxItems = 5_000): Promise<CliqBotRecord[] | CliqBotReadFailure> {
+    const records: CliqBotRecord[] = [];
+    let nextToken: string | undefined;
+    while (records.length < maxItems) {
+      const limit = Math.min(50, maxItems - records.length);
+      const query = new URLSearchParams({ limit: String(limit) });
+      if (nextToken) query.set("next_token", nextToken);
+      const data = await this.readBotJson(`/api/v3/bots?${query.toString()}`);
+      if (isCliqBotReadFailure(data)) return data;
+      const envelope = data as { data?: unknown; next_token?: unknown } | null;
+      const page = Array.isArray(envelope?.data)
+        ? (envelope.data as CliqBotRecord[])
+        : Array.isArray(data)
+          ? (data as CliqBotRecord[])
+          : [];
+      records.push(...page.slice(0, maxItems - records.length));
+      nextToken = typeof envelope?.next_token === "string" ? envelope.next_token : undefined;
+      if (!nextToken) return records;
+    }
+    return {
+      kind: "http",
+      detail: "the bot listing did not complete before the diagnostic item limit",
+    };
+  }
+
+  async getBot(botId: string): Promise<CliqBotRecord | CliqBotReadFailure> {
+    const data = await this.readBotJson(`/api/v3/bots/${encodeURIComponent(botId)}`);
+    if (isCliqBotReadFailure(data)) return data;
+    const record = (data as { data?: unknown } | null)?.data ?? data;
+    if (!record || typeof record !== "object" || Array.isArray(record)) {
+      return { kind: "http", detail: "the bot response carried no bot record" };
+    }
+    return record as CliqBotRecord;
+  }
+
+  async listBotSubscribers(
+    botIdOrUniqueName: string,
+    maxItems = 5_000,
+  ): Promise<CliqBotSubscriberPage | CliqBotReadFailure> {
+    const subscribers: CliqBotSubscriberRecord[] = [];
+    let nextToken: string | undefined;
+    while (subscribers.length < maxItems) {
+      const limit = Math.min(100, maxItems - subscribers.length);
+      const query = new URLSearchParams({ limit: String(limit) });
+      if (nextToken) query.set("next_token", nextToken);
+      const data = await this.readBotJson(
+        `/api/v3/bots/${encodeURIComponent(botIdOrUniqueName)}/subscribers?${query.toString()}`,
+      );
+      if (isCliqBotReadFailure(data)) return data;
+      const envelope = data as { data?: unknown; next_token?: unknown } | null;
+      const page = Array.isArray(envelope?.data)
+        ? (envelope.data as CliqBotSubscriberRecord[])
+        : [];
+      subscribers.push(...page.slice(0, maxItems - subscribers.length));
+      nextToken = typeof envelope?.next_token === "string" ? envelope.next_token : undefined;
+      if (!nextToken) return { subscribers, complete: true };
+    }
+    return { subscribers, complete: nextToken === undefined };
+  }
+
   /**
    * Read one bot handler back from `GET /api/v3/bots/{botId}/handlers/{type}`
    * (issue #124). The response carries the raw Deluge body on `data.script`.
@@ -2398,8 +2564,11 @@ export class CliqClient {
    * to its HTTP status so an error body (which can echo request content)
    * cannot leak either.
    */
-  async readBotHandlerScript(handlerType: string): Promise<{ script?: string; error?: string }> {
-    const path = `/api/v3/bots/${encodeURIComponent(this.botId)}/handlers/${encodeURIComponent(handlerType)}`;
+  async readBotHandlerScript(
+    handlerType: string,
+    internalBotId = this.botId,
+  ): Promise<{ script?: string; error?: string }> {
+    const path = `/api/v3/bots/${encodeURIComponent(internalBotId)}/handlers/${encodeURIComponent(handlerType)}`;
     let token: string;
     try {
       token = await this.getAccessToken("ZohoCliq.Bots.READ");
