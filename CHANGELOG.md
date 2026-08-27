@@ -95,6 +95,12 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Documentation
 
+- **Corrected the documented webhook authentication headers (issue #128).**
+  The README claimed the endpoint also accepts `x-webhook-secret` or
+  `Authorization: Bearer <secret>` "for convenience". The runtime has always
+  enforced single-header authentication and rejects both, so operators who
+  followed that note configured a header the gateway answers with `401`. Only
+  `x-cliq-webhook-secret` is documented now.
 - Added [docs/setup/public-webhook.md](docs/setup/public-webhook.md): how to
   make the webhook publicly reachable, with five options (VPS + reverse proxy,
   Cloudflare Tunnel, an existing reverse proxy, temporary dev tunnels, and
