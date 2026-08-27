@@ -171,6 +171,8 @@ describe("collectCliqPreviewWarnings", () => {
     });
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toMatch(/ackPolicy is "immediate"/);
+    expect(warnings[0]).toMatch(/GatewayDrainingError/);
+    expect(warnings[0]).toMatch(/runDetachedWebhookWork/);
   });
 
   it("emits no warnings for a clean, locked-down config", () => {

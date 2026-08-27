@@ -9,6 +9,7 @@ import {
 import cliqEntry from "../index.js";
 import { cliqPlugin } from "./channel.js";
 import { resetCliqDedupeForTest } from "./dedupe.js";
+import { setCliqDetachedWebhookWorkForTest } from "./detached-dispatch.js";
 import { resetCliqPairingStoreCacheForTests } from "./pairing-store.js";
 import { setCliqClientRegistry } from "./runtime-api.js";
 import {
@@ -552,6 +553,10 @@ describe("durable-before-ack ingest (issue #12)", () => {
     resetCliqDedupeForTest();
   });
 
+  afterEach(() => {
+    setCliqDetachedWebhookWorkForTest(undefined);
+  });
+
   function buildDurableRegistration(opts: {
     inboundRun: () => Promise<unknown>;
     ackPolicy?: "after_dispatch" | "immediate";
@@ -800,6 +805,126 @@ describe("durable-before-ack ingest (issue #12)", () => {
     // doesn't leak an unhandled rejection.
     await new Promise((r) => setTimeout(r, 80));
     expect(runResolved).toBe(true);
+  });
+
+  it("ackPolicy=immediate wraps the dispatch in runDetachedWebhookWork before acking (issue #122)", async () => {
+    const events: string[] = [];
+    let runResolved = false;
+    setCliqDetachedWebhookWorkForTest((work) => {
+      events.push("detached-called");
+      return Promise.resolve().then(() => {
+        events.push("detached-work-started");
+        return work();
+      });
+    });
+    const { webhook } = buildDurableRegistration({
+      ackPolicy: "immediate",
+      inboundRun: async () => {
+        events.push("dispatch-started");
+        await new Promise((r) => setTimeout(r, 50));
+        runResolved = true;
+      },
+    });
+    const res = createMockServerResponse();
+    res.onEnd = () => events.push("acked");
+    await webhook.handler(
+      createMockIncomingRequest("POST", mentionPayload, {
+        "x-cliq-webhook-secret": "s3cr3t",
+      }),
+      res as unknown as any,
+    );
+
+    // The admission root must be reserved while the request is still
+    // admitted — i.e. BEFORE the 200 is written.
+    expect(events.indexOf("detached-called")).toBeGreaterThanOrEqual(0);
+    expect(events.indexOf("detached-called")).toBeLessThan(events.indexOf("acked"));
+    expect(events.indexOf("detached-work-started")).toBeGreaterThan(events.indexOf("acked"));
+    expect(events).not.toContain("dispatch-started");
+    await vi.waitFor(() => expect(events).toContain("dispatch-started"));
+    // Still ack-first: the dispatch has not resolved when we responded.
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ status: "received" });
+    expect(runResolved).toBe(false);
+
+    await new Promise((r) => setTimeout(r, 80));
+    expect(runResolved).toBe(true);
+  });
+
+  it("ackPolicy=immediate still acks and dispatches when the helper is absent (2026.7.1-2)", async () => {
+    let runStarted = false;
+    let runResolved = false;
+    setCliqDetachedWebhookWorkForTest(null);
+    const { webhook } = buildDurableRegistration({
+      ackPolicy: "immediate",
+      inboundRun: async () => {
+        runStarted = true;
+        await new Promise((r) => setTimeout(r, 50));
+        runResolved = true;
+      },
+    });
+    const res = createMockServerResponse();
+    await webhook.handler(
+      createMockIncomingRequest("POST", mentionPayload, {
+        "x-cliq-webhook-secret": "s3cr3t",
+      }),
+      res as unknown as any,
+    );
+    expect(runStarted).toBe(true);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ status: "received" });
+    expect(runResolved).toBe(false);
+
+    await new Promise((r) => setTimeout(r, 80));
+    expect(runResolved).toBe(true);
+  });
+
+  it("ackPolicy=immediate still acks 200 when the detached helper itself throws", async () => {
+    setCliqDetachedWebhookWorkForTest(() => {
+      throw new Error("admission root unavailable");
+    });
+    let runStarted = false;
+    const { webhook } = buildDurableRegistration({
+      ackPolicy: "immediate",
+      inboundRun: async () => {
+        runStarted = true;
+      },
+    });
+    const res = createMockServerResponse();
+    await webhook.handler(
+      createMockIncomingRequest("POST", mentionPayload, {
+        "x-cliq-webhook-secret": "s3cr3t",
+      }),
+      res as unknown as any,
+    );
+    // A failing helper must never turn into a 500 for Cliq; the dispatch
+    // still ran on the inherited chain.
+    expect(runStarted).toBe(true);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ status: "received" });
+    await new Promise((r) => setTimeout(r, 20));
+  });
+
+  it("after_dispatch never uses the detached helper and still 500s on dispatch failure", async () => {
+    let detachedCalls = 0;
+    setCliqDetachedWebhookWorkForTest((work) => {
+      detachedCalls++;
+      return work();
+    });
+    const { webhook } = buildDurableRegistration({
+      inboundRun: async () => {
+        throw new Error("spool failed");
+      },
+    });
+    const res = createMockServerResponse();
+    await webhook.handler(
+      createMockIncomingRequest("POST", mentionPayload, {
+        "x-cliq-webhook-secret": "s3cr3t",
+      }),
+      res as unknown as any,
+    );
+    expect(detachedCalls).toBe(0);
+    expect(res.statusCode).toBe(500);
+    expect(res.body).toBe("dispatch failed");
   });
 });
 

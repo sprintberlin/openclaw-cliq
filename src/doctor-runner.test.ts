@@ -368,7 +368,9 @@ describe("cliq doctor — stage 1 config and secret resolution", () => {
 
   it("warns that ackPolicy immediate risks lost messages and the beta draining failure (issue #122)", async () => {
     const report = await runDefault(cfgWith({ ackPolicy: "immediate" }), createDeps());
-    expect(stageOf(report, "config").evidence.join(" ")).toMatch(/GatewayDrainingError/);
+    const evidence = stageOf(report, "config").evidence.join(" ");
+    expect(evidence).toMatch(/GatewayDrainingError/);
+    expect(evidence).toMatch(/runDetachedWebhookWork/);
   });
 
   it("scopes config warnings to the selected account rather than the top-level section", async () => {

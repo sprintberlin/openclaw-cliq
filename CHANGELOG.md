@@ -62,6 +62,13 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **`ackPolicy: "immediate"` no longer fails every turn with a false gateway
+  drain on OpenClaw 2026.8.x (issue #122).** The webhook now reserves the SDK's
+  independent admission root with `runDetachedWebhookWork` before writing the
+  HTTP 200, so the post-ack continuation remains accepted instead of failing
+  with `GatewayDrainingError` / *"Couldn't process that message"*. The helper
+  is resolved dynamically for dual-version safety: `2026.7.1-2` keeps its
+  working fire-and-forget path, while `>= 2026.8.1-beta.3` uses detached work.
 - **Redelivered slow turns no longer show a false failure placeholder (issue
   #123).** When Deluge redelivers a content-derived message after the short
   dedupe TTL while its original turn is still running, the duplicate no longer

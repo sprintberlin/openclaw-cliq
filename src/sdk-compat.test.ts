@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const RUNTIME_MODULE = "openclaw/plugin-sdk/conversation-runtime";
 const GATEWAY_MODULE = "openclaw/plugin-sdk/gateway-runtime";
 const CHANNEL_INBOUND_MODULE = "openclaw/plugin-sdk/channel-inbound";
+const WEBHOOK_GUARDS_MODULE = "openclaw/plugin-sdk/webhook-request-guards";
 
 async function loadResolver() {
   vi.resetModules();
@@ -13,6 +14,7 @@ afterEach(() => {
   vi.doUnmock(RUNTIME_MODULE);
   vi.doUnmock(GATEWAY_MODULE);
   vi.doUnmock(CHANNEL_INBOUND_MODULE);
+  vi.doUnmock(WEBHOOK_GUARDS_MODULE);
   vi.resetModules();
 });
 
@@ -128,5 +130,45 @@ describe("readInboundProcessedOutcome", () => {
     const { readInboundProcessedOutcome } = await loadResolver();
 
     await expect(readInboundProcessedOutcome({ dispatchResult: {} })).resolves.toBeNull();
+  });
+});
+
+describe("resolveRunDetachedWebhookWork (issue #122)", () => {
+  it("returns and caches the helper when the symbol is present (>= 2026.8.1-beta.3)", async () => {
+    const runDetached = vi.fn(async (work: () => Promise<unknown>) => await work());
+    const factory = vi.fn(() => ({ runDetachedWebhookWork: runDetached }));
+    vi.doMock(WEBHOOK_GUARDS_MODULE, factory);
+
+    const { resolveRunDetachedWebhookWork } = await loadResolver();
+
+    await expect(resolveRunDetachedWebhookWork()).resolves.toBe(runDetached);
+    await expect(resolveRunDetachedWebhookWork()).resolves.toBe(runDetached);
+    expect(factory).toHaveBeenCalledOnce();
+  });
+
+  it("returns null when the symbol is absent (2026.7.1-2)", async () => {
+    vi.doMock(WEBHOOK_GUARDS_MODULE, () => ({ someOtherGuard: vi.fn() }));
+
+    const { resolveRunDetachedWebhookWork } = await loadResolver();
+
+    await expect(resolveRunDetachedWebhookWork()).resolves.toBeNull();
+  });
+
+  it("returns null when importing the SDK module throws", async () => {
+    vi.doMock(WEBHOOK_GUARDS_MODULE, () => {
+      throw new Error("module unavailable");
+    });
+
+    const { resolveRunDetachedWebhookWork } = await loadResolver();
+
+    await expect(resolveRunDetachedWebhookWork()).resolves.toBeNull();
+  });
+
+  it("returns null when the property is not a function", async () => {
+    vi.doMock(WEBHOOK_GUARDS_MODULE, () => ({ runDetachedWebhookWork: "not-callable" }));
+
+    const { resolveRunDetachedWebhookWork } = await loadResolver();
+
+    await expect(resolveRunDetachedWebhookWork()).resolves.toBeNull();
   });
 });

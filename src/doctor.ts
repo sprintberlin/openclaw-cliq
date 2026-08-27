@@ -106,7 +106,7 @@ function collectCliqPreviewWarnings(params: {
   }
   if (section.ackPolicy === "immediate") {
     warnings.push(
-      `- channels.cliq: ackPolicy is "immediate". A crash between ack and dispatch loses the inbound message. Use only when the Deluge invokeUrl timeout is tighter than the agent round-trip.`,
+      `- channels.cliq: ackPolicy is "immediate". A crash between ack and dispatch loses the inbound message. On OpenClaw >= 2026.8.1-beta.3, post-ack work must be wrapped in runDetachedWebhookWork before responding or the healthy gateway refuses it with GatewayDrainingError; this plugin version applies that wrapper dynamically when available. Use immediate only when the Deluge invokeUrl timeout is tighter than the agent round-trip.`,
     );
   }
   // Data-center validation: warn when only one of `oauthBase` / `apiBase` is

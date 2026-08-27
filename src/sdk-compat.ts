@@ -183,3 +183,51 @@ export async function readInboundProcessedOutcome(
     return null;
   }
 }
+
+/**
+ * Structural type for the SDK's detached-webhook-work helper.
+ *
+ * Deliberately NOT `typeof runDetachedWebhookWork`: the symbol only exists on
+ * `>= 2026.8.1-beta.3`, and a `typeof` reference would require importing it.
+ */
+export type RunDetachedWebhookWorkFn = <T>(work: () => Promise<T>) => Promise<T>;
+
+/** Module-level memo — resolved once per process on the inbound webhook path. */
+let runDetachedResolution: Promise<RunDetachedWebhookWorkFn | null> | undefined;
+
+async function loadRunDetachedWebhookWork(): Promise<RunDetachedWebhookWorkFn | null> {
+  try {
+    const ns: Record<string, unknown> = await import(
+      "openclaw/plugin-sdk/webhook-request-guards"
+    );
+    const candidate = ns["runDetachedWebhookWork"];
+    if (typeof candidate !== "function") {
+      return null;
+    }
+    return candidate as RunDetachedWebhookWorkFn;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the SDK's `runDetachedWebhookWork` helper when the running OpenClaw
+ * version exports it (`>= 2026.8.1-beta.3`), else `null` (`2026.7.1-2`).
+ *
+ * An ack-first webhook handler responds before its processing finishes, so the
+ * continued work outlives the HTTP request admission it inherited. Once that
+ * admission is released, queue enqueues from the inherited chain are refused
+ * as if the gateway were draining — which is why `ackPolicy: "immediate"`
+ * failed every turn with `GatewayDrainingError` on beta.3. This helper
+ * reserves an independent root that keeps the detached processing accepted,
+ * and must be called synchronously from the request handler while the request
+ * is still admitted.
+ *
+ * Never throws: a failed import, a missing property, or a non-function
+ * property all resolve to `null`, and the caller falls back to the plain
+ * fire-and-forget dispatch that `2026.7.1-2` accepts. The result is memoized.
+ */
+export function resolveRunDetachedWebhookWork(): Promise<RunDetachedWebhookWorkFn | null> {
+  runDetachedResolution ??= loadRunDetachedWebhookWork();
+  return runDetachedResolution;
+}
