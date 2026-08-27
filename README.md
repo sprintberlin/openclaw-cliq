@@ -593,7 +593,7 @@ Notes (the parser is tolerant):
 - `message` may be a plain string instead of `{ text, id, time }`.
 - A wrapped `params` object (`{ params: { message, user, channel } }`) is also accepted.
 - Group vs DM detection: `chat.type === "channel"` (or the presence of `channel.*` fields) marks a group; otherwise the message is treated as a DM.
-- The `x-cliq-webhook-secret` header is checked against the configured `webhookSecret`. The plugin also accepts `x-webhook-secret` or `Authorization: Bearer <secret>` for convenience.
+- The `x-cliq-webhook-secret` header is checked against the configured `webhookSecret`. Only `x-cliq-webhook-secret` is accepted; `x-webhook-secret` and `Authorization: Bearer <secret>` are rejected.
 - **Form submissions** (see [§5b](#5b-form-handler-optional--structured-input)): a payload with `handler: "form"` and/or a non-empty `values` object (also accepted under `form.values` / `form_data` / `formvalues`, including inside a `params` wrapper) is recognized as a Cliq Form submission; the submitted field values synthesize the agent body and are surfaced as `FormValues` / `FormName` on the inbound context.
 - **Agent-rendered form button clicks** (see [§5c](#5c-agent-rendered-forms-outbound-structured-input)): a prompt-card button posts `__cliq_form__ <fieldName>=<value>` as the message text; the plugin recognizes the sentinel and surfaces the answer as a `FormValues` entry (`{ <fieldName>: <value> }`) on the inbound context (structured params for a tool call), with the clean `<fieldName>: <value>` rendering as the agent body.
 
