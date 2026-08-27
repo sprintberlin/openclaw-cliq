@@ -13,6 +13,41 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **Canonical structured SecretRefs are accepted again (issue #95).** The
+  plugin manifest typed `clientSecret`, `webhookSecret`, and `refreshToken` as
+  bare strings in all four schema locations, so the exact shape
+  `openclaw secrets apply` writes was rejected with
+  `invalid config for plugin cliq: must be string`, while `$ENV_VAR`
+  interpolation passed. All three representations — structured SecretRef,
+  environment interpolation, and a literal value — are now accepted at the
+  channel root and under `channels.cliq.accounts.<id>`, and are verified
+  against both supported OpenClaw versions (`2026.7.1-2` and
+  `2026.8.1-beta.3`), so no version-gated fallback is needed.
+- **`openclaw secrets audit` no longer reports Cliq plaintext as clean.** The
+  plugin's secret contract was published under export names OpenClaw's
+  contract loader does not read, so it silently registered zero targets: a
+  config with three plaintext Cliq secrets audited as `"status": "clean"`.
+  The contract is now exposed as `secret-contract-api.ts`, the artifact the
+  loader actually resolves. Secrets stored under a named account
+  (`channels.cliq.accounts.<id>.*`) are registered too — previously they were
+  never scanned even though `apply` would have rewritten them.
+- **Setup no longer reports success for a config the gateway would reject.**
+  The generated `channels.cliq` section is now validated against the real
+  manifest schema using OpenClaw's own validator before setup finishes, and
+  fails closed if the validator is unavailable. Validation failures name the
+  offending path only; secret values never appear in the message.
+- **The advertised compatibility floor matches the range actually tested.**
+  `openclaw.compat` and the `openclaw` peer dependency claimed `>=2026.6.6`,
+  a version no longer built, smoke-tested, or checked by `check:sdk-compat`.
+  Both now state `>=2026.7.1-2`, matching `.github/openclaw-compat.json`.
+- **`openclaw cliq doctor` distinguishes an unresolved secret reference from
+  an unset field.** A configured-but-broken reference — a missing environment
+  variable, an unavailable or mis-sourced provider, or a `file`/`exec` ref
+  that cannot resolve at runtime — used to be indistinguishable from an
+  optional field that was never set. Each secret is now reported as resolved,
+  unresolved, provider-unavailable, plaintext, or absent, identified by
+  `source:provider:id` and never by value.
+
 - **OAuth capability evidence is no longer conflated with consent (issue #93,
   including #110).** The capability matrix now distinguishes four outcomes
   instead of three: a capability is `pass` only when a real read-only API call

@@ -36,6 +36,7 @@
     "dist",
     "index.ts",
     "setup-entry.ts",
+    "secret-contract-api.ts",
     "src",
     "assets",
     "README.md",
@@ -59,8 +60,8 @@
       "blurb": "Connect OpenClaw to Zoho Cliq."
     },
     "compat": {
-      "pluginApi": ">=2026.6.6",
-      "minGatewayVersion": "2026.6.6"
+      "pluginApi": ">=2026.7.1-2",
+      "minGatewayVersion": "2026.7.1-2"
     },
     "build": {
       "openclawVersion": "2026.7.1-2"
@@ -73,6 +74,6 @@
     "vitest": "^2.1.0"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.6.6"
+    "openclaw": ">=2026.7.1-2"
   }
 }

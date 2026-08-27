@@ -1,5 +1,8 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { resolveCliqSecretString } from "./secret-resolve.js";
+import {
+  resolveCliqSecretString,
+  inspectCliqSecretFields,
+} from "./secret-resolve.js";
 import { resolveCliqConfig } from "./client.js";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 
@@ -222,5 +225,102 @@ describe("resolveCliqConfig with SecretRef credentials", () => {
     });
     const account = resolveCliqConfig(cfg, null);
     expect(account.webhookSecret).toBeUndefined();
+  });
+});
+
+describe("inspectCliqSecretFields — unresolved refs and unavailable providers (issue #95)", () => {
+  const ENV_ID = "CLIQ_INSPECT_SECRET";
+  afterEach(() => {
+    delete process.env[ENV_ID];
+  });
+
+  it("reports a resolved env ref without revealing its value", () => {
+    process.env[ENV_ID] = "super-secret-value";
+    const cfg = cfgWith({
+      clientSecret: { source: "env", provider: "default", id: ENV_ID },
+    });
+    const [finding] = inspectCliqSecretFields({ cfg }).filter(
+      (entry) => entry.field === "clientSecret",
+    );
+    expect(finding.status).toBe("resolved");
+    expect(JSON.stringify(finding)).not.toContain("super-secret-value");
+  });
+
+  it("reports an unresolved env ref as unresolved, naming the ref but not a value", () => {
+    delete process.env[ENV_ID];
+    const cfg = cfgWith({
+      clientSecret: { source: "env", provider: "default", id: ENV_ID },
+    });
+    const finding = inspectCliqSecretFields({ cfg }).find(
+      (entry) => entry.field === "clientSecret",
+    )!;
+    expect(finding.status).toBe("unresolved");
+    expect(finding.ref).toBe(`env:default:${ENV_ID}`);
+    expect(finding.detail).toMatch(/could not be resolved/i);
+  });
+
+  it("distinguishes an unresolved ref from an absent field", () => {
+    const cfg = cfgWith({ clientSecret: "plain" });
+    const webhook = inspectCliqSecretFields({ cfg }).find(
+      (entry) => entry.field === "webhookSecret",
+    )!;
+    expect(webhook.status).toBe("absent");
+    expect(webhook.ref).toBeUndefined();
+  });
+
+  it("reports an unavailable provider distinctly from an unresolved ref", () => {
+    const cfg = cfgWith(
+      { clientSecret: { source: "env", provider: "vaultish", id: ENV_ID } },
+      { providers: { vaultish: { source: "file", path: "/tmp/s.json" } } },
+    );
+    const finding = inspectCliqSecretFields({ cfg }).find(
+      (entry) => entry.field === "clientSecret",
+    )!;
+    expect(finding.status).toBe("provider_unavailable");
+    expect(finding.detail).toMatch(/source "file" but ref requests "env"/);
+  });
+
+  it("treats an allowlist rejection as an unavailable provider, without the value", () => {
+    process.env[ENV_ID] = "live-value";
+    const cfg = cfgWith(
+      { clientSecret: { source: "env", provider: "envp", id: ENV_ID } },
+      { providers: { envp: { source: "env", allowlist: ["OTHER"] } } },
+    );
+    const finding = inspectCliqSecretFields({ cfg }).find(
+      (entry) => entry.field === "clientSecret",
+    )!;
+    expect(finding.status).toBe("provider_unavailable");
+    expect(JSON.stringify(finding)).not.toContain("live-value");
+  });
+
+  it("marks file and exec refs unresolvable at runtime rather than silently empty", () => {
+    const cfg = cfgWith({
+      clientSecret: { source: "file", provider: "mounted", id: "/cliq/cs" },
+      refreshToken: { source: "exec", provider: "vault", id: "cliq/rt" },
+    });
+    const findings = inspectCliqSecretFields({ cfg });
+    expect(findings.find((e) => e.field === "clientSecret")!.status).toBe(
+      "unresolved",
+    );
+    expect(findings.find((e) => e.field === "refreshToken")!.status).toBe(
+      "unresolved",
+    );
+  });
+
+  it("flags a plaintext secret so the audit can offer a migration path", () => {
+    const cfg = cfgWith({ clientSecret: "literal-secret" });
+    const finding = inspectCliqSecretFields({ cfg }).find(
+      (entry) => entry.field === "clientSecret",
+    )!;
+    expect(finding.status).toBe("plaintext");
+    expect(JSON.stringify(finding)).not.toContain("literal-secret");
+  });
+
+  it("does not treat $ENV interpolation as plaintext", () => {
+    const cfg = cfgWith({ clientSecret: "$CLIQ_CLIENT_SECRET" });
+    const finding = inspectCliqSecretFields({ cfg }).find(
+      (entry) => entry.field === "clientSecret",
+    )!;
+    expect(finding.status).not.toBe("plaintext");
   });
 });

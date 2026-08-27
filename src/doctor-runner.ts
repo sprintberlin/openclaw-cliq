@@ -16,6 +16,7 @@ import {
   type CliqBotReader,
 } from "./bot-inspect.js";
 import { collectCliqPreviewWarnings } from "./doctor.js";
+import { inspectCliqSecretFields } from "./secret-resolve.js";
 import { probeCliqStatus } from "./status.js";
 import { resolveCliqClient } from "./runtime-api.js";
 import { runCliqWebhookPreflight, type CliqPreflightReport } from "./webhook-preflight.js";
@@ -362,16 +363,36 @@ function buildConfigStage(
       account: null,
     };
   }
+  const secretFindings = inspectCliqSecretFields({
+    cfg,
+    section: effective as unknown as Record<string, unknown>,
+  });
   let account: ResolvedCliqAccount;
   try {
     account = resolveCliqConfig(cfg, accountId ?? null);
   } catch (err) {
+    const diagnosed = secretFindings.filter(
+      (finding) =>
+        finding.status === "unresolved" ||
+        finding.status === "provider_unavailable",
+    );
     return {
       result: stage(
         "config",
         "fail",
-        [safeError(err, [])],
-        ["Resolve clientId, clientSecret, and botId, including any referenced secret provider, then rerun the doctor."],
+        diagnosed.length > 0
+          ? diagnosed.map(
+              (finding) =>
+                `${finding.field} ${
+                  finding.status === "unresolved"
+                    ? "is configured but UNRESOLVED"
+                    : "references an unavailable secret provider"
+                }: ${finding.detail}`,
+            )
+          : [safeError(err, [])],
+        [
+          "Resolve clientId, clientSecret, and botId, including any referenced secret provider, then rerun the doctor.",
+        ],
         "secret_resolution",
       ),
       account: null,
@@ -381,28 +402,54 @@ function buildConfigStage(
     ...scopedStaticWarnings(cfg, accountId),
     ...collectOperationalWarnings(cfg, accountId),
   ].map((warning) => warning.replace(/^- channels\.cliq:\s*/, ""));
+  // Per-field secret state. A configured-but-broken reference used to look
+  // exactly like an unset optional field; the reference coordinates and the
+  // failure reason are reported, never a value.
+  const secretEvidence = secretFindings.map((finding) => {
+    switch (finding.status) {
+      case "resolved":
+        return `${finding.field} resolved without exposing its value${finding.ref ? ` (${finding.ref})` : ""}`;
+      case "unresolved":
+        return `${finding.field} is configured but UNRESOLVED: ${finding.detail}`;
+      case "provider_unavailable":
+        return `${finding.field} references an unavailable secret provider: ${finding.detail}`;
+      case "plaintext":
+        return `${finding.field} is stored as plaintext in config`;
+      default:
+        return `${finding.field} is not configured`;
+    }
+  });
+  const secretProblems = secretFindings.filter(
+    (finding) =>
+      finding.status === "unresolved" || finding.status === "provider_unavailable",
+  );
   const evidence = [
     "the channel section resolved through the plugin's own config resolver (manifest schema validation happens at gateway load)",
-    "clientSecret resolved without exposing its value",
-    account.webhookSecret
-      ? "webhookSecret resolved without exposing its value"
-      : "webhookSecret is unavailable",
-    account.refreshToken
-      ? "refreshToken resolved without exposing its value"
-      : "refreshToken is not configured",
+    ...secretEvidence,
     `session.dmScope=${readDmScope(cfg)}`,
     ...warnings,
+  ];
+  const remediations = [
+    ...(secretProblems.length > 0
+      ? [
+          `Fix the unresolved secret reference(s) for ${secretProblems
+            .map((finding) => finding.field)
+            .join(", ")}: export the referenced environment variable, or repair the provider in secrets.providers, then rerun the doctor.`,
+        ]
+      : []),
+    ...(warnings.length > 0
+      ? [
+          "Review each warning before production use; use session.dmScope=per-channel-peer for multi-user DMs and ackPolicy=after_dispatch on affected OpenClaw versions.",
+        ]
+      : []),
   ];
   return {
     result: stage(
       "config",
-      warnings.length > 0 ? "warn" : "pass",
+      secretProblems.length > 0 || warnings.length > 0 ? "warn" : "pass",
       evidence,
-      warnings.length > 0
-        ? [
-            "Review each warning before production use; use session.dmScope=per-channel-peer for multi-user DMs and ackPolicy=after_dispatch on affected OpenClaw versions.",
-          ]
-        : [],
+      remediations,
+      secretProblems.length > 0 ? "secret_resolution" : undefined,
     ),
     account,
   };

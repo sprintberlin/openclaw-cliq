@@ -27,7 +27,7 @@ import {
  * one registered target at the channel root. The bundled Discord/Telegram
  * channels register per-account variants too; Cliq does not need them yet.
  */
-const CLIQ_SECRET_FIELDS = [
+export const CLIQ_SECRET_FIELDS = [
   "clientSecret",
   "webhookSecret",
   "refreshToken",
@@ -48,17 +48,34 @@ const CLIQ_SECRET_FIELDS = [
  * `SecretInput` (a `string | SecretRef`), not via a sibling `*Ref` field.
  */
 export const cliqSecretTargetRegistryEntries: SecretTargetRegistryEntry[] =
-  CLIQ_SECRET_FIELDS.map((field) => ({
-    id: `channels.cliq.${field}`,
-    targetType: `channels.cliq.${field}`,
-    configFile: "openclaw.json",
-    pathPattern: `channels.cliq.${field}`,
-    secretShape: "secret_input",
-    expectedResolvedValue: "string",
-    includeInPlan: true,
-    includeInConfigure: true,
-    includeInAudit: true,
-  }));
+  CLIQ_SECRET_FIELDS.flatMap((field) => [
+    {
+      id: `channels.cliq.${field}`,
+      targetType: `channels.cliq.${field}`,
+      configFile: "openclaw.json",
+      pathPattern: `channels.cliq.${field}`,
+      secretShape: "secret_input" as const,
+      expectedResolvedValue: "string" as const,
+      includeInPlan: true,
+      includeInConfigure: true,
+      includeInAudit: true,
+    },
+    // Named accounts (`channels.cliq.accounts.<id>.<field>`) hold real
+    // credentials too. `collectSimpleChannelFieldAssignments` already rewrites
+    // them on apply, but without a registered target the audit never scans
+    // them, so plaintext in a named account was reported as clean.
+    {
+      id: `channels.cliq.accounts.${field}`,
+      targetType: `channels.cliq.accounts.${field}`,
+      configFile: "openclaw.json",
+      pathPattern: `channels.cliq.accounts.*.${field}`,
+      secretShape: "secret_input" as const,
+      expectedResolvedValue: "string" as const,
+      includeInPlan: true,
+      includeInConfigure: true,
+      includeInAudit: true,
+    },
+  ]);
 
 /**
  * Collect runtime config assignments for `openclaw secrets apply` — walks each

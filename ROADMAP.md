@@ -76,6 +76,10 @@ Mostly v3-independent; **dynamic agents** in particular is high-value and can be
   account without changing config, and confirm that runtime messaging and bot/handler maintenance
   are reported separately with every token value redacted. Needs real credentials, so it stays a
   human step.
+- **Live SecretRef acceptance run.** Validate Franzi's existing secret references against the
+  installed OpenClaw version without printing values: confirm `openclaw config validate` passes,
+  `openclaw secrets audit` reports no plaintext and no unresolved reference, and a real OAuth
+  probe still succeeds after the plugin update. Needs real credentials, so it stays a human step.
 - **Live provisioning acceptance run.** Confirm on a real organization that the setup dry-run
   matches the Franzi Message/Mention handlers without mutating them, and exercise create plus the
   minimal-create-then-`PATCH` fallback against an isolated test bot rather than a production one.

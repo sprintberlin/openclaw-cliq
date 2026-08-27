@@ -1114,3 +1114,68 @@ describe("cliq doctor — capability evidence honesty (issue #93)", () => {
     expect(capabilities.remediation.join(" ")).toContain("ZohoCliq.Bots.READ");
   });
 });
+
+describe("cliq doctor — SecretRef diagnostics (issue #95)", () => {
+  it("identifies an unresolved env ref without exposing a value", async () => {
+    delete process.env.CLIQ_DOCTOR_UNSET;
+    const report = await runCliqDoctor(
+      cfgWith({
+        webhookSecret: {
+          source: "env",
+          provider: "default",
+          id: "CLIQ_DOCTOR_UNSET",
+        },
+      }),
+      {},
+      createDeps(),
+    );
+    const config = stageOf(report, "config");
+    expect(config.status).toBe("warn");
+    expect(config.boundary).toBe("secret_resolution");
+    expect(config.evidence.join(" ")).toContain(
+      "env:default:CLIQ_DOCTOR_UNSET",
+    );
+    expect(config.evidence.join(" ")).toMatch(/UNRESOLVED/);
+  });
+
+  it("identifies an unavailable provider without revealing the environment value", async () => {
+    process.env.CLIQ_DOCTOR_SECRET = "live-value-never-print";
+    const report = await runCliqDoctor(
+      cfgWith(
+        {
+          webhookSecret: {
+            source: "env",
+            provider: "wrong-source",
+            id: "CLIQ_DOCTOR_SECRET",
+          },
+        },
+        {
+          secrets: {
+            providers: {
+              "wrong-source": { source: "file", path: "/tmp/secrets.json" },
+            },
+          },
+        },
+      ),
+      {},
+      createDeps(),
+    );
+    const config = stageOf(report, "config");
+    expect(config.status).toBe("fail");
+    const printed = JSON.stringify(report);
+    expect(printed).toMatch(/source .*file.*ref requests .*env/i);
+    expect(printed).not.toContain("live-value-never-print");
+    delete process.env.CLIQ_DOCTOR_SECRET;
+  });
+
+  it("distinguishes an absent optional field from a broken reference", async () => {
+    const report = await runCliqDoctor(
+      cfgWith({ webhookSecret: undefined, refreshToken: undefined }),
+      {},
+      createDeps(),
+    );
+    const evidence = stageOf(report, "config").evidence.join(" ");
+    expect(evidence).toContain("webhookSecret is not configured");
+    expect(evidence).not.toMatch(/webhookSecret.*UNRESOLVED/);
+  });
+});

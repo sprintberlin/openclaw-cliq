@@ -31,6 +31,7 @@ import { resolveCliqDirectoryAllowlist } from "./setup-directory.js";
 import { runCliqSetupOnboarding } from "./setup-onboarding.js";
 import { runCliqSetupProvisioning } from "./setup-provisioning-flow.js";
 import { describeCliqInboundVerification } from "./inbound-verification.js";
+import { validateGeneratedCliqConfig } from "./config-validation.js";
 
 const CHANNEL = "cliq" as const;
 const DEFAULT_ACCOUNT_ID = "default";
@@ -712,8 +713,28 @@ const cliqFinalize: NonNullable<ChannelSetupWizard["finalize"]> = async ({
     }
   }
 
+  await validateCliqSetupResult(next);
+
   return { cfg: next, accountId: DEFAULT_ACCOUNT_ID };
 };
+
+/**
+ * Fail setup when the config it generated would be rejected by the gateway.
+ *
+ * Setup previously reported success for configs OpenClaw refused to load, so
+ * the breakage only surfaced on the next start. Validating the generated
+ * section against the shipped schema turns that into an immediate, explicit
+ * failure. Throws with redacted, path-only detail; secret values never appear
+ * in the message.
+ */
+export async function validateCliqSetupResult(cfg: OpenClawConfig): Promise<void> {
+  const section = readCliqSection(cfg);
+  const validation = await validateGeneratedCliqConfig(section);
+  if (validation.valid) return;
+  throw new Error(
+    `The generated Zoho Cliq config failed OpenClaw schema validation: ${validation.issues.join("; ")}`,
+  );
+}
 
 export const cliqSetupWizard: ChannelSetupWizard = {
   channel: CHANNEL,
