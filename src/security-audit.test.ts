@@ -252,6 +252,7 @@ describe("stacked findings", () => {
         "channels.cliq.allow_from.wildcard",
         "channels.cliq.dm_policy.open",
         "channels.cliq.secrets.plaintext",
+        "channels.cliq.session_scope.shared",
         "channels.cliq.webhook_secret.missing",
       ].sort(),
     );
@@ -351,5 +352,47 @@ describe("channel security adapter delivery (issue #111)", () => {
       hasExplicitAccountPath: false,
     });
     expect(findings).toEqual([]);
+  });
+});
+
+describe("channels.cliq.session_scope.shared (issue #104)", () => {
+  it("flags the runtime default main scope when session is absent and DMs are open", () => {
+    const cfg = cfgWith({ ...REFINED, dmPolicy: "open", allowFrom: ["*"] });
+    const finding = collectCliqSecurityAuditFindings({ cfg }).find(
+      (entry) => entry.checkId === "channels.cliq.session_scope.shared",
+    );
+    expect(finding).toBeDefined();
+    expect(finding!.severity).toBe("critical");
+    expect(finding!.detail).toMatch(/session\.dmScope.*main/i);
+    expect(finding!.detail).toMatch(/conversation|context/i);
+    expect(finding!.remediation).toContain("per-channel-peer");
+  });
+
+  it.each([
+    ["pairing policy", { dmPolicy: "pairing", allowFrom: [] }],
+    ["wildcard allowlist", { dmPolicy: "allowlist", allowFrom: ["*"] }],
+    ["multiple allowlisted senders", { dmPolicy: "allowlist", allowFrom: ["u1", "u2"] }],
+  ])("flags main scope for %s", (_label, section) => {
+    const cfg = cfgWith({ ...REFINED, ...section });
+    expect(
+      collectCliqSecurityAuditFindings({ cfg }).some(
+        (entry) => entry.checkId === "channels.cliq.session_scope.shared",
+      ),
+    ).toBe(true);
+  });
+
+  it.each([
+    ["one allowlisted sender", { dmPolicy: "allowlist", allowFrom: ["u1"] }, undefined],
+    ["disabled DMs", { dmPolicy: "disabled", allowFrom: ["u1", "u2"] }, undefined],
+    ["per-channel-peer", { dmPolicy: "open", allowFrom: ["*"] }, "per-channel-peer"],
+    ["per-account-channel-peer", { dmPolicy: "open", allowFrom: ["*"] }, "per-account-channel-peer"],
+  ])("does not flag %s", (_label, section, dmScope) => {
+    const cfg = cfgWith({ ...REFINED, ...section });
+    if (dmScope) (cfg as any).session = { dmScope };
+    expect(
+      collectCliqSecurityAuditFindings({ cfg }).some(
+        (entry) => entry.checkId === "channels.cliq.session_scope.shared",
+      ),
+    ).toBe(false);
   });
 });

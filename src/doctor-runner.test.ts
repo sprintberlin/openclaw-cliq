@@ -356,7 +356,18 @@ describe("cliq doctor — stage 1 config and secret resolution", () => {
     );
     const config = stageOf(report, "config");
     expect(config.status).toBe("warn");
-    expect(config.evidence.join(" ")).toMatch(/session\.dmScope resolves to main/);
+    expect(config.evidence.join(" ")).toMatch(/share one OpenClaw session/i);
+    expect(config.evidence.join(" ")).toMatch(/conversation-context leakage/i);
+  });
+
+  it("warns on a fresh install whose session block is absent (issue #104 live evidence)", async () => {
+    const report = await runDefault(
+      cfgWith({ dmPolicy: "open", allowFrom: ["*"] }, { session: undefined }),
+      createDeps(),
+    );
+    const evidence = stageOf(report, "config").evidence.join(" ");
+    expect(evidence).toMatch(/share one OpenClaw session/i);
+    expect(evidence).toMatch(/falls back to the runtime default/i);
   });
 
   it("does not warn about dmScope for a single-sender allowlist bot", async () => {

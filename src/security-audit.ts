@@ -6,6 +6,10 @@ import {
 import {
   trustedOrganizationAuditAdjustments,
 } from "./trusted-org.js";
+import {
+  hasSharedDmSessionRisk,
+  SHARED_DM_SCOPE_WARNING,
+} from "./dm-scope.js";
 
 /**
  * A single Cliq security audit finding. Mirrors the SDK's
@@ -160,6 +164,18 @@ export function collectCliqSecurityAuditFindings(params: {
   const { downgradeToInfo, extraFindings } = trustedOrganizationAuditAdjustments({
     cfg: params.cfg,
   });
+
+  if (hasSharedDmSessionRisk({ cfg: params.cfg, section })) {
+    findings.push({
+      checkId: "channels.cliq.session_scope.shared",
+      severity: "critical",
+      title: "Cliq DMs from multiple users share one OpenClaw session",
+      detail: SHARED_DM_SCOPE_WARNING,
+      remediation:
+        "Set session.dmScope to per-channel-peer (or per-account-channel-peer when several Cliq accounts must be isolated too), restart the gateway, and verify the effective scope with `openclaw cliq doctor`.",
+    });
+  }
+
   if (isWildcardAllowFrom(allowFrom)) {
     findings.push({
       checkId: "channels.cliq.allow_from.wildcard",

@@ -368,6 +368,8 @@ Add the `cliq` channel to your `openclaw.json` (or via `openclaw setup` / the se
       "webhookSecret": "<secret from step 2>",
       "refreshToken": "<refresh token from step 3c — required for channel posts / edits>",
        "allowFrom": ["<zoho user id of each allowed DM sender>"],
+       // See the multi-user privacy warning below: session.dmScope is global
+       // and must be per-channel-peer for any bot several people can DM.
        "dmPolicy": "allowlist",        // "open" | "allowlist" | "pairing" | "disabled"
        "groupPolicy": "disabled",      // "open" | "allowlist" | "disabled"
        "groups": { "dev-team": {} },
@@ -380,9 +382,48 @@ Add the `cliq` channel to your `openclaw.json` (or via `openclaw setup` / the se
         "animate": "dots"
       }
     }
+  },
+  "session": {
+    // REQUIRED for any bot more than one person can DM — see the warning below.
+    "dmScope": "per-channel-peer"
   }
 }
 ```
+
+> **⚠️ Multi-user privacy: `dmPolicy` and `allowFrom` do NOT isolate conversations.**
+>
+> Those two settings control **admission** — *who may contact the bot*. They say nothing about
+> **isolation** — *whether those people share one conversation*. Isolation is controlled by the
+> separate, global `session.dmScope`.
+>
+> **`main` is the runtime default whenever the `session` block is absent**, so this affects fresh
+> installations, not only upgrades from an older config. With `dmScope: "main"` every DM collapses
+> into `agent:<agentId>:main`, across senders *and* across channels. Two things follow:
+>
+> - **Context leakage** — one Cliq user's conversation history can appear in another user's turn.
+> - **Cross-channel misrouting** — the shared session's latest delivery route may point at a
+>   different channel, so a message can be received and processed while the reply is never
+>   delivered where it arrived (the gateway logs `visible channel turn dispatched with no queued
+>   reply payloads`).
+>
+> Set the scope for any bot several people can reach:
+>
+> ```jsonc
+> {
+>   "session": { "dmScope": "per-channel-peer" },
+>   "channels": { "cliq": { /* existing Cliq configuration */ } }
+> }
+> ```
+>
+> Sessions are then isolated per channel and per sender (conceptually
+> `agent:main:cliq:direct:<cliq-user-id>`). For deployments with **several configured Cliq
+> accounts**, use the stricter `per-account-channel-peer`, which additionally isolates the same
+> sender across accounts. Restart the gateway after changing it — it is read at startup.
+>
+> `openclaw cliq doctor` warns when a multi-user Cliq bot still resolves to `main`, and
+> `openclaw security audit` reports it as a **critical** finding
+> (`channels.cliq.session_scope.shared`). Setup asks before changing it, because the value is
+> global to every channel and must not be overwritten silently.
 
 The default account is configured directly under `channels.cliq`, as shown above. Do not put it under `accounts.default`: the plugin treats the reserved id `default` as the top-level account. For multiple Cliq accounts, keep the default credentials at the top level and add only named secondary accounts under `channels.cliq.accounts.<accountId>`.
 
@@ -438,8 +479,8 @@ Every field except the required ones has a sensible default; `groups` / `thinkin
 - **`inboundVerificationFailedAt`** *(written by setup or the preflight CLI)* — ISO timestamp of the last *failed* public webhook verification. Set when a check against the configured `publicWebhookUrl` fails and cleared by a later passing one, so status output can distinguish "never checked" from "last check failed" instead of folding both into "NOT verified". Not read at runtime.
 - **`refreshToken`** *(recommended)* — User-context OAuth refresh token (sensitive). Obtained once via the self-client `authorization_code` flow (§3c). **Required for channel @mention replies and live-edit message edits** — without it, those paths fail with `oauthtoken_scope_invalid` (the `client_credentials` grant cannot obtain a usable token for `ZohoCliq.Channels.UPDATE` / `ZohoCliq.Messages.UPDATE`). DM-only setups can leave it unset.
 - **`ackPolicy`** *(optional)* — When the webhook acknowledges Cliq relative to the inbound dispatch. `"after_dispatch"` (default) awaits the full dispatch before sending HTTP 200 — a crash mid-dispatch means Cliq never sees the 200 and redelivers (no lost message), and it works on every supported OpenClaw version. `"immediate"` acknowledges first (faster, but a crash after the ack can lose the message). **Deluge timeout gotcha:** Zoho's `invokeUrl` in the bot Message handler has a ~40 s hard timeout. With `"after_dispatch"`, a slow turn (image analysis, cold model) can trip Deluge's *"The task has been terminated since the API call is taking too long to respond"* even though the reply is delivered out-of-band; Deluge may then redeliver while the original turn is still running, and [#123](https://github.com/sprintberlin/openclaw-cliq/issues/123) prevents that redelivery from becoming a spurious *"Couldn't process that message"* placeholder. `"immediate"` is the escape hatch when that timeout is unavoidable: on OpenClaw `2026.7.1-2` it uses the legacy fire-and-forget path, while on `>= 2026.8.1-beta.3` this plugin wraps the continuation in the SDK's `runDetachedWebhookWork` **before** writing the 200 ([#122](https://github.com/sprintberlin/openclaw-cliq/issues/122)); without that wrapper the healthy gateway refuses the post-ack turn with `GatewayDrainingError` and the user sees *"Couldn't process that message"*. Prefer `"after_dispatch"` when turns stay below the Deluge timeout; use `"immediate"` for slower turns only when you accept the crash-after-ack loss risk. Pairs naturally with `thinking.mode: "placeholder"` (the placeholder posts immediately while the agent works).
-- **`allowFrom`** *(optional)* — Array of Zoho Cliq user ids allowed to DM the bot (only effective when `dmPolicy` is `allowlist` or `pairing`).
-- **`dmPolicy`** *(optional)* — DM admission policy. Default is `allowlist` (deny by default). `pairing` starts the OpenClaw pairing approval flow for unknown senders — by default the sender gets a reply with a pairing code and the bot owner runs `openclaw pairing approve cliq <code>` on the CLI; set `pairing.notifyOwnerTarget` (see the `pairing` row below) to instead post an Approve/Deny card to the owner so approval happens inline in Cliq. Accepted values: `open`, `allowlist`, `pairing`, `disabled` (schema-validated — unknown field names like `dmSecurity` are rejected).
+- **`allowFrom`** *(optional)* — Array of Zoho Cliq user ids allowed to DM the bot (only effective when `dmPolicy` is `allowlist` or `pairing`). This is an **admission** control, not session isolation; multiple allowed senders still share context unless global `session.dmScope` is `per-channel-peer` (or `per-account-channel-peer`).
+- **`dmPolicy`** *(optional)* — DM **admission** policy, not conversation isolation (see the multi-user privacy warning above). Default is `allowlist` (deny by default). `pairing` starts the OpenClaw pairing approval flow for unknown senders — by default the sender gets a reply with a pairing code and the bot owner runs `openclaw pairing approve cliq <code>` on the CLI; set `pairing.notifyOwnerTarget` (see the `pairing` row below) to instead post an Approve/Deny card to the owner so approval happens inline in Cliq. Accepted values: `open`, `allowlist`, `pairing`, `disabled` (schema-validated — unknown field names like `dmSecurity` are rejected).
 - **`groupPolicy`** *(optional)* — Group/channel admission policy. Fresh generic setup defaults to `disabled`; `open` lets the bot respond in any channel where it is @mentioned, `allowlist` restricts it to channel unique names listed under `groups`, and `disabled` ignores all group messages. Existing configurations without `groupPolicy` retain the legacy open behavior and are never rewritten during upgrades.
 - **`groups`** *(optional)* — Per-channel config keyed by the Cliq **channel unique name**. Setup resolves entered channel names through the existing directory adapter. Each entry supports `requireMention` (boolean — `false` lets the bot respond in that channel without an explicit @mention), `ingest` (boolean), `tools` (`{ allow, alsoAllow, deny }` tool policy for that channel), and `toolsBySender` (per-sender tool policy overrides keyed by `channel:cliq:<senderId>`, `id:<senderId>`, `name:<display>`, `e164:<phone>`, `username:<handle>`, or `*`). A `*` entry applies to any channel not listed explicitly.
 - **`trustedOrganization`** *(optional, explicit acknowledgement)* — Set by setup only after the operator confirms organization-wide exposure. This metadata is never inferred from `allowFrom: ["*"]` or `dmPolicy: "open"`; existing open configurations remain unchanged. `acknowledged: true` makes the security audit classify the deliberate wildcard/open policy as informational, but does **not** enforce organization membership. Cliq webhook payloads may include `user.organization_id`, yet Deluge forwards it as ordinary JSON and the directory API provides no independent tenant proof. The actual boundary is the constant-time verified `x-cliq-webhook-secret` plus the installed bot-handler context. The wizard displays the effective DM/group access and tool-policy caveat before recording acknowledgement.

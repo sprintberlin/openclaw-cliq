@@ -4,6 +4,7 @@ import { validateGeneratedCliqConfig } from "./config-validation.js";
 import {
   cliqSetupWizard,
   validateCliqSetupResult,
+  guardCliqDmScopeDuringSetup,
   isCliqChannelConfigured,
   promptCliqCredentials,
   applyCliqCredentials,
@@ -740,5 +741,57 @@ describe("cliq setup wizard — generated config validation (issue #95)", () => 
         },
       } as never),
     ).rejects.not.toThrow(/SUPER_SECRET_VALUE|LIVE_WEBHOOK_SECRET/);
+  });
+});
+
+describe("cliq setup wizard — shared DM scope guard (issue #104)", () => {
+  it("offers to set per-channel-peer when the absent session block defaults to main", async () => {
+    const { prompter, calls } = makeScriptedPrompter([
+      { method: "confirm", value: true },
+    ]);
+    const result = await guardCliqDmScopeDuringSetup({
+      cfg: cfgWith({ dmPolicy: "open", allowFrom: ["*"] }),
+      prompter,
+    });
+    expect((result as any).session.dmScope).toBe("per-channel-peer");
+    const warning = calls.find((call) => call.method === "note");
+    expect(String(warning?.args.message)).toMatch(/share one OpenClaw session/i);
+    expect(String(warning?.args.message)).toMatch(/conversation-context leakage/i);
+  });
+
+  it("does not overwrite an explicit main scope without consent", async () => {
+    const cfg = cfgWith({ dmPolicy: "pairing", allowFrom: [] });
+    (cfg as any).session = { dmScope: "main", unrelated: true };
+    const { prompter } = makeScriptedPrompter([
+      { method: "confirm", value: false },
+    ]);
+    const result = await guardCliqDmScopeDuringSetup({ cfg, prompter });
+    expect((result as any).session).toEqual({ dmScope: "main", unrelated: true });
+  });
+
+  it("preserves unrelated session config when consent changes the scope", async () => {
+    const cfg = cfgWith({ dmPolicy: "allowlist", allowFrom: ["u1", "u2"] });
+    (cfg as any).session = { dmScope: "main", reset: { mode: "daily" } };
+    const { prompter } = makeScriptedPrompter([
+      { method: "confirm", value: true },
+    ]);
+    const result = await guardCliqDmScopeDuringSetup({ cfg, prompter });
+    expect((result as any).session).toEqual({
+      dmScope: "per-channel-peer",
+      reset: { mode: "daily" },
+    });
+  });
+
+  it.each([
+    ["safe scope", { dmPolicy: "open", allowFrom: ["*"] }, "per-channel-peer"],
+    ["single sender", { dmPolicy: "allowlist", allowFrom: ["u1"] }, "main"],
+    ["disabled DMs", { dmPolicy: "disabled", allowFrom: ["u1", "u2"] }, "main"],
+  ])("does not prompt for %s", async (_label, section, dmScope) => {
+    const cfg = cfgWith(section);
+    (cfg as any).session = { dmScope };
+    const { prompter, calls } = makeScriptedPrompter([]);
+    const result = await guardCliqDmScopeDuringSetup({ cfg, prompter });
+    expect(result).toBe(cfg);
+    expect(calls).toEqual([]);
   });
 });

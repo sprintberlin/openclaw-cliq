@@ -83,10 +83,13 @@ Mostly v3-independent; **dynamic agents** in particular is high-value and can be
 - **Live provisioning acceptance run.** Confirm on a real organization that the setup dry-run
   matches the Franzi Message/Mention handlers without mutating them, and exercise create plus the
   minimal-create-then-`PATCH` fallback against an isolated test bot rather than a production one.
-- **Dynamic agents + workspace templates.** Route each DM sender and each channel to its own
-  isolated agent session and workspace, seeded on first contact from a configurable template
-  (`AGENTS.md` and friends). Today all senders share one agent context; per-channel *tool policy*
-  exists (`src/group-policy.ts`) but not per-identity *session/workspace* isolation. Use
+- **Dynamic agents + workspace templates.** Give each DM sender and each channel its own
+  dynamically provisioned **agent and workspace**, seeded on first contact from a configurable
+  template (`AGENTS.md` and friends). This is stricter than the basic conversation isolation
+  operators already get from global `session.dmScope: per-channel-peer` (or
+  `per-account-channel-peer`): that setting separates session history and delivery routes while
+  still using one configured agent and workspace for all identities. Per-channel *tool policy*
+  exists (`src/group-policy.ts`), but per-identity agent/workspace provisioning does not. Use
   deterministic routing keys (e.g. `cliq-dm-<senderId>`, `cliq-group-<channelUniqueName>`) and let
   an explicit OpenClaw `bindings` entry win over dynamic routing. Ref: OpenClaw agent-routing /
   bindings + Telegram/Discord in the monorepo. (Prior art: wecom.)

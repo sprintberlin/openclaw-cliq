@@ -16,6 +16,11 @@ import {
   type CliqBotReader,
 } from "./bot-inspect.js";
 import { collectCliqPreviewWarnings } from "./doctor.js";
+import {
+  admitsMultipleDmSenders,
+  readEffectiveDmScope,
+  SHARED_DM_SCOPE_WARNING,
+} from "./dm-scope.js";
 import { inspectCliqSecretFields } from "./secret-resolve.js";
 import { probeCliqStatus } from "./status.js";
 import { resolveCliqClient } from "./runtime-api.js";
@@ -198,24 +203,23 @@ function readPublicWebhookUrl(cfg: OpenClawConfig, accountId?: string): string |
 
 function isMultiUserDmConfig(cfg: OpenClawConfig, accountId?: string): boolean {
   const section = readEffectiveCliqSection(cfg, accountId ?? null).section;
-  if (!section) return false;
-  const policy = section.dmPolicy ?? "allowlist";
-  const allowFrom = section.allowFrom ?? [];
-  return policy === "open" || policy === "pairing" || allowFrom.includes("*") || allowFrom.length > 1;
+  return admitsMultipleDmSenders(section as unknown as Record<string, unknown> | null);
 }
 
 function readDmScope(cfg: OpenClawConfig): string {
+  return readEffectiveDmScope(cfg);
+}
+
+function isDmScopeUnset(cfg: OpenClawConfig): boolean {
   const raw = (cfg as unknown as { session?: { dmScope?: unknown } }).session?.dmScope;
-  return readString(raw) ?? "main";
+  return readString(raw) === undefined;
 }
 
 function collectOperationalWarnings(cfg: OpenClawConfig, accountId?: string): string[] {
   const warnings: string[] = [];
   const effective = readEffectiveCliqSection(cfg, accountId ?? null).section;
   if (isMultiUserDmConfig(cfg, accountId) && readDmScope(cfg) === "main") {
-    warnings.push(
-      "session.dmScope resolves to main while multiple Cliq DM senders can be admitted; conversations can share context and the latest delivery route",
-    );
+    warnings.push(SHARED_DM_SCOPE_WARNING);
   }
   if (effective?.ackPolicy === "immediate") {
     warnings.push(
@@ -427,6 +431,9 @@ function buildConfigStage(
     "the channel section resolved through the plugin's own config resolver (manifest schema validation happens at gateway load)",
     ...secretEvidence,
     `session.dmScope=${readDmScope(cfg)}`,
+    ...(isDmScopeUnset(cfg)
+      ? ["session.dmScope is unset and falls back to the runtime default, not an explicit operator choice"]
+      : []),
     ...warnings,
   ];
   const remediations = [
