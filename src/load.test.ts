@@ -300,6 +300,106 @@ describe("inbound activity timestamps (issue #98)", () => {
   });
 });
 
+describe("organization boundary + group admission over the webhook (issues #100 / #103)", () => {
+  beforeEach(() => {
+    resetCliqDedupeForTest();
+  });
+
+  function registration(extra: Record<string, unknown> = {}) {
+    const dispatched: unknown[] = [];
+    const { webhook, api } = registerCliqPluginForTest();
+    api.config = createCliqTestConfig({
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+      botName: "openclaw-bot",
+      webhookSecret: "s3cr3t",
+      dmPolicy: "open",
+      ...extra,
+    });
+    api.runtime = createTestRuntimeChannel(async (...args: unknown[]) => {
+      dispatched.push(args);
+      return undefined;
+    });
+    return { webhook, dispatched };
+  }
+
+  async function post(
+    webhook: ReturnType<typeof registerCliqPluginForTest>["webhook"],
+    payload: Record<string, unknown>,
+    headers: Record<string, string> = { "x-cliq-webhook-secret": "s3cr3t" },
+  ) {
+    const res = createMockServerResponse();
+    await webhook.handler(
+      createMockIncomingRequest("POST", payload, headers),
+      res as unknown as any,
+    );
+    return res;
+  }
+
+  it("dispatches a DM that carries a matching organization id", async () => {
+    const { webhook, dispatched } = registration();
+    const res = await post(
+      webhook,
+      createDmDelugePayload({
+        user: { id: "user-123", name: "Alice", organization_id: "org-1" },
+      }),
+    );
+    expect(res.statusCode).toBe(200);
+    expect(dispatched).toHaveLength(1);
+  });
+
+  it("dispatches a DM with NO organization id (documented compatibility policy)", async () => {
+    const { webhook, dispatched } = registration();
+    const res = await post(webhook, createDmDelugePayload());
+    expect(res.statusCode).toBe(200);
+    expect(dispatched).toHaveLength(1);
+  });
+
+  it("never dispatches a forged payload sent with the wrong secret", async () => {
+    const { webhook, dispatched } = registration();
+    const res = await post(
+      webhook,
+      createDmDelugePayload({
+        user: { id: "attacker", organization_id: "org-1" },
+      }),
+      { "x-cliq-webhook-secret": "wrong" },
+    );
+    expect(res.statusCode).toBe(401);
+    expect(dispatched).toHaveLength(0);
+  });
+
+  it("denies a group mention from a channel outside the group allowlist", async () => {
+    const { webhook, dispatched } = registration({
+      groupPolicy: "allowlist",
+      groups: { "dev-team": {} },
+    });
+    const res = await post(
+      webhook,
+      createMentionDelugePayload({ channel: { unique_name: "random" } }),
+    );
+    expect(res.statusCode).toBe(200);
+    expect(dispatched).toHaveLength(0);
+  });
+
+  it("admits a group mention from an allowlisted channel", async () => {
+    const { webhook, dispatched } = registration({
+      groupPolicy: "allowlist",
+      groups: { general: {} },
+    });
+    const res = await post(webhook, createMentionDelugePayload());
+    expect(res.statusCode).toBe(200);
+    expect(dispatched).toHaveLength(1);
+  });
+
+  it("keeps legacy configs (no groupPolicy) admitting mentions unchanged", async () => {
+    const { webhook, dispatched } = registration();
+    const res = await post(webhook, createMentionDelugePayload());
+    expect(res.statusCode).toBe(200);
+    expect(dispatched).toHaveLength(1);
+  });
+});
+
 describe("pairing approval sentinel over the webhook (issue #117)", () => {
   let stateDir: string;
   let previousStateDir: string | undefined;

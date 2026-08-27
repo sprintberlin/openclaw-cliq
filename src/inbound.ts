@@ -145,6 +145,13 @@ export interface CliqWebhookPayload {
     email?: string;
     zuid?: string;
     zoho_user_id?: string;
+    /**
+     * Zoho organization id, when the Deluge handler forwards the full user
+     * object. UNTRUSTED: Deluge posts it as ordinary JSON, so it is evidence
+     * about the tenant, never proof. See `src/identity.ts`.
+     */
+    organization_id?: string;
+    organizationId?: string;
   };
   chat?: {
     id?: string;
@@ -235,6 +242,7 @@ export interface ParsedCliqInbound {
   senderId: string;
   senderName: string;
   senderEmail?: string;
+  organization?: CliqOrganizationIdentity;
   chatId: string;
   channelId?: string;
   channelName?: string;
@@ -424,6 +432,7 @@ function buildSyntheticMessageId(
 }
 
 import { createHash } from "node:crypto";
+import { resolveCliqOrganizationIdentity, type CliqOrganizationIdentity } from "./identity.js";
 
 /**
  * Parse a raw Cliq webhook payload into a normalized inbound message.
@@ -580,6 +589,7 @@ export function parseCliqWebhookPayload(
     senderId: user.id,
     senderName: userName,
     senderEmail: user.email_id ?? user.email,
+    organization: resolveCliqOrganizationIdentity(payload),
     chatId,
     channelId,
     channelName,

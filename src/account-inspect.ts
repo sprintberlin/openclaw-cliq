@@ -78,6 +78,17 @@ export interface InspectedCliqAccountConfig {
   refreshToken: boolean;
   allowFrom: string[];
   dmPolicy?: string;
+  groupPolicy?: string;
+  /**
+   * Explicit trusted-organization acknowledgement (presence + label only).
+   * Reported so operators can see that organization-wide access is a
+   * deliberate policy rather than an accidental wildcard.
+   */
+  trustedOrganization?: {
+    acknowledged: boolean;
+    label?: string;
+    acknowledgedAt?: string;
+  };
   selfSenderIds: string[];
   ackPolicy: "after_dispatch" | "immediate";
   /** Whether progressive (block-streaming) reply delivery is opted-in. */
@@ -258,6 +269,18 @@ export function inspectCliqAccount(params: {
       ),
       allowFrom: resolved?.allowFrom ?? section?.allowFrom ?? [],
       dmPolicy: section?.dmPolicy,
+      groupPolicy: section?.groupPolicy,
+      trustedOrganization: resolved?.trustedOrganization
+        ? {
+            acknowledged: true,
+            ...(resolved.trustedOrganization.label
+              ? { label: resolved.trustedOrganization.label }
+              : {}),
+            ...(resolved.trustedOrganization.acknowledgedAt
+              ? { acknowledgedAt: resolved.trustedOrganization.acknowledgedAt }
+              : {}),
+          }
+        : undefined,
       selfSenderIds: resolved?.selfSenderIds ?? section?.selfSenderIds ?? [],
       ackPolicy: resolved?.ackPolicy ?? "after_dispatch",
       streamingPreview:

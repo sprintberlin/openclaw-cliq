@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   cliqSetupWizard,
   isCliqChannelConfigured,
@@ -333,6 +333,35 @@ describe("cliqSetupWizard", () => {
     const section = (next as unknown as { channels: { cliq: Record<string, unknown> } })
       .channels.cliq;
     expect(section.enabled).toBe(false);
+  });
+
+  it("groupAccess defaults to disabled on a fresh generic setup", () => {
+    expect(
+      cliqSetupWizard.groupAccess!.currentPolicy({
+        cfg: cfgWith({}),
+        accountId: "default",
+      }),
+    ).toBe("disabled");
+  });
+
+  it("dmPolicy.promptAllowFrom reuses the directory adapter", async () => {
+    const directory = await import("./setup-directory.js");
+    const spy = vi
+      .spyOn(directory, "resolveCliqDirectoryAllowlist")
+      .mockResolvedValue([
+        { input: "alice@example.com", id: "112233", resolved: true },
+      ]);
+    const { prompter } = makeScriptedPrompter([{ method: "text", value: "alice@example.com" }]);
+    const next = await cliqSetupWizard.dmPolicy!.promptAllowFrom!({
+      cfg: cfgWith({}),
+      prompter,
+      accountId: "default",
+    });
+    const section = (next as unknown as { channels: { cliq: { allowFrom: string[] } } })
+      .channels.cliq;
+    expect(section.allowFrom).toEqual(["112233"]);
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
   });
 
   it("dmPolicy reads the configured policy with allowlist default", () => {

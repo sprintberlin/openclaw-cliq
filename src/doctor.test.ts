@@ -102,6 +102,24 @@ describe("collectCliqPreviewWarnings", () => {
     expect(warnings[0]).toMatch(/dmPolicy is "open".*wildcard/);
   });
 
+  it("reports the honest organization boundary for an acknowledged trusted-organization deployment", () => {
+    const warnings = collectCliqPreviewWarnings({
+      cfg: cfgWith({
+        clientId: "id",
+        clientSecret: "secret",
+        botId: "bot",
+        refreshToken: "rt",
+        webhookSecret: "s",
+        dmPolicy: "open",
+        allowFrom: ["*"],
+        trustedOrganization: { acknowledged: true, label: "Pay-Jet" },
+      }),
+      doctorFixCommand: DOCTOR_FIX,
+    });
+    expect(warnings.some((w) => /trustedOrganization is acknowledged/.test(w))).toBe(true);
+    expect(warnings.some((w) => /not a signed tenant claim/.test(w))).toBe(true);
+  });
+
   it("does not warn about wildcard allowFrom under allowlist dmPolicy (covered by empty/open checks)", () => {
     const warnings = collectCliqPreviewWarnings({
       cfg: cfgWith({

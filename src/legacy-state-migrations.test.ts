@@ -64,6 +64,27 @@ describe("cliqLegacyConfigRules", () => {
     }
   });
 
+  it("never rewrites an existing open policy or infers trustedOrganization", () => {
+    const cfg = cfgWith({
+      clientId: "id",
+      clientSecret: "sec",
+      botId: "bot",
+      dmPolicy: "open",
+      allowFrom: ["*"],
+    });
+    const repaired = repairCliqConfig({
+      cfg,
+      doctorFixCommand: DOCTOR_FIX,
+    });
+    expect(repaired.changes).toHaveLength(0);
+    const section = (
+      repaired.config as unknown as { channels: { cliq: Record<string, unknown> } }
+    ).channels.cliq;
+    expect(section.dmPolicy).toBe("open");
+    expect(section.allowFrom).toEqual(["*"]);
+    expect(section.trustedOrganization).toBeUndefined();
+  });
+
   it("fires a warning for each present snake_case key (via findLegacyConfigIssues)", () => {
     const cfg = cfgWith({
       client_id: "id",

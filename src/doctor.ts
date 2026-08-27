@@ -14,6 +14,7 @@ import {
 } from "./region.js";
 import { hasConfiguredSecretInput } from "openclaw/plugin-sdk/secret-input-runtime";
 import { CLIQ_CAPABILITIES } from "./capabilities.js";
+import { CLIQ_ORGANIZATION_BOUNDARY_STATEMENT } from "./identity.js";
 
 /**
  * Read the raw (possibly unconfigured) Cliq channel section from cfg. Returns
@@ -86,6 +87,12 @@ function collectCliqPreviewWarnings(params: {
   }
   const dmPolicy =
     typeof section.dmPolicy === "string" ? section.dmPolicy : "allowlist";
+  const trusted = section.trustedOrganization as { acknowledged?: unknown } | undefined;
+  if (trusted?.acknowledged === true) {
+    warnings.push(
+      `- channels.cliq: trustedOrganization is acknowledged. ${CLIQ_ORGANIZATION_BOUNDARY_STATEMENT}`,
+    );
+  }
   const allowFrom = asStringArray(section.allowFrom);
   if (dmPolicy === "open" && isWildcardAllowFrom(allowFrom)) {
     warnings.push(

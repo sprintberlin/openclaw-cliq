@@ -123,6 +123,18 @@ describe("cliq manifest DM policy schema (issue #9)", () => {
     expect(errors).toEqual([]);
   });
 
+  it("accepts trustedOrganization acknowledgement metadata", () => {
+    const errors = validate(schema, {
+      ...baseConfig,
+      trustedOrganization: {
+        acknowledged: true,
+        label: "Pay-Jet",
+        acknowledgedAt: "2026-08-27T00:00:00.000Z",
+      },
+    });
+    expect(errors).toEqual([]);
+  });
+
   it("the top-level configSchema also allows dmPolicy", () => {
     expect(manifest.configSchema.properties?.dmPolicy).toBeDefined();
     expect(manifest.configSchema.properties?.dmPolicy?.enum).toEqual([

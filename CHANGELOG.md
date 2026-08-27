@@ -13,6 +13,33 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
+- **Explicit trusted-organization admission mode (issues #100, #103).**
+  Organization-wide deployments can now be declared deliberately via
+  `channels.cliq.trustedOrganization.acknowledged`, which `openclaw setup`
+  writes only after showing the resulting DM, group, and tool exposure and
+  asking for confirmation. The acknowledgement is never inferred from
+  `allowFrom: ["*"]` or `dmPolicy: "open"`, and upgrades never modify an
+  existing open configuration. `openclaw security audit` keeps reporting an
+  unacknowledged wildcard/open policy as critical, and downgrades an
+  acknowledged deployment to informational alongside a finding that records
+  the deliberate policy; `openclaw doctor` restates the real boundary.
+  Group admission is now enforced at the webhook: `groupPolicy: "allowlist"`
+  admits only channels listed in `groups`, `disabled` blocks all group
+  traffic, and configurations without `groupPolicy` keep the previous open
+  behavior. Fresh generic setup offers group access as disabled and resolves
+  DM and channel allowlist entries through the existing `openclaw directory`
+  adapter; entries the directory cannot resolve are kept exactly as entered
+  rather than silently broadened.
+  **Runtime organization verification is not implemented, because it is not
+  possible:** Zoho Cliq webhook payloads carry no signed tenant claim
+  (`user.organization_id` is handler-forwarded JSON) and the directory API
+  offers no independent sender-to-organization proof. The enforced boundary
+  remains the constant-time verified `x-cliq-webhook-secret` plus the
+  installed bot-handler context, and the config, README, doctor, and audit
+  wording now say exactly that instead of implying stronger isolation. The
+  normalized organization evidence is surfaced on inbound DM, mention,
+  welcome, form, and button-callback turns for diagnostics.
+
 - **`openclaw cliq webhook-route` (issue #108).** A local, unauthenticated
   check that asks the running gateway whether `/cliq/webhook` is registered.
   Registration is only claimed on a `405` that also carries the plugin's own

@@ -22,6 +22,8 @@ describe("inspectCliqAccount", () => {
       webhookSecret: "wh",
       allowFrom: ["user1", "user2"],
       dmPolicy: "pairing",
+      groupPolicy: "allowlist",
+      trustedOrganization: { acknowledged: true, label: "Pay-Jet" },
       selfSenderIds: ["bot-zuid-1"],
       ackPolicy: "immediate",
     });
@@ -43,6 +45,11 @@ describe("inspectCliqAccount", () => {
     expect(r.config.webhookSecret).toBe(true);
     expect(r.config.allowFrom).toEqual(["user1", "user2"]);
     expect(r.config.dmPolicy).toBe("pairing");
+    expect(r.config.groupPolicy).toBe("allowlist");
+    expect(r.config.trustedOrganization).toEqual({
+      acknowledged: true,
+      label: "Pay-Jet",
+    });
     expect(r.config.selfSenderIds).toEqual(["bot-zuid-1"]);
     expect(r.config.ackPolicy).toBe("immediate");
   });
