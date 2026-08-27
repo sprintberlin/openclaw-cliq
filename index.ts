@@ -42,6 +42,14 @@ import {
   CLIQ_ROUTE_HEADER_VALUE,
 } from "./src/webhook-route-check.js";
 
+function readConfiguredCliqWebhookUrl(config: OpenClawConfig): string | undefined {
+  const channels = (config as unknown as { channels?: Record<string, unknown> }).channels;
+  const section = channels?.cliq;
+  if (!section || typeof section !== "object") return undefined;
+  const value = (section as Record<string, unknown>).publicWebhookUrl;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
 /**
  * Per-IP fixed-window limiter for *failed* webhook authentications. Legit
  * Cliq delivery (which passes the secret check) never touches this — only
@@ -72,20 +80,38 @@ export default defineChannelPluginEntry({
           )
           .argument("<url>", "Public webhook URL, e.g. https://host.example.com/cliq/webhook")
           .option("--secret <secret>", "Webhook shared secret (defaults to channels.cliq.webhookSecret)")
+          .option("--no-write", "Do not record the result in channels.cliq verification status")
+          .option("--user-agent <userAgent>", "User-Agent the preflight identifies itself with to the edge")
           .option("--json", "Emit the machine-readable report")
-          .action(async (url: string, opts: { secret?: string; json?: boolean }) => {
+          .action(async (
+            url: string,
+            opts: { secret?: string; write?: boolean; userAgent?: string; json?: boolean },
+          ) => {
             const { runCliqWebhookPreflightCommand } = await import(
               "./src/webhook-preflight-command.js"
             );
             let secret = opts.secret;
+            let foreignSecret = false;
             if (!secret) {
               try {
                 secret = resolveCliqConfig(api.config as OpenClawConfig, null).webhookSecret;
               } catch {
                 secret = undefined;
               }
+            } else {
+              // A run with --secret proves an endpoint reachable, but not that
+              // this install's configured secret works — never record it.
+              foreignSecret = true;
             }
-            const code = await runCliqWebhookPreflightCommand({ url, secret, json: opts.json });
+            const code = await runCliqWebhookPreflightCommand({
+              url,
+              secret,
+              configuredUrl: readConfiguredCliqWebhookUrl(api.config as OpenClawConfig),
+              foreignSecret,
+              write: opts.write,
+              userAgent: opts.userAgent,
+              json: opts.json,
+            });
             process.exitCode = code;
           });
         cliq

@@ -38,7 +38,13 @@
 #         delivered, and asserts the mock's bot-send log recorded a send
 #         whose text contains the stub model's reply marker -- i.e. the reply
 #         actually landed end-to-end (inbound -> agent -> outbound -> Cliq
-#         send), not just that the inbound was dispatched.
+#         send), not just that the inbound was dispatched. The same stage
+#         covers the ingress contract end-to-end (issue #102): the GET method
+#         response, fail-closed behavior when no secret is configured, missing
+#         and wrong request secrets, invalid payloads, dedupe of a duplicate
+#         delivery, and normalized DM/group turns -- each asserted as "no
+#         model turn was created" against the mock's model-request log, so a
+#         rejection can never silently dispatch.
 #     12. Tears down the mock + gateway.
 #
 # Headless: no daemon, no Zoho, no real secrets, no real model. Run via:
@@ -169,7 +175,21 @@ node -e '
 '
 run_oc config validate
 
-# Pick a free loopback port for the gateway HTTP/WS server.
+# The security audit must consume the channel adapter in its normal sweep. This
+# is deliberately an assertion against the shipped CLI output, not a direct
+# collector invocation.
+AUDIT_JSON="$SMOKE_HOME/security-audit.json"
+run_oc security audit --json > "$AUDIT_JSON"
+node -e '
+  const report = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  const findings = Array.isArray(report.findings) ? report.findings : [];
+  if (!findings.some((finding) => finding && finding.checkId === "channels.cliq.secrets.plaintext")) {
+    console.error("FAIL: default security audit output omitted channels.cliq.secrets.plaintext");
+    process.exit(1);
+  }
+  console.log("OK: default security audit output includes the Cliq plaintext-secret finding");
+' "$AUDIT_JSON"
+
 PORT="$(node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')"
 echo "==> [6/12] Starting foreground gateway on 127.0.0.1:$PORT"
 GW_LOG="$SMOKE_HOME/gateway.log"
@@ -519,6 +539,41 @@ if [ "$ready" -ne 1 ]; then
 fi
 echo "OK: gateway-4b ready (route responded)"
 
+# GET on the registered route must answer with the method contract: 405 +
+# Allow: POST. Assert it through the real route, not just as a readiness poll.
+METHOD_HEADERS="$SMOKE_HOME/method-check.headers"
+method_code="$(curl -s -o /dev/null -D "$METHOD_HEADERS" -w "%{http_code}" --max-time 5 -X GET "$WEBHOOK_URL")"
+assert_status "GET /cliq/webhook method check" 405 "$method_code"
+if ! grep -qi '^allow:[[:space:]]*POST' "$METHOD_HEADERS"; then
+  echo "FAIL: GET /cliq/webhook 405 missing Allow: POST" >&2
+  cat "$METHOD_HEADERS" >&2
+  exit 1
+fi
+echo "OK: GET /cliq/webhook carries Allow: POST"
+
+echo "==> [11/12] Verifying rejected ingress never reaches the model"
+for request in missing wrong invalid; do
+  case "$request" in
+    missing)
+      response_args=(-H "content-type: application/json" --data '{"message":{"text":"rejected-missing","id":"rejected-missing"},"user":{"id":"user-rejected","name":"Rejected"}}') ;;
+    wrong)
+      response_args=(-H "x-cliq-webhook-secret: wrong-secret" -H "content-type: application/json" --data '{"message":{"text":"rejected-wrong","id":"rejected-wrong"},"user":{"id":"user-rejected","name":"Rejected"}}') ;;
+    invalid)
+      response_args=(-H "x-cliq-webhook-secret: smoke-webhook-secret" -H "content-type: application/json" --data '{"not":"a-cliq-payload"}') ;;
+  esac
+  code="$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 -X POST "$WEBHOOK_URL" "${response_args[@]}")"
+  case "$request" in
+    missing|wrong) assert_status "$request webhook secret" 401 "$code" ;;
+    invalid) assert_status "invalid payload" 400 "$code" ;;
+  esac
+done
+if [ -f "$MODEL_REQUESTS_LOG" ] && [ -s "$MODEL_REQUESTS_LOG" ]; then
+  echo "FAIL: rejected ingress reached the model" >&2
+  cat "$MODEL_REQUESTS_LOG" >&2
+  exit 1
+fi
+echo "OK: rejected and invalid ingress produced no model turn"
+
 echo "==> [11/12] POSTing a DM and asserting the agent reply lands at the mock"
 # A unique inbound text so we can match the round-trip in the mock's send log.
 ROUNDTRIP_MARKER="stage4b-roundtrip-$$"
@@ -615,6 +670,18 @@ fi
 if ! grep -q '"channel":"general"' "$SENDS_LOG"; then
   echo "FAIL: group reply did not use the channelsbyname target" >&2
   cat "$SENDS_LOG" >&2
+  exit 1
+fi
+# The group turn must carry normalized group/mention context into the agent:
+# the bot mention is stripped from the prompt text and the sender is named.
+if ! grep -q "$GROUP_MARKER" "$MODEL_REQUESTS_LOG" || ! grep -q "Bob" "$MODEL_REQUESTS_LOG"; then
+  echo "FAIL: group turn lacked normalized sender context" >&2
+  cat "$MODEL_REQUESTS_LOG" >&2
+  exit 1
+fi
+if grep -q "@openclaw-bot $GROUP_MARKER" "$MODEL_REQUESTS_LOG"; then
+  echo "FAIL: group turn kept the raw bot mention instead of the normalized text" >&2
+  cat "$MODEL_REQUESTS_LOG" >&2
   exit 1
 fi
 echo "OK: valid group mention dispatched exactly once through channel target"

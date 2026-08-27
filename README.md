@@ -54,7 +54,7 @@ DM the bot → it answers. To also reply to channel **@mentions** and stream liv
 - **🧩 Per-channel policy** — Group admission + per-channel `requireMention`, tool policy, and per-sender tool overrides.
 - **🔁 Reliability** — Durable-before-ack ingest, de-dup on redelivery, bot-loop / self-message protection, outbound retry with error classification (parses the v3 `{"message":"…"}` error envelope). Real Cliq message ids retain 30-minute replay protection; content-derived ids used when the Message Handler supplies no `message.id` expire after 60 seconds, so retry redeliveries are suppressed without swallowing a deliberate repeated command such as `/status`.
 - **🔒 Hardened webhook** — Constant-time secret compare, single-header auth, failed-auth rate limiting.
-- **🩺 Operations** — `openclaw status` / `channels` health probe, `openclaw directory` lookup, staged `openclaw cliq doctor`, plugin doctor, interactive setup wizard, SecretRef credentials, security audit, session binding, multi-account, lifecycle hooks. Status reports the integration as a webhook/event-driven channel (`mode: webhook`, path `/cliq/webhook`); a configured account stays `running` for as long as the gateway is up, and `lastInboundAt` / `lastOutboundAt` fill in after real traffic.
+- **🩺 Operations** — `openclaw status` / `channels` health probe, `openclaw directory` lookup, staged `openclaw cliq doctor`, plugin doctor, interactive setup wizard, SecretRef credentials, security audit, session binding, multi-account, lifecycle hooks. Status reports the integration as a webhook/event-driven channel (`mode: webhook`, path `/cliq/webhook`); a configured account stays `running` for as long as the gateway is up, and `lastInboundAt` / `lastOutboundAt` fill in after real traffic. `openclaw security audit` includes Cliq-specific findings in its default sweep; `--deep` is only needed for live gateway probes.
 
 > **Known limitation:** the bot can *send* reactions, but *inbound* reaction notifications (being told when a user reacts) are not yet possible — the OpenClaw plugin SDK exposes no inbound non-message event hook for external channel plugins. Tracked upstream: [openclaw/openclaw#100447](https://github.com/openclaw/openclaw/issues/100447).
 
@@ -116,7 +116,13 @@ The plugin registers a single HTTP route at **`POST /cliq/webhook`** on your Ope
    openclaw cliq webhook-preflight https://<gateway-host>/cliq/webhook
    ```
 
-   `openclaw setup` runs the same check and will not report inbound Cliq as ready when it fails. For a full staged diagnostic of config, OAuth, capabilities, and inbound, see [`openclaw cliq doctor`](#cliq-doctor).
+   When the checked URL matches the configured `channels.cliq.publicWebhookUrl`, a passing run records `channels.cliq.inboundVerifiedAt` and a failing run records `inboundVerificationFailedAt` (clearing any stale verification) — so verifying via the CLI counts just like verifying via the wizard. The write never happens for a URL that is not this install's, and `--no-write` keeps the command a pure read-only probe:
+
+   ```bash
+   openclaw cliq webhook-preflight https://<gateway-host>/cliq/webhook --no-write
+   ```
+
+   `openclaw setup` runs the same check and will not report inbound Cliq as ready when it fails. Every preflight request identifies itself as `openclaw-cliq-preflight/<package-version> (+https://github.com/sprintberlin/openclaw-cliq)` so edge/WAF rules can allowlist it deliberately (the version is this package's `package.json` version); use `--user-agent <value>` when you need to reproduce the identity your Zoho/Deluge delivery uses. An HTTP `403` is reported as a probable edge/WAF/bot-rule block with that remediation, not as proof that the route or reverse proxy is broken. For a full staged diagnostic of config, OAuth, capabilities, and inbound, see [`openclaw cliq doctor`](#cliq-doctor).
 
    To check only whether the gateway registered the route (no public path, no secret, no agent turn):
 
@@ -378,6 +384,8 @@ The default account is configured directly under `channels.cliq`, as shown above
 
 The plugin defaults to the EU data center. For another region, add both `oauthBase` and `apiBase` at the same account level; see [Data centers](#data-centers).
 
+For multiple gateway deployments, see [Running multiple agents](https://github.com/sprintberlin/openclaw-cliq/blob/main/docs/setup/running-multiple-agents.md) before reusing credentials: the OAuth app can be shared, but each agent requires its own bot identity, webhook secret, public URL, and handlers.
+
 Every field except the required ones has a sensible default; `groups` / `thinking` / `pairing` are nested objects (see their descriptions).
 
 - **`clientId`** *(required)* — OAuth client id from the Zoho API Console.
@@ -385,8 +393,9 @@ Every field except the required ones has a sensible default; `groups` / `thinkin
 - **`botId`** *(required)* — Bot **Unique Name** (the path segment in the bot message API), not Zoho's internal `b-...` bot ID. Bot and handler provisioning CRUD requires that separate internal ID after resolving the unique name; see the [verified provisioning API contract](https://github.com/sprintberlin/openclaw-cliq/blob/main/docs/setup/provisioning-api-contract.md).
 - **`botName`** *(recommended)* — Bot display name. Used to strip the `@botName` mention from the text the agent sees.
 - **`webhookSecret`** *(required for inbound delivery)* — High-entropy shared secret the Deluge handler sends in the `x-cliq-webhook-secret` header. If unset or unresolved, `/cliq/webhook` fails closed with `503` and never dispatches an agent turn. A missing or wrong request header returns `401`.
-- **`publicWebhookUrl`** *(optional)* — The public HTTPS URL Zoho posts to, e.g. `https://cliq.example.com/cliq/webhook`. Recorded by `openclaw setup` so it can verify inbound delivery, and reused as the default target for `openclaw cliq webhook-preflight` and the public-webhook stage of `openclaw cliq doctor`. It does not change routing (the gateway always serves `/cliq/webhook`); it only tells the tooling which public URL to check. See [Expose the webhook publicly](https://github.com/sprintberlin/openclaw-cliq/blob/main/docs/setup/public-webhook.md).
-- **`inboundVerifiedAt`** *(written by setup)* — ISO timestamp of the last successful public webhook verification. Written by `openclaw setup` when the preflight passes and cleared when a later run fails, so setup status reports whether inbound delivery was actually proven rather than inferring it from the presence of credentials. Not read at runtime.
+- **`publicWebhookUrl`** *(optional)* — The public HTTPS URL Zoho posts to, e.g. `https://cliq.example.com/cliq/webhook`. Recorded by `openclaw setup` so it can verify inbound delivery, and used to identify whether `openclaw cliq webhook-preflight <url>` is checking this install (and may record its result) or an unrelated endpoint (which must stay read-only). It is also reused by the public-webhook stage of `openclaw cliq doctor`. It does not change routing (the gateway always serves `/cliq/webhook`); it only tells the tooling which public URL belongs to this install. See [Expose the webhook publicly](https://github.com/sprintberlin/openclaw-cliq/blob/main/docs/setup/public-webhook.md).
+- **`inboundVerifiedAt`** *(written by setup or the preflight CLI)* — ISO timestamp of the last successful public webhook verification. Written by `openclaw setup` when the preflight passes, and also by `openclaw cliq webhook-preflight <url>` when the checked URL is the configured `publicWebhookUrl` (pass `--no-write` for a read-only probe); cleared when a later check fails. Not read at runtime.
+- **`inboundVerificationFailedAt`** *(written by setup or the preflight CLI)* — ISO timestamp of the last *failed* public webhook verification. Set when a check against the configured `publicWebhookUrl` fails and cleared by a later passing one, so status output can distinguish "never checked" from "last check failed" instead of folding both into "NOT verified". Not read at runtime.
 - **`refreshToken`** *(recommended)* — User-context OAuth refresh token (sensitive). Obtained once via the self-client `authorization_code` flow (§3c). **Required for channel @mention replies and live-edit message edits** — without it, those paths fail with `oauthtoken_scope_invalid` (the `client_credentials` grant cannot obtain a usable token for `ZohoCliq.Channels.UPDATE` / `ZohoCliq.Messages.UPDATE`). DM-only setups can leave it unset.
 - **`ackPolicy`** *(optional)* — When the webhook acknowledges Cliq relative to the inbound dispatch. `"after_dispatch"` (default) awaits the full dispatch before sending HTTP 200 — a crash mid-dispatch means Cliq never sees the 200 and redelivers (no lost message). `"immediate"` fires-and-forgets (faster, but a crash between ack and dispatch loses the message). **Do not use `"immediate"` on OpenClaw `2026.8.1-beta.3`:** that runtime can reject every post-ack turn with `GatewayDrainingError`; `openclaw cliq doctor` warns when this combination is configured. **Deluge timeout gotcha:** Zoho's `invokeUrl` in the bot Message handler has a ~40 s hard timeout. With `"after_dispatch"`, a slow turn (image analysis, cold model) can trip Deluge's *"The task has been terminated since the API call is taking too long to respond"* even though the reply is delivered out-of-band. Prefer `"after_dispatch"`; only consider `"immediate"` on an unaffected OpenClaw version when the timeout is otherwise unavoidable and you accept the lost-message risk. Pairs naturally with `thinking.mode: "placeholder"` (the placeholder posts immediately while the agent works).
 - **`allowFrom`** *(optional)* — Array of Zoho Cliq user ids allowed to DM the bot (only effective when `dmPolicy` is `allowlist` or `pairing`).
@@ -909,13 +918,12 @@ the version history is in
 
 ## Development
 
-This plugin is developed iteratively by an autonomous coding agent (OpenCode via GitHub Actions). See
+This plugin is developed iteratively by the maintainers and contributors. See
 [AGENTS.md](https://github.com/sprintberlin/openclaw-cliq/blob/main/AGENTS.md)
 for project context and conventions, and
 [ROADMAP.md](https://github.com/sprintberlin/openclaw-cliq/blob/main/ROADMAP.md)
-for the open worklist / feature-parity target. **The coding-agent workflow only
-runs for issues opened by repo maintainers** (owner / member / collaborator) —
-a public issue will not trigger it.
+for the open worklist / feature-parity target. Changes are reviewed through the
+normal pull-request workflow.
 
 ## License
 

@@ -15,6 +15,7 @@
       "webhookSecret": { "type": "string" },
       "publicWebhookUrl": { "type": "string" },
       "inboundVerifiedAt": { "type": "string" },
+      "inboundVerificationFailedAt": { "type": "string" },
       "refreshToken": { "type": "string" },
       "allowFrom": {
         "type": "array",
@@ -184,6 +185,7 @@
           "webhookSecret": { "type": "string" },
           "publicWebhookUrl": { "type": "string" },
           "inboundVerifiedAt": { "type": "string" },
+          "inboundVerificationFailedAt": { "type": "string" },
           "refreshToken": { "type": "string" },
           "allowFrom": {
             "type": "array",

@@ -40,6 +40,13 @@ publish workflow extracts the matching section as the release notes (see
   normalized organization evidence is surfaced on inbound DM, mention,
   welcome, form, and button-callback turns for diagnostics.
 
+- **Multi-agent rollout guide (issue #109).** The setup documentation now
+  distinguishes the shared OAuth app and same-org user-context refresh token
+  from each agent's dedicated bot identity, webhook secret, public URL, and
+  handlers. It also records per-organization data-center selection, the
+  setup-scope error and re-consent requirement, and the need to diff an
+  existing bot's stored handler URL and secret before treating a matching
+  unique name as this deployment.
 - **`openclaw cliq webhook-route` (issue #108).** A local, unauthenticated
   check that asks the running gateway whether `/cliq/webhook` is registered.
   Registration is only claimed on a `405` that also carries the plugin's own
@@ -55,6 +62,31 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **The public webhook preflight now identifies itself explicitly at the edge
+  (issue #107).** Every reachability, secret-enforcement, and authenticated
+  probe request sends the documented User-Agent
+  `openclaw-cliq-preflight/<package-version> (+https://github.com/sprintberlin/openclaw-cliq)`
+  instead of relying on Node's runtime-dependent default or sending no identity
+  at all — avoiding false diagnostics when an edge WAF blocks unfamiliar bot
+  clients before they reach an otherwise healthy gateway. Operators can pass
+  `--user-agent <value>` to reproduce Zoho/Deluge's identity, and an HTTP `403`
+  is now classified as a probable edge/WAF/bot-rule block with allowlisting
+  guidance rather than blamed on the route or reverse proxy.
+- **A passing CLI preflight now records the inbound verification (issue
+  #106).** `channels.cliq.inboundVerifiedAt` was only ever written by the setup
+  wizard, so an operator who configured the channel by hand and verified the
+  endpoint with `openclaw cliq webhook-preflight` still saw "inbound: NOT
+  verified" — a real proof of reachability was silently discarded. The CLI now
+  records `inboundVerifiedAt` on a passing run and the new
+  `inboundVerificationFailedAt` on a failing run (clearing any stale
+  verification), but **only** when the checked URL is the configured
+  `channels.cliq.publicWebhookUrl`: running the command against any other
+  endpoint never touches config, `--no-write` keeps it a pure read-only probe,
+  and an inconclusive run (upstream `429`, no resolvable secret) preserves the
+  previous state instead of destroying a genuine verification. Setup status
+  now distinguishes three states — verified, last check FAILED, never checked —
+  instead of folding two of them into "NOT verified".
+- **Cliq security audit delivery (issue #111).** Route Cliq-specific findings through the channel security adapter so `openclaw security audit` includes them in its default output. `--deep` remains reserved for live gateway probes.
 - **Documented and contained the Deluge handler secret exposure (issue #113).**
   Zoho stores the webhook secret as a literal in each handler script and
   returns that script — secret included — to anyone with bot-edit access or

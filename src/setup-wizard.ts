@@ -27,6 +27,7 @@ import {
 } from "./inbound-readiness.js";
 import { resolveCliqSecretString } from "./secret-resolve.js";
 import { resolveCliqDirectoryAllowlist } from "./setup-directory.js";
+import { describeCliqInboundVerification } from "./inbound-verification.js";
 
 const CHANNEL = "cliq" as const;
 const DEFAULT_ACCOUNT_ID = "default";
@@ -75,7 +76,14 @@ function patchCliqSection(
   };
   if (!next.channels) next.channels = {};
   const existing = next.channels[CHANNEL] ?? {};
-  next.channels[CHANNEL] = { ...existing, ...patch, enabled: true };
+  const merged: Record<string, unknown> = { ...existing, ...patch, enabled: true };
+  // An explicit `undefined` in the patch means "clear this field". Deleting the
+  // key rather than leaving it present-but-undefined keeps the cleared state
+  // independent of how a given writer serializes undefined values.
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) delete merged[key];
+  }
+  next.channels[CHANNEL] = merged;
   return next as unknown as OpenClawConfig;
 }
 
@@ -452,8 +460,10 @@ export function applyCliqInboundVerification(
   readiness: CliqInboundReadiness,
   now: Date = new Date(),
 ): OpenClawConfig {
+  const at = now.toISOString();
   return patchCliqSection(cfg, {
-    inboundVerifiedAt: readiness.ready ? now.toISOString() : undefined,
+    inboundVerifiedAt: readiness.ready ? at : undefined,
+    inboundVerificationFailedAt: readiness.ready ? undefined : at,
   });
 }
 
@@ -659,15 +669,13 @@ export const cliqSetupWizard: ChannelSetupWizard = {
       // Issue #96: credentials alone never mean inbound delivery works, so
       // report the verification state explicitly instead of letting
       // "Configured" imply a reachable webhook.
-      const publicUrl = asString(section.publicWebhookUrl);
-      const verifiedAt = asString(section.inboundVerifiedAt);
-      if (verifiedAt && publicUrl) {
-        lines.push(`inbound: verified ${verifiedAt} at ${publicUrl}`);
-      } else if (publicUrl) {
-        lines.push(`inbound: NOT verified (${publicUrl})`);
-      } else {
-        lines.push("inbound: not verified (no public webhook URL configured)");
-      }
+      lines.push(
+        describeCliqInboundVerification({
+          publicUrl: asString(section.publicWebhookUrl),
+          verifiedAt: asString(section.inboundVerifiedAt),
+          failedAt: asString(section.inboundVerificationFailedAt),
+        }),
+      );
       const dcId = detectConfiguredCliqDataCenter(cfg);
       if (dcId) lines.push(`data center: ${dcId}`);
       return lines;

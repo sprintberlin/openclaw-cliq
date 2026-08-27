@@ -1,9 +1,25 @@
 import { CLIQ_PROBE_HANDLER, buildCliqProbeBody } from "./webhook-probe.js";
 import { WEBHOOK_SECRET_HEADER } from "./webhook-security.js";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+
+function readPackageVersion(): string {
+  for (const candidate of ["../package.json", "../../package.json"] as const) {
+    try {
+      const url = new URL(candidate, import.meta.url);
+      const parsed = JSON.parse(readFileSync(url, "utf8")) as { version?: string };
+      if (typeof parsed.version === "string" && parsed.version.length > 0) return parsed.version;
+    } catch {
+      // Try the next candidate (src vs dist).
+    }
+  }
+  return "unknown";
+}
+
+export const CLIQ_PREFLIGHT_USER_AGENT = `openclaw-cliq-preflight/${readPackageVersion()} (+https://github.com/sprintberlin/openclaw-cliq)`;
 
 /**
- * Public HTTPS webhook preflight for the Cliq inbound endpoint (issue #96).
+ * Public HTTPS webhook preflight for the Cliq inbound endpoint (issues #96, #107).
  *
  * This module owns DNS/TLS/HTTP/reverse-proxy validation for the public
  * `/cliq/webhook` route. `openclaw setup` uses it to refuse to mark inbound
@@ -209,7 +225,9 @@ const STAGE_LABELS: Record<CliqPreflightStageId, string> = {
   probe: "Authenticated non-dispatching probe",
 };
 
-/** Fill in every not-yet-reached stage so the report shape stays stable. */
+/**
+ * Fill in every not-yet-reached stage so the report shape stays stable.
+ */
 function skipRemaining(recorder: StageRecorder, reason: string): void {
   const done = new Set(recorder.stages.map((s) => s.id));
   for (const id of ["url", "reachability", "method", "secret", "probe"] as CliqPreflightStageId[]) {
@@ -226,12 +244,15 @@ export interface RunCliqWebhookPreflightOptions {
   fetchImpl?: CliqPreflightFetch;
   /** Per-request timeout in milliseconds. */
   timeoutMs?: number;
+  /** User-Agent sent to the public endpoint. */
+  userAgent?: string;
 }
 
 function defaultFetch(timeoutMs: number): CliqPreflightFetch {
   return async (url, init) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    timer.unref?.();
     try {
       const res = await fetch(url, {
         method: init?.method,
@@ -269,7 +290,10 @@ export async function runCliqWebhookPreflight(
   options: RunCliqWebhookPreflightOptions,
 ): Promise<CliqPreflightReport> {
   const timeoutMs = options.timeoutMs ?? 15_000;
-  const fetchImpl = options.fetchImpl ?? defaultFetch(timeoutMs);
+  const userAgent = options.userAgent ?? CLIQ_PREFLIGHT_USER_AGENT;
+  const innerFetch = options.fetchImpl ?? defaultFetch(timeoutMs);
+  const fetchImpl: CliqPreflightFetch = (url, init) =>
+    innerFetch(url, { ...init, headers: { ...(init?.headers ?? {}), "user-agent": userAgent } });
   const secret = options.secret;
   const nonce = randomUUID();
   const recorder = createRecorder();
@@ -294,7 +318,11 @@ export async function runCliqWebhookPreflight(
   // ---- Stage 2 + 3: reachability and method -------------------------------
   let getRes: CliqPreflightResponse;
   try {
-    getRes = await fetchImpl(options.url, { method: "GET", redirect: "manual" });
+    getRes = await fetchImpl(options.url, {
+      method: "GET",
+      headers: { "user-agent": userAgent },
+      redirect: "manual",
+    });
   } catch (err) {
     const kind = classifyPreflightNetworkError(err);
     const detail =
@@ -316,6 +344,14 @@ export async function runCliqWebhookPreflight(
   );
 
   const getBody = await getRes.text();
+  if (getRes.status === 403) {
+    const htmlHint = looksLikeHtml(getBody, getRes.headers)
+      ? " The 403 body is an HTML challenge page, so this is almost certainly an interactive bot-fight at the edge rather than a plugin 403."
+      : "";
+    const detail = `probable edge/WAF block: the endpoint answered 403 before the plugin route could be verified.${htmlHint} Allow the User-Agent "${userAgent}" (or the Zoho/Deluge source) at the edge; do not change a working reverse proxy based on this result.`;
+    recorder.record("method", STAGE_LABELS.method, "fail", detail);
+    return fail(detail);
+  }
   if (getRes.status >= 300 && getRes.status < 400) {
     const location = getRes.headers?.["location"] ?? "(no Location header)";
     const detail = `redirect: the endpoint answered ${getRes.status} to ${location} instead of reaching the plugin route. A catch-all redirect rule in front of the route intercepts Zoho's delivery.`;
@@ -348,7 +384,7 @@ export async function runCliqWebhookPreflight(
 
   // ---- Stage 4: secret enforcement ---------------------------------------
   const probeBody = JSON.stringify(buildCliqProbeBody(nonce));
-  const jsonHeaders = { "content-type": "application/json" };
+  const jsonHeaders = { "content-type": "application/json", "user-agent": userAgent };
 
   let unauthed: CliqPreflightResponse;
   try {
@@ -360,6 +396,11 @@ export async function runCliqWebhookPreflight(
     });
   } catch (err) {
     const detail = redact(`unauthenticated probe failed to complete: ${String(err)}`, secret);
+    recorder.record("secret", STAGE_LABELS.secret, "fail", detail);
+    return fail(detail);
+  }
+  if (unauthed.status === 403) {
+    const detail = `probable edge/WAF block: the unauthenticated POST answered 403 before the plugin's secret check could run. Allow the User-Agent "${userAgent}" (or the Zoho/Deluge source) at the edge.`;
     recorder.record("secret", STAGE_LABELS.secret, "fail", detail);
     return fail(detail);
   }
@@ -402,12 +443,22 @@ export async function runCliqWebhookPreflight(
     recorder.record("secret", STAGE_LABELS.secret, "fail", detail);
     return fail(detail);
   }
+  if (wrongSecret.status === 403) {
+    const detail = `probable edge/WAF block: the wrong-secret POST answered 403 before the plugin's secret check could run. Allow the User-Agent "${userAgent}" (or the Zoho/Deluge source) at the edge.`;
+    recorder.record("secret", STAGE_LABELS.secret, "fail", detail);
+    return fail(detail);
+  }
   if (rateLimited(wrongSecret)) {
     const detail =
       "inconclusive: the endpoint answered 429 (rate limited) to the wrong-secret probe, so the plugin's secret check was never exercised. Retry later or exempt the preflight source from the upstream rate limiter.";
     recorder.record("secret", STAGE_LABELS.secret, "warn", detail);
     skipRemaining(recorder, "not reached: the secret stage was inconclusive");
     return { ok: false, url: options.url, nonce, dispatched: false, stages: recorder.stages };
+  }
+  if (wrongSecret.status === 403) {
+    const detail = `probable edge/WAF block: the wrong-secret POST answered 403 before the plugin's secret check could run. Allow the User-Agent "${userAgent}" (or the Zoho/Deluge source) at the edge.`;
+    recorder.record("secret", STAGE_LABELS.secret, "fail", detail);
+    return fail(detail);
   }
   if (wrongSecret.status !== 401) {
     const body = await wrongSecret.text();
@@ -444,6 +495,11 @@ export async function runCliqWebhookPreflight(
     return fail(detail);
   }
   const authedBody = await authed.text();
+  if (authed.status === 403) {
+    const detail = `probable edge/WAF block: the authenticated probe answered 403 before reaching the plugin. Allow the User-Agent "${userAgent}" (or the Zoho/Deluge source) at the edge.`;
+    recorder.record("probe", STAGE_LABELS.probe, "fail", detail);
+    return fail(detail);
+  }
   if (authed.status !== 200) {
     const detail = `the authenticated probe was rejected with ${authed.status}. The gateway may be running an older version of the plugin that does not recognize the "${CLIQ_PROBE_HANDLER}" probe payload: ${snippet(authedBody, secret)}`;
     recorder.record("probe", STAGE_LABELS.probe, "fail", detail);

@@ -76,8 +76,25 @@ describe("setup status surfaces inbound verification (issue #96)", () => {
     );
   }
 
-  it("reports inbound as unverified when setup never verified the public webhook", async () => {
-    expect((await lines(base)).join("\n")).toMatch(/inbound.*not verified|unverified/i);
+  it("reports inbound as never checked when setup never verified the public webhook", async () => {
+    expect((await lines(base)).join("\n")).toMatch(/inbound.*never checked/i);
+  });
+
+  it("distinguishes a failed last check from never having checked (issue #106)", async () => {
+    const failed = (
+      await lines({
+        ...base,
+        publicWebhookUrl: "https://host.example.com/cliq/webhook",
+        inboundVerificationFailedAt: "2026-08-27T09:00:00.000Z",
+      })
+    ).join("\n");
+    const never = (
+      await lines({ ...base, publicWebhookUrl: "https://host.example.com/cliq/webhook" })
+    ).join("\n");
+    expect(failed).toMatch(/failed/i);
+    expect(failed).toContain("2026-08-27T09:00:00.000Z");
+    expect(never).toMatch(/never checked/i);
+    expect(never).not.toMatch(/failed/i);
   });
 
   it("reports the verified public URL once verification succeeded", async () => {
@@ -99,7 +116,8 @@ describe("setup status surfaces inbound verification (issue #96)", () => {
         publicWebhookUrl: "https://host.example.com/cliq/webhook",
       })
     ).join("\n");
-    expect(out).toMatch(/not verified|unverified/i);
+    expect(out).not.toMatch(/inbound: verified/i);
+    expect(out).toMatch(/never checked/i);
   });
 
   it("reports a SecretRef-configured webhook secret as set (same asString class of bug)", async () => {
@@ -140,6 +158,29 @@ describe("applyCliqInboundVerification (issue #96)", () => {
     const next = applyCliqInboundVerification(verified, { ready: false, reason: "unreachable" });
     const section = (next as never as { channels: { cliq: Record<string, unknown> } }).channels.cliq;
     expect(section.inboundVerifiedAt).toBeUndefined();
+    // Cleared means the key is gone, not present-with-undefined: how a writer
+    // serializes undefined must not decide whether the stale claim survives.
+    expect("inboundVerifiedAt" in section).toBe(false);
+  });
+
+  it("records when the failing check happened so status can say 'last check failed' (issue #106)", () => {
+    const next = applyCliqInboundVerification(cfgWith({ botId: "b" }), {
+      ready: false,
+      reason: "unreachable",
+    });
+    const section = (next as never as { channels: { cliq: Record<string, unknown> } }).channels.cliq;
+    expect(typeof section.inboundVerificationFailedAt).toBe("string");
+  });
+
+  it("clears a recorded failure once a later run verifies successfully", () => {
+    const failed = applyCliqInboundVerification(cfgWith({ botId: "b" }), {
+      ready: false,
+      reason: "unreachable",
+    });
+    const next = applyCliqInboundVerification(failed, { ready: true, reason: "ok" });
+    const section = (next as never as { channels: { cliq: Record<string, unknown> } }).channels.cliq;
+    expect(section.inboundVerificationFailedAt).toBeUndefined();
+    expect(typeof section.inboundVerifiedAt).toBe("string");
   });
 });
 

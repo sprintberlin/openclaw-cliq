@@ -3,6 +3,7 @@ import {
   classifyPreflightNetworkError,
   runCliqWebhookPreflight,
   validateWebhookUrl,
+  CLIQ_PREFLIGHT_USER_AGENT,
   type CliqPreflightFetch,
 } from "./webhook-preflight.js";
 import { CLIQ_PROBE_HANDLER } from "./webhook-probe.js";
@@ -460,5 +461,91 @@ describe("runCliqWebhookPreflight (issue #96)", () => {
       "secret",
       "probe",
     ]);
+  });
+
+  /** A fetch stub that records every request's headers. */
+  function recordingFetch(): { fetch: CliqPreflightFetch; headersOf: (i: number) => Record<string, string> } {
+    const seen: Array<Record<string, string>> = [];
+    const fetch: CliqPreflightFetch = async (_url, init) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      seen.push(headers);
+      const method = init?.method ?? "GET";
+      if (method === "GET") return { status: 405, text: async () => "" };
+      if (headers["x-cliq-webhook-secret"] !== secret) return { status: 401, text: async () => "" };
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      return {
+        status: 200,
+        text: async () => JSON.stringify({ ok: true, channel: "cliq", probe: body.probe, dispatched: false }),
+      };
+    };
+    return { fetch, headersOf: (i) => seen[i] };
+  }
+
+  it("sends the documented default User-Agent on every request (issue #107)", async () => {
+    expect(CLIQ_PREFLIGHT_USER_AGENT).toMatch(/^openclaw-cliq-preflight\/\d+\.\d+\.\d+ \(\+https:\/\/github\.com\/sprintberlin\/openclaw-cliq\)$/);
+    const { fetch, headersOf } = recordingFetch();
+    const report = await runCliqWebhookPreflight({ url: URL_OK, secret, fetchImpl: fetch });
+    expect(report.ok).toBe(true);
+    // GET + unauthenticated POST + wrong-secret POST + authenticated probe.
+    expect(headersOf(0)["user-agent"]).toBe(CLIQ_PREFLIGHT_USER_AGENT);
+    expect(headersOf(1)["user-agent"]).toBe(CLIQ_PREFLIGHT_USER_AGENT);
+    expect(headersOf(2)["user-agent"]).toBe(CLIQ_PREFLIGHT_USER_AGENT);
+    expect(headersOf(3)["user-agent"]).toBe(CLIQ_PREFLIGHT_USER_AGENT);
+  });
+
+  it("applies a --user-agent override to every request (issue #107)", async () => {
+    const { fetch, headersOf } = recordingFetch();
+    const report = await runCliqWebhookPreflight({
+      url: URL_OK,
+      secret,
+      userAgent: "ZohoCliq",
+      fetchImpl: fetch,
+    });
+    expect(report.ok).toBe(true);
+    for (let i = 0; i < 4; i += 1) expect(headersOf(i)["user-agent"]).toBe("ZohoCliq");
+  });
+
+  it("classifies a 403 on the GET as a probable edge/WAF block, not a route failure (issue #107)", async () => {
+    const report = await runCliqWebhookPreflight({
+      url: URL_OK,
+      secret,
+      fetchImpl: async () => ({ status: 403, text: async () => "Access denied" }),
+    });
+    expect(report.ok).toBe(false);
+    const stage = stageOf(report, "method");
+    expect(stage.status).toBe("fail");
+    expect(stage.detail).toMatch(/edge\/WAF/i);
+    // Remediation must point at the edge allowlist, not at the proxy.
+    expect(stage.detail).toMatch(/allow the user-agent/i);
+    expect(stage.detail).not.toMatch(/route not found|proxy must forward/i);
+  });
+
+  it("classifies a 403 on the unauthenticated POST as an edge block", async () => {
+    const report = await runCliqWebhookPreflight({
+      url: URL_OK,
+      secret,
+      fetchImpl: async (_url, init) => {
+        if ((init?.method ?? "GET") === "GET") return { status: 405, text: async () => "" };
+        return { status: 403, text: async () => "Access denied" };
+      },
+    });
+    expect(report.ok).toBe(false);
+    expect(stageOf(report, "secret").detail).toMatch(/edge\/WAF/i);
+  });
+
+  it("classifies a 403 on the authenticated probe as an edge block", async () => {
+    const report = await runCliqWebhookPreflight({
+      url: URL_OK,
+      secret,
+      fetchImpl: async (_url, init) => {
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+        if ((init?.method ?? "GET") === "GET") return { status: 405, text: async () => "" };
+        if (!headers["x-cliq-webhook-secret"]) return { status: 401, text: async () => "" };
+        if (headers["x-cliq-webhook-secret"] !== secret) return { status: 401, text: async () => "" };
+        return { status: 403, text: async () => "Access denied" };
+      },
+    });
+    expect(report.ok).toBe(false);
+    expect(stageOf(report, "probe").detail).toMatch(/edge\/WAF/i);
   });
 });
