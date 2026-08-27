@@ -37,6 +37,10 @@ import {
   parseCliqProbePayload,
 } from "./src/webhook-probe.js";
 import { recordCliqActivity } from "./src/activity.js";
+import {
+  CLIQ_ROUTE_HEADER,
+  CLIQ_ROUTE_HEADER_VALUE,
+} from "./src/webhook-route-check.js";
 
 /**
  * Per-IP fixed-window limiter for *failed* webhook authentications. Legit
@@ -84,6 +88,28 @@ export default defineChannelPluginEntry({
             const code = await runCliqWebhookPreflightCommand({ url, secret, json: opts.json });
             process.exitCode = code;
           });
+        cliq
+          .command("webhook-route")
+          .description(
+            "Check whether the running gateway registered /cliq/webhook (the trustworthy answer that `plugins inspect --runtime` httpRoutes cannot give)",
+          )
+          .option(
+            "--url <url>",
+            "Webhook URL to query (defaults to the local gateway route)",
+          )
+          .option("--port <port>", "Gateway port when no --url is given", "18789")
+          .option("--json", "Emit the machine-readable report")
+          .action(async (opts: { url?: string; port?: string; json?: boolean }) => {
+            const { runCliqWebhookRouteCommand } = await import(
+              "./src/webhook-route-command.js"
+            );
+            const code = await runCliqWebhookRouteCommand({
+              url: opts.url,
+              port: opts.port === undefined ? undefined : Number(opts.port),
+              json: opts.json,
+            });
+            process.exitCode = code;
+          });
       },
       {
         descriptors: [
@@ -115,6 +141,9 @@ export default defineChannelPluginEntry({
         if (req.method !== "POST") {
           res.statusCode = 405;
           res.setHeader("Allow", "POST");
+          // Route signature: lets `openclaw cliq webhook-route` distinguish
+          // THIS route's 405 from an unrelated service that also rejects GET.
+          res.setHeader(CLIQ_ROUTE_HEADER, CLIQ_ROUTE_HEADER_VALUE);
           res.end("Method Not Allowed");
           return true;
         }
