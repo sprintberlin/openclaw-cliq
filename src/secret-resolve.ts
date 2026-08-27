@@ -3,6 +3,9 @@ import {
   resolveSecretInputString,
   normalizeSecretInputString,
 } from "openclaw/plugin-sdk/secret-input-runtime";
+// Only the field list is imported. `client.ts` already imports this module,
+// so pulling its section readers back in here would close an import cycle.
+import { CLIQ_SECRET_FIELDS } from "./secret-contract.js";
 
 /**
  * Built-in default provider alias used when a SecretRef omits a source-specific
@@ -128,4 +131,129 @@ export function resolveCliqSecretString(params: {
     return "";
   }
   return "";
+}
+
+/**
+ * How a single Cliq secret field currently stands, for the doctor and the
+ * security audit (issue #95).
+ *
+ *  - `resolved` — a SecretRef that resolved to a usable value.
+ *  - `unresolved` — a SecretRef is configured but yields nothing: a missing
+ *    env var, or a file/exec ref this synchronous path cannot read.
+ *  - `provider_unavailable` — the named provider rejected the ref (wrong
+ *    source, or the id is not allowlisted).
+ *  - `plaintext` — a literal secret sits in config and should be migrated.
+ *  - `absent` — nothing is configured. Deliberately distinct from
+ *    `unresolved`: a broken reference and an unset optional field used to be
+ *    indistinguishable, which hid real misconfiguration.
+ */
+export type CliqSecretFieldStatus =
+  | "resolved"
+  | "unresolved"
+  | "provider_unavailable"
+  | "plaintext"
+  | "absent";
+
+export interface CliqSecretFieldFinding {
+  field: (typeof CLIQ_SECRET_FIELDS)[number];
+  status: CliqSecretFieldStatus;
+  /** `source:provider:id` — identifies the ref, never its value. */
+  ref?: string;
+  /** Human-readable reason. Never contains secret material. */
+  detail?: string;
+}
+
+/**
+ * Inspect every Cliq secret field without ever exposing a value.
+ *
+ * Only the reference coordinates (`source:provider:id`) and the failure reason
+ * are reported. The resolved value is used solely to decide resolved vs
+ * unresolved, and is never placed into a finding.
+ */
+export function inspectCliqSecretFields(params: {
+  cfg: OpenClawConfig;
+  section?: Record<string, unknown> | null;
+  env?: NodeJS.ProcessEnv;
+}): CliqSecretFieldFinding[] {
+  const section =
+    params.section ??
+    ((params.cfg as unknown as { channels?: { cliq?: Record<string, unknown> } })
+      .channels?.cliq ??
+      null);
+  const secrets = readSecretsConfig(params.cfg);
+  const findings: CliqSecretFieldFinding[] = [];
+  for (const field of CLIQ_SECRET_FIELDS) {
+    const value = section?.[field];
+    const path = `channels.cliq.${field}`;
+    let resolved: ReturnType<typeof resolveSecretInputString>;
+    try {
+      resolved = resolveSecretInputString({
+        value,
+        path,
+        defaults: secrets?.defaults,
+        mode: "inspect",
+      });
+    } catch (err) {
+      findings.push({
+        field,
+        status: "provider_unavailable",
+        detail: err instanceof Error ? err.message : "secret reference is invalid",
+      });
+      continue;
+    }
+    if (resolved.status === "missing") {
+      findings.push({ field, status: "absent" });
+      continue;
+    }
+    if (resolved.status === "available") {
+      // A literal value in config; `$VAR` interpolation is already expanded
+      // by the SDK and must not be reported as plaintext.
+      const isInterpolated =
+        typeof value === "string" && /^\$\{?[A-Za-z_]/.test(value.trim());
+      findings.push({
+        field,
+        status: isInterpolated ? "resolved" : "plaintext",
+        ...(isInterpolated ? {} : { detail: `${path} holds a literal secret value` }),
+      });
+      continue;
+    }
+    const ref = `${resolved.ref.source}:${resolved.ref.provider}:${resolved.ref.id}`;
+    if (resolved.ref.source !== "env") {
+      findings.push({
+        field,
+        status: "unresolved",
+        ref,
+        detail: `${ref} could not be resolved at runtime (only env-backed references resolve synchronously).`,
+      });
+      continue;
+    }
+    let envValue: string;
+    try {
+      envValue = resolveEnvSecretRefValue({
+        cfg: params.cfg,
+        provider: resolved.ref.provider,
+        id: resolved.ref.id,
+        env: params.env,
+      });
+    } catch (err) {
+      findings.push({
+        field,
+        status: "provider_unavailable",
+        ref,
+        detail: err instanceof Error ? err.message : "secret provider is unavailable",
+      });
+      continue;
+    }
+    findings.push(
+      envValue
+        ? { field, status: "resolved", ref }
+        : {
+            field,
+            status: "unresolved",
+            ref,
+            detail: `${ref} could not be resolved (the environment variable is missing or empty).`,
+          },
+    );
+  }
+  return findings;
 }

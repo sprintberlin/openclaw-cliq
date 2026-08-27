@@ -31,13 +31,27 @@ function makeContext() {
 const ENV_REF = { source: "env", provider: "default", id: "CLIQ_CLIENT_SECRET" };
 
 describe("cliqSecretTargetRegistryEntries", () => {
-  it("registers exactly the three Cliq secret fields at the channel root", () => {
+  it("registers each Cliq secret field at the channel root and under named accounts", () => {
     const paths = cliqSecretTargetRegistryEntries.map((e) => e.pathPattern);
     expect(paths).toEqual([
       "channels.cliq.clientSecret",
+      "channels.cliq.accounts.*.clientSecret",
       "channels.cliq.webhookSecret",
+      "channels.cliq.accounts.*.webhookSecret",
       "channels.cliq.refreshToken",
+      "channels.cliq.accounts.*.refreshToken",
     ]);
+  });
+
+  it("audits named-account secrets, which apply already rewrites", () => {
+    // Without a registered account target the audit skipped
+    // `channels.cliq.accounts.<id>.*` entirely and called a config holding
+    // plaintext account credentials "clean".
+    const accountEntries = cliqSecretTargetRegistryEntries.filter((entry) =>
+      entry.pathPattern.includes("accounts."),
+    );
+    expect(accountEntries).toHaveLength(3);
+    for (const entry of accountEntries) expect(entry.includeInAudit).toBe(true);
   });
 
   it("each entry is an auditable, plan-able, configurable secret_input", () => {
@@ -49,7 +63,9 @@ describe("cliqSecretTargetRegistryEntries", () => {
       expect(entry.includeInConfigure).toBe(true);
       expect(entry.includeInAudit).toBe(true);
       expect(entry.id).toBe(entry.targetType);
-      expect(entry.targetType).toBe(entry.pathPattern);
+      if (!entry.pathPattern.includes("accounts.*")) {
+        expect(entry.targetType).toBe(entry.pathPattern);
+      }
     }
   });
 });

@@ -386,6 +386,41 @@ Add the `cliq` channel to your `openclaw.json` (or via `openclaw setup` / the se
 
 The default account is configured directly under `channels.cliq`, as shown above. Do not put it under `accounts.default`: the plugin treats the reserved id `default` as the top-level account. For multiple Cliq accounts, keep the default credentials at the top level and add only named secondary accounts under `channels.cliq.accounts.<accountId>`.
 
+#### Secret representation (`clientSecret`, `webhookSecret`, `refreshToken`)
+
+The three sensitive fields accept **three interchangeable representations**, at the channel root and inside `channels.cliq.accounts.<id>`. All three are accepted identically on every supported OpenClaw version (`2026.7.1-2` and `2026.8.1-beta.3`) — there is no version-gated fallback:
+
+```jsonc
+{
+  "channels": {
+    "cliq": {
+      // 1. Canonical structured SecretRef — what `openclaw secrets apply` writes.
+      "clientSecret": { "source": "env", "provider": "default", "id": "CLIQ_CLIENT_SECRET" },
+
+      // 2. Environment interpolation.
+      "webhookSecret": "$CLIQ_WEBHOOK_SECRET",
+
+      // 3. A literal value (discouraged — the security audit flags it).
+      "refreshToken": "1000.abc..."
+    }
+  }
+}
+```
+
+A SecretRef requires all three of `source`, `provider`, and `id`; `source` is one of `env`, `file`, or `exec`. `provider` must match `^[a-z][a-z0-9_-]{0,63}$` and, for `env`, `id` must match `^[A-Z][A-Z0-9_]{0,127}$`. Anything else is rejected by config validation rather than silently accepted.
+
+At runtime the plugin resolves **plaintext and `env`-backed refs** synchronously, matching the bundled Telegram channel. `file` and `exec` refs are reported by `openclaw cliq doctor` as configured-but-unresolved rather than being silently treated as absent.
+
+To migrate literal secrets out of `openclaw.json`:
+
+```bash
+openclaw secrets audit          # lists every plaintext Cliq secret, root and per-account, by path
+openclaw secrets configure      # map each one to a provider-backed SecretRef
+openclaw secrets apply          # rewrite config in place; values are never printed
+```
+
+`openclaw cliq doctor` reports each secret as resolved, unresolved, referencing an unavailable provider, plaintext, or absent — identified by `source:provider:id` only, never by value.
+
 The plugin defaults to the EU data center. For another region, add both `oauthBase` and `apiBase` at the same account level; see [Data centers](#data-centers).
 
 For multiple gateway deployments, see [Running multiple agents](https://github.com/sprintberlin/openclaw-cliq/blob/main/docs/setup/running-multiple-agents.md) before reusing credentials: the OAuth app can be shared, but each agent requires its own bot identity, webhook secret, public URL, and handlers.

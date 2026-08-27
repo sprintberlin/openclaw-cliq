@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import { FULL_SCOPE_STRING } from "./capabilities.js";
+import { validateGeneratedCliqConfig } from "./config-validation.js";
 import {
   cliqSetupWizard,
+  validateCliqSetupResult,
   isCliqChannelConfigured,
   promptCliqCredentials,
   applyCliqCredentials,
@@ -675,5 +677,68 @@ describe("cliq setup wizard — canonical OAuth profile (issue #93)", () => {
     expect(setupNote).toBeDefined();
     expect(String(setupNote!.args.message)).toContain(FULL_SCOPE_STRING);
     expect(String(setupNote!.args.message)).toContain("ZohoCliq.Bots.CREATE");
+  });
+});
+
+describe("cliq setup wizard — generated config validation (issue #95)", () => {
+  it("returns the generated config only after it passes the real OpenClaw schema", async () => {
+    const { prompter } = makeScriptedPrompter([
+      { method: "select", value: "eu" },
+      { method: "text", value: "CID" },
+      { method: "text", value: "$CLIQ_CLIENT_SECRET" },
+      { method: "text", value: "franzi" },
+      { method: "text", value: "Franzi" },
+      { method: "text", value: "$CLIQ_WEBHOOK_SECRET" },
+      { method: "text", value: "$CLIQ_REFRESH_TOKEN" },
+      { method: "text", value: "" },
+    ]);
+    const result = await cliqSetupWizard.finalize!({
+      cfg: cfgWith({}),
+      accountId: "default",
+      credentialValues: {},
+      runtime: {} as never,
+      prompter,
+      forceAllowFrom: false,
+    });
+    expect(result).toBeDefined();
+    const section = (result!.cfg as any).channels.cliq;
+    const validation = await validateGeneratedCliqConfig(section);
+    expect(validation).toMatchObject({ valid: true, checked: true });
+  });
+
+  it("rejects an invalid generated Cliq section before reporting setup success", async () => {
+    await expect(
+      validateCliqSetupResult({
+        channels: {
+          cliq: {
+            enabled: true,
+            clientId: "CID",
+            clientSecret: { source: "env", provider: "default" },
+            botId: "franzi",
+            webhookSecret: "wh",
+          },
+        },
+      } as never),
+    ).rejects.toThrow(/generated Zoho Cliq config failed OpenClaw schema validation/i);
+  });
+
+  it("redacts invalid secret-ref values from validation failures", async () => {
+    await expect(
+      validateCliqSetupResult({
+        channels: {
+          cliq: {
+            enabled: true,
+            clientId: "CID",
+            clientSecret: {
+              source: "env",
+              provider: "BAD PROVIDER",
+              id: "SUPER_SECRET_VALUE",
+            },
+            botId: "franzi",
+            webhookSecret: "LIVE_WEBHOOK_SECRET",
+          },
+        },
+      } as never),
+    ).rejects.not.toThrow(/SUPER_SECRET_VALUE|LIVE_WEBHOOK_SECRET/);
   });
 });
