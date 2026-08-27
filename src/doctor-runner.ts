@@ -14,6 +14,10 @@ import { collectCliqPreviewWarnings } from "./doctor.js";
 import { probeCliqStatus } from "./status.js";
 import { resolveCliqClient } from "./runtime-api.js";
 import { runCliqWebhookPreflight, type CliqPreflightReport } from "./webhook-preflight.js";
+import {
+  createCliqHandlerScriptReader,
+  type CliqHandlerScriptRecord,
+} from "./handler-consistency.js";
 
 export const CLIQ_DOCTOR_SCHEMA_VERSION = 1 as const;
 export const CLIQ_DOCTOR_EXIT = {
@@ -94,6 +98,7 @@ export interface CliqDoctorClient {
   getApiBase(): string;
   listUsers(maxItems?: number): Promise<CliqDirectoryEntry[]>;
   listChannels(maxItems?: number): Promise<CliqDirectoryEntry[]>;
+  readBotHandlerScript?(handlerType: string): Promise<{ script?: string; error?: string }>;
   sendMessage(options: { to: string; text: string; isDm?: boolean }): Promise<{ messageId?: string; chatId?: string }>;
   resolveChannelChatId(channelUniqueName: string): Promise<string | undefined>;
   listChatMessages(chatId: string, options?: { limit?: number }): Promise<CliqChatMessageRef[]>;
@@ -107,7 +112,11 @@ export interface CliqDoctorDeps {
     apiBase: string,
     token: string,
   ) => Promise<CliqCapabilityProbeResult>;
-  runPreflight: (options: { url: string; secret: string | undefined }) => Promise<CliqPreflightReport>;
+  runPreflight: (options: {
+    url: string;
+    secret: string | undefined;
+    readHandlers?: () => Promise<readonly CliqHandlerScriptRecord[]>;
+  }) => Promise<CliqPreflightReport>;
   inspectBot?: (options: {
     account: ResolvedCliqAccount;
     publicWebhookUrl: string | undefined;
@@ -576,6 +585,7 @@ async function buildBotStage(
 async function buildPublicWebhookStage(
   account: ResolvedCliqAccount | null,
   publicWebhookUrl: string | undefined,
+  client: CliqDoctorClient | null,
   deps: CliqDoctorDeps,
   values: readonly string[],
 ): Promise<CliqDoctorStage> {
@@ -590,7 +600,17 @@ async function buildPublicWebhookStage(
     );
   }
   try {
-    const report = await deps.runPreflight({ url: publicWebhookUrl, secret: account.webhookSecret });
+    const readHandlers = client?.readBotHandlerScript
+      ? createCliqHandlerScriptReader({
+          account,
+          readHandlerScript: (handlerType) => client.readBotHandlerScript!(handlerType),
+        }) ?? undefined
+      : undefined;
+    const report = await deps.runPreflight({
+      url: publicWebhookUrl,
+      secret: account.webhookSecret,
+      readHandlers,
+    });
     const evidence = report.stages.map(
       (item) => `${item.id}=${item.status}: ${redactCliqDoctorText(item.detail, values)}`,
     );
@@ -943,7 +963,13 @@ export async function runCliqDoctor(
   ));
   const publicWebhookUrl = readPublicWebhookUrl(cfg, options.accountId);
   stages.push(await buildBotStage(config.account, publicWebhookUrl, deps, values));
-  stages.push(await buildPublicWebhookStage(config.account, publicWebhookUrl, deps, values));
+  stages.push(await buildPublicWebhookStage(
+    config.account,
+    publicWebhookUrl,
+    client,
+    deps,
+    values,
+  ));
   stages.push(await buildDiscoveryStage(config.account, client, values));
   const outbound = await buildOutboundStage(
     cfg,

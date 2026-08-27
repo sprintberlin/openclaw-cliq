@@ -1,5 +1,9 @@
 import { CLIQ_PROBE_HANDLER, buildCliqProbeBody } from "./webhook-probe.js";
 import { WEBHOOK_SECRET_HEADER } from "./webhook-security.js";
+import {
+  checkCliqHandlerConsistency,
+  type CliqHandlerScriptRecord,
+} from "./handler-consistency.js";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 
@@ -47,7 +51,8 @@ export type CliqPreflightStageId =
   | "reachability"
   | "method"
   | "secret"
-  | "probe";
+  | "probe"
+  | "handler_secret";
 
 export interface CliqPreflightStage {
   id: CliqPreflightStageId;
@@ -223,6 +228,7 @@ const STAGE_LABELS: Record<CliqPreflightStageId, string> = {
   method: "Route reachability and method handling",
   secret: "Webhook secret enforcement",
   probe: "Authenticated non-dispatching probe",
+  handler_secret: "Zoho handler secret and URL consistency",
 };
 
 /**
@@ -230,7 +236,14 @@ const STAGE_LABELS: Record<CliqPreflightStageId, string> = {
  */
 function skipRemaining(recorder: StageRecorder, reason: string): void {
   const done = new Set(recorder.stages.map((s) => s.id));
-  for (const id of ["url", "reachability", "method", "secret", "probe"] as CliqPreflightStageId[]) {
+  for (const id of [
+    "url",
+    "reachability",
+    "method",
+    "secret",
+    "probe",
+    "handler_secret",
+  ] as CliqPreflightStageId[]) {
     if (!done.has(id)) recorder.record(id, STAGE_LABELS[id], "skipped", reason);
   }
 }
@@ -246,6 +259,16 @@ export interface RunCliqWebhookPreflightOptions {
   timeoutMs?: number;
   /** User-Agent sent to the public endpoint. */
   userAgent?: string;
+  /**
+   * Read the bot's inbound handler scripts back from Zoho so the secret the
+   * *sender* actually holds can be compared with this install's config
+   * (issue #124).
+   *
+   * Optional and additive: without it the handler stage reports `skipped`,
+   * never `pass`, because a preflight that never asked Zoho cannot claim the
+   * two agree. Requires `ZohoCliq.Bots.READ`.
+   */
+  readHandlers?: () => Promise<readonly CliqHandlerScriptRecord[]>;
 }
 
 function defaultFetch(timeoutMs: number): CliqPreflightFetch {
@@ -559,7 +582,55 @@ export async function runCliqWebhookPreflight(
     "the authenticated probe reached the plugin and returned without dispatching an agent turn (no agent turn, session entry, or Cliq message was created)",
   );
 
-  return { ok: true, url: options.url, nonce, dispatched: false, stages: recorder.stages };
+  // ---- Stage 6: Zoho-held handler secret and URL --------------------------
+  // Everything above authenticates with the CONFIGURED secret against our own
+  // endpoint, which only proves the config agrees with itself. This stage is
+  // the only one that consults the sender's copy (issue #124).
+  if (!options.readHandlers) {
+    recorder.record(
+      "handler_secret",
+      STAGE_LABELS.handler_secret,
+      "skipped",
+      "the bot's handler scripts were not read, so this run did NOT verify that Zoho holds the same webhook secret — the stages above only prove the configured secret works against this endpoint",
+    );
+    return { ok: true, url: options.url, nonce, dispatched: false, stages: recorder.stages };
+  }
+
+  let handlers: readonly CliqHandlerScriptRecord[];
+  try {
+    handlers = await options.readHandlers();
+  } catch (err) {
+    recorder.record(
+      "handler_secret",
+      STAGE_LABELS.handler_secret,
+      "skipped",
+      redact(
+        `the bot's handler scripts could not be read, so the Zoho-held secret is unknown: ${String(err)}`,
+        secret,
+      ),
+    );
+    return { ok: true, url: options.url, nonce, dispatched: false, stages: recorder.stages };
+  }
+
+  const consistency = checkCliqHandlerConsistency({
+    handlers,
+    configSecret: secret,
+    expectedWebhookUrl: options.url,
+  });
+  recorder.record(
+    "handler_secret",
+    STAGE_LABELS.handler_secret,
+    consistency.status,
+    redact(consistency.detail, secret),
+  );
+
+  return {
+    ok: consistency.status !== "fail",
+    url: options.url,
+    nonce,
+    dispatched: false,
+    stages: recorder.stages,
+  };
 }
 
 /** Render a report as human-readable lines for CLI output. */
@@ -575,5 +646,14 @@ export function formatCliqPreflightReport(report: CliqPreflightReport): string[]
     lines.push(`  ${icon[stage.status]} ${stage.label}: ${stage.detail}`);
   }
   lines.push(report.ok ? "Result: inbound Cliq is reachable and authenticated." : "Result: inbound Cliq is NOT ready.");
+  // A green run whose handler stage never ran is a weaker statement than it
+  // looks, so say so explicitly rather than letting "reachable and
+  // authenticated" be read as "Zoho can deliver" (issue #124).
+  const handlerStage = report.stages.find((stage) => stage.id === "handler_secret");
+  if (report.ok && handlerStage && handlerStage.status === "skipped") {
+    lines.push(
+      "Note: this does NOT prove Zoho holds the same webhook secret — the checks above used the configured secret against your own endpoint. Grant ZohoCliq.Bots.READ and rerun to compare the bot's handler scripts.",
+    );
+  }
   return lines;
 }

@@ -72,11 +72,11 @@ Mostly v3-independent; **dynamic agents** in particular is high-value and can be
   user and one group channel still round-trip under the acknowledged trusted-organization
   configuration, and that `openclaw security audit` reports the deployment as informational
   rather than critical. Negative tenant cases must stay on fixtures or an isolated setup.
-- **Read-only bot and handler inspection.** Implement the shared #94 inspection service and wire it into
-  staged doctor stage 5 so bot existence, active state, organization visibility, Message/Mention
-  handler structure, public URL, JSON transport, and the Zoho-held webhook secret can be compared
-  with loaded config without modifying handlers. Keep subscription state explicitly `unknown` when
-  Zoho does not expose it; #99 setup/first-contact flows will reuse the same inspector.
+- **Read-only bot and handler inspection.** Implement the remaining shared #94 inspection service
+  so staged doctor stage 5 can verify bot existence, active state, organization visibility, handler
+  structure, and JSON transport without modifying handlers. Keep subscription state explicitly
+  `unknown` when Zoho does not expose it; #99 setup/first-contact flows will reuse the same
+  inspector.
 - **Dynamic agents + workspace templates.** Route each DM sender and each channel to its own
   isolated agent session and workspace, seeded on first contact from a configurable template
   (`AGENTS.md` and friends). Today all senders share one agent context; per-channel *tool policy*

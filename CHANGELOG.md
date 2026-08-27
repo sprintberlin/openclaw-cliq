@@ -62,6 +62,16 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **A green webhook preflight no longer falsely claims Zoho holds the same
+  secret as the gateway (issue #124).** When `botId` and
+  `ZohoCliq.Bots.READ` are available, a sixth stage reads the bot's Message and
+  Mention handlers, compares SHA-256 fingerprints of their `webhookSecret`
+  literals with the resolved config secret, and compares their `webhookUrl`
+  with the public URL. A mismatch fails and names the handler without exposing
+  either secret. Missing scope, unreadable handlers, hand-written script
+  shapes, and missing `botId` are explicitly skipped rather than passed; the
+  report warns that the original five stages only prove the configured secret
+  works against this install's own endpoint.
 - **`ackPolicy: "immediate"` no longer fails every turn with a false gateway
   drain on OpenClaw 2026.8.x (issue #122).** The webhook now reserves the SDK's
   independent admission root with `runDetachedWebhookWork` before writing the

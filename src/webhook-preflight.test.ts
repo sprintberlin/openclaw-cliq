@@ -97,7 +97,7 @@ describe("runCliqWebhookPreflight (issue #96)", () => {
     };
   });
 
-  it("passes every stage against a correctly deployed endpoint", async () => {
+  it("passes every network stage and explicitly skips the Zoho-held secret check when no handler reader is available", async () => {
     const report = await runCliqWebhookPreflight({ url: URL_OK, secret, fetchImpl: healthyFetch });
     expect(report.ok).toBe(true);
     expect(stageOf(report, "url").status).toBe("pass");
@@ -105,6 +105,50 @@ describe("runCliqWebhookPreflight (issue #96)", () => {
     expect(stageOf(report, "method").status).toBe("pass");
     expect(stageOf(report, "secret").status).toBe("pass");
     expect(stageOf(report, "probe").status).toBe("pass");
+    expect(stageOf(report, "handler_secret").status).toBe("skipped");
+    expect(stageOf(report, "handler_secret").detail).toMatch(/did NOT verify that Zoho holds/i);
+  });
+
+  it("passes the Zoho-held secret stage when both handlers match", async () => {
+    const handler = `webhookUrl = "${URL_OK}";\nwebhookSecret = "${secret}";`;
+    const report = await runCliqWebhookPreflight({
+      url: URL_OK,
+      secret,
+      fetchImpl: healthyFetch,
+      readHandlers: async () => [
+        { type: "message_handler", script: handler },
+        { type: "mention_handler", script: handler },
+      ],
+    });
+
+    expect(report.ok).toBe(true);
+    expect(stageOf(report, "handler_secret").status).toBe("pass");
+    expect(JSON.stringify(report)).not.toContain(secret);
+  });
+
+  it("fails the preflight when Zoho's handler holds a different secret without exposing either value", async () => {
+    const zohoSecret = "a-different-zoho-secret";
+    const report = await runCliqWebhookPreflight({
+      url: URL_OK,
+      secret,
+      fetchImpl: healthyFetch,
+      readHandlers: async () => [
+        {
+          type: "message_handler",
+          script: `webhookUrl = "${URL_OK}";\nwebhookSecret = "${zohoSecret}";`,
+        },
+        {
+          type: "mention_handler",
+          script: `webhookUrl = "${URL_OK}";\nwebhookSecret = "${zohoSecret}";`,
+        },
+      ],
+    });
+
+    expect(report.ok).toBe(false);
+    expect(stageOf(report, "handler_secret").status).toBe("fail");
+    expect(stageOf(report, "handler_secret").detail).toMatch(/message handler|mention handler/i);
+    expect(JSON.stringify(report)).not.toContain(secret);
+    expect(JSON.stringify(report)).not.toContain(zohoSecret);
   });
 
   it("proves the authenticated probe did not dispatch an agent turn", async () => {
@@ -460,6 +504,7 @@ describe("runCliqWebhookPreflight (issue #96)", () => {
       "method",
       "secret",
       "probe",
+      "handler_secret",
     ]);
   });
 

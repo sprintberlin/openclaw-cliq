@@ -39,6 +39,10 @@ import {
 import { recordCliqActivity } from "./src/activity.js";
 import { resolveCliqDetachedWebhookWork } from "./src/detached-dispatch.js";
 import {
+  createCliqHandlerScriptReader,
+  type CliqHandlerScriptRecord,
+} from "./src/handler-consistency.js";
+import {
   CLIQ_ROUTE_HEADER,
   CLIQ_ROUTE_HEADER_VALUE,
 } from "./src/webhook-route-check.js";
@@ -93,9 +97,16 @@ export default defineChannelPluginEntry({
             );
             let secret = opts.secret;
             let foreignSecret = false;
+            let readHandlers: (() => Promise<CliqHandlerScriptRecord[]>) | undefined;
             if (!secret) {
               try {
-                secret = resolveCliqConfig(api.config as OpenClawConfig, null).webhookSecret;
+                const account = resolveCliqConfig(api.config as OpenClawConfig, null);
+                secret = account.webhookSecret;
+                const client = resolveCliqClient(account);
+                readHandlers = createCliqHandlerScriptReader({
+                  account,
+                  readHandlerScript: (handlerType) => client.readBotHandlerScript(handlerType),
+                }) ?? undefined;
               } catch {
                 secret = undefined;
               }
@@ -112,6 +123,7 @@ export default defineChannelPluginEntry({
               write: opts.write,
               userAgent: opts.userAgent,
               json: opts.json,
+              readHandlers,
             });
             process.exitCode = code;
           });
