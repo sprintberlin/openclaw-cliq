@@ -63,6 +63,24 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
+- **Staged Cliq doctor with optional end-to-end roundtrip (issue #97).**
+  `openclaw cliq doctor` orchestrates a nine-stage diagnostic over the existing
+  static doctor warnings, OAuth capability probes, public webhook preflight,
+  and directory listing. Default mode is read-only (no messages, handler
+  updates, config writes, or restarts). `--outbound-test` and `--roundtrip`
+  require an explicit target, kind, and `--confirm`. `--roundtrip` posts a
+  nonce-bearing challenge and waits for the exact nonce reply in the same
+  chat, so a completed roundtrip proves the inbound webhook, agent turn,
+  configured policy, and outbound reply; a timeout or partial failure names
+  the boundary that broke. `--json` emits a documented stable report
+  (`schemaVersion: 1`). Exit codes distinguish healthy (`0`), degraded (`1`),
+  failed (`2`), and invalid invocation (`3`). Secrets, tokens, auth codes, and
+  sensitive response bodies are redacted. The config stage also warns about a
+  shared `session.dmScope: main` on a multi-user bot and about
+  `ackPolicy: "immediate"`. Bot/handler inspection is used when a subsystem is
+  available and otherwise reported as `skipped` (degrading the run) rather
+  than guessed — including the Zoho-held webhook-secret comparison that a
+  green public preflight cannot see.
 - **Declared OpenClaw support range, enforced in CI (issue #118).** The
   supported versions live in a single file (`.github/openclaw-compat.json`).
   A compatibility workflow builds once against the pinned floor and loads that
