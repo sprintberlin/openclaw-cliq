@@ -1,0 +1,9 @@
+---
+title: Bot/handler provisioning addresses bots by internal id and rejects byte-identical handler scripts
+category: Zoho Cliq specifics
+files: [docs/setup/provisioning-api-contract.md]
+apis: [/api/v3/bots, /api/v3/bots/{BOT_ID}, /api/v3/bots/{BOT_ID}/handlers, /api/v3/bots/{BOT_ID}/handlers/{HANDLER_TYPE}, ZohoCliq.Bots.CREATE, ZohoCliq.Bots.UPDATE]
+issues: [#112, #94, #110]
+---
+- **Bot and handler provisioning CRUD keys on the internal `b-…` bot id, not the unique name the plugin stores in `botId`:** `GET /api/v3/bots/<bot-id>` returns 200 while `GET /api/v3/bots/<unique_name>` returns `404 request_url_invalid`, so a provisioning path must resolve the unique name to the id first. `POST /api/v3/bots` requires `scope: "organization"` (`org` → `input_pattern_mismatch`), must NOT send `unique_name` (`extra_key_found` — Zoho derives it from `name`), and needs `ZohoCliq.Bots.CREATE`; `POST /api/v2/bots` is not a create route (`request_method_invalid`). Handler create is `POST /api/v3/bots/<bot-id>/handlers` with `{type, script}` (the key is `script`, not `code`), and handler update is `PATCH /api/v3/bots/<bot-id>/handlers/<handler_type>` with a body containing ONLY `script` (`type` / `handler_type` / `enabled` → `extra_key_found`; `PUT`/`POST` on the item path → `request_method_invalid`).
+- **Message and Mention handler scripts cannot be byte-identical, and `execution_handler_update_failed` is not reliably transient:** the Mention Handler does not expose the `attachments` parameter the Message Handler receives, so a Mention script referencing `attachments` fails validation on save; removing that block makes the same `PATCH` succeed immediately. Retrying that error code alone never fixes it — treat it as a probable script-validity fault and surface the script reference rather than looping with backoff.
