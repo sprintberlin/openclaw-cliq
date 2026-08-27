@@ -19,7 +19,7 @@ const manifest = JSON.parse(
 
 interface JsonSchema {
   type?: string;
-  additionalProperties?: boolean;
+  additionalProperties?: boolean | JsonSchema;
   properties?: Record<string, JsonSchema>;
   enum?: unknown[];
   required?: string[];
@@ -64,11 +64,16 @@ function validate(
       return errors;
     }
     const obj = value as Record<string, unknown>;
-    if (schema.additionalProperties === false && schema.properties) {
+    if (schema.additionalProperties === false) {
       for (const key of Object.keys(obj)) {
-        if (!(key in schema.properties)) {
+        if (!(schema.properties && key in schema.properties)) {
           errors.push(`${path}: must not have additional properties: "${key}"`);
         }
+      }
+    } else if (schema.additionalProperties && typeof schema.additionalProperties === "object") {
+      for (const key of Object.keys(obj)) {
+        if (schema.properties && key in schema.properties) continue;
+        errors.push(...validate(schema.additionalProperties, obj[key], `${path}.${key}`));
       }
     }
     for (const [key, sub] of Object.entries(schema.properties ?? {})) {
@@ -83,6 +88,10 @@ function validate(
   } else if (schema.type === "string") {
     if (typeof value !== "string") {
       errors.push(`${path}: expected string, got ${typeof value}`);
+    }
+  } else if (schema.type === "boolean") {
+    if (typeof value !== "boolean") {
+      errors.push(`${path}: expected boolean, got ${typeof value}`);
     }
   }
   if (schema.enum && !schema.enum.includes(value)) {
@@ -566,5 +575,57 @@ describe("cliq apiVersion manifest schema (issue #86)", () => {
     expect(resolveCliqApiVersion(resolved.apiVersion, "channelPost")).toBe("v2");
     expect(resolveCliqApiVersion(resolved.apiVersion, "channelCard")).toBe("v2");
     expect(resolveCliqApiVersion(resolved.apiVersion, "delete")).toBe("v2");
+  });
+});
+
+describe("cliq enabled + bundled-channel shape audit (issue #125)", () => {
+  const channelSchema = manifest.channelConfigs.cliq.schema;
+  const topLevelSchema = manifest.configSchema;
+  const baseConfig = { clientId: "id", clientSecret: "secret", botId: "bot" };
+
+  it("accepts channels.cliq.enabled as a boolean in both schema copies", () => {
+    for (const enabled of [true, false]) {
+      expect(validate(channelSchema, { ...baseConfig, enabled })).toEqual([]);
+      expect(validate(topLevelSchema, { ...baseConfig, enabled })).toEqual([]);
+    }
+  });
+
+  it("rejects a non-boolean enabled value", () => {
+    const errors = validate(channelSchema, { ...baseConfig, enabled: "yes" });
+    expect(errors).toContain("$.enabled: expected boolean, got string");
+  });
+
+  it("accepts the documented named-account shape and per-account enabled overrides", () => {
+    const section = {
+      webhookSecret: "shared",
+      accounts: {
+        alpha: { ...baseConfig, enabled: true },
+        beta: { ...baseConfig, botId: "beta", enabled: false },
+      },
+    };
+    expect(validate(channelSchema, section)).toEqual([]);
+    expect(validate(topLevelSchema, section)).toEqual([]);
+  });
+
+  it("keeps strict unknown-key rejection after auditing bundled Telegram/Discord keys", () => {
+    // `enabled` is the one common copied key whose semantics Cliq implements.
+    // The named `accounts` shape was already implemented and documented, so
+    // it is declared too. Other channel-specific keys are not silently
+    // ignored: copying one must keep producing a validation failure rather
+    // than an operator believing a no-op setting took effect.
+    for (const key of [
+      "token",
+      "proxy",
+      "historyLimit",
+      "textChunkLimit",
+      "mediaMaxMb",
+      "mentionPatterns",
+      "responsePrefix",
+      "threadBindings",
+      "guilds",
+    ]) {
+      const errors = validate(channelSchema, { ...baseConfig, [key]: true });
+      expect(errors, key).toContain(`$: must not have additional properties: "${key}"`);
+    }
   });
 });

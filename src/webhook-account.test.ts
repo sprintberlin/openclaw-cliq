@@ -103,6 +103,20 @@ describe("describeCliqWebhookAccount", () => {
     expect(snapshot.name).toBe("MyBot");
   });
 
+  it("describes an explicitly disabled account as disabled", () => {
+    const disabled = cfgWith({
+      enabled: false,
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+    });
+    const snapshot = describeCliqWebhookAccount(
+      resolveCliqConfig(disabled),
+    ) as Record<string, unknown>;
+    expect(snapshot.enabled).toBe(false);
+    expect(snapshot.configured).toBe(true);
+  });
+
   it("is wired as config.describeAccount so gateway startup sees the transport", () => {
     const describe = cliqPlugin.config.describeAccount;
     expect(typeof describe).toBe("function");

@@ -170,6 +170,12 @@ export async function runCliqStartupMaintenance(params: {
       );
       continue;
     }
+    if (account.enabled === false) {
+      log.info?.(
+        `${prefix}: account "${label}" is disabled via channels.cliq.enabled; skipping OAuth pre-warm.`,
+      );
+      continue;
+    }
     if (!account.webhookSecret) {
       log.warn?.(
         `${prefix}: account "${label}" has no webhook secret — inbound delivery is disabled and returns 503 until channels.cliq.webhookSecret is set.`,

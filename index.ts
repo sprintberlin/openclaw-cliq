@@ -239,6 +239,15 @@ export default defineChannelPluginEntry({
           return true;
         }
 
+        if (account.enabled === false) {
+          api.logger.warn?.(
+            "[cliq] webhook received but channels.cliq.enabled is false — inbound is disabled",
+          );
+          res.statusCode = 503;
+          res.end("cliq channel disabled");
+          return true;
+        }
+
         if (!account.webhookSecret) {
           api.logger.error?.(
             "[cliq] webhook rejected because webhookSecret is not configured",

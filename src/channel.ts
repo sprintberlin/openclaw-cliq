@@ -332,6 +332,12 @@ export const cliqPlugin = createChatChannelPlugin<ResolvedCliqAccount, CliqStatu
       listAccountIds,
       resolveAccount,
       inspectAccount,
+      // `channels.cliq.enabled: false` keeps the config but stops the
+      // channel: the gateway skips starting the account instead of the
+      // operator having to delete credentials (issue #125).
+      isEnabled: (account) => account.enabled !== false,
+      disabledReason: () =>
+        "disabled via channels.cliq.enabled: false (set it to true, or remove the key, to re-enable)",
       isConfigured: (account) => isConfiguredCliqAccountShape(account),
       describeAccount: (account) => describeCliqWebhookAccount(account),
     },

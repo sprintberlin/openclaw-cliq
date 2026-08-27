@@ -54,6 +54,19 @@ describe("inspectCliqAccount", () => {
     expect(r.config.ackPolicy).toBe("immediate");
   });
 
+  it("reports an explicitly disabled configured account as disabled", () => {
+    const r = inspectCliqAccount({
+      cfg: cfgWith({
+        enabled: false,
+        clientId: "id",
+        clientSecret: "secret",
+        botId: "bot",
+      }),
+    });
+    expect(r.configured).toBe(true);
+    expect(r.enabled).toBe(false);
+  });
+
   it("reports missing config without throwing", () => {
     const r = inspectCliqAccount({ cfg: cfgWith({}) }) as InspectedCliqAccount;
     expect(r.configured).toBe(false);

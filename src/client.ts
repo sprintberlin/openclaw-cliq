@@ -164,6 +164,17 @@ function normalizeCliqApiVersionConfig(
  * stays on v2 regardless of `apiVersion`.
  */
 export interface CliqChannelConfig {
+  /**
+   * Whether this Cliq channel/account is active. Defaults to `true`, so an
+   * existing config without the key behaves exactly as before.
+   *
+   * This is the *channel-level* switch and matches the shape every bundled
+   * channel uses (`channels.telegram.enabled`, …); the plugin's own setup
+   * wizard has always written it. `plugins.entries.cliq.enabled: false` is a
+   * different, stronger switch owned by OpenClaw: it stops the plugin from
+   * loading at all, so nothing here can re-enable it.
+   */
+  enabled?: boolean;
   clientId?: string;
   /**
    * OAuth `client_credentials` grant secret. May be a plaintext string or a
@@ -538,6 +549,12 @@ export const DEFAULT_CLIQ_PAIRING_DENIED_OWNER_TEXT = "🚫 Denied.";
 
 export interface ResolvedCliqAccount {
   accountId: string | null;
+  /**
+   * Resolved channel-level enablement (`channels.cliq.enabled`, or the
+   * per-account override). `true` unless explicitly set to `false`, so
+   * configs written before the key existed are unaffected.
+   */
+  enabled?: boolean;
   clientId: string;
   clientSecret: string;
   botId: string;
@@ -655,6 +672,9 @@ export function resolveCliqConfig(
   });
   return {
     accountId: effective.accountId,
+    // Absent means enabled: every config written before this key existed
+    // must keep working, and only an explicit `false` disables the channel.
+    enabled: section?.enabled !== false,
     clientId,
     clientSecret,
     botId,
