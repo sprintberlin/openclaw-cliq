@@ -1,6 +1,5 @@
 name: ✨ Feature request
 description: Suggest a capability or improvement for the Zoho Cliq channel plugin.
-labels: ["enhancement"]
 body:
   - type: textarea
     id: problem
