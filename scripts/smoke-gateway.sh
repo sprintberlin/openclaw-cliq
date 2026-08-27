@@ -246,6 +246,81 @@ if [ "$ready" -ne 1 ]; then
   exit 1
 fi
 
+# Issue #108: `plugins inspect --runtime` reports httpRoutes: 0 even for a
+# healthy install, because that command loads plugins WITHOUT activating them
+# (discovery mode), so registerFull -- and therefore registerHttpRoute -- never
+# runs for it. Pin both halves of that fact against the real gateway: the
+# inspect count stays 0 while the route is demonstrably live, and our own
+# route check reports the truth the inspect field cannot.
+#
+# The assertion goes through the SHIPPED CLI command (not a direct import) so
+# the compat matrix also covers Commander registration, argument parsing, the
+# dynamic command-module import, JSON stdout, and the exit code on both
+# supported OpenClaw versions.
+echo "==> [6b/12] Asserting the route check reports reality (issue #108)"
+run_oc plugins inspect cliq --json --runtime > "$SMOKE_HOME/inspect-configured.json" 2>&1
+node -e '
+  const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  const count = (d.plugin && d.plugin.httpRouteCount) ?? (d.plugin && d.plugin.httpRoutes) ?? 0;
+  console.log(`inspect httpRoutes for a configured, route-serving gateway = ${count}`);
+' "$SMOKE_HOME/inspect-configured.json"
+
+ROUTE_JSON="$SMOKE_HOME/route-check.json"
+# `2>&1` makes the capture version-proof: plugin-command output lands on
+# stderr on 2026.7.x (the host CLI rebinds console) and on stdout once the
+# command writes to process.stdout directly; either way the JSON is captured.
+if ! run_oc cliq webhook-route --port "$PORT" --json > "$ROUTE_JSON" 2>&1; then
+  echo "FAIL: cliq webhook-route exited non-zero for a live route" >&2
+  cat "$ROUTE_JSON" >&2
+  exit 1
+fi
+node -e '
+  const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  if (r.ok !== true || r.status !== "registered" || r.httpStatus !== 405) {
+    console.error("FAIL: route check did not report the live route as registered: " + JSON.stringify(r));
+    process.exit(1);
+  }
+  if (!/httpRoutes/.test(r.inspectNote || "")) {
+    console.error("FAIL: route check report is missing the inspect httpRoutes explanation");
+    process.exit(1);
+  }
+  console.log("OK: cliq webhook-route reports the live route as registered (405)");
+' "$ROUTE_JSON"
+
+# The same command must NOT claim registration where nothing is listening --
+# otherwise it would be as untrustworthy as the field it replaces.
+FREE_PORT="$(node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')"
+ABSENT_JSON="$SMOKE_HOME/route-check-absent.json"
+set +e
+run_oc cliq webhook-route --port "$FREE_PORT" --json > "$ABSENT_JSON" 2>&1
+absent_code=$?
+set -e
+if [ "$absent_code" -eq 0 ]; then
+  echo "FAIL: cliq webhook-route exited 0 for a port with no gateway" >&2
+  cat "$ABSENT_JSON" >&2
+  exit 1
+fi
+node -e '
+  const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  if (r.ok !== false || r.status === "registered") {
+    console.error("FAIL: route check claimed a registered route on a dead port: " + JSON.stringify(r));
+    process.exit(1);
+  }
+  console.log(`OK: route check does not claim registration without evidence (status=${r.status})`);
+' "$ABSENT_JSON"
+
+# An invalid --port must be a hard error, never a silent fallback to 18789
+# (which could report an unrelated gateway as healthy).
+set +e
+run_oc cliq webhook-route --port not-a-port --json > "$SMOKE_HOME/route-check-badport.json" 2>/dev/null
+badport_code=$?
+set -e
+if [ "$badport_code" -eq 0 ]; then
+  echo "FAIL: cliq webhook-route accepted an invalid --port" >&2
+  exit 1
+fi
+echo "OK: invalid --port is rejected (exit $badport_code), no silent default-port fallback"
+
 echo "==> [7/12] Probing /cliq/webhook with canonical Deluge payloads"
 
 assert_status() {

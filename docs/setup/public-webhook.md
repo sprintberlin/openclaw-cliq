@@ -50,6 +50,9 @@ openclaw cliq webhook-preflight https://<public-host>/cliq/webhook
 
 # Stable machine-readable report for automation / doctor integration
 openclaw cliq webhook-preflight https://<public-host>/cliq/webhook --json
+
+# Or run the full staged doctor, which reuses this preflight as one stage
+openclaw cliq doctor --json
 ```
 
 By default the command uses `channels.cliq.webhookSecret` from the resolved
@@ -76,6 +79,45 @@ Expect `405` on `GET`. An unauthenticated `POST` returns `401` when a
 `webhookSecret` is configured, and `503` when one is not (the plugin fails
 closed rather than accepting unauthenticated delivery). A `200`, a redirect,
 or an HTML page means something else is answering.
+
+To separate "the public path is broken" from "the route was never registered",
+run the route check directly against the gateway on the host itself:
+
+```bash
+openclaw cliq webhook-route            # defaults to http://127.0.0.1:18789/cliq/webhook
+openclaw cliq webhook-route --port 8080
+openclaw cliq webhook-route --json     # machine-readable
+```
+
+Exit codes: `0` when the route is proven registered, `1` when the result is
+anything else, and `2` for a bad `--port` (an unusable port is an error, never
+a silent fallback to `18789`, which could report an unrelated gateway as
+healthy).
+
+Prefer the loopback default. Registration is proven by a route-signature
+response header, and a reverse proxy that strips unknown headers will make an
+otherwise healthy `--url https://…` run report `unknown`; querying the gateway
+address directly avoids that.
+
+If this reports the route as registered but the preflight fails, the problem is
+in front of the gateway (DNS, TLS, proxy, tunnel rules). Registration is only
+claimed on a `405` that also carries the plugin's own route signature header,
+so an unrelated service that happens to reject `GET` cannot pass the check.
+Every other outcome — an unreachable port, a bare `404` (which a proxy can
+generate without ever reaching the gateway), or any unexpected status — is
+reported as inconclusive with a non-zero exit code, never as a confirmed
+verdict. When it is inconclusive, query the gateway address directly: if the
+route is genuinely absent there, the plugin is not loaded or `channels.cliq`
+is not configured — a channel plugin registers its route only once its channel
+is configured.
+
+> **`plugins inspect` cannot answer this question.** `openclaw plugins inspect
+> cliq --runtime --json` prints `"httpRoutes": 0` even on a healthy install
+> whose route is answering `405`/`401` at that very moment. That command loads
+> plugins *without activating* them, and the route is registered in the
+> activation step, so the count describes a throwaway registry rather than the
+> running gateway. Reported upstream as
+> [openclaw/openclaw#130773](https://github.com/openclaw/openclaw/issues/130773).
 
 ---
 
@@ -161,8 +203,11 @@ constant-time secret check and expects the request to arrive unmodified.
 > answers only after the agent turn completes, which is what drives Cliq's
 > native "bot is processing" indicator. If your proxy's read timeout is
 > shorter than a slow turn, raise it (as above) rather than lowering the
-> plugin's guarantees. If you cannot, switch to `ackPolicy: "immediate"` and
-> accept the documented lost-message risk on a crash between ack and dispatch.
+> plugin's guarantees. If you cannot, `ackPolicy: "immediate"` trades the
+> documented lost-message-on-crash risk for a fast ack — but do not use it on
+> OpenClaw `2026.8.1-beta.3`, where post-ack turns can fail with
+> `GatewayDrainingError`. `openclaw cliq doctor` warns whenever `immediate` is
+> configured.
 
 ---
 

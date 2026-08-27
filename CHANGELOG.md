@@ -11,6 +11,21 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Added
+
+- **`openclaw cliq webhook-route` (issue #108).** A local, unauthenticated
+  check that asks the running gateway whether `/cliq/webhook` is registered.
+  Registration is only claimed on a `405` that also carries the plugin's own
+  route-signature header, so an unrelated service that rejects `GET` cannot
+  pass; every other outcome (unreachable port, a bare `404` a proxy may have
+  generated, any unexpected status) is reported as inconclusive with a
+  non-zero exit code, so the command is safe as a deploy gate. The report
+  always explains why `openclaw plugins inspect cliq --runtime --json` prints
+  `"httpRoutes": 0` even for a healthy install: that command loads plugins
+  without activating them, so `registerFull` (the only place the route is
+  registered) never runs for it. Tracked upstream as
+  [openclaw/openclaw#130773](https://github.com/openclaw/openclaw/issues/130773).
+
 ### Fixed
 
 - **Documented and contained the Deluge handler secret exposure (issue #113).**
@@ -23,6 +38,18 @@ publish workflow extracts the matching section as the release notes (see
   secret storage, and cross-links the two-copy drift diagnostic gap in #124.
   A regression audit locks the invariant that plugin tooling never logs
   handler scripts, raw provisioning responses, or configured secret values.
+- **`ZohoCliq.Bots.CREATE` added to the capability matrix (issue #110).**
+  The setup/maintenance profile previously documented only `Bots.READ` and
+  `Bots.UPDATE`, which suffice to inspect bots but not to create one: a token
+  consented with the full documented set is issued successfully and still
+  fails `POST /api/v3/bots` with `oauthtoken_scope_invalid`. Bot creation is
+  now its own `client_credentials` capability, the setup profile is split
+  into an inspect-only string (`Bots.READ`) and a provisioning string
+  (`Bots.READ,Bots.CREATE,Bots.UPDATE`), the combined consent string
+  includes the new scope, and a missing `Bots.CREATE` produces a message
+  naming that exact scope. Because creating a bot is destructive, the
+  capability is reported from the granted scope set and labelled
+  consent-reported, never proven by a live probe.
 - **Webhook accounts now report as running, configured, and event-driven
   (issue #98).** A configured Cliq account keeps a passive `startAccount`
   lifecycle so OpenClaw does not treat the webhook transport as `stopped` /
@@ -58,6 +85,24 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
+- **Staged Cliq doctor with optional end-to-end roundtrip (issue #97).**
+  `openclaw cliq doctor` orchestrates a nine-stage diagnostic over the existing
+  static doctor warnings, OAuth capability probes, public webhook preflight,
+  and directory listing. Default mode is read-only (no messages, handler
+  updates, config writes, or restarts). `--outbound-test` and `--roundtrip`
+  require an explicit target, kind, and `--confirm`. `--roundtrip` posts a
+  nonce-bearing challenge and waits for the exact nonce reply in the same
+  chat, so a completed roundtrip proves the inbound webhook, agent turn,
+  configured policy, and outbound reply; a timeout or partial failure names
+  the boundary that broke. `--json` emits a documented stable report
+  (`schemaVersion: 1`). Exit codes distinguish healthy (`0`), degraded (`1`),
+  failed (`2`), and invalid invocation (`3`). Secrets, tokens, auth codes, and
+  sensitive response bodies are redacted. The config stage also warns about a
+  shared `session.dmScope: main` on a multi-user bot and about
+  `ackPolicy: "immediate"`. Bot/handler inspection is used when a subsystem is
+  available and otherwise reported as `skipped` (degrading the run) rather
+  than guessed — including the Zoho-held webhook-secret comparison that a
+  green public preflight cannot see.
 - **Declared OpenClaw support range, enforced in CI (issue #118).** The
   supported versions live in a single file (`.github/openclaw-compat.json`).
   A compatibility workflow builds once against the pinned floor and loads that
@@ -105,6 +150,12 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Documentation
 
+- **Corrected the documented webhook authentication headers (issue #128).**
+  The README claimed the endpoint also accepts `x-webhook-secret` or
+  `Authorization: Bearer <secret>` "for convenience". The runtime has always
+  enforced single-header authentication and rejects both, so operators who
+  followed that note configured a header the gateway answers with `401`. Only
+  `x-cliq-webhook-secret` is documented now.
 - Added [docs/setup/public-webhook.md](docs/setup/public-webhook.md): how to
   make the webhook publicly reachable, with five options (VPS + reverse proxy,
   Cloudflare Tunnel, an existing reverse proxy, temporary dev tunnels, and

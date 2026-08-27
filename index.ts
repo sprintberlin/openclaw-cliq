@@ -37,6 +37,10 @@ import {
   parseCliqProbePayload,
 } from "./src/webhook-probe.js";
 import { recordCliqActivity } from "./src/activity.js";
+import {
+  CLIQ_ROUTE_HEADER,
+  CLIQ_ROUTE_HEADER_VALUE,
+} from "./src/webhook-route-check.js";
 
 /**
  * Per-IP fixed-window limiter for *failed* webhook authentications. Legit
@@ -84,6 +88,67 @@ export default defineChannelPluginEntry({
             const code = await runCliqWebhookPreflightCommand({ url, secret, json: opts.json });
             process.exitCode = code;
           });
+        cliq
+          .command("webhook-route")
+          .description(
+            "Check whether the running gateway registered /cliq/webhook (the trustworthy answer that `plugins inspect --runtime` httpRoutes cannot give)",
+          )
+          .option(
+            "--url <url>",
+            "Webhook URL to query (defaults to the local gateway route)",
+          )
+          .option("--port <port>", "Gateway port when no --url is given", "18789")
+          .option("--json", "Emit the machine-readable report")
+          .action(async (opts: { url?: string; port?: string; json?: boolean }) => {
+            const { runCliqWebhookRouteCommand } = await import(
+              "./src/webhook-route-command.js"
+            );
+            const code = await runCliqWebhookRouteCommand({
+              url: opts.url,
+              port: opts.port === undefined ? undefined : Number(opts.port),
+              json: opts.json,
+            });
+            process.exitCode = code;
+          });
+        cliq
+          .command("doctor")
+          .description(
+            "Run the staged Cliq diagnostic pipeline (config, runtime, OAuth, capabilities, bot/handlers, public webhook, discovery)",
+          )
+          .option("--account <accountId>", "Cliq account id (defaults to the single-account config)")
+          .option("--outbound-test", "Send one clearly labeled test message after explicit confirmation")
+          .option("--roundtrip", "Run the nonce-correlated inbound and reply roundtrip after explicit confirmation")
+          .option("--target <target>", "Target user id (dm) or channel unique name (group)")
+          .option("--kind <kind>", "Target kind: dm or group")
+          .option("--confirm", "Confirm that a diagnostic message may be sent")
+          .option("--timeout <seconds>", "Roundtrip timeout in seconds (default 120)")
+          .option("--json", "Emit the stable machine-readable report")
+          .action(
+            async (opts: {
+              account?: string;
+              outboundTest?: boolean;
+              roundtrip?: boolean;
+              target?: string;
+              kind?: string;
+              confirm?: boolean;
+              timeout?: string;
+              json?: boolean;
+            }) => {
+              const { runCliqDoctorCommand } = await import("./src/doctor-command.js");
+              const code = await runCliqDoctorCommand({
+                cfg: api.config as OpenClawConfig,
+                accountId: opts.account,
+                outboundTest: opts.outboundTest,
+                roundtrip: opts.roundtrip,
+                target: opts.target,
+                kind: opts.kind,
+                confirm: opts.confirm,
+                timeout: opts.timeout,
+                json: opts.json,
+              });
+              process.exitCode = code;
+            },
+          );
       },
       {
         descriptors: [
@@ -115,6 +180,9 @@ export default defineChannelPluginEntry({
         if (req.method !== "POST") {
           res.statusCode = 405;
           res.setHeader("Allow", "POST");
+          // Route signature: lets `openclaw cliq webhook-route` distinguish
+          // THIS route's 405 from an unrelated service that also rejects GET.
+          res.setHeader(CLIQ_ROUTE_HEADER, CLIQ_ROUTE_HEADER_VALUE);
           res.end("Method Not Allowed");
           return true;
         }
