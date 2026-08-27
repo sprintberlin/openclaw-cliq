@@ -13,6 +13,13 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
+- **Multi-agent rollout guide (issue #109).** The setup documentation now
+  distinguishes the shared OAuth app and same-org user-context refresh token
+  from each agent's dedicated bot identity, webhook secret, public URL, and
+  handlers. It also records per-organization data-center selection, the
+  setup-scope error and re-consent requirement, and the need to diff an
+  existing bot's stored handler URL and secret before treating a matching
+  unique name as this deployment.
 - **`openclaw cliq webhook-route` (issue #108).** A local, unauthenticated
   check that asks the running gateway whether `/cliq/webhook` is registered.
   Registration is only claimed on a `405` that also carries the plugin's own
