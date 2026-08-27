@@ -28,10 +28,23 @@ import {
 } from "./inbound-readiness.js";
 import { resolveCliqSecretString } from "./secret-resolve.js";
 import { resolveCliqDirectoryAllowlist } from "./setup-directory.js";
-import { runCliqSetupOnboarding } from "./setup-onboarding.js";
+import { runCliqSetupOnboarding, type CliqSetupOnboardingResult } from "./setup-onboarding.js";
 import { runCliqSetupProvisioning } from "./setup-provisioning-flow.js";
 import { describeCliqInboundVerification } from "./inbound-verification.js";
 import { validateGeneratedCliqConfig } from "./config-validation.js";
+import { formatCliqDoctorReport, runCliqDoctor } from "./doctor-runner.js";
+import {
+  buildCliqSetupReport,
+  formatCliqSetupReport,
+  type CliqSetupCompatibility,
+  type CliqSetupReport,
+  type CliqSetupReportInput,
+} from "./setup-report.js";
+import type { CliqProvisioningRunResult } from "./setup-provisioning.js";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
 import {
   hasSharedDmSessionRisk,
   CLIQ_RECOMMENDED_DM_SCOPE,
@@ -40,6 +53,66 @@ import {
 
 const CHANNEL = "cliq" as const;
 const DEFAULT_ACCOUNT_ID = "default";
+
+function readJsonFile(path: string): unknown {
+  return JSON.parse(readFileSync(path, "utf8"));
+}
+
+export function checkInstalledOpenClawCompatibility(params: {
+  resolvePackageJson?: (specifier: string) => string;
+  readJson?: (path: string) => unknown;
+  supportedVersions?: string[];
+} = {}): CliqSetupCompatibility {
+  const supportedVersions = params.supportedVersions ?? readSupportedOpenClawVersions();
+  const resolvePackageJson = params.resolvePackageJson ?? ((specifier: string) => {
+    const setupPath = createRequire(import.meta.url).resolve(specifier);
+    return resolve(dirname(setupPath), "..", "..", "package.json");
+  });
+  const readJson = params.readJson ?? readJsonFile;
+  let installedVersion: string | null = null;
+  try {
+    const parsed = readJson(resolvePackageJson("openclaw/plugin-sdk/setup")) as {
+      version?: unknown;
+    };
+    if (typeof parsed.version === "string" && parsed.version.trim()) {
+      installedVersion = parsed.version.trim();
+    }
+  } catch {
+    installedVersion = null;
+  }
+  return {
+    installedVersion,
+    supportedVersions,
+    status:
+      installedVersion === null || supportedVersions.length === 0
+        ? "unknown"
+        : supportedVersions.includes(installedVersion)
+          ? "supported"
+          : "unsupported",
+  };
+}
+
+export function readSupportedOpenClawVersions(): string[] {
+  const here = dirname(fileURLToPath(import.meta.url));
+  for (const candidate of [
+    resolve(here, "..", ".github", "openclaw-compat.json"),
+    resolve(here, "..", "..", ".github", "openclaw-compat.json"),
+  ]) {
+    try {
+      const parsed = JSON.parse(readFileSync(candidate, "utf8")) as {
+        supported?: unknown;
+      };
+      if (Array.isArray(parsed.supported)) {
+        return parsed.supported.filter(
+          (value): value is string => typeof value === "string",
+        );
+      }
+    } catch {
+      continue;
+    }
+  }
+  return [];
+}
 
 /** Env vars consulted by the env-shortcut / use-env prompts. */
 export const CLIQ_ENV_VARS = {
@@ -96,6 +169,13 @@ function patchCliqSection(
   return next as unknown as OpenClawConfig;
 }
 
+/**
+ * Sentinel for "this secret is already configured as a SecretRef; keep the
+ * stored representation exactly". `applyCliqCredentials` drops it rather than
+ * writing it, so a structured ref survives a rerun untouched.
+ */
+const KEEP_CONFIGURED_SECRET = "\u0000cliq-keep-configured-secret";
+
 export interface CliqSetupCredentials {
   clientId?: string;
   clientSecret?: string;
@@ -116,11 +196,11 @@ export async function promptCliqCredentials(
 ): Promise<CliqSetupCredentials> {
   const section = readCliqSection(cfg);
   const existingClientId = asString(section.clientId);
-  const existingClientSecret = asString(section.clientSecret);
   const existingBotId = asString(section.botId);
   const existingBotName = asString(section.botName);
-  const existingWebhookSecret = asString(section.webhookSecret);
-  const existingRefreshToken = asString(section.refreshToken);
+  const hasExistingClientSecret = hasConfiguredSecretInput(section.clientSecret);
+  const hasExistingWebhookSecret = hasConfiguredSecretInput(section.webhookSecret);
+  const hasExistingRefreshToken = hasConfiguredSecretInput(section.refreshToken);
 
   const envClientId = asString(process.env[CLIQ_ENV_VARS.clientId]);
   const envClientSecret = asString(process.env[CLIQ_ENV_VARS.clientSecret]);
@@ -173,15 +253,15 @@ export async function promptCliqCredentials(
   }
 
   // Client Secret (sensitive)
-  let clientSecret = existingClientSecret;
-  if (clientSecret) {
+  let clientSecret: string | undefined;
+  if (hasExistingClientSecret) {
     if (
       await prompter.confirm({
         message: "Keep the existing Client Secret?",
         initialValue: true,
       })
     ) {
-      // keep
+      clientSecret = KEEP_CONFIGURED_SECRET;
     } else if (envClientSecret && (await maybeUseEnv("Client Secret", CLIQ_ENV_VARS.clientSecret, envClientSecret))) {
       clientSecret = envClientSecret;
     } else {
@@ -249,15 +329,15 @@ export async function promptCliqCredentials(
   }
 
   // Webhook secret (required: the inbound webhook fails closed without it)
-  let webhookSecret = existingWebhookSecret;
-  if (webhookSecret) {
+  let webhookSecret: string | undefined;
+  if (hasExistingWebhookSecret) {
     if (
       await prompter.confirm({
         message: "Keep the existing webhook secret?",
         initialValue: true,
       })
     ) {
-      // keep
+      webhookSecret = KEEP_CONFIGURED_SECRET;
     } else if (
       envWebhookSecret &&
       (await maybeUseEnv("webhook secret", CLIQ_ENV_VARS.webhookSecret, envWebhookSecret))
@@ -293,15 +373,15 @@ export async function promptCliqCredentials(
   // refresh token (obtained once via the self-client authorization_code
   // flow — see README §3) is required for the channel reply + live-edit
   // paths. DM-only setups can leave this blank.
-  let refreshToken = existingRefreshToken;
-  if (refreshToken) {
+  let refreshToken: string | undefined;
+  if (hasExistingRefreshToken) {
     if (
       await prompter.confirm({
         message: "Keep the existing refresh token?",
         initialValue: true,
       })
     ) {
-      // keep
+      refreshToken = KEEP_CONFIGURED_SECRET;
     } else if (
       envRefreshToken &&
       (await maybeUseEnv("refresh token", CLIQ_ENV_VARS.refreshToken, envRefreshToken))
@@ -341,11 +421,19 @@ export function applyCliqCredentials(
 ): OpenClawConfig {
   const patch: Record<string, unknown> = {};
   if (creds.clientId) patch.clientId = creds.clientId;
-  if (creds.clientSecret) patch.clientSecret = creds.clientSecret;
   if (creds.botId) patch.botId = creds.botId;
   if (creds.botName !== undefined) patch.botName = creds.botName;
-  if (creds.webhookSecret !== undefined) patch.webhookSecret = creds.webhookSecret;
-  if (creds.refreshToken !== undefined) patch.refreshToken = creds.refreshToken;
+  // The keep sentinel means "leave the configured SecretRef alone": omitting
+  // the key preserves it, whereas writing the sentinel would destroy it.
+  if (creds.clientSecret && creds.clientSecret !== KEEP_CONFIGURED_SECRET) {
+    patch.clientSecret = creds.clientSecret;
+  }
+  if (creds.webhookSecret !== undefined && creds.webhookSecret !== KEEP_CONFIGURED_SECRET) {
+    patch.webhookSecret = creds.webhookSecret;
+  }
+  if (creds.refreshToken !== undefined && creds.refreshToken !== KEEP_CONFIGURED_SECRET) {
+    patch.refreshToken = creds.refreshToken;
+  }
   return patchCliqSection(cfg, patch);
 }
 
@@ -597,6 +685,49 @@ const cliqFinalize: NonNullable<ChannelSetupWizard["finalize"]> = async ({
   cfg,
   prompter,
 }) => {
+  // Guided onboarding report inputs (issue #92). Each integration step fills
+  // in its own outcome; the final report is printed once at the end so a
+  // partial setup still states its next required action.
+  const reportInput: CliqSetupReportInput = {
+    accountId: DEFAULT_ACCOUNT_ID,
+    compatibility: checkInstalledOpenClawCompatibility(),
+    configValid: true,
+    oauth: "pass",
+    bot: "not_run",
+    handlers: "not_run",
+    lifecycle: "restart_required",
+    webhook: "not_run",
+    admission: "isolated",
+    delivery: "not_requested",
+    notes: [],
+  };
+  const noteFailSoft = async (message: string, title: string) => {
+    try {
+      await prompter.note(message, title);
+    } catch {
+      // A prompter that cannot display notes must not abort setup.
+    }
+  };
+
+  // Step 1: compare the installed OpenClaw package to the shared support
+  // matrix. This is the package that resolves the setup SDK in this process,
+  // not an inferred or running-daemon version.
+  const compat = reportInput.compatibility!;
+  await noteFailSoft(
+    [
+      compat.installedVersion
+        ? `Installed OpenClaw version: ${compat.installedVersion} (${compat.status}).`
+        : "The installed OpenClaw version could not be determined from the setup SDK package.",
+      compat.supportedVersions.length > 0
+        ? `Supported OpenClaw versions: ${compat.supportedVersions.join(", ")}.`
+        : "The supported OpenClaw version matrix is unavailable from this package layout.",
+      compat.status === "unsupported"
+        ? "Do not start the Cliq gateway until a supported OpenClaw version is installed."
+        : "This checks the setup process package; the read-only doctor checks the configured runtime boundaries.",
+    ].join("\n"),
+    "Plugin / OpenClaw compatibility",
+  );
+
   // Prompt for the Zoho data center first so the printed setup instructions
   // reference the chosen region's API Console URL and the credentials are
   // stored alongside the matching `oauthBase` / `apiBase`. EU remains the
@@ -638,6 +769,8 @@ const cliqFinalize: NonNullable<ChannelSetupWizard["finalize"]> = async ({
     url: publicUrl,
     prompter,
   });
+  reportInput.webhook = !publicUrl ? "not_run" : readiness.ready ? "pass" : "blocked";
+  reportInput.oauth = isCliqChannelConfigured(next) ? "pass" : "not_run";
   // Persist the verdict so status/doctor keep reporting the truth after the
   // wizard exits, instead of inferring readiness from credentials alone.
   next = applyCliqInboundVerification(next, readiness);
@@ -652,7 +785,7 @@ const cliqFinalize: NonNullable<ChannelSetupWizard["finalize"]> = async ({
   // never abort a setup whose credentials are already written.
   if (publicUrl && isCliqChannelConfigured(next)) {
     try {
-      await runCliqSetupProvisioning({
+      const provisioned = await runCliqSetupProvisioning({
         cfg: next,
         publicWebhookUrl: publicUrl,
         prompter,
@@ -660,7 +793,10 @@ const cliqFinalize: NonNullable<ChannelSetupWizard["finalize"]> = async ({
         includeWelcome:
           (readCliqSection(next).welcome as { enabled?: unknown } | undefined)?.enabled === true,
       });
+      applyProvisioningToReport(reportInput, provisioned);
     } catch {
+      reportInput.bot = "blocked";
+      reportInput.handlers = "blocked";
       await noteSafely(
         prompter,
         "Bot and handler provisioning could not be inspected; no Zoho-held handler was changed.",
@@ -669,12 +805,33 @@ const cliqFinalize: NonNullable<ChannelSetupWizard["finalize"]> = async ({
     }
   }
 
-  await runCliqSetupOnboarding({
+  const onboarding: CliqSetupOnboardingResult = await runCliqSetupOnboarding({
     cfg: next,
     prompter,
     accountId: DEFAULT_ACCOUNT_ID,
     publicWebhookUrl: publicUrl,
   });
+  reportInput.delivery =
+    onboarding.firstContact === "sent"
+      ? "pass"
+      : onboarding.firstContact === "cancelled"
+        ? "cancelled"
+        : onboarding.firstContact === "failed"
+          ? "failed"
+          : "not_requested";
+  if (onboarding.status === "blocked" && onboarding.nextAction) {
+    reportInput.notes = [...(reportInput.notes ?? []), onboarding.nextAction];
+  }
+
+  // The full roundtrip is distinct from the one-way first-contact DM: it asks
+  // the operator to reply with a nonce and correlates the inbound agent turn
+  // plus outbound answer. It is separately consented and fail-soft so
+  // cancelling it never invalidates setup.
+  const roundtrip = await runOptionalCliqRoundtripDuringSetup({
+    cfg: next,
+    prompter,
+  });
+  if (roundtrip !== "not_requested") reportInput.delivery = roundtrip;
 
   next = await guardCliqDmScopeDuringSetup({ cfg: next, prompter });
 
@@ -720,10 +877,287 @@ const cliqFinalize: NonNullable<ChannelSetupWizard["finalize"]> = async ({
     }
   }
 
+  try {
+    await validateCliqSetupResult(next);
+    reportInput.configValid = true;
+  } catch (err) {
+    reportInput.configValid = false;
+    reportInput.notes = [
+      ...(reportInput.notes ?? []),
+      err instanceof Error ? err.message : "generated config failed validation",
+    ];
+    throw err;
+  }
+
+  const laterSection = readCliqSection(next);
+  const laterAllowFrom = Array.isArray(laterSection.allowFrom)
+    ? laterSection.allowFrom.filter((value): value is string => typeof value === "string")
+    : [];
+  const laterOrgWide =
+    laterSection.dmPolicy === "open" ||
+    laterAllowFrom.some((value) => value.trim() === "*") ||
+    laterSection.groupPolicy === "open";
+  const laterTrusted = laterSection.trustedOrganization as
+    | { acknowledged?: unknown }
+    | undefined;
+  reportInput.admission =
+    laterOrgWide && laterTrusted?.acknowledged === true
+      ? "organization_wide"
+      : "isolated";
+
+  await runReadOnlyDoctorDuringSetup({ cfg: next, prompter, reportInput });
+  next = prepareCliqSecretsForPersistence({ originalCfg: cfg, generatedCfg: next });
+  // Validate the exact shape that will be persisted, including canonical
+  // env-backed SecretRefs, rather than validating plaintext and rewriting only
+  // afterwards.
   await validateCliqSetupResult(next);
+  reportInput.requiredEnvironment = collectRequiredCliqEnvironment(next);
+  if (reportInput.requiredEnvironment.length > 0) {
+    reportInput.notes = [
+      ...(reportInput.notes ?? []),
+      `Newly entered secret values are not stored by setup. Configure the same values in the gateway environment for: ${reportInput.requiredEnvironment.join(", ")}.`,
+    ];
+  }
+  const report = buildCliqSetupReport(reportInput);
+  await presentCliqSetupReport(prompter, report);
 
   return { cfg: next, accountId: DEFAULT_ACCOUNT_ID };
 };
+
+function applyProvisioningToReport(
+  reportInput: CliqSetupReportInput,
+  provisioned: CliqProvisioningRunResult,
+): void {
+  const status = provisioned.plan.status;
+  if (status === "in_sync") {
+    reportInput.bot = "in_sync";
+    reportInput.handlers = "in_sync";
+    return;
+  }
+  if (status === "blocked") {
+    reportInput.bot = "blocked";
+    reportInput.handlers = "blocked";
+    return;
+  }
+  if (status === "conflict") {
+    reportInput.bot = "in_sync";
+    reportInput.handlers = provisioned.apply?.applied ? "created" : "conflict";
+    return;
+  }
+  reportInput.bot = provisioned.apply?.applied ? "created" : "not_run";
+  reportInput.handlers = provisioned.apply?.applied ? "created" : "not_run";
+}
+
+async function runReadOnlyDoctorDuringSetup(params: {
+  cfg: OpenClawConfig;
+  prompter: WizardPrompter;
+  reportInput: CliqSetupReportInput;
+}): Promise<void> {
+  let run = false;
+  try {
+    run = await params.prompter.confirm({
+      message: "Run the read-only Cliq doctor now? This performs no sends, writes, or restarts.",
+      initialValue: true,
+    });
+  } catch {
+    run = false;
+  }
+  if (!run) {
+    await presentRestartGuidance(params.prompter);
+    return;
+  }
+  try {
+    const doctor = await runCliqDoctor(params.cfg, { accountId: DEFAULT_ACCOUNT_ID });
+    await noteSafely(
+      params.prompter,
+      formatCliqDoctorReport(doctor).join("\n"),
+      "Zoho Cliq doctor",
+    );
+    if (doctor.outcome === "failed") {
+      params.reportInput.notes = [
+        ...(params.reportInput.notes ?? []),
+        `read-only doctor outcome: ${doctor.outcome}`,
+      ];
+    }
+  } catch {
+    await noteSafely(
+      params.prompter,
+      "The read-only doctor could not run. Existing config was not changed.",
+      "Zoho Cliq doctor",
+    );
+  }
+  await presentRestartGuidance(params.prompter);
+}
+
+async function presentRestartGuidance(prompter: WizardPrompter): Promise<void> {
+  await noteSafely(
+    prompter,
+    [
+      "After setup returns successfully, OpenClaw will write the generated config.",
+      "Then restart the OpenClaw gateway so it loads that config.",
+      "Supported path: `systemctl --user restart openclaw-gateway.service`",
+      "or the equivalent command this host already uses to start the gateway.",
+      "Do not weaken gateway binding, change SSH, or print secrets to confirm the restart.",
+    ].join("\n"),
+    "Gateway restart",
+  );
+}
+
+async function presentCliqSetupReport(
+  prompter: WizardPrompter,
+  report: CliqSetupReport,
+): Promise<void> {
+  await noteSafely(
+    prompter,
+    [...formatCliqSetupReport(report), "", JSON.stringify(report)].join("\n"),
+    "Zoho Cliq setup report",
+  );
+}
+
+/**
+ * Rewrite freshly entered plaintext secrets into canonical env-backed
+ * SecretRefs before the wizard hands the config back to be written.
+ *
+ * Setup must never store a typed-in credential as a literal in
+ * `openclaw.json` (issue #92). A value that is already a SecretRef, or an
+ * `$ENV` interpolation, is a deliberate operator choice and is preserved
+ * exactly — only a new literal is converted.
+ */
+export function prepareCliqSecretsForPersistence(params: {
+  originalCfg: OpenClawConfig;
+  generatedCfg: OpenClawConfig;
+}): OpenClawConfig {
+  const section = readCliqSection(params.generatedCfg);
+  const originalSection = readCliqSection(params.originalCfg);
+  const patch: Record<string, unknown> = {};
+  const envIds: Record<string, string> = {
+    clientSecret: CLIQ_ENV_VARS.clientSecret,
+    webhookSecret: CLIQ_ENV_VARS.webhookSecret,
+    refreshToken: CLIQ_ENV_VARS.refreshToken,
+  };
+  for (const [field, envId] of Object.entries(envIds)) {
+    const value = section[field];
+    const original = originalSection[field];
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (!trimmed) continue;
+    // Preserve an existing operator-authored representation on rerun; only a
+    // newly entered literal is converted.
+    if (original === value) continue;
+    // `$NAME` / `${NAME}` already resolve through OpenClaw's interpolation.
+    if (/^\$\{?[A-Za-z_]/.test(trimmed)) continue;
+    patch[field] = { source: "env", provider: "default", id: envId };
+  }
+  if (Object.keys(patch).length === 0) return params.generatedCfg;
+  return patchCliqSection(params.generatedCfg, patch);
+}
+
+function collectRequiredCliqEnvironment(cfg: OpenClawConfig): string[] {
+  const section = readCliqSection(cfg);
+  const names = new Set<string>();
+  for (const field of ["clientSecret", "webhookSecret", "refreshToken"] as const) {
+    const value = section[field];
+    if (value && typeof value === "object") {
+      const ref = value as { source?: unknown; id?: unknown };
+      if (ref.source === "env" && typeof ref.id === "string" && ref.id.trim()) {
+        names.add(ref.id.trim());
+      }
+      continue;
+    }
+    if (typeof value !== "string") continue;
+    const match = value.trim().match(/^\$\{?([A-Z][A-Z0-9_]*)\}?$/);
+    if (match) names.add(match[1]);
+  }
+  return [...names];
+}
+
+export type CliqSetupRoundtripResult = "pass" | "failed" | "cancelled" | "not_requested";
+
+/**
+ * Optional consented roundtrip at the end of setup.
+ *
+ * Three separate gates: opting in, naming the target and kind, and a final
+ * confirmation. Declining at any point leaves Zoho untouched and is reported
+ * as cancelled rather than as a failure, so a cancelled test never makes an
+ * otherwise healthy setup look broken.
+ */
+export async function runOptionalCliqRoundtripDuringSetup(params: {
+  cfg: OpenClawConfig;
+  prompter: WizardPrompter;
+  runDoctor?: typeof runCliqDoctor;
+}): Promise<CliqSetupRoundtripResult> {
+  const runDoctor = params.runDoctor ?? runCliqDoctor;
+  let begin = false;
+  try {
+    begin = await params.prompter.confirm({
+      message:
+        "Run an optional end-to-end roundtrip test now? It posts one nonce-bearing message and waits for your reply.",
+      initialValue: false,
+    });
+  } catch {
+    return "not_requested";
+  }
+  if (!begin) return "not_requested";
+
+  let targetKind: string;
+  let target: string;
+  try {
+    targetKind = await params.prompter.select<string>({
+      message: "Roundtrip target kind",
+      options: [
+        { value: "dm", label: "Direct message" },
+        { value: "group", label: "Channel @mention" },
+      ],
+      initialValue: "dm",
+    });
+    target = (
+      await params.prompter.text({
+        message:
+          targetKind === "group"
+            ? "Channel unique name to test"
+            : "Zoho user id to DM for the test",
+      })
+    ).trim();
+  } catch {
+    return "cancelled";
+  }
+  if (!target) return "cancelled";
+
+  let confirmed = false;
+  try {
+    confirmed = await params.prompter.confirm({
+      message: `Send the nonce-bearing roundtrip challenge to ${target} now?`,
+      initialValue: false,
+    });
+  } catch {
+    return "cancelled";
+  }
+  if (!confirmed) return "cancelled";
+
+  try {
+    const report = await runDoctor(params.cfg, {
+      accountId: DEFAULT_ACCOUNT_ID,
+      roundtrip: true,
+      target,
+      targetKind: targetKind === "group" ? "group" : "dm",
+      confirmed: true,
+    });
+    const stage = report.stages.find((item) => item.id === "roundtrip");
+    await noteSafely(
+      params.prompter,
+      `Roundtrip stage: ${stage?.status ?? "unknown"}${stage?.boundary ? ` (boundary: ${stage.boundary})` : ""}`,
+      "Zoho Cliq roundtrip",
+    );
+    return stage?.status === "pass" ? "pass" : "failed";
+  } catch {
+    await noteSafely(
+      params.prompter,
+      "The roundtrip test could not run; no configuration was changed.",
+      "Zoho Cliq roundtrip",
+    );
+    return "failed";
+  }
+}
 
 export async function guardCliqDmScopeDuringSetup(params: {
   cfg: OpenClawConfig;

@@ -39,6 +39,7 @@
     "secret-contract-api.ts",
     "src",
     "assets",
+    ".github/openclaw-compat.json",
     "README.md",
     "openclaw.plugin.json"
   ],

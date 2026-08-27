@@ -80,6 +80,10 @@ Mostly v3-independent; **dynamic agents** in particular is high-value and can be
   installed OpenClaw version without printing values: confirm `openclaw config validate` passes,
   `openclaw secrets audit` reports no plaintext and no unresolved reference, and a real OAuth
   probe still succeeds after the plugin update. Needs real credentials, so it stays a human step.
+- **Live guided-setup acceptance run.** Rerun `openclaw setup` against Franzi in preservation
+  mode first, then complete a fresh isolated install through the guided flow to a verified
+  roundtrip, without replacing existing handlers, printing secrets, or changing SSH/gateway
+  binding. Needs real credentials, so it stays a human step.
 - **Live provisioning acceptance run.** Confirm on a real organization that the setup dry-run
   matches the Franzi Message/Mention handlers without mutating them, and exercise create plus the
   minimal-create-then-`PATCH` fallback against an isolated test bot rather than a production one.

@@ -60,13 +60,19 @@ function subscriptionLine(
     : `subscription state: ${state.reason}`;
 }
 
+export interface CliqSetupOnboardingResult {
+  status: "completed" | "cancelled" | "blocked";
+  firstContact: "sent" | "cancelled" | "failed" | "not_requested";
+  nextAction?: string;
+}
+
 export async function runCliqSetupOnboarding(params: {
   cfg: OpenClawConfig;
   prompter: Pick<WizardPrompter, "text" | "confirm" | "note">;
   accountId?: string;
   publicWebhookUrl?: string;
   deps?: Partial<CliqSetupOnboardingDeps>;
-}): Promise<void> {
+}): Promise<CliqSetupOnboardingResult> {
   const deps = { ...defaultDeps, ...params.deps };
   let begin: boolean;
   try {
@@ -75,9 +81,19 @@ export async function runCliqSetupOnboarding(params: {
       initialValue: false,
     });
   } catch {
-    return;
+    return {
+      status: "cancelled",
+      firstContact: "not_requested",
+      nextAction: "Rerun setup when you want to inspect targets or send a first-contact message.",
+    };
   }
-  if (!begin) return;
+  if (!begin) {
+    return {
+      status: "cancelled",
+      firstContact: "not_requested",
+      nextAction: "Rerun setup when you want to inspect targets or send a first-contact message.",
+    };
+  }
   let account: ResolvedCliqAccount;
   try {
     account = deps.resolveAccount(params.cfg, params.accountId ?? null);
@@ -87,7 +103,11 @@ export async function runCliqSetupOnboarding(params: {
       "Bot visibility, subscription state, and first-contact testing are unavailable until the account credentials resolve.",
       "Zoho Cliq onboarding",
     );
-    return;
+    return {
+      status: "blocked",
+      firstContact: "not_requested",
+      nextAction: "Correct the Zoho OAuth credentials, then rerun setup from the credential step.",
+    };
   }
 
   const userTarget = await deps.promptTarget({
@@ -118,7 +138,7 @@ export async function runCliqSetupOnboarding(params: {
         "Zoho Cliq bot and subscription",
       );
     }
-    await sendCliqFirstContactDm({
+    const firstContact = await sendCliqFirstContactDm({
       client,
       target: userTarget,
       prompter: params.prompter,
@@ -129,15 +149,33 @@ export async function runCliqSetupOnboarding(params: {
         account.refreshToken ?? "",
       ],
     });
+    await promptChannelTarget();
+    if (firstContact.sent) return { status: "completed", firstContact: "sent" };
+    if (firstContact.reason === "cancelled") {
+      return {
+        status: "completed",
+        firstContact: "cancelled",
+        nextAction: "Rerun setup when you want to inspect targets or send a first-contact message.",
+      };
+    }
+    return {
+      status: "blocked",
+      firstContact: "failed",
+      nextAction: "Inspect the redacted first-contact failure and rerun setup if you want to retry the optional message test.",
+    };
   }
 
-  const channelTarget = await deps.promptTarget({
-    cfg: params.cfg,
-    accountId: params.accountId,
-    kind: "group",
-    prompter: params.prompter,
-  });
-  if (channelTarget) {
+  await promptChannelTarget();
+  return { status: "completed", firstContact: "not_requested" };
+
+  async function promptChannelTarget(): Promise<void> {
+    const channelTarget = await deps.promptTarget({
+      cfg: params.cfg,
+      accountId: params.accountId,
+      kind: "group",
+      prompter: params.prompter,
+    });
+    if (!channelTarget) return;
     await noteSafely(
       params.prompter,
       [
