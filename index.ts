@@ -36,6 +36,7 @@ import {
   buildCliqProbeResponse,
   parseCliqProbePayload,
 } from "./src/webhook-probe.js";
+import { recordCliqActivity } from "./src/activity.js";
 
 /**
  * Per-IP fixed-window limiter for *failed* webhook authentications. Legit
@@ -380,6 +381,16 @@ export default defineChannelPluginEntry({
           res.end("ok");
           return true;
         }
+
+        // Liveness: this is the only real inbound signal a webhook channel
+        // has. Record after the accept gates (secret, self, mention,
+        // admission, dedupe) so rejected or replayed deliveries do not look
+        // like traffic, and before dispatch so a later agent/outbound
+        // failure still shows that Cliq reached us (issue #98).
+        recordCliqActivity({
+          accountId: account.accountId,
+          direction: "inbound",
+        });
 
         // Durable-before-ack: by default await the inbound pipeline before
         // acknowledging Cliq so a crash mid-dispatch triggers redelivery

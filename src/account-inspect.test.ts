@@ -161,4 +161,17 @@ describe("inspectCliqAccount", () => {
     expect(r.enabled).toBe(false);
     expect(r.tokenStatus).toBe("missing");
   });
+
+  it("treats a SecretRef-backed clientSecret as configured", () => {
+    const cfg = cfgWith({
+      clientId: "id",
+      clientSecret: { source: "env", provider: "default", id: "CLIQ_SECRET" },
+      botId: "bot",
+    });
+    const r = inspectCliqAccount({ cfg });
+    expect(r.configured).toBe(true);
+    expect(r.tokenStatus).toBe("available");
+    const serialized = JSON.stringify(r);
+    expect(serialized).not.toContain("CLIQ_SECRET");
+  });
 });
