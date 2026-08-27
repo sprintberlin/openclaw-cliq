@@ -13,6 +13,22 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **Multi-user Cliq bots no longer enter service with a shared DM session
+  silently (issue #104).** `channels.cliq.dmPolicy` / `allowFrom` control who
+  may contact the bot, but only global `session.dmScope` isolates those users'
+  conversation history. OpenClaw resolves an absent `session` block to
+  `dmScope: "main"`, including on fresh installs; every sender and every
+  channel then collapses into `agent:<agentId>:main`, which can leak context
+  between users and leave the shared session's latest delivery route pointing
+  at another channel. Setup now shows a prominent privacy warning and offers
+  (default no) to set `per-channel-peer`, never silently overwriting the global
+  value. `openclaw cliq doctor` covers the absent-session case, and
+  `openclaw security audit` emits the critical
+  `channels.cliq.session_scope.shared` finding for `open`, `pairing`, wildcard,
+  or multi-sender allowlist configurations. Single-sender allowlists and
+  disabled DMs are not warned; `per-account-channel-peer` is documented as the
+  stricter multi-account option.
+
 - **Canonical structured SecretRefs are accepted again (issue #95).** The
   plugin manifest typed `clientSecret`, `webhookSecret`, and `refreshToken` as
   bare strings in all four schema locations, so the exact shape

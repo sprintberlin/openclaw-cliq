@@ -32,6 +32,11 @@ import { runCliqSetupOnboarding } from "./setup-onboarding.js";
 import { runCliqSetupProvisioning } from "./setup-provisioning-flow.js";
 import { describeCliqInboundVerification } from "./inbound-verification.js";
 import { validateGeneratedCliqConfig } from "./config-validation.js";
+import {
+  hasSharedDmSessionRisk,
+  CLIQ_RECOMMENDED_DM_SCOPE,
+  SHARED_DM_SCOPE_WARNING,
+} from "./dm-scope.js";
 
 const CHANNEL = "cliq" as const;
 const DEFAULT_ACCOUNT_ID = "default";
@@ -671,6 +676,8 @@ const cliqFinalize: NonNullable<ChannelSetupWizard["finalize"]> = async ({
     publicWebhookUrl: publicUrl,
   });
 
+  next = await guardCliqDmScopeDuringSetup({ cfg: next, prompter });
+
   // Trusted-organization mode is opt-in. Only an existing deliberately open
   const section = readCliqSection(next);
   const allowFrom = Array.isArray(section.allowFrom)
@@ -717,6 +724,32 @@ const cliqFinalize: NonNullable<ChannelSetupWizard["finalize"]> = async ({
 
   return { cfg: next, accountId: DEFAULT_ACCOUNT_ID };
 };
+
+export async function guardCliqDmScopeDuringSetup(params: {
+  cfg: OpenClawConfig;
+  prompter: WizardPrompter;
+}): Promise<OpenClawConfig> {
+  const section = readCliqSection(params.cfg);
+  if (!hasSharedDmSessionRisk({ cfg: params.cfg, section })) return params.cfg;
+
+  await params.prompter.note(SHARED_DM_SCOPE_WARNING, "Multi-user DM privacy");
+  const apply = await params.prompter.confirm({
+    message:
+      "Set global session.dmScope to per-channel-peer now? This affects DMs on every configured channel.",
+    initialValue: false,
+  });
+  if (!apply) return params.cfg;
+
+  const session = (params.cfg as unknown as { session?: Record<string, unknown> })
+    .session;
+  return {
+    ...params.cfg,
+    session: {
+      ...(session ?? {}),
+      dmScope: CLIQ_RECOMMENDED_DM_SCOPE,
+    },
+  } as OpenClawConfig;
+}
 
 /**
  * Fail setup when the config it generated would be rejected by the gateway.
