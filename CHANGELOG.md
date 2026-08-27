@@ -50,6 +50,15 @@ publish workflow extracts the matching section as the release notes (see
   naming that exact scope. Because creating a bot is destructive, the
   capability is reported from the granted scope set and labelled
   consent-reported, never proven by a live probe.
+- **Zoho provisioning guidance now matches the live v3 API contract (issue
+  #112).** The setup guide distinguishes the configured bot unique name from
+  the internal `b-...` ID required by bot/handler CRUD, records the verified
+  create/read/handler endpoint methods and body fields, and no longer claims
+  that Message and Mention handlers use byte-identical Deluge. Mention handlers
+  must omit the Message Handler's `attachments` block; an
+  `execution_handler_update_failed` response can indicate invalid handler
+  script references rather than a transient failure.
+
 - **Webhook accounts now report as running, configured, and event-driven
   (issue #98).** A configured Cliq account keeps a passive `startAccount`
   lifecycle so OpenClaw does not treat the webhook transport as `stopped` /
