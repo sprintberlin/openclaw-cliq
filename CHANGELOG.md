@@ -28,6 +28,7 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **Cliq security audit delivery (issue #111).** Route Cliq-specific findings through the channel security adapter so `openclaw security audit` includes them in its default output. `--deep` remains reserved for live gateway probes.
 - **Documented and contained the Deluge handler secret exposure (issue #113).**
   Zoho stores the webhook secret as a literal in each handler script and
   returns that script — secret included — to anyone with bot-edit access or

@@ -169,7 +169,21 @@ node -e '
 '
 run_oc config validate
 
-# Pick a free loopback port for the gateway HTTP/WS server.
+# The security audit must consume the channel adapter in its normal sweep. This
+# is deliberately an assertion against the shipped CLI output, not a direct
+# collector invocation.
+AUDIT_JSON="$SMOKE_HOME/security-audit.json"
+run_oc security audit --json > "$AUDIT_JSON"
+node -e '
+  const report = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  const findings = Array.isArray(report.findings) ? report.findings : [];
+  if (!findings.some((finding) => finding && finding.checkId === "channels.cliq.secrets.plaintext")) {
+    console.error("FAIL: default security audit output omitted channels.cliq.secrets.plaintext");
+    process.exit(1);
+  }
+  console.log("OK: default security audit output includes the Cliq plaintext-secret finding");
+' "$AUDIT_JSON"
+
 PORT="$(node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')"
 echo "==> [6/12] Starting foreground gateway on 127.0.0.1:$PORT"
 GW_LOG="$SMOKE_HOME/gateway.log"

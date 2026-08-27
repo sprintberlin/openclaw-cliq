@@ -5,6 +5,7 @@ import {
 } from "./security-audit.js";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { createCliqTestConfig as cfgWith } from "./test-api.js";
+import { cliqPlugin } from "./channel.js";
 
 const REFINED = {
   clientId: "id",
@@ -303,5 +304,52 @@ describe("cliqSecurityAuditCollector (SDK adapter)", () => {
       dmPolicy: { weird: true },
     });
     expect(() => cliqSecurityAuditCollector({ config: cfg })).not.toThrow();
+  });
+});
+
+describe("channel security adapter delivery (issue #111)", () => {
+  it("exposes collectAuditFindings on the channel security adapter", () => {
+    expect(typeof cliqPlugin.security?.collectAuditFindings).toBe("function");
+  });
+
+  it("returns the plaintext-secret finding through the channel adapter", async () => {
+    const cfg = cfgWith({
+      clientId: "id",
+      clientSecret: "literal-client-secret",
+      botId: "bot",
+      webhookSecret: "literal-webhook-secret",
+      refreshToken: "literal-refresh-token",
+      dmPolicy: "allowlist",
+      allowFrom: ["user@example.com"],
+    });
+    const collect = cliqPlugin.security?.collectAuditFindings as (
+      ctx: unknown,
+    ) => Promise<Array<{ checkId: string }>> | Array<{ checkId: string }>;
+    const findings = await collect({
+      cfg,
+      sourceConfig: cfg,
+      accountId: null,
+      account: {},
+      orderedAccountIds: ["default"],
+      hasExplicitAccountPath: false,
+    });
+    expect(findings.map((f) => f.checkId)).toContain(
+      "channels.cliq.secrets.plaintext",
+    );
+  });
+
+  it("returns no findings through the adapter for an unconfigured channel", async () => {
+    const collect = cliqPlugin.security?.collectAuditFindings as (
+      ctx: unknown,
+    ) => Promise<Array<{ checkId: string }>> | Array<{ checkId: string }>;
+    const findings = await collect({
+      cfg: {} as unknown as OpenClawConfig,
+      sourceConfig: {} as unknown as OpenClawConfig,
+      accountId: null,
+      account: {},
+      orderedAccountIds: ["default"],
+      hasExplicitAccountPath: false,
+    });
+    expect(findings).toEqual([]);
   });
 });
