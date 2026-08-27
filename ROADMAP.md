@@ -112,14 +112,14 @@ blocker is resolved.
   Only bundled channels (Telegram/Discord) can do this. Tracked upstream:
   **openclaw/openclaw#100447**. Revisit when that lands. (Outbound *agent-invoked* reactions
   via the `react` message-action already work — this item is only the inbound/ack side.)
-- **Trustworthy `plugins inspect --runtime` route/collector counts.** `httpRoutes` (and the
-  security-audit collector list) are reported from a non-activating, discovery-mode plugin
-  load, so anything registered in `registerFull` reads as absent — `httpRoutes: 0` on a
-  gateway that is serving `/cliq/webhook`. Blocked: only the host can fix the count (report
-  the active gateway registry, run a safe full registration for diagnostics, or surface the
-  effective registration mode). Tracked upstream: **openclaw/openclaw#130773**. Once it
-  lands, assert the real count in the gateway smoke and drop the workaround note from
-  `openclaw cliq webhook-route` / README §2 / `docs/setup/public-webhook.md`.
+- **Trustworthy `plugins inspect --runtime` route counts.** `httpRoutes` is reported from a
+  non-activating, discovery-mode plugin load, so anything registered in `registerFull` reads
+  as absent — `httpRoutes: 0` on a gateway that is serving `/cliq/webhook`. Blocked: only the
+  host can fix the count (report the active gateway registry, run a safe full registration for
+  diagnostics, or surface the effective registration mode). Tracked upstream:
+  **openclaw/openclaw#130773**. Once it lands, assert the real count in the gateway smoke and
+  drop the workaround note from `openclaw cliq webhook-route` / README §2 /
+  `docs/setup/public-webhook.md`.
 
 ---
 

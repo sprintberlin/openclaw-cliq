@@ -39,6 +39,7 @@ import { cliqSecretsAdapter } from "./secret-contract.js";
 import { cliqMessagingAdapter } from "./messaging.js";
 import { cliqLifecycleAdapter } from "./lifecycle.js";
 import { cliqGatewayAdapter } from "./gateway.js";
+import { collectCliqSecurityAuditFindings } from "./security-audit.js";
 import {
   CLIQ_PAIRING_APPROVED_MESSAGE,
   CLIQ_PAIRING_ID_LABEL,
@@ -376,6 +377,8 @@ export const cliqPlugin = createChatChannelPlugin<ResolvedCliqAccount, CliqStatu
       resolveAllowFrom: (account) => account.allowFrom,
       defaultPolicy: "allowlist",
     },
+    collectAuditFindings: (ctx) =>
+      collectCliqSecurityAuditFindings({ cfg: ctx.cfg }),
   },
 
   threading: cliqThreadingAdapter,
