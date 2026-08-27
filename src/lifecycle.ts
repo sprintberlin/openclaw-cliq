@@ -1,5 +1,4 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
-import type { ChannelLifecycleAdapter } from "openclaw/plugin-sdk/channel-runtime";
+import type { ChannelPlugin, OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import {
   getCliqClientRegistry,
   type CliqAccountIdentity,
@@ -11,6 +10,8 @@ import {
 } from "./client.js";
 import { detectCliqLegacyStateMigrations } from "./legacy-state-migrations.js";
 import { dropCliqPairingAccount } from "./pairing-store.js";
+
+type ChannelLifecycleAdapter = NonNullable<ChannelPlugin["lifecycle"]>;
 
 /**
  * Lifecycle hooks for the Cliq channel.

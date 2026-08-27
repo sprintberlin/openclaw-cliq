@@ -1,9 +1,9 @@
-import { resolveInboundMentionDecision } from "openclaw/plugin-sdk/channel-mention-gating";
-import type {
-  InboundMentionDecision,
-  InboundMentionFacts,
-  InboundImplicitMentionKind,
-} from "openclaw/plugin-sdk/channel-mention-gating";
+import {
+  resolveInboundMentionDecision,
+  type InboundMentionDecision,
+  type InboundMentionFacts,
+  type InboundImplicitMentionKind,
+} from "openclaw/plugin-sdk/channel-inbound";
 import type { IncomingMessage } from "node:http";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import type { CliqClient, ResolvedCliqAccount } from "./client.js";

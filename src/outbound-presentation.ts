@@ -22,12 +22,8 @@
  */
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import type { ReplyPayload } from "openclaw/plugin-sdk/core";
-import type {
-  ChannelOutboundAdapter,
-  ChannelOutboundPayloadContext,
-} from "openclaw/plugin-sdk/channel-runtime";
+import type { ChannelOutboundAdapter } from "openclaw/plugin-sdk/channel-contract";
 import type { MessagePresentation } from "openclaw/plugin-sdk/interactive-runtime";
-
 import {
   chunkMessage,
   normalizeCliqRouteTarget,
@@ -37,6 +33,11 @@ import {
 import { markdownToCliq } from "./markdown.js";
 import { resolveCliqClient } from "./runtime-api.js";
 import { CliqSendError } from "./send-retry.js";
+
+type ChannelOutboundPayloadContext = Parameters<
+  NonNullable<ChannelOutboundAdapter["sendPayload"]>
+>[0];
+
 import {
   CLIQ_PRESENTATION_CAPABILITIES,
   presentationToCliqCard,

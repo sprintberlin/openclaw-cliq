@@ -1,4 +1,4 @@
-import type { ChannelGatewayAdapter } from "openclaw/plugin-sdk/channel-runtime";
+import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-core";
 import {
   createAccountStatusSink,
   runPassiveAccountLifecycle,
@@ -6,6 +6,10 @@ import {
 import type { ResolvedCliqAccount } from "./client.js";
 import { resolveChannelReadyPatch } from "./sdk-compat.js";
 import { cliqTransportStatusFields } from "./webhook-account.js";
+
+type ChannelGatewayAdapter<ResolvedAccount = unknown> = NonNullable<
+  ChannelPlugin<ResolvedAccount>["gateway"]
+>;
 
 /**
  * Build the status patch that marks the passive webhook transport ready.

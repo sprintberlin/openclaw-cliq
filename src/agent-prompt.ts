@@ -25,9 +25,10 @@
  *   `"minimal"` by default; operators can opt into `"extensive"` or `"off"`
  *   via `channels.cliq.reactions.agentGuidance`.
  */
-import type { ChannelAgentPromptAdapter } from "openclaw/plugin-sdk/channel-runtime";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
+import type { ChannelPlugin, OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import type { CliqReactionGuidanceConfig } from "./client.js";
+
+type ChannelAgentPromptAdapter = NonNullable<ChannelPlugin["agentPrompt"]>;
 
 const CHANNEL_LABEL = "Zoho Cliq";
 

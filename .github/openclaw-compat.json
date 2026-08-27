@@ -1,5 +1,5 @@
 {
   "$comment": "Single source of truth for the OpenClaw versions this plugin supports. Consumed by scripts/check-sdk-compat.mjs and .github/workflows/compat.yml — adding a version must only require editing this file. `build` is the typecheck/build floor and must match devDependencies.openclaw in package.json.",
-  "build": "2026.7.1-2",
+  "build": "2026.8.1-beta.3",
   "supported": ["2026.7.1-2", "2026.8.1-beta.3"]
 }

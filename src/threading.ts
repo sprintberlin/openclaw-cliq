@@ -42,13 +42,16 @@
  *    thread-derived channel id to compute.
  */
 import type {
-  ChannelThreadingAdapter,
   ChannelThreadingContext,
   ChannelThreadingToolContext,
-  ChannelReplyTransport,
-} from "openclaw/plugin-sdk/channel-runtime";
+} from "openclaw/plugin-sdk/channel-contract";
+import type { ChannelPlugin, OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import type { ReplyToMode } from "openclaw/plugin-sdk/config-runtime";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
+
+type ChannelThreadingAdapter = NonNullable<ChannelPlugin["threading"]>;
+type ChannelReplyTransport = NonNullable<
+  ReturnType<NonNullable<ChannelThreadingAdapter["resolveReplyTransport"]>>
+>;
 
 const CHANNEL_ID = "cliq" as const;
 

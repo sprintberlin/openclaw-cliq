@@ -1085,7 +1085,7 @@ describe("guided setup integration (issue #92)", () => {
       }).status,
     ).toBe("unsupported");
     const live = checkInstalledOpenClawCompatibility();
-    expect(live.installedVersion).toBe("2026.7.1-2");
+    expect(live.installedVersion).toBe("2026.8.1-beta.3");
     expect(live.status).toBe("supported");
   });
 

@@ -57,7 +57,16 @@ export function isCliqAbortIntent(
   botName?: string,
 ): boolean {
   if (!text) return false;
-  return isAbortRequestText(text, botName ? { botUsername: botName } : undefined);
+  const trimmed = text.trim();
+  const targeted = trimmed.match(/^\/([^\s@]+)@([^\s]+)([\s\S]*)$/u);
+  const normalized =
+    botName && targeted?.[2]?.toLowerCase() === botName.toLowerCase()
+      ? `/${targeted[1]}${targeted[3] ?? ""}`
+      : text;
+  return isAbortRequestText(
+    normalized,
+    botName ? { botUsername: botName } : undefined,
+  );
 }
 
 /**

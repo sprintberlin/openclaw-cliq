@@ -144,7 +144,10 @@ describe("cliqAgentPromptAdapter", () => {
 
   it("inboundFormattingHints delegates to the resolver", () => {
     expect(
-      cliqAgentPromptAdapter.inboundFormattingHints!({ accountId: null }),
+      cliqAgentPromptAdapter.inboundFormattingHints!({
+        cfg: {} as OpenClawConfig,
+        accountId: null,
+      }),
     ).toEqual(resolveCliqInboundFormattingHints());
   });
 

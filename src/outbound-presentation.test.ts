@@ -7,9 +7,13 @@ import {
 } from "./outbound-presentation.js";
 import { setCliqClientRegistry } from "./runtime-api.js";
 import type { ReplyPayload } from "openclaw/plugin-sdk/core";
-import type { ChannelOutboundPayloadContext } from "openclaw/plugin-sdk/channel-runtime";
+import type { ChannelOutboundAdapter } from "openclaw/plugin-sdk/channel-contract";
 import type { MessagePresentation } from "openclaw/plugin-sdk/interactive-runtime";
 import { createCliqTestConfig as cfgWith } from "./test-api.js";
+
+type ChannelOutboundPayloadContext = Parameters<
+  NonNullable<ChannelOutboundAdapter["sendPayload"]>
+>[0];
 
 const baseCfg = cfgWith({
   clientId: "id",

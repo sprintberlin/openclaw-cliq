@@ -2,21 +2,17 @@ name: OpenClaw compatibility
 
 # ONE built artifact must load on EVERY supported OpenClaw version.
 #
-# The two supported versions are not interchangeable at build time: the beta
-# ships a reduced `.d.ts` surface (no `plugin-sdk/channel-runtime` types, no
-# `agent-core` / `channel-mention-gating` types), while its runtime JS stays
-# usable. Type-only imports are erased by `tsc` and cannot break loading, so
-# chasing a green typecheck on the beta would mean deleting real type imports
-# and degrading type safety for no runtime benefit.
+# The declared build floor is the exact OpenClaw version used for install,
+# typecheck, and build. The resulting artifact must then load on every version
+# in the supported matrix, including the retained 2026.7.1-2 runtime baseline.
 #
 # The strategy is therefore:
 #   - typecheck + BUILD against the floor version (`build` in
 #     .github/openclaw-compat.json, matching devDependencies.openclaw);
 #   - runtime-verify that identical artifact against EVERY supported version.
 #
-# Typecheck is deliberately NOT run against the beta. `npm run smoke:gateway`
-# is the source of truth for load/registration; reading `.d.ts` files is not
-# an acceptable substitute.
+# `npm run smoke:gateway` is the source of truth for load/registration; reading
+# `.d.ts` files is not an acceptable substitute.
 
 on:
   push:

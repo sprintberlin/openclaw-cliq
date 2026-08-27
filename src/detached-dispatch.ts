@@ -3,7 +3,7 @@ import { resolveRunDetachedWebhookWork, type RunDetachedWebhookWorkFn } from "./
 /**
  * Test override for the resolved detached-work helper. `undefined` means "not
  * overridden" (resolve through the SDK); `null` pins the absent-helper
- * behaviour of the pinned floor version `2026.7.1-2`.
+ * behaviour of OpenClaw `2026.7.1-2`.
  */
 let overrideForTest: RunDetachedWebhookWorkFn | null | undefined;
 

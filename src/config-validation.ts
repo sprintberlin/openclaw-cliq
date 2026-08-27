@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { buildJsonChannelConfigSchema } from "openclaw/plugin-sdk/channel-config-schema";
+
+type JsonSchemaDocument = Parameters<typeof buildJsonChannelConfigSchema>[0];
 
 /**
  * Real config-schema validation for a generated Cliq section (issue #95).
@@ -12,17 +15,11 @@ import { dirname, resolve } from "node:path";
  * interpolation passed. Generating config is therefore not enough — it has to
  * be checked against the same schema the gateway enforces.
  *
- * The validator is reached through a dynamic import (learning 112): the
- * beta ships the runtime JS without the matching `.d.ts`, and a static named
- * import of a symbol a supported version lacks fails the entire plugin load
- * rather than the one feature.
+ * The public channel config-schema builder supplies the runtime parser used by
+ * the gateway, so setup validation follows the same defaults and issue shape.
  */
 
-/**
- * Structural type for the SDK's schema validator. It takes a single params
- * object and answers `{ ok, errors }` — deliberately not `typeof
- * validateJsonSchemaValue`, which would require a static import.
- */
+/** Structural result type retained for injectable setup validation tests. */
 export type JsonSchemaValidatorFn = (params: {
   schema: unknown;
   value: unknown;
@@ -31,17 +28,24 @@ export type JsonSchemaValidatorFn = (params: {
 let validatorResolution: Promise<JsonSchemaValidatorFn | null> | undefined;
 
 async function loadJsonSchemaValidator(): Promise<JsonSchemaValidatorFn | null> {
-  try {
-    const ns: Record<string, unknown> = await import(
-      "openclaw/plugin-sdk/json-schema-runtime"
-    );
-    const candidate = ns["validateJsonSchemaValue"];
-    return typeof candidate === "function"
-      ? (candidate as JsonSchemaValidatorFn)
-      : null;
-  } catch {
-    return null;
-  }
+  return ({ schema, value }) => {
+    const runtime = buildJsonChannelConfigSchema(
+      schema as JsonSchemaDocument,
+      { cacheKey: "openclaw-cliq:generated-config" },
+    ).runtime;
+    if (!runtime) {
+      throw new Error("OpenClaw channel schema runtime is unavailable");
+    }
+    const result = runtime.safeParse(value);
+    if (result.success) return { ok: true };
+    return {
+      ok: false,
+      errors: result.issues.map((issue) => ({
+        path: issue.path?.map(String).join("."),
+        message: issue.message,
+      })),
+    };
+  };
 }
 
 /** Resolve OpenClaw's own JSON-schema validator, or `null` when unavailable. */

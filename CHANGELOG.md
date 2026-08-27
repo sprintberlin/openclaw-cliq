@@ -11,6 +11,10 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Changed
+
+- **The OpenClaw build floor is now `2026.8.1-beta.3` (issue #156).** Typecheck, build, and the development tree pin that version. Existing installs on `2026.7.1-2` remain supported and are still runtime-smoked.
+
 ### Added
 
 - **Guided Cliq onboarding is now one resumable flow (issue #92).** `openclaw setup` integrates the existing capability, SecretRef, provisioning, preflight, doctor, and first-contact work into a single wizard: it checks the installed OpenClaw package against the shared support matrix, names the unavoidable Zoho Self Client and Deluge UI actions, stores newly entered secrets as canonical env-backed SecretRefs, validates generated config, offers the read-only doctor plus an optional consented roundtrip, and prints a machine-readable final report covering config, OAuth, bot, handlers, lifecycle, webhook, admission, and delivery. Reruns preserve existing credentials and handlers unless a change is confirmed. Partial completion reports the next required action; cancelled optional message tests are not treated as failures.
@@ -215,7 +219,7 @@ publish workflow extracts the matching section as the release notes (see
   rule (issue #126).** `openclaw plugins install --link <path>` is cancelled on
   OpenClaw `2026.8.1-beta.3` unless `--force` acknowledges that the source is
   outside ClawHub trust metadata; the same `--force` is rejected with `--link`
-  on the floor version `2026.7.1-2`. The README now states both commands, why
+  on the retained runtime baseline `2026.7.1-2`. The README now states both commands, why
   the confirmation exists, that the manifest-id / package-name line is
   expected, and that every later `git pull` on a `--link` install needs a
   rebuild plus a gateway restart.

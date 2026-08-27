@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
-import type { ChannelGroupContext } from "openclaw/plugin-sdk/channel-runtime";
+import type { ChannelGroupContext } from "openclaw/plugin-sdk/channel-contract";
 import {
   cliqGroupsAdapter,
   resolveCliqGroupId,

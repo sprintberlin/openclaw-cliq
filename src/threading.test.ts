@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import type {
   ChannelThreadingContext,
-} from "openclaw/plugin-sdk/channel-runtime";
+} from "openclaw/plugin-sdk/channel-contract";
 import {
   cliqThreadingAdapter,
   resolveCliqReplyToMode,
