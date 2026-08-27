@@ -12,6 +12,8 @@ import {
 import {
   ALL_CAPABILITY_SCOPES,
   RUNTIME_SCOPE_STRING,
+  SETUP_INSPECT_SCOPE_STRING,
+  SETUP_PROVISION_SCOPE_STRING,
   SETUP_SCOPE_STRING,
   FULL_SCOPE_STRING,
 } from "./capabilities.js";
@@ -34,13 +36,15 @@ export const CLIQ_OAUTH_SCOPES: readonly string[] = ALL_CAPABILITY_SCOPES;
  *
  * - `RUNTIME` — all scopes needed for normal DM/channel messaging + optional
  *   features (reactions, media, streaming, message read/delete).
- * - `SETUP` — scopes needed for bot read + handler provisioning
- *   (`ZohoCliq.Bots.READ`, `ZohoCliq.Bots.UPDATE`).
- * - `FULL` — combined (runtime + setup) for a single consent that covers
+ * - `SETUP_INSPECT` — `ZohoCliq.Bots.READ` only, for existing-bot inspection.
+ * - `SETUP_PROVISION` — bot read/create/update for bot + handler provisioning.
+ * - `FULL` — combined (runtime + setup provisioning) for a single consent that covers
  *   everything.
  */
 export const CLIQ_SCOPE_PROFILES = {
   runtime: RUNTIME_SCOPE_STRING,
+  setupInspect: SETUP_INSPECT_SCOPE_STRING,
+  setupProvision: SETUP_PROVISION_SCOPE_STRING,
   setup: SETUP_SCOPE_STRING,
   full: FULL_SCOPE_STRING,
 } as const;
@@ -100,7 +104,11 @@ export interface InspectedCliqAccount {
   scopeProfiles: {
     /** All runtime scopes (DM, channel, messaging, rich features). */
     runtime: string;
-    /** Setup/maintenance scopes (bot read, bot update). */
+    /** Inspect-only setup scope (bot read). */
+    setupInspect: string;
+    /** Setup provisioning scopes (bot read/create/update). */
+    setupProvision: string;
+    /** Backward-compatible alias for setup provisioning. */
     setup: string;
     /** Combined (runtime + setup). */
     full: string;

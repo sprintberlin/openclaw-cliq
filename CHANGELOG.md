@@ -28,6 +28,18 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **`ZohoCliq.Bots.CREATE` added to the capability matrix (issue #110).**
+  The setup/maintenance profile previously documented only `Bots.READ` and
+  `Bots.UPDATE`, which suffice to inspect bots but not to create one: a token
+  consented with the full documented set is issued successfully and still
+  fails `POST /api/v3/bots` with `oauthtoken_scope_invalid`. Bot creation is
+  now its own `client_credentials` capability, the setup profile is split
+  into an inspect-only string (`Bots.READ`) and a provisioning string
+  (`Bots.READ,Bots.CREATE,Bots.UPDATE`), the combined consent string
+  includes the new scope, and a missing `Bots.CREATE` produces a message
+  naming that exact scope. Because creating a bot is destructive, the
+  capability is reported from the granted scope set and labelled
+  consent-reported, never proven by a live probe.
 - **Webhook accounts now report as running, configured, and event-driven
   (issue #98).** A configured Cliq account keeps a passive `startAccount`
   lifecycle so OpenClaw does not treat the webhook transport as `stopped` /

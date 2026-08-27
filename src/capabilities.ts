@@ -76,6 +76,7 @@ export interface CliqCapability {
    * which scope is missing and how to regenerate the token.
    */
   readonly missingHint: string;
+  readonly scopeReportedOnly?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +236,20 @@ export const CLIQ_CAPABILITIES: readonly CliqCapability[] = [
       "Bot inspection requires the ZohoCliq.Bots.READ scope. Re-consent your self-client with this scope and regenerate the token.",
   },
   {
+    id: "bot_create",
+    label: "Bot create",
+    scope: "ZohoCliq.Bots.CREATE",
+    grantType: "client_credentials",
+    profile: "setup",
+    category: "setup",
+    optional: false,
+    probePath: null,
+    probeMethod: "GET",
+    missingHint:
+      "Creating a bot requires the ZohoCliq.Bots.CREATE scope. A token with only Bots.READ and Bots.UPDATE can inspect and update existing bots but POST /api/v3/bots will fail. Re-consent your self-client with ZohoCliq.Bots.CREATE and regenerate the token.",
+    scopeReportedOnly: true,
+  },
+  {
     id: "bot_update",
     label: "Bot / handler update",
     scope: "ZohoCliq.Bots.UPDATE",
@@ -300,13 +315,20 @@ export const RUNTIME_SCOPE_STRING = [
 
 /**
  * Canonical comma-separated scope string for the **setup/maintenance**
- * profile — bot read + bot update. Added alongside the runtime scopes when
- * the operator also needs handler provisioning from `openclaw setup`.
+ * profile — inspect existing bots. Add `SETUP_PROVISION_SCOPE_STRING` to
+ * create new bots and configure their handlers from `openclaw setup`.
  */
-export const SETUP_SCOPE_STRING = [
+export const SETUP_INSPECT_SCOPE_STRING = "ZohoCliq.Bots.READ";
+
+/** Setup profile for bot creation and handler provisioning. */
+export const SETUP_PROVISION_SCOPE_STRING = [
   "ZohoCliq.Bots.READ",
+  "ZohoCliq.Bots.CREATE",
   "ZohoCliq.Bots.UPDATE",
 ].join(",");
+
+/** Backward-compatible setup alias for the complete provisioning profile. */
+export const SETUP_SCOPE_STRING = SETUP_PROVISION_SCOPE_STRING;
 
 /**
  * Combined scope string (runtime + setup) for a single consent that covers
@@ -316,6 +338,47 @@ export const FULL_SCOPE_STRING = [
   RUNTIME_SCOPE_STRING,
   SETUP_SCOPE_STRING,
 ].join(",");
+
+export interface CliqScopeSetEvaluation {
+  readonly granted: readonly string[];
+  readonly available: readonly string[];
+  readonly missing: readonly string[];
+  readonly scopeReportedOnly: readonly string[];
+  readonly messages: readonly string[];
+  readonly canInspectBots: boolean;
+  readonly canCreateBots: boolean;
+}
+
+export function evaluateCliqScopeSet(
+  grantedScopes: string | readonly string[],
+): CliqScopeSetEvaluation {
+  const rawScopes = typeof grantedScopes === "string"
+    ? grantedScopes.split(",")
+    : grantedScopes;
+  const granted = [...new Set(rawScopes.map((scope) => scope.trim()).filter(Boolean))];
+  const grantedSet = new Set(granted);
+  const available = CLIQ_CAPABILITIES
+    .filter((capability) => grantedSet.has(capability.scope))
+    .map((capability) => capability.id);
+  const missingCapabilities = CLIQ_CAPABILITIES.filter(
+    (capability) => !grantedSet.has(capability.scope),
+  );
+  const scopeReportedOnly = CLIQ_CAPABILITIES
+    .filter(
+      (capability) => capability.scopeReportedOnly && grantedSet.has(capability.scope),
+    )
+    .map((capability) => capability.id);
+
+  return {
+    granted,
+    available,
+    missing: missingCapabilities.map((capability) => capability.id),
+    scopeReportedOnly,
+    messages: missingCapabilities.map((capability) => capability.missingHint),
+    canInspectBots: grantedSet.has("ZohoCliq.Bots.READ"),
+    canCreateBots: grantedSet.has("ZohoCliq.Bots.CREATE"),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Probe result types

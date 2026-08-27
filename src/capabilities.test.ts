@@ -9,6 +9,7 @@ import {
   FULL_SCOPE_STRING,
   probeCliqCapability,
   formatCapabilityReport,
+  evaluateCliqScopeSet,
   getCapabilityById,
   getCapabilitiesByProfile,
   getRequiredScopesForProfile,
@@ -104,6 +105,94 @@ describe("CLIQ_CAPABILITIES", () => {
     expect(botUpdate.scope).toBe("ZohoCliq.Bots.UPDATE");
   });
 
+  it("Bot create is its own setup capability on the client_credentials grant", () => {
+    const botCreate = getCapabilityById("bot_create")!;
+    expect(botCreate).toBeDefined();
+    expect(botCreate.scope).toBe("ZohoCliq.Bots.CREATE");
+    expect(botCreate.profile).toBe("setup");
+    expect(botCreate.category).toBe("setup");
+    expect(botCreate.grantType).toBe("client_credentials");
+  });
+
+  it("Bot create is reported from the granted scope set, never probed", () => {
+    const botCreate = getCapabilityById("bot_create")!;
+    expect(botCreate.probePath).toBeNull();
+    expect(botCreate.scopeReportedOnly).toBe(true);
+  });
+
+  it("Bot read stays probe-free but is not a scope-reported-only capability", () => {
+    const botRead = getCapabilityById("bot_read")!;
+    expect(botRead.scopeReportedOnly).toBeFalsy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scope-set evaluation (issue #110)
+// ---------------------------------------------------------------------------
+
+describe("evaluateCliqScopeSet", () => {
+  const runtimeScopes = RUNTIME_SCOPE_STRING.split(",");
+
+  it("reports Bots.CREATE as missing for a READ+UPDATE consent", () => {
+    const granted = [
+      ...runtimeScopes,
+      "ZohoCliq.Bots.READ",
+      "ZohoCliq.Bots.UPDATE",
+    ];
+    const result = evaluateCliqScopeSet(granted);
+    expect(result.missing).toContain("bot_create");
+    expect(result.canCreateBots).toBe(false);
+    expect(result.canInspectBots).toBe(true);
+  });
+
+  it("names ZohoCliq.Bots.CREATE explicitly instead of a generic scope error", () => {
+    const granted = [
+      ...runtimeScopes,
+      "ZohoCliq.Bots.READ",
+      "ZohoCliq.Bots.UPDATE",
+    ];
+    const result = evaluateCliqScopeSet(granted);
+    const message = result.messages.join("\n");
+    expect(message).toContain("ZohoCliq.Bots.CREATE");
+    expect(message).toMatch(/create/i);
+    expect(message).not.toMatch(/^The OAuth token passed does not have/);
+  });
+
+  it("reports bot creation as available once Bots.CREATE is consented", () => {
+    const granted = [
+      ...runtimeScopes,
+      "ZohoCliq.Bots.READ",
+      "ZohoCliq.Bots.CREATE",
+      "ZohoCliq.Bots.UPDATE",
+    ];
+    const result = evaluateCliqScopeSet(granted);
+    expect(result.canCreateBots).toBe(true);
+    expect(result.missing).not.toContain("bot_create");
+  });
+
+  it("marks bot creation as consent-reported, not probed", () => {
+    const granted = [...runtimeScopes, ...SETUP_SCOPE_STRING.split(",")];
+    const result = evaluateCliqScopeSet(granted);
+    expect(result.canCreateBots).toBe(true);
+    expect(result.scopeReportedOnly).toContain("bot_create");
+  });
+
+  it("tolerates whitespace and empty entries in the granted scope list", () => {
+    const result = evaluateCliqScopeSet([
+      " ZohoCliq.Bots.READ ",
+      "",
+      "ZohoCliq.Bots.CREATE",
+    ]);
+    expect(result.canInspectBots).toBe(true);
+    expect(result.canCreateBots).toBe(true);
+  });
+
+  it("accepts a raw comma-separated scope string", () => {
+    const result = evaluateCliqScopeSet("ZohoCliq.Bots.READ,ZohoCliq.Bots.UPDATE");
+    expect(result.canCreateBots).toBe(false);
+    expect(result.missing).toContain("bot_create");
+  });
+
   it("Reactions are optional", () => {
     const react = getCapabilityById("reactions")!;
     expect(react).toBeDefined();
@@ -155,8 +244,9 @@ describe("scope sets", () => {
     }
   });
 
-  it("SETUP_SCOPES includes Bots.READ and Bots.UPDATE", () => {
+  it("SETUP_SCOPES includes Bots.READ, Bots.CREATE, and Bots.UPDATE", () => {
     expect(SETUP_SCOPES).toContain("ZohoCliq.Bots.READ");
+    expect(SETUP_SCOPES).toContain("ZohoCliq.Bots.CREATE");
     expect(SETUP_SCOPES).toContain("ZohoCliq.Bots.UPDATE");
   });
 
@@ -189,8 +279,9 @@ describe("canonical scope strings", () => {
     }
   });
 
-  it("SETUP_SCOPE_STRING contains Bots.READ and Bots.UPDATE", () => {
+  it("SETUP_SCOPE_STRING contains Bots.READ, Bots.CREATE, and Bots.UPDATE", () => {
     expect(SETUP_SCOPE_STRING).toContain("ZohoCliq.Bots.READ");
+    expect(SETUP_SCOPE_STRING).toContain("ZohoCliq.Bots.CREATE");
     expect(SETUP_SCOPE_STRING).toContain("ZohoCliq.Bots.UPDATE");
   });
 
@@ -475,6 +566,7 @@ describe("getRequiredScopesForProfile", () => {
   it("returns required setup scopes", () => {
     const scopes = getRequiredScopesForProfile("setup");
     expect(scopes).toContain("ZohoCliq.Bots.READ");
+    expect(scopes).toContain("ZohoCliq.Bots.CREATE");
     expect(scopes).toContain("ZohoCliq.Bots.UPDATE");
   });
 
@@ -494,7 +586,7 @@ describe("grant type requirements", () => {
   it("client_credentials scopes are for DM and directory operations", () => {
     const ccCaps = CLIQ_CAPABILITIES.filter((c) => c.grantType === "client_credentials");
     for (const cap of ccCaps) {
-      expect(["ZohoCliq.Webhooks.CREATE", "ZohoCliq.Users.READ", "ZohoCliq.Channels.READ", "ZohoCliq.Bots.READ", "ZohoCliq.Bots.UPDATE"]).toContain(cap.scope);
+      expect(["ZohoCliq.Webhooks.CREATE", "ZohoCliq.Users.READ", "ZohoCliq.Channels.READ", "ZohoCliq.Bots.READ", "ZohoCliq.Bots.CREATE", "ZohoCliq.Bots.UPDATE"]).toContain(cap.scope);
     }
   });
 
