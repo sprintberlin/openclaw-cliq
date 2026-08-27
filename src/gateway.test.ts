@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ChannelGatewayContext } from "openclaw/plugin-sdk/channel-runtime";
+import type { ChannelGatewayContext } from "openclaw/plugin-sdk/channel-contract";
 import type { ResolvedCliqAccount } from "./client.js";
 import { cliqGatewayAdapter } from "./gateway.js";
 

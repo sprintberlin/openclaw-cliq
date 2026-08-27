@@ -1,5 +1,4 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
-import type { ChannelSecretsAdapter } from "openclaw/plugin-sdk/channel-runtime";
+import type { ChannelPlugin, OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import {
   collectSimpleChannelFieldAssignments,
   getChannelSurface,
@@ -11,6 +10,8 @@ import {
   // present in every supported version (in 2026.7.x the removed module merely
   // re-exported them from here).
 } from "openclaw/plugin-sdk/channel-secret-basic-runtime";
+
+type ChannelSecretsAdapter = NonNullable<ChannelPlugin["secrets"]>;
 
 /**
  * The three Cliq config fields that carry secret material and are therefore

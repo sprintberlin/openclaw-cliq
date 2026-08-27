@@ -26,7 +26,7 @@ import type {
   ChannelMessageActionName,
   ChannelMessageToolDiscovery,
 } from "openclaw/plugin-sdk/channel-contract";
-import type { AgentToolResult } from "openclaw/plugin-sdk/agent-core";
+import type { AgentToolResult } from "openclaw/plugin-sdk/tool-results";
 
 import {
   normalizeCliqRouteTarget,

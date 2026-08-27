@@ -1,4 +1,4 @@
-import { recordChannelActivity } from "openclaw/plugin-sdk/channel-activity-runtime";
+import { recordChannelActivity } from "openclaw/plugin-sdk/infra-runtime";
 import { CLIQ_DEFAULT_ACCOUNT_ID } from "./client.js";
 
 /**

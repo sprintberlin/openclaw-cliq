@@ -1,8 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import {
-  getChannelActivity,
-  resetChannelActivityForTest,
-} from "openclaw/plugin-sdk/infra-runtime";
+import { getChannelActivity } from "openclaw/plugin-sdk/infra-runtime";
 import {
   CliqClientRegistry,
   getCliqClientRegistry,
@@ -62,10 +59,6 @@ describe("CliqClientRegistry instance", () => {
 
   beforeEach(() => {
     registry = new CliqClientRegistry();
-    resetChannelActivityForTest();
-  });
-  afterEach(() => {
-    resetChannelActivityForTest();
   });
 
   it("getOrCreate returns the same instance for the same account", () => {
@@ -172,15 +165,21 @@ describe("CliqClientRegistry instance", () => {
     try {
       const client = registry.getOrCreate(account());
       await client.sendMessage({ to: "user-1", isDm: true, text: "hi" });
-      expect(
-        getChannelActivity({ channel: "cliq", accountId: "default" }).outboundAt,
-      ).toEqual(expect.any(Number));
+      const after = getChannelActivity({
+        channel: "cliq",
+        accountId: "default",
+      }).outboundAt;
+      expect(after).toEqual(expect.any(Number));
     } finally {
       globalThis.fetch = original;
     }
   });
 
   it("does not record outbound activity when the send throws", async () => {
+    const before = getChannelActivity({
+      channel: "cliq",
+      accountId: "default",
+    }).outboundAt;
     const original = globalThis.fetch;
     globalThis.fetch = (async (url: URL | string) => {
       const urlStr = typeof url === "string" ? url : url.toString();
@@ -199,7 +198,7 @@ describe("CliqClientRegistry instance", () => {
       ).rejects.toThrow();
       expect(
         getChannelActivity({ channel: "cliq", accountId: "default" }).outboundAt,
-      ).toBeNull();
+      ).toBe(before);
     } finally {
       globalThis.fetch = original;
     }

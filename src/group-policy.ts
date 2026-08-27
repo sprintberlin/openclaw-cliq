@@ -16,15 +16,15 @@
  * and also fills `GroupChannel`/`GroupSubject` with the channel display name
  * as a fallback for Deluge payloads that omit the unique name.
  */
-import type {
-  ChannelGroupAdapter,
-  ChannelGroupContext,
-} from "openclaw/plugin-sdk/channel-runtime";
+import type { ChannelGroupContext } from "openclaw/plugin-sdk/channel-contract";
+import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-core";
 import {
   resolveChannelGroupRequireMention,
   resolveChannelGroupToolsPolicy,
   type GroupToolPolicyConfig,
 } from "openclaw/plugin-sdk/channel-policy";
+
+type ChannelGroupAdapter = NonNullable<ChannelPlugin["groups"]>;
 
 const CHANNEL_ID = "cliq" as const;
 

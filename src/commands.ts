@@ -40,13 +40,15 @@
  * model list paginates at 8 models per page (matching Telegram's page size)
  * to leave room for the prev/next + back row.
  */
-import type { ChannelCommandAdapter } from "openclaw/plugin-sdk/channel-runtime";
+import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-core";
 import type { ReplyPayload } from "openclaw/plugin-sdk/core";
 import {
   CLIQ_MAX_BUTTONS_PER_MESSAGE,
   CLIQ_MAX_BUTTON_LABEL_LENGTH,
   type CliqButton,
 } from "./presentation.js";
+
+type ChannelCommandAdapter = NonNullable<ChannelPlugin["commands"]>;
 
 /** Models per page in the interactive model-list (leaves room for nav row). */
 export const CLIQ_COMMANDS_MODELS_PAGE_SIZE = 6;

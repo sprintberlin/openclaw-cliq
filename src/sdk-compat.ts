@@ -11,8 +11,8 @@
  * dynamic `import()` and namespace property access, so a missing export
  * degrades to `undefined` instead of killing the plugin.
  *
- * Supported range today: `2026.7.1-2` (the build/typecheck floor) through
- * `2026.8.1-beta.3`.
+ * Supported range today: `2026.7.1-2` through `2026.8.1-beta.3` (the
+ * build/typecheck floor).
  */
 
 /**

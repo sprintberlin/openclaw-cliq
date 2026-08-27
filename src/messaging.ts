@@ -41,11 +41,11 @@
  *    directory-miss fallback and cross-channel target validation can recognize
  *    native targets.
  */
-import type { ChannelMessagingAdapter } from "openclaw/plugin-sdk/channel-runtime";
-import type { ChatType } from "openclaw/plugin-sdk/core";
 import {
   buildChannelOutboundSessionRoute,
+  type ChannelMessagingAdapter,
   type ChannelOutboundSessionRoute,
+  type ChatType,
   type OpenClawConfig,
 } from "openclaw/plugin-sdk/core";
 

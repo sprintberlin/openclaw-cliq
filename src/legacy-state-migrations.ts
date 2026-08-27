@@ -2,10 +2,8 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import type {
   ChannelDoctorConfigMutation,
   ChannelDoctorLegacyConfigRule,
-} from "openclaw/plugin-sdk/channel-contract";
-import type {
   ChannelLegacyStateMigrationPlan,
-} from "openclaw/plugin-sdk/channel-runtime";
+} from "openclaw/plugin-sdk/channel-contract";
 
 /**
  * Legacy config / state migration surface for the Cliq channel.

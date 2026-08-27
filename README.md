@@ -70,7 +70,7 @@ Everything that must be configured **on the Zoho side** so the `cliq` channel pl
 
 ### Prerequisites
 
-- OpenClaw `2026.7.1-2` through `2026.8.1-beta.3`. The plugin is typechecked and built against the pinned floor version (`2026.7.1-2`), then that exact built artifact is loaded by a real gateway smoke test on every supported version. CI also checks every static runtime SDK import against each version's published export table; typecheck is intentionally not rerun on the beta because its reduced `.d.ts` surface omits type-only modules that are erased from the shipped JavaScript.
+- OpenClaw `2026.7.1-2` through `2026.8.1-beta.3`. The plugin is typechecked and built against the pinned floor version (`2026.8.1-beta.3`), then that exact built artifact is loaded by a real gateway smoke test on every supported version. CI also checks every static runtime SDK import against each version's published export table.
 - A Zoho account with access to **Zoho Cliq** and the **Zoho API Console**.
 - A running OpenClaw gateway reachable from the public internet (so Zoho can call the webhook). A reverse proxy, Cloudflare Tunnel, or `ngrok` all work — see [Expose the webhook publicly](https://github.com/sprintberlin/openclaw-cliq/blob/main/docs/setup/public-webhook.md).
 - The bot owner must be able to create a bot in Cliq (admin / developer permission).
@@ -1025,7 +1025,7 @@ Then install. **Which flags you need depends on the OpenClaw version** — a sin
   openclaw plugins install --link --force ~/github_repos/openclaw-cliq
   ```
 
-- **OpenClaw `2026.7.1-2` (the floor):** `--force` still means "overwrite an existing install" and is **rejected** together with `--link`. Omit it:
+- **OpenClaw `2026.7.1-2`:** `--force` still means "overwrite an existing install" and is **rejected** together with `--link`. Omit it:
 
   ```bash
   openclaw plugins install --link ~/github_repos/openclaw-cliq

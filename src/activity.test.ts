@@ -1,29 +1,27 @@
-import { afterEach, describe, expect, it } from "vitest";
-import {
-  getChannelActivity,
-  resetChannelActivityForTest,
-} from "openclaw/plugin-sdk/infra-runtime";
+import { describe, expect, it } from "vitest";
+import { getChannelActivity } from "openclaw/plugin-sdk/infra-runtime";
 import { recordCliqActivity, trackCliqOutboundActivity } from "./activity.js";
-
-afterEach(() => {
-  resetChannelActivityForTest();
-});
 
 describe("recordCliqActivity", () => {
   it("records inbound under the default account when accountId is null", () => {
     recordCliqActivity({ accountId: null, direction: "inbound", at: 111 });
-    expect(getChannelActivity({ channel: "cliq", accountId: "default" })).toEqual({
-      inboundAt: 111,
-      outboundAt: null,
-    });
+    expect(
+      getChannelActivity({ channel: "cliq", accountId: "default" }).inboundAt,
+    ).toBe(111);
   });
 
   it("records outbound under the named account", () => {
-    recordCliqActivity({ accountId: "acct-7", direction: "outbound", at: 222 });
-    expect(getChannelActivity({ channel: "cliq", accountId: "acct-7" })).toEqual({
-      inboundAt: null,
-      outboundAt: 222,
+    recordCliqActivity({
+      accountId: "activity-acct-7",
+      direction: "outbound",
+      at: 222,
     });
+    expect(
+      getChannelActivity({
+        channel: "cliq",
+        accountId: "activity-acct-7",
+      }).outboundAt,
+    ).toBe(222);
   });
 
   it("never throws when the SDK helper is unhappy", () => {
@@ -42,20 +40,26 @@ describe("trackCliqOutboundActivity", () => {
       },
       sendCard: async () => ({ messageId: "c1" }),
     };
-    const tracked = trackCliqOutboundActivity(client, null);
+    const tracked = trackCliqOutboundActivity(client, "activity-send");
 
     await tracked.sendMessage();
-    expect(getChannelActivity({ channel: "cliq", accountId: "default" }).outboundAt).toEqual(
-      expect.any(Number),
-    );
+    expect(
+      getChannelActivity({
+        channel: "cliq",
+        accountId: "activity-send",
+      }).outboundAt,
+    ).toEqual(expect.any(Number));
 
     const afterSuccess = getChannelActivity({
       channel: "cliq",
-      accountId: "default",
+      accountId: "activity-send",
     }).outboundAt;
     await expect(tracked.sendMediaMessage()).rejects.toThrow(/send failed/);
     expect(
-      getChannelActivity({ channel: "cliq", accountId: "default" }).outboundAt,
+      getChannelActivity({
+        channel: "cliq",
+        accountId: "activity-send",
+      }).outboundAt,
     ).toBe(afterSuccess);
   });
 
@@ -65,10 +69,13 @@ describe("trackCliqOutboundActivity", () => {
       sendMediaMessage: async () => ({ messageId: "f1" }),
       sendCard: async () => ({ messageId: "c1" }),
     };
-    const tracked = trackCliqOutboundActivity(client, "acct-9");
+    const tracked = trackCliqOutboundActivity(client, "activity-card");
     await tracked.sendCard();
     expect(
-      getChannelActivity({ channel: "cliq", accountId: "acct-9" }).outboundAt,
+      getChannelActivity({
+        channel: "cliq",
+        accountId: "activity-card",
+      }).outboundAt,
     ).toEqual(expect.any(Number));
   });
 
