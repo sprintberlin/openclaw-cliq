@@ -13,7 +13,12 @@ import {
   resolveCliqConfig,
   type ResolvedCliqAccount,
 } from "./client.js";
+import { isConfiguredCliqAccountShape } from "./account-inspect.js";
 import { probeCliqHeartbeat } from "./heartbeat.js";
+import {
+  CLIQ_WEBHOOK_ROUTE_PATH,
+  cliqTransportStatusFields,
+} from "./webhook-account.js";
 
 /**
  * Status probe result for a Cliq account. The probe fetches an OAuth access
@@ -68,10 +73,6 @@ export async function probeCliqStatus(
   }
 }
 
-function isConfiguredAccount(account: ResolvedCliqAccount): boolean {
-  return Boolean(account.clientId && account.clientSecret && account.botId);
-}
-
 /**
  * Resolve a Cliq account from cfg for a status adapter call without throwing.
  * When the channel is unconfigured there is nothing to probe; the caller
@@ -110,8 +111,7 @@ export const cliqStatusAdapter: ChannelStatusAdapter<
   CliqStatusProbe
 > = createComputedAccountStatusAdapter<ResolvedCliqAccount, CliqStatusProbe>({
   defaultRuntime: createDefaultChannelRuntimeState(DEFAULT_ACCOUNT_ID, {
-    mode: "webhook",
-    webhookPath: "/cliq/webhook",
+    ...cliqTransportStatusFields(),
     botId: null as string | null,
     probe: null as CliqStatusProbe | null,
   }),
@@ -131,7 +131,7 @@ export const cliqStatusAdapter: ChannelStatusAdapter<
     };
     const configured = typeof inspected.configured === "boolean"
       ? inspected.configured
-      : isConfiguredAccount(account);
+      : isConfiguredCliqAccountShape(account);
     const enabled = typeof inspected.enabled === "boolean"
       ? inspected.enabled
       : configured;
@@ -141,8 +141,7 @@ export const cliqStatusAdapter: ChannelStatusAdapter<
       enabled,
       configured,
       extra: {
-        mode: "webhook",
-        webhookPath: "/cliq/webhook",
+        ...cliqTransportStatusFields(),
         botId: inspected.botId ?? account.botId,
         probe: probe ?? null,
       },
@@ -153,7 +152,7 @@ export const cliqStatusAdapter: ChannelStatusAdapter<
       probe?: CliqStatusProbe | null;
     }).probe ?? null;
     return buildWebhookChannelStatusSummary(snapshot, {
-      webhookPath: "/cliq/webhook",
+      webhookPath: CLIQ_WEBHOOK_ROUTE_PATH,
       botId:
         (snapshot as ChannelAccountSnapshot & { botId?: string | null }).botId ??
         null,

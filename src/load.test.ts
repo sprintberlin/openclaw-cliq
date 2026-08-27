@@ -2,6 +2,10 @@ import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  getChannelActivity,
+  resetChannelActivityForTest,
+} from "openclaw/plugin-sdk/infra-runtime";
 import cliqEntry from "../index.js";
 import { cliqPlugin } from "./channel.js";
 import { resetCliqDedupeForTest } from "./dedupe.js";
@@ -14,6 +18,7 @@ import {
   createTestRuntimeChannel,
   registerCliqPluginForTest,
   createMentionDelugePayload,
+  createDmDelugePayload,
 } from "./test-api.js";
 
 describe("plugin entry load + /cliq/webhook smoke", () => {
@@ -165,6 +170,133 @@ describe("plugin entry load + /cliq/webhook smoke", () => {
     expect(result).toBe(true);
     expect(res.statusCode).toBe(401);
     expect(res.body).toBe("unauthorized");
+  });
+});
+
+describe("inbound activity timestamps (issue #98)", () => {
+  beforeEach(() => {
+    resetCliqDedupeForTest();
+    resetChannelActivityForTest();
+  });
+  afterEach(() => {
+    resetChannelActivityForTest();
+  });
+
+  function configuredRegistration(opts: {
+    inboundRun?: () => Promise<unknown>;
+    extra?: Record<string, unknown>;
+  } = {}) {
+    const { webhook, api } = registerCliqPluginForTest();
+    api.config = createCliqTestConfig({
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+      botName: "openclaw-bot",
+      webhookSecret: "s3cr3t",
+      ...opts.extra,
+    });
+    api.runtime = createTestRuntimeChannel(opts.inboundRun ?? (async () => undefined));
+    return webhook;
+  }
+
+  async function post(
+    webhook: ReturnType<typeof registerCliqPluginForTest>["webhook"],
+    payload: Record<string, unknown>,
+    headers: Record<string, string> = { "x-cliq-webhook-secret": "s3cr3t" },
+  ) {
+    const res = createMockServerResponse();
+    await webhook.handler(
+      createMockIncomingRequest("POST", payload, headers),
+      res as unknown as any,
+    );
+    return res;
+  }
+
+  it("records inbound after an accepted mention", async () => {
+    const webhook = configuredRegistration();
+    const res = await post(webhook, createMentionDelugePayload());
+    expect(res.statusCode).toBe(200);
+    expect(
+      getChannelActivity({ channel: "cliq", accountId: "default" }).inboundAt,
+    ).toEqual(expect.any(Number));
+  });
+
+  it("does not record inbound for a 401 (wrong secret)", async () => {
+    const webhook = configuredRegistration();
+    await post(webhook, createDmDelugePayload(), {
+      "x-cliq-webhook-secret": "wrong",
+    });
+    expect(
+      getChannelActivity({ channel: "cliq", accountId: "default" }).inboundAt,
+    ).toBeNull();
+  });
+
+  it("does not record inbound for a 503 (unconfigured secret)", async () => {
+    const { webhook, api } = registerCliqPluginForTest();
+    api.config = createCliqTestConfig({
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+    });
+    await post(webhook, createDmDelugePayload());
+    expect(
+      getChannelActivity({ channel: "cliq", accountId: "default" }).inboundAt,
+    ).toBeNull();
+  });
+
+  it("does not record inbound for an authenticated probe", async () => {
+    const webhook = configuredRegistration();
+    const res = await post(webhook, {
+      handler: "openclaw-probe",
+      nonce: "n1",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(
+      getChannelActivity({ channel: "cliq", accountId: "default" }).inboundAt,
+    ).toBeNull();
+  });
+
+  it("does not record inbound for a self-message", async () => {
+    const webhook = configuredRegistration();
+    const res = await post(
+      webhook,
+      createDmDelugePayload({
+        user: { id: "bot", name: "openclaw-bot" },
+      }),
+    );
+    expect(res.statusCode).toBe(200);
+    expect(
+      getChannelActivity({ channel: "cliq", accountId: "default" }).inboundAt,
+    ).toBeNull();
+  });
+
+  it("does not record inbound for a denied sender", async () => {
+    const webhook = configuredRegistration({
+      extra: { dmPolicy: "allowlist", allowFrom: ["someone-else"] },
+    });
+    const res = await post(webhook, createDmDelugePayload());
+    expect(res.statusCode).toBe(200);
+    expect(
+      getChannelActivity({ channel: "cliq", accountId: "default" }).inboundAt,
+    ).toBeNull();
+  });
+
+  it("does not record inbound for a dedupe replay", async () => {
+    const webhook = configuredRegistration();
+    const payload = createMentionDelugePayload();
+    const first = await post(webhook, payload);
+    expect(first.statusCode).toBe(200);
+    const firstAt = getChannelActivity({
+      channel: "cliq",
+      accountId: "default",
+    }).inboundAt;
+    expect(firstAt).toEqual(expect.any(Number));
+
+    const replay = await post(webhook, payload);
+    expect(replay.statusCode).toBe(200);
+    expect(
+      getChannelActivity({ channel: "cliq", accountId: "default" }).inboundAt,
+    ).toBe(firstAt);
   });
 });
 

@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
+  getChannelActivity,
+  resetChannelActivityForTest,
+} from "openclaw/plugin-sdk/infra-runtime";
+import {
   CliqClientRegistry,
   getCliqClientRegistry,
   resolveCliqClient,
@@ -58,6 +62,10 @@ describe("CliqClientRegistry instance", () => {
 
   beforeEach(() => {
     registry = new CliqClientRegistry();
+    resetChannelActivityForTest();
+  });
+  afterEach(() => {
+    resetChannelActivityForTest();
   });
 
   it("getOrCreate returns the same instance for the same account", () => {
@@ -144,6 +152,54 @@ describe("CliqClientRegistry instance", () => {
       await c2.getAccessToken();
       expect(c1).toBe(c2);
       expect(oauthCalls).toBe(1);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it("records outbound activity after a successful send, keyed to default when accountId is null", async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(
+          JSON.stringify({ access_token: "tok", expires_in: 3600 }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ id: "msg-1" }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const client = registry.getOrCreate(account());
+      await client.sendMessage({ to: "user-1", isDm: true, text: "hi" });
+      expect(
+        getChannelActivity({ channel: "cliq", accountId: "default" }).outboundAt,
+      ).toEqual(expect.any(Number));
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it("does not record outbound activity when the send throws", async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(
+          JSON.stringify({ access_token: "tok", expires_in: 3600 }),
+          { status: 200 },
+        );
+      }
+      return new Response("unauthorized", { status: 401 });
+    }) as typeof fetch;
+    try {
+      const client = registry.getOrCreate(account());
+      await expect(
+        client.sendMessage({ to: "user-1", isDm: true, text: "hi" }),
+      ).rejects.toThrow();
+      expect(
+        getChannelActivity({ channel: "cliq", accountId: "default" }).outboundAt,
+      ).toBeNull();
     } finally {
       globalThis.fetch = original;
     }

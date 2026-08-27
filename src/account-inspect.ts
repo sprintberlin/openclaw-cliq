@@ -141,6 +141,48 @@ function isConfiguredSection(section: CliqChannelConfig | undefined): boolean {
 }
 
 /**
+ * Whether an account object counts as configured, accepting BOTH account
+ * shapes the gateway hands to `config.isConfigured`.
+ *
+ * `openclaw channels status` passes the *resolved* account (plaintext
+ * `clientId`/`clientSecret`/`botId`), while the gateway health path passes the
+ * *redacted* `inspectAccount` result, which deliberately carries no
+ * `clientSecret` at all and keeps `clientId` under `config`. A predicate that
+ * only understands the resolved shape therefore reports a healthy account as
+ * "not configured" on the Health table while the Channels table says
+ * "configured" — the same account, contradicting itself in the same second
+ * (issue #98).
+ *
+ * For the redacted shape, credential presence is read from `tokenStatus`:
+ * `"available"` and `"configured_unavailable"` both mean the operator
+ * configured a secret (the latter is a file/exec SecretRef that cannot be
+ * resolved synchronously), matching the SDK's own snapshot semantics. Only
+ * `"missing"` counts as unconfigured.
+ */
+export function isConfiguredCliqAccountShape(account: unknown): boolean {
+  if (!account || typeof account !== "object") return false;
+  const shape = account as {
+    clientId?: unknown;
+    clientSecret?: unknown;
+    botId?: unknown;
+    configured?: unknown;
+    tokenStatus?: unknown;
+    config?: { clientId?: unknown; botId?: unknown };
+  };
+  // Redacted `inspectAccount` shape: it already computed `configured` from the
+  // raw section (SecretRef-aware), so trust it rather than re-deriving from
+  // fields it intentionally omits.
+  if (typeof shape.tokenStatus === "string") {
+    if (typeof shape.configured === "boolean") return shape.configured;
+    const clientId = shape.clientId ?? shape.config?.clientId;
+    const botId = shape.botId ?? shape.config?.botId;
+    return Boolean(clientId && botId && shape.tokenStatus !== "missing");
+  }
+  // Resolved runtime account shape.
+  return Boolean(shape.clientId && shape.clientSecret && shape.botId);
+}
+
+/**
  * Inspect a Cliq account for `openclaw channels inspect` / `openclaw configure`.
  *
  * Mirrors the shape the bundled Telegram/Discord channels return (accountId,

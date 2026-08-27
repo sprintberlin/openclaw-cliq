@@ -212,6 +212,71 @@ describe("cliqStatusAdapter", () => {
     expect(snapshot.botId).toBe("bot");
   });
 
+  it("agrees with inspectAccount so Channels and Health never disagree for the same account", () => {
+    const inspected = inspectCliqAccount({ cfg: CONFIGURED, accountId: "default" });
+    const fromInspected = cliqStatusAdapter.buildAccountSnapshot!({
+      account: inspected as never,
+      cfg: CONFIGURED,
+      runtime: {
+        accountId: "default",
+        running: true,
+        lastStartAt: 1,
+        lastStopAt: null,
+        lastError: null,
+      },
+      probe: { ok: true, reason: "ok", probedAt: 123 },
+    }) as Record<string, unknown>;
+    const fromResolved = cliqStatusAdapter.buildAccountSnapshot!({
+      account: configuredAccount(),
+      cfg: CONFIGURED,
+      runtime: {
+        accountId: "default",
+        running: true,
+        lastStartAt: 1,
+        lastStopAt: null,
+        lastError: null,
+      },
+      probe: { ok: true, reason: "ok", probedAt: 123 },
+    }) as Record<string, unknown>;
+    expect(fromInspected.configured).toBe(true);
+    expect(fromResolved.configured).toBe(true);
+    expect(fromInspected.enabled).toBe(fromResolved.enabled);
+    expect(fromInspected.running).toBe(true);
+    expect(fromResolved.running).toBe(true);
+    expect(fromInspected.mode).toBe("webhook");
+    expect(fromResolved.mode).toBe("webhook");
+  });
+
+  it("does not treat a successful probe as proof the account is configured", () => {
+    const snapshot = cliqStatusAdapter.buildAccountSnapshot!({
+      account: {
+        accountId: null,
+        clientId: "",
+        clientSecret: "",
+        botId: "",
+        allowFrom: [],
+        dmPolicy: undefined,
+        ackPolicy: "after_dispatch" as const,
+        selfSenderIds: [],
+        blockStreaming: false,
+        thinking: { mode: "off" as const, text: "thinking" },
+        welcome: { enabled: false, text: "", textRejoin: "" },
+        pairing: {
+          notifyOwnerTarget: null,
+          approveLabel: "Approve",
+          denyLabel: "Deny",
+          approvalTitle: "Pairing request",
+          approvedOwnerText: "Approved.",
+          deniedOwnerText: "Denied.",
+        },
+      },
+      cfg: {} as never,
+      probe: { ok: true, reason: "ok", probedAt: 1 },
+    }) as Record<string, unknown>;
+    expect(snapshot.configured).toBe(false);
+    expect(snapshot.probe).toEqual({ ok: true, reason: "ok", probedAt: 1 });
+  });
+
   it("buildAccountSnapshot reports disabled when the account section is absent", () => {
     const partial = {
       accountId: null,

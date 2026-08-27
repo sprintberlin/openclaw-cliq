@@ -13,6 +13,15 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **Webhook accounts now report as running, configured, and event-driven
+  (issue #98).** A configured Cliq account keeps a passive `startAccount`
+  lifecycle so OpenClaw does not treat the webhook transport as `stopped` /
+  `health:not-running` and restart it. Status surfaces agree that the
+  account is `configured` (the Health table no longer contradicts the
+  Channels table for the same credentials), identify the integration as
+  `mode: webhook` at `/cliq/webhook`, and populate `lastInboundAt` /
+  `lastOutboundAt` after a verified round-trip. The lifecycle resolves
+  cleanly on abort; `/cliq/webhook` registration and delivery are unchanged.
 - **Pairing Approve/Deny buttons now enforce owner identity (issue #117).**
   Button clicks are short-circuited before the agent turn and may only be
   performed by the DM identity configured in `pairing.notifyOwnerTarget`;

@@ -24,7 +24,11 @@ import { cliqStatusAdapter, type CliqStatusProbe } from "./status.js";
 import { cliqDirectoryAdapter } from "./directory.js";
 import { cliqDoctorAdapter } from "./doctor.js";
 import { cliqSetupWizard } from "./setup-wizard.js";
-import { inspectCliqAccount } from "./account-inspect.js";
+import {
+  inspectCliqAccount,
+  isConfiguredCliqAccountShape,
+} from "./account-inspect.js";
+import { describeCliqWebhookAccount } from "./webhook-account.js";
 import { cliqMessageActions } from "./message-actions.js";
 import { cliqGroupsAdapter } from "./group-policy.js";
 import { cliqAgentPromptAdapter } from "./agent-prompt.js";
@@ -57,7 +61,15 @@ export {
   type CliqSetupCredentials,
 } from "./setup-wizard.js";
 export {
+  describeCliqWebhookAccount,
+  cliqTransportStatusFields,
+  CLIQ_WEBHOOK_ROUTE_PATH,
+  CLIQ_TRANSPORT_MODE,
+} from "./webhook-account.js";
+export { recordCliqActivity, trackCliqOutboundActivity } from "./activity.js";
+export {
   inspectCliqAccount,
+  isConfiguredCliqAccountShape,
   CLIQ_OAUTH_SCOPES,
   CLIQ_API_BASE,
   CLIQ_OAUTH_BASE,
@@ -319,7 +331,8 @@ export const cliqPlugin = createChatChannelPlugin<ResolvedCliqAccount, CliqStatu
       listAccountIds,
       resolveAccount,
       inspectAccount,
-      isConfigured: (account) => Boolean(account.clientId && account.clientSecret && account.botId),
+      isConfigured: (account) => isConfiguredCliqAccountShape(account),
+      describeAccount: (account) => describeCliqWebhookAccount(account),
     },
     setup: {
       applyAccountConfig,

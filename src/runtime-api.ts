@@ -22,6 +22,7 @@
 
 import { CliqClient, type ResolvedCliqAccount } from "./client.js";
 import type { CliqLogger } from "./logger.js";
+import { trackCliqOutboundActivity } from "./activity.js";
 
 /** Minimal identity shape needed to key a cached client. */
 export interface CliqAccountIdentity {
@@ -60,6 +61,11 @@ export class CliqClientRegistry {
         account.refreshToken,
         account.apiVersion,
       );
+      // Wrap the send methods once, here, so every runtime send path (outbound
+      // replies, inbound delivery, welcome, pairing, message actions) records
+      // outbound liveness — for a webhook channel the last inbound/outbound
+      // timestamps are the only real liveness signal (issue #98).
+      trackCliqOutboundActivity(client, account.accountId);
       this.clients.set(key, client);
     }
     return client;

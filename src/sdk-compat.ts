@@ -60,3 +60,49 @@ export function resolveChannelPairingApprove(): Promise<ChannelPairingApproveFn 
   approveResolution ??= loadChannelPairingApprove();
   return approveResolution;
 }
+
+/**
+ * Structural type for the SDK's "channel is ready" status-patch builder.
+ *
+ * Deliberately NOT `typeof channelReadyPatch`: the symbol only exists on
+ * newer OpenClaw versions, and a `typeof` reference would require importing
+ * it, which is exactly the load-time hazard this module exists to avoid.
+ */
+export type ChannelReadyPatchFn = (
+  extras?: Record<string, unknown>,
+) => Record<string, unknown>;
+
+/** Module-level memo — resolved once per process on the startup path. */
+let readyPatchResolution: Promise<ChannelReadyPatchFn | null> | undefined;
+
+async function loadChannelReadyPatch(): Promise<ChannelReadyPatchFn | null> {
+  try {
+    const ns: Record<string, unknown> = await import(
+      "openclaw/plugin-sdk/gateway-runtime"
+    );
+    const candidate = ns["channelReadyPatch"];
+    if (typeof candidate !== "function") {
+      return null;
+    }
+    return candidate as ChannelReadyPatchFn;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the SDK's `channelReadyPatch` helper when the running OpenClaw
+ * version exports it (`>= 2026.8.1-beta.3`), else `null` (`2026.7.x`, which
+ * has no `lifecycle` field at all).
+ *
+ * Newer gateways set `lifecycle: "starting"` before handing off to
+ * `gateway.startAccount` and expect the channel to advance it; this helper is
+ * how a channel says "ready". Never throws — a failed import, a missing
+ * property, or a non-function property all resolve to `null`, and the caller
+ * falls back to a plain running/connected patch that every supported version
+ * understands. The result is memoized.
+ */
+export function resolveChannelReadyPatch(): Promise<ChannelReadyPatchFn | null> {
+  readyPatchResolution ??= loadChannelReadyPatch();
+  return readyPatchResolution;
+}
