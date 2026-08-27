@@ -1,10 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   buildCliqDedupeKey,
+  beginCliqContentTurn,
   claimCliqMessage,
   commitCliqMessage,
   releaseCliqMessage,
   resetCliqDedupeForTest,
+  type CliqContentTurn,
 } from "./dedupe.js";
 import { parseCliqWebhookPayload, type ParsedCliqInbound } from "./inbound.js";
 
@@ -301,5 +303,75 @@ describe("dedupe TTL by key kind (issue #114)", () => {
     vi.advanceTimersByTime(PAST_CONTENT_TTL_MS);
     const redelivery = await claimCliqMessage(welcome, account);
     expect(redelivery!.kind).toBe("duplicate");
+  });
+});
+
+describe("beginCliqContentTurn (issue #123)", () => {
+  beforeEach(() => {
+    resetCliqDedupeForTest();
+  });
+
+  function contentMessage(text = "explain this"): ParsedCliqInbound {
+    const message = parseCliqWebhookPayload({
+      handler: "message",
+      message: text,
+      user: { id: "u-1", name: "Alice" },
+      chat: { id: "CT_dm", type: "dm" },
+    });
+    expect(message).not.toBeNull();
+    expect(message!.messageId).toMatch(/^syn:/);
+    return message!;
+  }
+
+  it("reports no equivalent turn in flight for the first content-derived delivery", () => {
+    const turn = beginCliqContentTurn(contentMessage(), account);
+    expect(turn).not.toBeNull();
+    expect(turn!.hadInFlightTurn).toBe(false);
+    turn!.finish();
+  });
+
+  it("reports an equivalent turn in flight for a redelivery of the same content", () => {
+    const first = beginCliqContentTurn(contentMessage(), account);
+    expect(first!.hadInFlightTurn).toBe(false);
+
+    const redelivery = beginCliqContentTurn(contentMessage(), account);
+    expect(redelivery!.hadInFlightTurn).toBe(true);
+
+    redelivery!.finish();
+    first!.finish();
+  });
+
+  it("clears the in-flight marker once the original turn finishes", () => {
+    const first = beginCliqContentTurn(contentMessage(), account);
+    first!.finish();
+
+    const later = beginCliqContentTurn(contentMessage(), account);
+    expect(later!.hadInFlightTurn).toBe(false);
+    later!.finish();
+  });
+
+  it("keeps distinct senders, chats and texts independent", () => {
+    const alice = beginCliqContentTurn(contentMessage("same words"), account);
+    expect(alice!.hadInFlightTurn).toBe(false);
+
+    const otherText = beginCliqContentTurn(contentMessage("different words"), account);
+    expect(otherText!.hadInFlightTurn).toBe(false);
+
+    const otherAccount = beginCliqContentTurn(contentMessage("same words"), {
+      accountId: "acct-b",
+    });
+    expect(otherAccount!.hadInFlightTurn).toBe(false);
+
+    otherAccount!.finish();
+    otherText!.finish();
+    alice!.finish();
+  });
+
+  it("does not track a real Cliq message id (not content-derived)", () => {
+    const turn: CliqContentTurn | null = beginCliqContentTurn(
+      parsed({ messageId: "real-1" }),
+      account,
+    );
+    expect(turn).toBeNull();
   });
 });

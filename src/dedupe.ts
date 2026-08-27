@@ -165,4 +165,34 @@ export function resetCliqDedupeForTest(): void {
   longLivedDedupe = null;
   contentDedupe?.clearMemory();
   contentDedupe = null;
+  contentTurnsInFlight.clear();
+}
+
+export interface CliqContentTurn {
+  hadInFlightTurn: boolean;
+  finish: () => void;
+}
+
+const contentTurnsInFlight = new Map<string, number>();
+
+export function beginCliqContentTurn(
+  parsed: ParsedCliqInbound,
+  account: { accountId: string | null },
+): CliqContentTurn | null {
+  if (!usesContentDedupe(parsed)) return null;
+  const key = buildCliqDedupeKey(parsed, account);
+  if (!key) return null;
+  const active = contentTurnsInFlight.get(key) ?? 0;
+  contentTurnsInFlight.set(key, active + 1);
+  let finished = false;
+  return {
+    hadInFlightTurn: active > 0,
+    finish: () => {
+      if (finished) return;
+      finished = true;
+      const current = contentTurnsInFlight.get(key) ?? 0;
+      if (current <= 1) contentTurnsInFlight.delete(key);
+      else contentTurnsInFlight.set(key, current - 1);
+    },
+  };
 }

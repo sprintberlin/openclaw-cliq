@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const RUNTIME_MODULE = "openclaw/plugin-sdk/conversation-runtime";
 const GATEWAY_MODULE = "openclaw/plugin-sdk/gateway-runtime";
+const CHANNEL_INBOUND_MODULE = "openclaw/plugin-sdk/channel-inbound";
 
 async function loadResolver() {
   vi.resetModules();
@@ -11,6 +12,7 @@ async function loadResolver() {
 afterEach(() => {
   vi.doUnmock(RUNTIME_MODULE);
   vi.doUnmock(GATEWAY_MODULE);
+  vi.doUnmock(CHANNEL_INBOUND_MODULE);
   vi.resetModules();
 });
 
@@ -88,5 +90,43 @@ describe("resolveChannelReadyPatch", () => {
     const { resolveChannelReadyPatch } = await loadResolver();
 
     await expect(resolveChannelReadyPatch()).resolves.toBeNull();
+  });
+});
+
+describe("readInboundProcessedOutcome", () => {
+  it("reads a processed outcome attached to the turn result", async () => {
+    vi.doMock(CHANNEL_INBOUND_MODULE, () => ({}));
+    const { readInboundProcessedOutcome } = await loadResolver();
+
+    await expect(
+      readInboundProcessedOutcome({
+        processedOutcome: { outcome: "skipped", reason: "duplicate" },
+      }),
+    ).resolves.toEqual({ outcome: "skipped", reason: "duplicate" });
+  });
+
+  it("uses and caches a dynamically resolved reader when available", async () => {
+    const reader = vi.fn(() => ({ outcome: "skipped", reason: "reply-operation-active" }));
+    const factory = vi.fn(() => ({ readInboundProcessedOutcome: reader }));
+    vi.doMock(CHANNEL_INBOUND_MODULE, factory);
+    const {
+      readInboundProcessedOutcome,
+      resolveInboundProcessedOutcomeReader,
+    } = await loadResolver();
+
+    const result = { dispatchResult: { queuedFinal: false } };
+    await expect(readInboundProcessedOutcome(result)).resolves.toEqual({
+      outcome: "skipped",
+      reason: "reply-operation-active",
+    });
+    await expect(resolveInboundProcessedOutcomeReader()).resolves.toBe(reader);
+    expect(factory).toHaveBeenCalledOnce();
+  });
+
+  it("returns null when no compatible reader or outcome is available", async () => {
+    vi.doMock(CHANNEL_INBOUND_MODULE, () => ({ runChannelInboundEvent: vi.fn() }));
+    const { readInboundProcessedOutcome } = await loadResolver();
+
+    await expect(readInboundProcessedOutcome({ dispatchResult: {} })).resolves.toBeNull();
   });
 });

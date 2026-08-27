@@ -106,3 +106,80 @@ export function resolveChannelReadyPatch(): Promise<ChannelReadyPatchFn | null> 
   readyPatchResolution ??= loadChannelReadyPatch();
   return readyPatchResolution;
 }
+
+export type InboundProcessedOutcome = {
+  outcome: string;
+  reason?: string;
+};
+
+export type InboundProcessedOutcomeReaderFn = (
+  result: unknown,
+) => InboundProcessedOutcome | null | undefined;
+
+let inboundProcessedOutcomeResolution:
+  | Promise<InboundProcessedOutcomeReaderFn | null>
+  | undefined;
+
+function asProcessedOutcome(value: unknown): InboundProcessedOutcome | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.outcome !== "string") return null;
+  return {
+    outcome: record.outcome,
+    ...(typeof record.reason === "string" ? { reason: record.reason } : {}),
+  };
+}
+
+async function loadInboundProcessedOutcomeReader(): Promise<InboundProcessedOutcomeReaderFn | null> {
+  try {
+    const ns: Record<string, unknown> = await import(
+      "openclaw/plugin-sdk/channel-inbound"
+    );
+    for (const name of [
+      "readInboundProcessedOutcome",
+      "readChannelTurnProcessedOutcome",
+      "resolveInboundProcessedOutcome",
+    ]) {
+      const candidate = ns[name];
+      if (typeof candidate === "function") {
+        return candidate as InboundProcessedOutcomeReaderFn;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function resolveInboundProcessedOutcomeReader(): Promise<InboundProcessedOutcomeReaderFn | null> {
+  inboundProcessedOutcomeResolution ??= loadInboundProcessedOutcomeReader();
+  return inboundProcessedOutcomeResolution;
+}
+
+export async function readInboundProcessedOutcome(
+  result: unknown,
+): Promise<InboundProcessedOutcome | null> {
+  if (result && typeof result === "object" && !Array.isArray(result)) {
+    const record = result as Record<string, unknown>;
+    const direct = asProcessedOutcome(record.processedOutcome);
+    if (direct) return direct;
+    const dispatchResult = record.dispatchResult;
+    if (
+      dispatchResult &&
+      typeof dispatchResult === "object" &&
+      !Array.isArray(dispatchResult)
+    ) {
+      const nested = asProcessedOutcome(
+        (dispatchResult as Record<string, unknown>).processedOutcome,
+      );
+      if (nested) return nested;
+    }
+  }
+  const reader = await resolveInboundProcessedOutcomeReader();
+  if (!reader) return null;
+  try {
+    return asProcessedOutcome(reader(result));
+  } catch {
+    return null;
+  }
+}
