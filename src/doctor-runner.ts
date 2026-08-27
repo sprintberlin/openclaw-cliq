@@ -201,7 +201,7 @@ function collectOperationalWarnings(cfg: OpenClawConfig, accountId?: string): st
   }
   if (effective?.ackPolicy === "immediate") {
     warnings.push(
-      "ackPolicy is immediate: a crash after acknowledgement loses the message, and on OpenClaw 2026.8.1-beta.3 every post-ack turn can fail with GatewayDrainingError",
+      "ackPolicy is immediate: a crash after acknowledgement loses the message; on OpenClaw >= 2026.8.1-beta.3 post-ack work must be wrapped in runDetachedWebhookWork before responding or the healthy gateway refuses it with GatewayDrainingError (this plugin version applies that wrapper dynamically when available)",
     );
   }
   return warnings;

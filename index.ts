@@ -37,6 +37,7 @@ import {
   parseCliqProbePayload,
 } from "./src/webhook-probe.js";
 import { recordCliqActivity } from "./src/activity.js";
+import { resolveCliqDetachedWebhookWork } from "./src/detached-dispatch.js";
 import {
   CLIQ_ROUTE_HEADER,
   CLIQ_ROUTE_HEADER_VALUE,
@@ -493,28 +494,57 @@ export default defineChannelPluginEntry({
         // instead of a lost message. `ackPolicy: "immediate"` opts out
         // (legacy fire-and-forget) for setups whose Cliq/Deluge timeout is
         // tighter than the agent round-trip.
-        const dispatchPromise = dispatchCliqInbound({
-          runtime,
-          cfg,
-          account,
-          parsed,
-          onError: (err, info) => {
-            api.logger.error?.(`[cliq] ${info.kind} failed: ${String(err)}`);
-          },
-        }).then((result) => {
-          // Commit the dedupe tombstone once dispatch resolves so a later
-          // redelivery within the TTL is dropped instead of re-processed.
-          void commitCliqMessage(claim?.key ?? null);
-          return result;
-        }, (err) => {
-          // Retryable failure: release the claim so the next redelivery can
-          // re-enter the pipeline (the tombstone is not recorded).
-          releaseCliqMessage(claim?.key ?? null, err);
-          throw err;
-        });
+        //
+        // Ack-first work must be detached from the request admission BEFORE
+        // the 200 is written (issue #122): on `>= 2026.8.1-beta.3` the
+        // continuation of an inherited, already-released admission is refused
+        // as if the gateway were draining, so every post-ack turn died with
+        // `GatewayDrainingError`. Resolve the helper first — it must be
+        // invoked synchronously while the request is still admitted.
+        const runDetached =
+          account.ackPolicy === "immediate"
+            ? await resolveCliqDetachedWebhookWork()
+            : null;
+
+        let dispatchPromise: Promise<void> | undefined;
+        const dispatch = (): Promise<void> => {
+          dispatchPromise ??= dispatchCliqInbound({
+            runtime,
+            cfg,
+            account,
+            parsed,
+            onError: (err, info) => {
+              api.logger.error?.(`[cliq] ${info.kind} failed: ${String(err)}`);
+            },
+          }).then((result) => {
+            void commitCliqMessage(claim?.key ?? null);
+            return result;
+          }, (err) => {
+            releaseCliqMessage(claim?.key ?? null, err);
+            throw err;
+          });
+          return dispatchPromise;
+        };
 
         if (account.ackPolicy === "immediate") {
-          dispatchPromise.catch((err) => {
+          // Reserve the independent admission root synchronously, while the
+          // request is still admitted, and only then write the 200. Calling
+          // it after `res.end` would be too late — that is the entire point
+          // of the SDK contract. The dispatch is NOT awaited here: awaiting
+          // would silently turn `immediate` into `after_dispatch` and
+          // reintroduce the ~40 s Deluge timeout this policy exists to avoid.
+          let detached: Promise<unknown>;
+          try {
+            detached = runDetached ? runDetached(dispatch) : dispatch();
+          } catch (err) {
+            // A failing helper must never cost Cliq its acknowledgement: fall
+            // back to the inherited chain (the pre-beta.3 behaviour).
+            api.logger.warn?.(
+              `[cliq] detached webhook work unavailable, dispatching on the inherited admission: ${String(err)}`,
+            );
+            detached = dispatch();
+          }
+          detached.catch((err) => {
             // A "reply session initialization conflicted" error is transient
             // (a Cliq redelivery racing the first dispatch's session init).
             // Log at warn — not error — so operators don't panic; the dedupe
@@ -536,7 +566,7 @@ export default defineChannelPluginEntry({
         }
 
         try {
-          await dispatchPromise;
+          await dispatch();
           res.statusCode = 200;
           res.setHeader("Content-Type", "application/json");
           res.end(JSON.stringify({ status: "received" }));

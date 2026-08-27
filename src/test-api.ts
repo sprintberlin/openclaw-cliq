@@ -68,6 +68,8 @@ export interface CliqMockServerResponse {
   headers: Record<string, string | string[]>;
   body: string;
   ended: boolean;
+  /** Optional hook fired when `end()` is called (ack-ordering assertions). */
+  onEnd?: () => void;
   setHeader(name: string, value: string | string[]): void;
   end(chunk?: string): void;
 }
@@ -104,6 +106,7 @@ export function createMockServerResponse(): CliqMockServerResponse {
     end(chunk) {
       if (chunk !== undefined) this.body += chunk;
       this.ended = true;
+      this.onEnd?.();
     },
   };
 }
