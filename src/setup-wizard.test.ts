@@ -5,6 +5,10 @@ import {
   cliqSetupWizard,
   validateCliqSetupResult,
   guardCliqDmScopeDuringSetup,
+  prepareCliqSecretsForPersistence,
+  runOptionalCliqRoundtripDuringSetup,
+  readSupportedOpenClawVersions,
+  checkInstalledOpenClawCompatibility,
   isCliqChannelConfigured,
   promptCliqCredentials,
   applyCliqCredentials,
@@ -226,16 +230,49 @@ describe("promptCliqCredentials — re-running over existing config", () => {
       { method: "confirm", value: true },
     ]);
     const creds = await promptCliqCredentials(prompter, existing);
-    expect(creds).toEqual({
-      clientId: "CID",
-      clientSecret: "SECRET",
-      botId: "bot",
-      botName: "OpenClaw",
-      webhookSecret: "WH",
-      refreshToken: "RT",
-    });
+    expect(creds.clientId).toBe("CID");
+    expect(creds.botId).toBe("bot");
+    expect(creds.botName).toBe("OpenClaw");
+    const next = applyCliqCredentials(existing, creds);
+    const section = (next as any).channels.cliq;
+    expect(section.clientSecret).toBe("SECRET");
+    expect(section.webhookSecret).toBe("WH");
+    expect(section.refreshToken).toBe("RT");
     const texts = calls.filter((c) => c.method === "text");
     expect(texts).toHaveLength(0);
+  });
+
+  it("keeps existing SecretRefs without returning their values", async () => {
+    const existing = cfgWith({
+      clientId: "CID",
+      clientSecret: { source: "env", provider: "default", id: "CLIQ_CLIENT_SECRET" },
+      botId: "bot",
+      webhookSecret: { source: "file", provider: "mounted", id: "/cliq/webhook" },
+      refreshToken: "$CLIQ_REFRESH_TOKEN",
+    });
+    const { prompter } = makeScriptedPrompter([
+      { method: "confirm", value: true },
+      { method: "confirm", value: true },
+      { method: "confirm", value: true },
+      { method: "text", value: "" },
+      { method: "confirm", value: true },
+      { method: "confirm", value: true },
+    ]);
+    const creds = await promptCliqCredentials(prompter, existing);
+    const next = applyCliqCredentials(existing, creds);
+    const section = (next as any).channels.cliq;
+    expect(section.clientSecret).toEqual({
+      source: "env",
+      provider: "default",
+      id: "CLIQ_CLIENT_SECRET",
+    });
+    expect(section.webhookSecret).toEqual({
+      source: "file",
+      provider: "mounted",
+      id: "/cliq/webhook",
+    });
+    expect(section.refreshToken).toBe("$CLIQ_REFRESH_TOKEN");
+    expect(JSON.stringify(creds)).not.toMatch(/CLIQ_CLIENT_SECRET|\/cliq\/webhook|CLIQ_REFRESH_TOKEN/);
   });
 
   it("on 'no' to keep clientId, re-prompts for it", async () => {
@@ -258,7 +295,8 @@ describe("promptCliqCredentials — re-running over existing config", () => {
     ]);
     const creds = await promptCliqCredentials(prompter, existing);
     expect(creds.clientId).toBe("NEWCID");
-    expect(creds.clientSecret).toBe("SECRET");
+    const next = applyCliqCredentials(existing, creds);
+    expect((next as any).channels.cliq.clientSecret).toBe("SECRET");
   });
 });
 
@@ -402,11 +440,23 @@ describe("cliqSetupWizard", () => {
       result!.cfg as unknown as { channels: { cliq: Record<string, unknown> } }
     ).channels.cliq;
     expect(section.clientId).toBe("CID");
-    expect(section.clientSecret).toBe("SECRET");
+    expect(section.clientSecret).toEqual({
+      source: "env",
+      provider: "default",
+      id: "CLIQ_CLIENT_SECRET",
+    });
     expect(section.botId).toBe("bot");
     expect(section.botName).toBe("OpenClaw");
-    expect(section.webhookSecret).toBe("WH");
-    expect(section.refreshToken).toBe("RT");
+    expect(section.webhookSecret).toEqual({
+      source: "env",
+      provider: "default",
+      id: "CLIQ_WEBHOOK_SECRET",
+    });
+    expect(section.refreshToken).toEqual({
+      source: "env",
+      provider: "default",
+      id: "CLIQ_REFRESH_TOKEN",
+    });
     expect(section.enabled).toBe(true);
     // The DC prompt writes oauthBase + apiBase together (issue #46).
     expect(section.oauthBase).toBe("https://accounts.zoho.eu");
@@ -440,7 +490,9 @@ describe("cliqSetupWizard", () => {
     expect(section.apiBase).toBe("https://cliq.zoho.com");
     // The setup note references the chosen region's API Console URL, not the
     // hard-coded EU one (issue #46).
-    const noteCall = calls.find((c) => c.method === "note");
+    const noteCall = calls.find(
+      (call) => call.method === "note" && String(call.args.message).includes("api-console"),
+    );
     expect(noteCall).toBeDefined();
     expect(noteCall!.args.message).toContain("https://api-console.zoho.com");
     expect(noteCall!.args.message).not.toContain("api-console.zoho.eu");
@@ -793,5 +845,252 @@ describe("cliq setup wizard — shared DM scope guard (issue #104)", () => {
     const result = await guardCliqDmScopeDuringSetup({ cfg, prompter });
     expect(result).toBe(cfg);
     expect(calls).toEqual([]);
+  });
+});
+
+describe("guided setup secret persistence (issue #92)", () => {
+  it("turns freshly entered secrets into canonical env refs before config is returned", () => {
+    const cfg = cfgWith({});
+    const next = prepareCliqSecretsForPersistence({
+      originalCfg: cfg,
+      generatedCfg: applyCliqCredentials(cfg, {
+        clientId: "CID",
+        clientSecret: "live-client-secret",
+        botId: "bot",
+        webhookSecret: "live-webhook-secret",
+        refreshToken: "live-refresh-token",
+      }),
+    });
+    const section = (next as any).channels.cliq;
+    expect(section.clientSecret).toEqual({ source: "env", provider: "default", id: "CLIQ_CLIENT_SECRET" });
+    expect(section.webhookSecret).toEqual({ source: "env", provider: "default", id: "CLIQ_WEBHOOK_SECRET" });
+    expect(section.refreshToken).toEqual({ source: "env", provider: "default", id: "CLIQ_REFRESH_TOKEN" });
+    expect(JSON.stringify(next)).not.toMatch(/live-client-secret|live-webhook-secret|live-refresh-token/);
+  });
+
+  it("preserves an existing structured ref exactly on rerun", () => {
+    const existingRef = { source: "file", provider: "mounted", id: "/cliq/client" };
+    const original = cfgWith({
+      clientId: "CID",
+      clientSecret: existingRef,
+      botId: "bot",
+      webhookSecret: "$CLIQ_WEBHOOK_SECRET",
+    });
+    const next = prepareCliqSecretsForPersistence({ originalCfg: original, generatedCfg: original });
+    expect((next as any).channels.cliq.clientSecret).toEqual(existingRef);
+    expect((next as any).channels.cliq.webhookSecret).toBe("$CLIQ_WEBHOOK_SECRET");
+  });
+});
+
+describe("optional full roundtrip during setup (issue #92)", () => {
+  it("does nothing when the operator declines", async () => {
+    const { prompter } = makeScriptedPrompter([{ method: "confirm", value: false }]);
+    const runDoctor = vi.fn();
+    const result = await runOptionalCliqRoundtripDuringSetup({
+      cfg: cfgWith({}), prompter, runDoctor,
+    });
+    expect(result).toBe("not_requested");
+    expect(runDoctor).not.toHaveBeenCalled();
+  });
+
+  it("requires kind, target, and a final explicit confirmation", async () => {
+    const { prompter } = makeScriptedPrompter([
+      { method: "confirm", value: true },
+      { method: "select", value: "dm" },
+      { method: "text", value: "user-1" },
+      { method: "confirm", value: true },
+    ]);
+    const runDoctor = vi.fn(async () => ({
+      outcome: "healthy",
+      stages: [{ id: "roundtrip", status: "pass", evidence: [], remediation: [] }],
+    } as never));
+    const result = await runOptionalCliqRoundtripDuringSetup({
+      cfg: cfgWith({}), prompter, runDoctor,
+    });
+    expect(result).toBe("pass");
+    expect(runDoctor).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ roundtrip: true, target: "user-1", targetKind: "dm", confirmed: true }),
+    );
+  });
+
+  it("reports a cancelled final confirmation as cancelled", async () => {
+    const { prompter } = makeScriptedPrompter([
+      { method: "confirm", value: true },
+      { method: "select", value: "group" },
+      { method: "text", value: "dev-team" },
+      { method: "confirm", value: false },
+    ]);
+    const result = await runOptionalCliqRoundtripDuringSetup({
+      cfg: cfgWith({}), prompter, runDoctor: vi.fn(),
+    });
+    expect(result).toBe("cancelled");
+  });
+});
+
+describe("guided setup integration (issue #92)", () => {
+  it("names the Zoho API Console as an unavoidable UI action", async () => {
+    const { prompter, calls } = makeScriptedPrompter([
+      { method: "select", value: "eu" },
+      { method: "text", value: "CID" },
+      { method: "text", value: "SECRET" },
+      { method: "text", value: "bot" },
+      { method: "text", value: "OpenClaw" },
+      { method: "text", value: "WH" },
+      { method: "text", value: "" },
+      { method: "text", value: "" },
+    ]);
+    await cliqSetupWizard.finalize!({
+      cfg: cfgWith({}),
+      accountId: "default",
+      credentialValues: {},
+      runtime: {} as never,
+      prompter,
+      forceAllowFrom: false,
+    });
+    const notes = calls
+      .filter((call) => call.method === "note")
+      .map((call) => String(call.args.message))
+      .join("\n");
+    expect(notes).toMatch(/api-console\.zoho\.eu/);
+    expect(notes).toMatch(/Self Client|self-client/i);
+    expect(notes).toMatch(/Deluge/);
+  });
+
+  it("prints a machine-readable setup report covering every required subsystem", async () => {
+    const { prompter, calls } = makeScriptedPrompter([
+      { method: "select", value: "eu" },
+      { method: "text", value: "CID" },
+      { method: "text", value: "SECRET" },
+      { method: "text", value: "bot" },
+      { method: "text", value: "OpenClaw" },
+      { method: "text", value: "WH" },
+      { method: "text", value: "" },
+      { method: "text", value: "" },
+    ]);
+    const result = await cliqSetupWizard.finalize!({
+      cfg: cfgWith({}),
+      accountId: "default",
+      credentialValues: {},
+      runtime: {} as never,
+      prompter,
+      forceAllowFrom: false,
+    });
+    const persisted = (result!.cfg as { channels: { cliq: Record<string, unknown> } }).channels.cliq;
+    expect(persisted.clientSecret).toEqual({
+      source: "env",
+      provider: "default",
+      id: "CLIQ_CLIENT_SECRET",
+    });
+    expect(persisted.webhookSecret).toEqual({
+      source: "env",
+      provider: "default",
+      id: "CLIQ_WEBHOOK_SECRET",
+    });
+    expect(JSON.stringify(result!.cfg)).not.toMatch(/"SECRET"|"WH"/);
+    const reportNote = calls.find(
+      (call) => call.method === "note" && String(call.args.title) === "Zoho Cliq setup report",
+    );
+    expect(reportNote).toBeDefined();
+    const jsonLine = String(reportNote!.args.message)
+      .split("\n")
+      .find((line) => line.startsWith("{"));
+    expect(jsonLine).toBeDefined();
+    const report = JSON.parse(jsonLine!);
+    expect(report.schemaVersion).toBe(1);
+    expect(report.command).toBe("cliq setup");
+    expect(report.compatibility.status).toMatch(/supported|unsupported|unknown/);
+    expect(report.requiredEnvironment).toEqual(
+      expect.arrayContaining(["CLIQ_CLIENT_SECRET", "CLIQ_WEBHOOK_SECRET"]),
+    );
+    expect(report.sections.map((section: { id: string }) => section.id)).toEqual([
+      "config",
+      "oauth",
+      "bot",
+      "handlers",
+      "lifecycle",
+      "webhook",
+      "admission",
+      "delivery",
+    ]);
+    expect(String(reportNote!.args.message)).toMatch(/restart/i);
+    expect(String(reportNote!.args.message)).toMatch(/not stored by setup/i);
+    expect(String(reportNote!.args.message)).toMatch(/gateway environment/i);
+    expect(String(reportNote!.args.message)).not.toMatch(/"SECRET"|=SECRET\b/);
+    expect(String(reportNote!.args.message)).not.toMatch(/"WH"|=WH\b/);
+  });
+
+  it("keeps existing credentials on a rerun without prompting to replace handlers", async () => {
+    const existing = cfgWith({
+      clientId: "CID",
+      clientSecret: { source: "env", provider: "default", id: "CLIQ_CLIENT_SECRET" },
+      botId: "bot",
+      botName: "OpenClaw",
+      webhookSecret: { source: "env", provider: "default", id: "CLIQ_WEBHOOK_SECRET" },
+      refreshToken: { source: "env", provider: "default", id: "CLIQ_REFRESH_TOKEN" },
+    });
+    const { prompter, calls } = makeScriptedPrompter([
+      { method: "select", value: "eu" },
+      { method: "confirm", value: true },
+      { method: "confirm", value: true },
+      { method: "confirm", value: true },
+      { method: "confirm", value: true },
+      { method: "confirm", value: true },
+      { method: "confirm", value: true },
+      { method: "text", value: "" },
+    ]);
+    const result = await cliqSetupWizard.finalize!({
+      cfg: existing,
+      accountId: "default",
+      credentialValues: {},
+      runtime: {} as never,
+      prompter,
+      forceAllowFrom: false,
+    });
+    const section = (result!.cfg as { channels: { cliq: Record<string, unknown> } }).channels.cliq;
+    expect(section.clientSecret).toEqual({
+      source: "env",
+      provider: "default",
+      id: "CLIQ_CLIENT_SECRET",
+    });
+    expect(section.webhookSecret).toEqual({
+      source: "env",
+      provider: "default",
+      id: "CLIQ_WEBHOOK_SECRET",
+    });
+    const notes = calls
+      .filter((call) => call.method === "note")
+      .map((call) => String(call.args.message))
+      .join("\n");
+    expect(notes).not.toMatch(/Replace the divergent Zoho bot handler/i);
+  });
+
+  it("checks the installed SDK package version against the shared matrix", () => {
+    expect(
+      checkInstalledOpenClawCompatibility({
+        resolvePackageJson: () => "/sdk/package.json",
+        readJson: () => ({ version: "2026.7.1-2" }),
+        supportedVersions: ["2026.7.1-2", "2026.8.1-beta.3"],
+      }),
+    ).toEqual({
+      installedVersion: "2026.7.1-2",
+      supportedVersions: ["2026.7.1-2", "2026.8.1-beta.3"],
+      status: "supported",
+    });
+    expect(
+      checkInstalledOpenClawCompatibility({
+        resolvePackageJson: () => "/sdk/package.json",
+        readJson: () => ({ version: "2025.1.0" }),
+        supportedVersions: ["2026.7.1-2"],
+      }).status,
+    ).toBe("unsupported");
+    const live = checkInstalledOpenClawCompatibility();
+    expect(live.installedVersion).toBe("2026.7.1-2");
+    expect(live.status).toBe("supported");
+  });
+
+  it("reads the supported OpenClaw versions from the shared compat matrix", () => {
+    const versions = readSupportedOpenClawVersions();
+    expect(versions).toEqual(expect.arrayContaining(["2026.7.1-2", "2026.8.1-beta.3"]));
   });
 });

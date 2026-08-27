@@ -34,7 +34,7 @@ Get a bot answering **DMs** in four steps (channel @mention replies add one OAut
 3. **Install & configure**
    ```bash
    openclaw plugins install clawhub:@sprintcx/openclaw-cliq
-   openclaw setup            # pick "Zoho Cliq" — the wizard writes the account config
+    openclaw setup            # pick "Zoho Cliq" — the guided flow writes, validates, and reports the account config
    ```
 4. **Wire the webhook** — paste the [Deluge handler](#5-deluge-webhook-handler) into the bot's Message/Mention handlers, pointing at `https://<your-gateway>/cliq/webhook`.
 
@@ -856,7 +856,17 @@ Stage 5 uses the shared read-only bot inspector. It resolves the configured uniq
 
 Each stage reports `pass`, `warn`, `fail`, or `skipped`, with redacted evidence and actionable remediation. Timeouts and partial failures name the failed boundary.
 
-`openclaw setup` additionally offers an optional onboarding pass after credentials and inbound verification. Only after the operator opts in does it accept a first-contact user by name, email, or id through the existing directory adapter, display the read-only bot/visibility/subscription result, and ask again before sending exactly one clearly labeled DM. Declining sends nothing; a successful send prints only non-reversible, redacted chat/message identifiers. It then accepts an optional channel name/handle and explains the add-bot, admission, and `@mention` requirements without mutating the real channel. The same setup flow asks separately whether to enable `welcome.enabled`; accepting preserves custom greeting text and points at the existing Welcome Handler in §5a, while declining writes no welcome config.
+`openclaw setup` is the guided, resumable path from a freshly installed plugin to a verified roundtrip. It:
+
+1. Checks the installed OpenClaw package against `.github/openclaw-compat.json` and reports `supported`, `unsupported`, or `unknown`.
+2. Asks for the Zoho data center and names the unavoidable Zoho UI actions: create a **Self Client** at that region's API Console, then paste the Deluge Message/Mention handlers.
+3. Collects OAuth credentials and stores newly entered secrets as canonical env-backed SecretRefs (`CLIQ_CLIENT_SECRET`, `CLIQ_WEBHOOK_SECRET`, `CLIQ_REFRESH_TOKEN`). Existing SecretRefs and `$ENV` interpolation are preserved on rerun; literals are never written into `openclaw.json`. Newly entered values are only held for the current setup process: after setup, assign those same values to the listed gateway environment variables before restarting.
+4. Offers idempotent bot/handler provisioning. A dry-run always runs first; creating or repairing a resource needs a separate confirmation that defaults to *no*.
+5. Verifies the public HTTPS webhook, admission policy (including trusted-organization acknowledgement), and generated config against the real OpenClaw schema.
+6. Offers the read-only doctor, names the supported gateway restart (`systemctl --user restart openclaw-gateway.service` or this host's equivalent), and optionally a consented first-contact DM plus a nonce-correlated roundtrip.
+7. Prints a machine-readable final report (`schemaVersion: 1`, `command: "cliq setup"`) covering config, OAuth, bot, handlers, lifecycle, webhook, admission, and delivery, plus the next required action when the flow is only partially complete.
+
+Rerunning setup keeps existing credentials and custom handlers unless a change is confirmed. Declining an optional message test is reported as cancelled, not failed. Provide the listed environment variables to the gateway service after setup; the wizard does not print secret values.
 
 `--outbound-test` and `--roundtrip` both require `--target`, `--kind dm|group`, and `--confirm`. `--roundtrip` posts one clearly labeled, copyable challenge. A human sends the complete `OPENCLAW_CLIQ_ROUNDTRIP_REQUEST <nonce> — reply exactly OPENCLAW_CLIQ_ROUNDTRIP_REPLY <nonce>` instruction through the real Cliq bot (a DM, or a group @mention); the agent must answer exactly `OPENCLAW_CLIQ_ROUNDTRIP_REPLY <nonce>`. Seeing the request proves Zoho delivered it to the inbound webhook; seeing the exact reply proves the agent turn, the configured policy, and the outbound reply all completed. Chat text is the only correlation signal a read-only diagnostic has, so to attribute an individual hop, grep the gateway logs for the same nonce. A DM roundtrip additionally needs a chat id from the send response (`apiVersion.dmPost: "v3"` returns one); without it the doctor fails at `roundtrip_correlation` rather than polling blindly.
 

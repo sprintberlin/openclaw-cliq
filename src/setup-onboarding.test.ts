@@ -157,3 +157,26 @@ describe("runCliqSetupOnboarding", () => {
     expect(sendMessage).not.toHaveBeenCalled();
   });
 });
+
+describe("runCliqSetupOnboarding report (issue #92)", () => {
+  it("reports cancellation without treating it as a failed message test", async () => {
+    const p = prompter([false]);
+    const result = await runCliqSetupOnboarding({
+      cfg: configured(),
+      prompter: p.value,
+      deps: { promptTarget: vi.fn() },
+    });
+    expect(result).toEqual({ status: "cancelled", firstContact: "not_requested", nextAction: "Rerun setup when you want to inspect targets or send a first-contact message." });
+  });
+
+  it("reports invalid credentials as resumable rather than throwing", async () => {
+    const p = prompter([true]);
+    const result = await runCliqSetupOnboarding({
+      cfg: cfgWith({}),
+      prompter: p.value,
+      deps: { resolveAccount: () => { throw new Error("invalid credentials"); } },
+    });
+    expect(result.status).toBe("blocked");
+    expect(result.nextAction).toMatch(/credentials/i);
+  });
+});
