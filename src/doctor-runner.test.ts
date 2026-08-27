@@ -646,7 +646,7 @@ describe("cliq doctor — stage 7 discovery", () => {
     expect(stageOf(report, "discovery").status).toBe("pass");
   });
 
-  it("fails and names the discovery boundary when a directory read fails", async () => {
+  it("warns and names the discovery boundary when a directory read fails", async () => {
     const client = createClient({
       listUsers: vi.fn(async () => {
         throw new Error("cliq: GET /api/v2/users failed (401): oauthtoken_scope_invalid");
@@ -654,9 +654,10 @@ describe("cliq doctor — stage 7 discovery", () => {
     });
     const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }));
     const discovery = stageOf(report, "discovery");
-    expect(discovery.status).toBe("fail");
+    expect(discovery.status).toBe("warn");
     expect(discovery.boundary).toBe("directory_discovery");
     expect(discovery.remediation.join(" ")).toContain("ZohoCliq.Users.READ");
+    expect(discovery.evidence.join(" ")).toContain("--target");
   });
 
   it("reports a channel discovery failure separately", async () => {
@@ -667,6 +668,83 @@ describe("cliq doctor — stage 7 discovery", () => {
     });
     const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }));
     expect(stageOf(report, "discovery").remediation.join(" ")).toContain("ZohoCliq.Channels.READ");
+  });
+});
+
+/**
+ * Directory discovery is a convenience aid for picking a target, not a
+ * precondition for talking to one the operator already named (issue #146). A
+ * v2 directory read that Zoho rejects must degrade the stage instead of
+ * blocking an explicitly confirmed, consented send.
+ */
+describe("cliq doctor — a failed directory read does not block an explicit target", () => {
+  const HTTP_400 = 'cliq: GET /api/v2/users failed (400): {"code":"extra_param_found"}';
+
+  function brokenDirectoryClient(overrides: Partial<CliqDoctorClient> = {}): CliqDoctorClient {
+    return createClient({
+      listUsers: vi.fn(async () => {
+        throw new Error(HTTP_400);
+      }),
+      listChannels: vi.fn(async () => {
+        throw new Error('cliq: GET /api/v2/channels failed (400): {"code":"extra_param_found"}');
+      }),
+      ...overrides,
+    });
+  }
+
+  it("still sends the consented outbound test to the explicit target", async () => {
+    const client = brokenDirectoryClient();
+    const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), {
+      outboundTest: true,
+      target: "user-1",
+      targetKind: "dm",
+      confirmed: true,
+    });
+    expect(client.sendMessage).toHaveBeenCalledTimes(1);
+    expect(stageOf(report, "outbound_test").status).toBe("pass");
+    expect(report.outcome).toBe("degraded");
+  });
+
+  it("still completes the consented roundtrip against the explicit target", async () => {
+    const client = brokenDirectoryClient({
+      listChatMessages: vi.fn(async () => [
+        { messageId: "m-2", chatId: "CT_1", text: "OPENCLAW_CLIQ_ROUNDTRIP_REQUEST nonce-1234" },
+        { messageId: "m-3", chatId: "CT_1", text: "OPENCLAW_CLIQ_ROUNDTRIP_REPLY nonce-1234" },
+      ]),
+    });
+    const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), {
+      roundtrip: true,
+      target: "user-1",
+      targetKind: "dm",
+      confirmed: true,
+      timeoutMs: 3_000,
+    });
+    expect(stageOf(report, "roundtrip").status).toBe("pass");
+  });
+
+  it("still blocks the send when a mandatory earlier stage failed", async () => {
+    const client = brokenDirectoryClient();
+    const report = await runDefault(
+      cfgWith(),
+      createDeps({
+        getClient: () => client,
+        probeStatus: vi.fn(async () => ({ ok: false, reason: "unreachable" })),
+      }),
+      { outboundTest: true, target: "user-1", targetKind: "dm", confirmed: true },
+    );
+    expect(client.sendMessage).not.toHaveBeenCalled();
+    expect(stageOf(report, "outbound_test").boundary).toBe("outbound_precondition");
+  });
+
+  it("still requires a passing public webhook preflight for a roundtrip", async () => {
+    const client = brokenDirectoryClient();
+    const report = await runDefault(
+      cfgWith({ publicWebhookUrl: undefined }),
+      createDeps({ getClient: () => client }),
+      { roundtrip: true, target: "user-1", targetKind: "dm", confirmed: true },
+    );
+    expect(client.sendMessage).not.toHaveBeenCalled();
+    expect(stageOf(report, "roundtrip").status).toBe("skipped");
   });
 });
 

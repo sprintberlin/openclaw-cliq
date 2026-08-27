@@ -661,17 +661,39 @@ async function buildDiscoveryStage(
     evidence.push(`channel directory read failed: ${safeError(err, values)}`);
     remediation.push("Grant ZohoCliq.Channels.READ and verify the /api/v2/channels endpoint.");
   }
+  if (failed) {
+    evidence.push(
+      "target resolution from the directory is unavailable; an explicit --target still works because the send does not depend on this stage",
+    );
+  }
   return stage(
     "discovery",
-    failed ? "fail" : "pass",
+    failed ? "warn" : "pass",
     evidence,
     remediation,
     failed ? "directory_discovery" : undefined,
   );
 }
 
+/**
+ * Stages whose failure genuinely prevents a consented diagnostic send. The
+ * `discovery` stage is deliberately absent: it exists to help an operator
+ * pick a target, so a rejected directory read must not block a send to a
+ * target the operator already named with `--target` (issue #146).
+ */
+const OUTBOUND_MANDATORY_STAGES: readonly CliqDoctorStageId[] = [
+  "config",
+  "runtime",
+  "oauth",
+  "capabilities",
+  "bot_handlers",
+  "public_webhook",
+];
+
 function priorFailure(stages: readonly CliqDoctorStage[]): CliqDoctorStage | undefined {
-  return stages.find((item) => item.status === "fail");
+  return stages.find(
+    (item) => item.status === "fail" && OUTBOUND_MANDATORY_STAGES.includes(item.id),
+  );
 }
 
 function roundtripPolicyEvidence(cfg: OpenClawConfig, target: string): string {

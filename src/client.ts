@@ -1027,6 +1027,31 @@ export interface CliqDirectoryEntry {
   raw?: unknown;
 }
 
+/**
+ * Largest page the v2 directory endpoints document (`limit` — "Maximum is
+ * 100" for `/api/v2/users` and `/api/v2/channels`). A larger value is
+ * rejected, so the shared list calls never ask for more.
+ */
+const CLIQ_DIRECTORY_MAX_PAGE_SIZE = 100;
+
+/**
+ * Build the query string for a v2 directory list request (issue #146).
+ *
+ * `/api/v2/users` and `/api/v2/channels` accept only their documented params;
+ * anything else (an offset-style `from`, an empty key) is answered with HTTP
+ * 400 `extra_param_found`, which is why the read-only capability probes at
+ * `?limit=1` succeed while a listing with extra params fails on the same
+ * account and scopes. Only `limit` and the opaque `next_token` cursor are
+ * ever sent, and the cursor is passed back verbatim (URL-encoded).
+ */
+function buildDirectoryQuery(limit: number, nextToken?: string): string {
+  const query = new URLSearchParams({
+    limit: String(Math.max(1, Math.min(limit, CLIQ_DIRECTORY_MAX_PAGE_SIZE))),
+  });
+  if (nextToken) query.set("next_token", nextToken);
+  return query.toString();
+}
+
 /** Pull a string id from a Cliq user record (tolerates `id` / `user_id`). */
 function readCliqUserId(rec: CliqUserRecord): string | undefined {
   return rec.id ?? rec.user_id ?? undefined;
@@ -2414,21 +2439,23 @@ export class CliqClient {
 
   /**
    * List Zoho Cliq users (organization peers) for the directory. Paginates
-   * via the v3 `next_token` cursor when the v2 response carries one (v2 used
-   * `next_token` as one of its six pagination tokens), falling back to
-   * `from`/`limit` offset pagination otherwise — so the directory is
-   * forward-compatible with v3's standardized `next_token` model even though
-   * the `/users` path stays v2 (v3 has no org-directory equivalent). Cliq's
-   * max page size is 200; pages are fetched up to `maxItems`. The raw record
-   * is kept on `raw` for callers that need extra fields. Never throws on a
-   * malformed record — it is skipped.
+   * via the `next_token` cursor the v2 response carries (v2 used `next_token`
+   * as one of its six pagination tokens; v3 standardized on it) — so the
+   * directory is forward-compatible with v3's model even though the `/users`
+   * path stays v2 (v3 has no org-directory equivalent).
+   *
+   * The request carries only the documented query params: `limit` (max 100)
+   * and, on a follow-up page, `next_token`. The v2 directory endpoints have
+   * no offset parameter and reject any extra key with HTTP 400
+   * `extra_param_found` (issue #146), so cursor-less responses end the walk
+   * instead of retrying with an offset. Pages are fetched up to `maxItems`.
+   * The raw record is kept on `raw` for callers that need extra fields. Never
+   * throws on a malformed record — it is skipped.
    */
   async listUsers(maxItems = 500): Promise<CliqDirectoryEntry[]> {
     const recs = await paginateList<CliqUserRecord>(
-      async ({ nextToken, from, limit }) => {
-        const path = nextToken
-          ? `/api/v2/users?from=${from}&limit=${limit}&next_token=${encodeURIComponent(nextToken)}`
-          : `/api/v2/users?from=${from}&limit=${limit}`;
+      async ({ nextToken, limit }) => {
+        const path = `/api/v2/users?${buildDirectoryQuery(limit, nextToken)}`;
         const json = (await this.getJson(path, "ZohoCliq.Users.READ")) as {
           users?: CliqUserRecord[];
           next_token?: string;
@@ -2440,7 +2467,7 @@ export class CliqClient {
             : undefined;
         return { items, nextToken: token };
       },
-      { maxItems, pageSize: 200 },
+      { maxItems, pageSize: CLIQ_DIRECTORY_MAX_PAGE_SIZE, cursorOnly: true },
     );
     const entries: CliqDirectoryEntry[] = [];
     for (const rec of recs) {
@@ -2458,18 +2485,16 @@ export class CliqClient {
 
   /**
    * List Zoho Cliq channels (group chats the bot/user can see) for the
-   * directory. Paginates like `listUsers` (`next_token` cursor when present,
-   * `from`/`limit` offset otherwise). Channel ids become directory entries of
-   * kind `group`; `unique_name` (when present) is exposed as the `handle` so
-   * routing can target either `cliq:chat:<id>` or
-   * `cliq:channel:<unique_name>`.
+   * directory. Paginates like `listUsers`: `limit` (max 100) plus the
+   * `next_token` cursor only, never an offset param the v2 endpoint rejects
+   * (issue #146). Channel ids become directory entries of kind `group`;
+   * `unique_name` (when present) is exposed as the `handle` so routing can
+   * target either `cliq:chat:<id>` or `cliq:channel:<unique_name>`.
    */
   async listChannels(maxItems = 500): Promise<CliqDirectoryEntry[]> {
     const recs = await paginateList<CliqChannelRecord>(
-      async ({ nextToken, from, limit }) => {
-        const path = nextToken
-          ? `/api/v2/channels?from=${from}&limit=${limit}&next_token=${encodeURIComponent(nextToken)}`
-          : `/api/v2/channels?from=${from}&limit=${limit}`;
+      async ({ nextToken, limit }) => {
+        const path = `/api/v2/channels?${buildDirectoryQuery(limit, nextToken)}`;
         const json = (await this.getJson(path, "ZohoCliq.Channels.READ")) as {
           channels?: CliqChannelRecord[];
           next_token?: string;
@@ -2481,7 +2506,7 @@ export class CliqClient {
             : undefined;
         return { items, nextToken: token };
       },
-      { maxItems, pageSize: 200 },
+      { maxItems, pageSize: CLIQ_DIRECTORY_MAX_PAGE_SIZE, cursorOnly: true },
     );
     const entries: CliqDirectoryEntry[] = [];
     for (const rec of recs) {

@@ -120,6 +120,19 @@ describe("paginateList — mixed mode (cursor then offset)", () => {
   });
 });
 
+describe("paginateList — cursorOnly endpoints", () => {
+  it("stops after a full page that carries no cursor instead of re-reading it", async () => {
+    const { fn, calls } = makeFetchPage([
+      { items: ["a", "b"], nextToken: "cur-1" },
+      { items: ["c", "d"] }, // full page, no cursor → nothing more to ask for
+    ]);
+    const out = await paginateList(fn, { maxItems: 100, pageSize: 2, cursorOnly: true });
+    expect(out).toEqual(["a", "b", "c", "d"]);
+    expect(calls).toHaveLength(2);
+    expect(calls.every((c) => c.from === undefined || typeof c.from === "number")).toBe(true);
+  });
+});
+
 describe("paginateList — clamping", () => {
   it("clamps pageSize to [1, 200]", async () => {
     // Use a large maxItems so the requested limit reflects the pageSize clamp

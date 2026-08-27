@@ -62,6 +62,22 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **Directory listing no longer sends a query param Zoho rejects, and a failed
+  directory read no longer blocks the consented doctor send (issue #146).**
+  `GET /api/v2/users` and `GET /api/v2/channels` accept only `limit` (maximum
+  100) and the `next_token` cursor; the offset-style `from` the list calls
+  added was answered with HTTP 400 `extra_param_found` even on an account
+  whose `ZohoCliq.Users.READ` / `ZohoCliq.Channels.READ` probes passed, so
+  `openclaw directory`, setup allowlist resolution, and `openclaw cliq doctor`
+  all came back empty or failed. The shared request construction now sends
+  only the documented params, clamps the page size to 100, and stops when a
+  response carries no cursor instead of retrying with an offset — the same
+  class of bug fixed earlier for `listChatMessages`. `openclaw cliq doctor`
+  additionally treats stage 7 as a target-selection aid: a rejected directory
+  read warns (run `degraded`, exit `1`) instead of failing, and the consented
+  `--outbound-test` / `--roundtrip` still run against an explicit `--target`.
+  Failures in the config, runtime, OAuth, capability, bot-handler, and public
+  webhook stages keep blocking the send.
 - **Local checkout install is documented with the version-specific `--force`
   rule (issue #126).** `openclaw plugins install --link <path>` is cancelled on
   OpenClaw `2026.8.1-beta.3` unless `--force` acknowledges that the source is

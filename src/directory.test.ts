@@ -491,15 +491,161 @@ describe("CliqClient directory listing stays on /api/v2 regardless of apiVersion
 });
 
 /**
+ * Live-shaped v2 directory regression guard (issue #146).
+ *
+ * The v2 directory list endpoints accept only their documented query params
+ * (`limit`, max 100, plus the `next_token` cursor). Any extra key — notably an
+ * offset-style `from` — is rejected with HTTP 400 `extra_param_found`, which is
+ * exactly what a live EU deployment reported: the read-only capability probes
+ * (`/api/v2/users?limit=1`) passed while the directory listing came back 400.
+ * The mock below refuses anything outside the documented allowlist so the
+ * shared request construction can never regain a rejected parameter.
+ */
+describe("CliqClient directory list against a v2 endpoint that rejects unknown query params", () => {
+  beforeEach(() => setCliqClientRegistry(null));
+  afterEach(() => setCliqClientRegistry(null));
+
+  const ALLOWED_QUERY_KEYS = new Set(["limit", "next_token"]);
+
+  function installStrictV2Fetch(opts: {
+    users?: CliqUserRecord[];
+    channels?: CliqChannelRecord[];
+    usersNextTokens?: (string | undefined)[];
+  } = {}): { seen: string[]; restore: () => void } {
+    const original = globalThis.fetch;
+    const seen: string[] = [];
+    let usersCall = 0;
+    globalThis.fetch = (async (input: URL | string) => {
+      const urlStr = typeof input === "string" ? input : input.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(
+          JSON.stringify({ access_token: "tok", expires_in: 3600 }),
+          { status: 200 },
+        );
+      }
+      seen.push(urlStr);
+      const parsed = new URL(urlStr);
+      for (const key of parsed.searchParams.keys()) {
+        if (!ALLOWED_QUERY_KEYS.has(key)) {
+          return new Response(
+            JSON.stringify({ code: "extra_param_found", message: `'${key}' is an extra key` }),
+            { status: 400, headers: { "content-type": "application/json" } },
+          );
+        }
+      }
+      const limit = Number(parsed.searchParams.get("limit") ?? "0");
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+        return new Response(
+          JSON.stringify({ code: "input_pattern_mismatch", message: "limit" }),
+          { status: 400, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (parsed.pathname === "/api/v2/users") {
+        const nextToken = opts.usersNextTokens?.[usersCall];
+        usersCall++;
+        return new Response(
+          JSON.stringify({
+            users: opts.users ?? [],
+            ...(nextToken ? { next_token: nextToken } : {}),
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (parsed.pathname === "/api/v2/channels") {
+        return new Response(
+          JSON.stringify({ channels: opts.channels ?? [] }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("", { status: 404 });
+    }) as typeof fetch;
+    return {
+      seen,
+      restore: () => {
+        globalThis.fetch = original;
+      },
+    };
+  }
+
+  it("reads the user directory without sending an offset param the endpoint rejects", async () => {
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient("id", "secret", "bot");
+    const mock = installStrictV2Fetch({ users: [{ id: "u1", name: "U1" }] });
+    let peers;
+    try {
+      peers = await client.listUsers(1);
+    } finally {
+      mock.restore();
+    }
+    expect(peers).toHaveLength(1);
+    const usersCall = mock.seen.find((url) => url.includes("/api/v2/users"));
+    expect(usersCall).toBeDefined();
+    expect(usersCall).not.toContain("from=");
+    expect(usersCall).toContain("limit=1");
+  });
+
+  it("reads the channel directory without sending an offset param the endpoint rejects", async () => {
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient("id", "secret", "bot");
+    const mock = installStrictV2Fetch({ channels: [{ id: "c1", unique_name: "general" }] });
+    let groups;
+    try {
+      groups = await client.listChannels(1);
+    } finally {
+      mock.restore();
+    }
+    expect(groups).toHaveLength(1);
+    const channelsCall = mock.seen.find((url) => url.includes("/api/v2/channels"));
+    expect(channelsCall).toBeDefined();
+    expect(channelsCall).not.toContain("from=");
+    expect(channelsCall).toContain("limit=1");
+  });
+
+  it("never requests more than the documented v2 maximum page size", async () => {
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient("id", "secret", "bot");
+    const mock = installStrictV2Fetch({ users: [{ id: "u1", name: "U1" }] });
+    try {
+      await client.listUsers(500);
+      await client.listChannels(500);
+    } finally {
+      mock.restore();
+    }
+    expect(mock.seen.length).toBeGreaterThan(0);
+    for (const url of mock.seen) {
+      expect(Number(new URL(url).searchParams.get("limit"))).toBeLessThanOrEqual(100);
+    }
+  });
+
+  it("carries only the cursor on a follow-up page", async () => {
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient("id", "secret", "bot");
+    const mock = installStrictV2Fetch({
+      users: [{ id: "u1", name: "U1" }],
+      usersNextTokens: ["cur-1"],
+    });
+    try {
+      await client.listUsers(500);
+    } finally {
+      mock.restore();
+    }
+    const usersCalls = mock.seen.filter((url) => url.includes("/api/v2/users"));
+    expect(usersCalls).toHaveLength(2);
+    expect(usersCalls[1]).toContain("next_token=cur-1");
+    expect(usersCalls[1]).not.toContain("from=");
+  });
+});
+
+/**
  * v3 `next_token` cursor pagination adoption. The directory list calls stay
  * on the v2 `/users` / `/channels` paths (v3 has no org-directory equivalent
- * — see docs/learnings/094), but they now follow a `next_token` cursor when
- * the v2 response carries one (v2 used `next_token` as one of its six
- * pagination tokens), falling back to `from`/`limit` offset pagination
- * otherwise. This makes the directory forward-compatible with v3's
- * standardized `next_token` model (the v3 pagination convention — see
- * docs/learnings/096) and is the primitive the future v3 CRUD list
- * endpoints (Phase 4) will build on.
+ * — see docs/learnings/094), but they follow a `next_token` cursor when the
+ * v2 response carries one (v2 used `next_token` as one of its six pagination
+ * tokens) and stop when it is absent — the v2 directory endpoints have no
+ * offset parameter to fall back to (see docs/learnings/066). This makes the
+ * directory forward-compatible with v3's standardized `next_token` model (the
+ * v3 pagination convention — see docs/learnings/096) and is the primitive the
+ * future v3 CRUD list endpoints (Phase 4) will build on.
  */
 describe("CliqClient directory list follows next_token cursors", () => {
   beforeEach(() => setCliqClientRegistry(null));
@@ -547,11 +693,10 @@ describe("CliqClient directory list follows next_token cursors", () => {
     expect(usersCall).toBe(2);
   });
 
-  it("listChannels falls back to from/limit offset when next_token is absent", async () => {
+  it("listChannels stops after a full page that carries no next_token", async () => {
     const { CliqClient } = await import("./client.js");
     const client = new CliqClient("id", "secret", "bot");
-    const page1 = Array.from({ length: 200 }, (_, i) => ({ id: `c${i}`, unique_name: `ch${i}` }));
-    const page2 = Array.from({ length: 50 }, (_, i) => ({ id: `c${200 + i}`, unique_name: `ch${200 + i}` }));
+    const page1 = Array.from({ length: 100 }, (_, i) => ({ id: `c${i}`, unique_name: `ch${i}` }));
     const seen: string[] = [];
     const original = globalThis.fetch;
     let call = 0;
@@ -563,8 +708,7 @@ describe("CliqClient directory list follows next_token cursors", () => {
       }
       if (urlStr.includes("/api/v2/channels")) {
         call++;
-        const recs = call === 1 ? page1 : page2;
-        return new Response(JSON.stringify({ channels: recs }), {
+        return new Response(JSON.stringify({ channels: page1 }), {
           status: 200, headers: { "content-type": "application/json" },
         });
       }
@@ -576,12 +720,12 @@ describe("CliqClient directory list follows next_token cursors", () => {
     } finally {
       globalThis.fetch = original;
     }
-    expect(groups).toHaveLength(250);
-    expect(call).toBe(2);
-    // seen[0] is the OAuth token request; seen[1] = page 1; seen[2] = page 2.
-    // No next_token param on either request (offset mode).
+    // Without a cursor there is no second page to ask for: the v2 directory
+    // endpoints reject an offset param, so re-requesting would either 400 or
+    // loop over the same page forever.
+    expect(groups).toHaveLength(100);
+    expect(call).toBe(1);
     expect(seen.filter((u) => u.includes("/api/v2/")).every((u) => !u.includes("next_token="))).toBe(true);
-    // The second channels request advanced the `from` offset by the page size.
-    expect(seen[2]).toContain("from=200");
+    expect(seen.filter((u) => u.includes("/api/v2/")).every((u) => !u.includes("from="))).toBe(true);
   });
 });
