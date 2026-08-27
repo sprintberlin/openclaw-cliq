@@ -62,6 +62,13 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **Redelivered slow turns no longer show a false failure placeholder (issue
+  #123).** When Deluge redelivers a content-derived message after the short
+  dedupe TTL while its original turn is still running, the duplicate no longer
+  posts a second thinking placeholder; if the runtime reports the benign skip
+  after a placeholder was posted, the plugin deletes that placeholder instead
+  of editing it into *"Couldn't process that message"*. Genuine failed or empty
+  turns still produce the configured failure text.
 - **The public webhook preflight now identifies itself explicitly at the edge
   (issue #107).** Every reachability, secret-enforcement, and authenticated
   probe request sends the documented User-Agent

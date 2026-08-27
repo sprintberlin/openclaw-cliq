@@ -12,6 +12,8 @@ import { stripCliqMentions } from "./mentions.js";
 import { resolveCliqClient } from "./runtime-api.js";
 import { createLiveEditDeliver, getLiveEditPlaceholderConsumed, editStatusCardPhase } from "./live-edit.js";
 import { startThinkingAnimation, type ThinkingAnimation } from "./thinking-animate.js";
+import { readInboundProcessedOutcome } from "./sdk-compat.js";
+import { beginCliqContentTurn } from "./dedupe.js";
 import {
   isSensitiveInbound,
   buildConfirmCardButtons,
@@ -1163,12 +1165,15 @@ export async function dispatchCliqInbound(params: {
   // and the no-reply cleanup can stop a late frame edit before the final
   // edit-into-reply. `null` when no animation is running.
   let thinkingAnimation: ThinkingAnimation | null = null;
+  const contentTurn = beginCliqContentTurn(parsed, account);
+  const isLikelyRedelivery = contentTurn?.hadInFlightTurn ?? false;
   if (
     (account.thinking?.mode === "placeholder" ||
       account.thinking?.mode === "card") &&
     !account.blockStreaming &&
     account.refreshToken &&
-    !isAbort
+    !isAbort &&
+    !isLikelyRedelivery
   ) {
     try {
       const cardMode = account.thinking?.mode === "card";
@@ -1284,12 +1289,28 @@ export async function dispatchCliqInbound(params: {
   // resolution, edit failure → delete + fresh send fallback, and chunking
   // transparently. A failed cleanup is swallowed + reported — it must never
   // break or delay the turn.
-  const cleanupStrayPlaceholder = async (): Promise<void> => {
+  const cleanupStrayPlaceholder = async (
+    turnResult?: { skippedBenignly: boolean },
+  ): Promise<void> => {
     // Stop the animation first so a late frame edit cannot clobber the
     // cleanup edit (or race with the reply deliver).
     thinkingAnimation?.stop();
     if (!initialDraft) return;
     if (getLiveEditPlaceholderConsumed(deliver)) return;
+    if (turnResult?.skippedBenignly) {
+      try {
+        await deleteStrayPlaceholder({
+          client,
+          draft: initialDraft,
+          to: deliverTo,
+          isDm: !parsed.isGroup,
+          onError: (err, info) => onError?.(err, info),
+        });
+      } catch (err) {
+        onError?.(err, { kind: "thinking-placeholder-cleanup" });
+      }
+      return;
+    }
     const noticeText =
       account.thinking?.failureText ?? "⚠️ Couldn't process that message.";
     try {
@@ -1304,8 +1325,9 @@ export async function dispatchCliqInbound(params: {
     }
   };
 
+  let turnOutcome: { skippedBenignly: boolean } | undefined;
   try {
-    await runtime.channel.inbound.run({
+    const runResult = await runtime.channel.inbound.run({
       channel: "cliq",
       accountId: account.accountId ?? undefined,
       raw: parsed,
@@ -1349,7 +1371,71 @@ export async function dispatchCliqInbound(params: {
         }),
       },
     });
+    turnOutcome = {
+      skippedBenignly:
+        isLikelyRedelivery || (await isBenignlySkippedTurn(runResult)),
+    };
+  } catch (err) {
+    if (isLikelyRedelivery && isCliqSessionConflictError(err)) {
+      turnOutcome = { skippedBenignly: true };
+      return;
+    }
+    throw err;
   } finally {
-    await cleanupStrayPlaceholder();
+    contentTurn?.finish();
+    await cleanupStrayPlaceholder(turnOutcome);
+  }
+}
+
+const CLIQ_BENIGN_SKIP_REASONS = new Set([
+  "duplicate",
+  "inflight",
+  "in-flight",
+  "reply-operation-active",
+  "deferred-to-active-run",
+  "deferred",
+]);
+
+async function isBenignlySkippedTurn(runResult: unknown): Promise<boolean> {
+  if (!runResult || typeof runResult !== "object" || Array.isArray(runResult)) {
+    return false;
+  }
+  const dispatchResult = (runResult as { dispatchResult?: unknown }).dispatchResult;
+  if (
+    dispatchResult &&
+    typeof dispatchResult === "object" &&
+    !Array.isArray(dispatchResult) &&
+    (dispatchResult as { deferredToActiveRun?: unknown }).deferredToActiveRun === true
+  ) {
+    return true;
+  }
+  const processed = await readInboundProcessedOutcome(runResult);
+  if (!processed || processed.outcome !== "skipped") return false;
+  const reason = processed.reason?.trim().toLowerCase();
+  return Boolean(reason && CLIQ_BENIGN_SKIP_REASONS.has(reason));
+}
+
+async function deleteStrayPlaceholder(opts: {
+  client: Pick<CliqClient, "resolveChannelChatId" | "deleteMessage">;
+  draft: { messageId: string; chatId?: string };
+  to: string;
+  isDm: boolean;
+  onError?: (err: unknown, info: { kind: string }) => void;
+}): Promise<void> {
+  const { client, draft, to, isDm, onError } = opts;
+  let chatId = draft.chatId;
+  if (!chatId && !isDm) {
+    try {
+      chatId = (await client.resolveChannelChatId(to)) ?? undefined;
+    } catch (err) {
+      onError?.(err, { kind: "thinking-placeholder-cleanup-resolve" });
+      return;
+    }
+  }
+  if (!chatId) return;
+  try {
+    await client.deleteMessage({ chatId, messageId: draft.messageId });
+  } catch (err) {
+    onError?.(err, { kind: "thinking-placeholder-cleanup" });
   }
 }

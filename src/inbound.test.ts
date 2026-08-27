@@ -2912,6 +2912,23 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
     };
   }
 
+  function mockRuntimeSkipped(reason: string): CliqRuntime {
+    const runtime = mockRuntimeNoReply();
+    runtime.channel.inbound.run = async (params) => {
+      const adapter = (params as unknown as {
+        adapter: { resolveTurn: (...args: unknown[]) => unknown };
+      }).adapter;
+      adapter.resolveTurn({}, {}, {});
+      return {
+        admission: { kind: "dispatch" },
+        dispatched: true,
+        processedOutcome: { outcome: "skipped", reason },
+        dispatchResult: { queuedFinal: false, counts: {} },
+      };
+    };
+    return runtime;
+  }
+
   // A runtime that drives a single canned reply through `delivery.deliver`
   // (mirrors the buffered block dispatcher flushing one final block).
   function mockRuntimeWithReply(replyText: string): CliqRuntime {
@@ -3014,6 +3031,151 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
     };
     return client;
   }
+
+  it("deletes an active placeholder when the runtime skips a duplicate", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    await dispatchCliqInbound({
+      runtime: mockRuntimeSkipped("duplicate"),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "💭 …" },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    expect(client.sends).toHaveLength(1);
+    expect(client.edits).toHaveLength(0);
+    expect(client.deletes).toEqual([{ chatId: "chat-u1", messageId: "ph-1" }]);
+  });
+
+  it("does nothing when the runtime skips a duplicate without a placeholder", async () => {
+    const client = makeMockClient();
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    await dispatchCliqInbound({
+      runtime: mockRuntimeSkipped("duplicate"),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account(),
+      parsed: parsed!,
+      client,
+    });
+    expect(client.sends).toHaveLength(0);
+    expect(client.edits).toHaveLength(0);
+    expect(client.deletes).toHaveLength(0);
+  });
+
+  it("posts no placeholder for a redelivery while an equivalent turn is in flight (issue #123)", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    expect(parsed!.messageId).toMatch(/^syn:/);
+    const thinkingAccount = account({
+      thinking: { mode: "placeholder", text: "💭 …" },
+      refreshToken: "rt",
+      blockStreaming: false,
+    });
+    const cfg = {
+      channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } },
+    } as never;
+
+    let releaseOriginal: (() => void) | undefined;
+    const originalRuntime = mockRuntimeNoReply();
+    originalRuntime.channel.inbound.run = async (params) => {
+      const adapter = (params as unknown as {
+        adapter: { resolveTurn: (...args: unknown[]) => unknown };
+      }).adapter;
+      const turn = adapter.resolveTurn({}, {}, {}) as unknown as {
+        delivery: { deliver: (payload: { text?: string }) => Promise<void> };
+      };
+      await new Promise<void>((resolve) => {
+        releaseOriginal = resolve;
+      });
+      await turn.delivery.deliver({ text: "the real reply" });
+    };
+
+    const originalTurn = dispatchCliqInbound({
+      runtime: originalRuntime,
+      cfg,
+      account: thinkingAccount,
+      parsed: parsed!,
+      client,
+    });
+    await vi.waitFor(() => expect(client.sends).toHaveLength(1));
+
+    await dispatchCliqInbound({
+      runtime: mockRuntimeSkipped("duplicate"),
+      cfg,
+      account: thinkingAccount,
+      parsed: parseCliqWebhookPayload(dmPayload())!,
+      client,
+    });
+
+    expect(client.sends).toHaveLength(1);
+    expect(client.deletes).toHaveLength(0);
+    expect(
+      client.edits.some((e) => e.text === "⚠️ Couldn't process that message."),
+    ).toBe(false);
+
+    releaseOriginal?.();
+    await originalTurn;
+
+    expect(client.edits).toHaveLength(1);
+    expect(client.edits[0].text).toBe("the real reply");
+  });
+
+  it("removes a redelivery placeholder when the runtime reports a session conflict (operator evidence)", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    const thinkingAccount = account({
+      thinking: { mode: "placeholder", text: "💭 …" },
+      refreshToken: "rt",
+      blockStreaming: false,
+    });
+    const cfg = {
+      channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } },
+    } as never;
+
+    let releaseOriginal: (() => void) | undefined;
+    const originalRuntime = mockRuntimeNoReply();
+    originalRuntime.channel.inbound.run = async () => {
+      await new Promise<void>((resolve) => {
+        releaseOriginal = resolve;
+      });
+    };
+    const originalTurn = dispatchCliqInbound({
+      runtime: originalRuntime,
+      cfg,
+      account: thinkingAccount,
+      parsed: parsed!,
+      client,
+    });
+    await vi.waitFor(() => expect(client.sends).toHaveLength(1));
+
+    const conflictRuntime = mockRuntimeNoReply();
+    conflictRuntime.channel.inbound.run = async () => {
+      throw new Error("reply session initialization conflicted");
+    };
+    await expect(
+      dispatchCliqInbound({
+        runtime: conflictRuntime,
+        cfg,
+        account: thinkingAccount,
+        parsed: parseCliqWebhookPayload(dmPayload())!,
+        client,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(client.sends).toHaveLength(1);
+    expect(client.deletes).toHaveLength(0);
+    expect(
+      client.edits.some((e) => e.text === "⚠️ Couldn't process that message."),
+    ).toBe(false);
+
+    releaseOriginal?.();
+    await originalTurn;
+    expect(client.edits[0].text).toBe("⚠️ Couldn't process that message.");
+  });
 
   it("edits the untouched placeholder to a default notice when no reply is produced (no failureText) (issue #88)", async () => {
     const client = makeMockClient({ placeholderChatId: "chat-u1" });
