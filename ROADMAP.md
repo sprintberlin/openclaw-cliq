@@ -60,9 +60,9 @@ v3 adds CRUD endpoints v2 never had (bots, slash commands, message actions, widg
   <https://www.zoho.com/cliq/help/restapi/v3/>. (Prior art: octo's single management tool.)
 - **Schedulers / proactive messages.** Use the v3 scheduler CRUD to let the agent schedule or
   cancel proactive messages. Ref: REST API v3 (schedulers).
-- **Setup-wizard auto-provisioning.** Register the bot, slash-commands, and message-actions via v3
-  CRUD from `openclaw setup` instead of the manual Deluge / console steps in today's guide.
-  Ref: REST API v3.
+- **Setup-wizard auto-provisioning for slash-commands and message-actions.** Register them via v3
+  CRUD from `openclaw setup` instead of the manual console steps in today's guide, reusing the
+  existing bot/handler provisioning service. Ref: REST API v3.
 
 ## Phase 5 — Scaling & operations
 
@@ -72,10 +72,9 @@ Mostly v3-independent; **dynamic agents** in particular is high-value and can be
   user and one group channel still round-trip under the acknowledged trusted-organization
   configuration, and that `openclaw security audit` reports the deployment as informational
   rather than critical. Negative tenant cases must stay on fixtures or an isolated setup.
-- **Read-only bot and handler inspection.** Extend the shared inspector with the remaining #94
-  provisioning dry-run metadata: handler JSON transport structure and a redacted structural diff
-  suitable for the future mutation-confirmation gate. Keep every unreadable field explicitly
-  `unknown`; never infer it from a successful network probe.
+- **Live provisioning acceptance run.** Confirm on a real organization that the setup dry-run
+  matches the Franzi Message/Mention handlers without mutating them, and exercise create plus the
+  minimal-create-then-`PATCH` fallback against an isolated test bot rather than a production one.
 - **Dynamic agents + workspace templates.** Route each DM sender and each channel to its own
   isolated agent session and workspace, seeded on first contact from a configurable template
   (`AGENTS.md` and friends). Today all senders share one agent context; per-channel *tool policy*
