@@ -409,3 +409,39 @@ describe("cliqDoctorAdapter integration with the doctor adapter contract", () =>
     expect(lines).toHaveLength(1);
   });
 });
+
+describe("collectCliqPreviewWarnings — maintenance capabilities (issue #93)", () => {
+  it("stays silent about setup scopes it cannot observe, so a healthy install is not degraded", () => {
+    // Doctor is static: it cannot distinguish a runtime-only consent from a
+    // provisioning one. Enforcement belongs where evidence exists — the
+    // bot_read probe and the provisioning capability gate.
+    const warnings = collectCliqPreviewWarnings({
+      cfg: cfgWith({
+        clientId: "id",
+        clientSecret: "secret",
+        botId: "franzi",
+        webhookSecret: "wh",
+        refreshToken: "rt",
+        publicWebhookUrl: "https://cliq.example.com/cliq/webhook",
+      }),
+      doctorFixCommand: "openclaw doctor --fix",
+    });
+    expect(warnings.filter((w) => w.includes("ZohoCliq.Bots."))).toEqual([]);
+  });
+
+  it("uses the matrix's per-capability refresh-token instructions", () => {
+    const warnings = collectCliqPreviewWarnings({
+      cfg: cfgWith({
+        clientId: "id",
+        clientSecret: "secret",
+        botId: "franzi",
+        webhookSecret: "wh",
+      }),
+      doctorFixCommand: "openclaw doctor --fix",
+    });
+    const joined = warnings.join("\n");
+    expect(joined).toContain("ZohoCliq.Channels.UPDATE");
+    expect(joined).toContain("ZohoCliq.Messages.UPDATE");
+    expect(joined).toMatch(/authorization_code exchange/i);
+  });
+});

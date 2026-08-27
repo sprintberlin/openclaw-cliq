@@ -498,8 +498,18 @@ async function buildCapabilitiesStage(
   sendExercised: boolean,
 ): Promise<CliqDoctorStage> {
   if (!account || !client) return skipped("capabilities", "not run: config and secret resolution failed");
-  const probeable = CLIQ_CAPABILITIES.filter((capability) => capability.probePath);
-  const unprobeable = CLIQ_CAPABILITIES.filter((capability) => !capability.probePath);
+  // Three-way split: what we can prove, what has no safe probe, and what is
+  // reported from consent only. Collapsing the last two would let an
+  // unverifiable capability read as a verdict.
+  const probeable = CLIQ_CAPABILITIES.filter(
+    (capability) => capability.probePath && !capability.scopeReportedOnly,
+  );
+  const scopeReportedOnly = CLIQ_CAPABILITIES.filter(
+    (capability) => capability.scopeReportedOnly,
+  );
+  const unprobeable = CLIQ_CAPABILITIES.filter(
+    (capability) => !capability.probePath && !capability.scopeReportedOnly,
+  );
   const evidence: string[] = [];
   const remediation: string[] = [];
   let failed = false;
@@ -546,6 +556,13 @@ async function buildCapabilitiesStage(
   if (unprobeableOptional.length > 0) {
     evidence.push(
       `${unprobeableOptional.length} optional capabilities have no safe read-only API probe and were not exercised: ${unprobeableOptional.map((capability) => capability.id).join(", ")}`,
+    );
+  }
+  for (const capability of scopeReportedOnly) {
+    // Never `pass`: Zoho issues tokens that echo a scope the API later
+    // rejects (learning 070), and the only real proof would create a bot.
+    evidence.push(
+      `${capability.id}=unverified (reported from the granted scope set, not proven: ${capability.unprobeableReason ?? "no non-destructive proof exists"})`,
     );
   }
   return stage(

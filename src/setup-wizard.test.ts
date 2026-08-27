@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { FULL_SCOPE_STRING } from "./capabilities.js";
 import {
   cliqSetupWizard,
   isCliqChannelConfigured,
@@ -645,5 +646,34 @@ describe("resolveCliqDataCenterOrEu", () => {
   it("falls back to EU for undefined / unknown", () => {
     expect(resolveCliqDataCenterOrEu(undefined).id).toBe("eu");
     expect(resolveCliqDataCenterOrEu("zz").id).toBe("eu");
+  });
+});
+
+describe("cliq setup wizard — canonical OAuth profile (issue #93)", () => {
+  it("prints the full matrix-derived scope string, including Bots.CREATE", async () => {
+    const { prompter, calls } = makeScriptedPrompter([
+      { method: "select", value: "eu" },
+      { method: "text", value: "CID" },
+      { method: "text", value: "SECRET" },
+      { method: "text", value: "franzi" },
+      { method: "text", value: "Franzi" },
+      { method: "text", value: "WH" },
+      { method: "text", value: "" },
+      { method: "text", value: "" },
+    ]);
+    await cliqSetupWizard.finalize!({
+      cfg: cfgWith({}),
+      accountId: "default",
+      credentialValues: {},
+      runtime: {} as never,
+      prompter,
+      forceAllowFrom: false,
+    });
+    const setupNote = calls.find(
+      (call) => call.method === "note" && String(call.args.message).includes("with scopes"),
+    );
+    expect(setupNote).toBeDefined();
+    expect(String(setupNote!.args.message)).toContain(FULL_SCOPE_STRING);
+    expect(String(setupNote!.args.message)).toContain("ZohoCliq.Bots.CREATE");
   });
 });

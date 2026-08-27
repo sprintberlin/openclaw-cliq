@@ -72,6 +72,10 @@ Mostly v3-independent; **dynamic agents** in particular is high-value and can be
   user and one group channel still round-trip under the acknowledged trusted-organization
   configuration, and that `openclaw security audit` reports the deployment as informational
   rather than critical. Negative tenant cases must stay on fixtures or an isolated setup.
+- **Live capability-report acceptance run.** Run the staged capability report against the Franzi
+  account without changing config, and confirm that runtime messaging and bot/handler maintenance
+  are reported separately with every token value redacted. Needs real credentials, so it stays a
+  human step.
 - **Live provisioning acceptance run.** Confirm on a real organization that the setup dry-run
   matches the Franzi Message/Mention handlers without mutating them, and exercise create plus the
   minimal-create-then-`PATCH` fallback against an isolated test bot rather than a production one.

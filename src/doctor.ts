@@ -184,8 +184,14 @@ function collectCliqCapabilityWarnings(params: {
     if (requiredRtCaps.length > 0) {
       const capNames = requiredRtCaps.map((c) => c.label).join(", ");
       warnings.push(
-        `- channels.cliq: no refreshToken configured. The following runtime capabilities require a user-context refresh token and will fail: ${capNames}. See README §3c to obtain one.`,
+        `- channels.cliq: no refreshToken configured. The following runtime capabilities require a user-context refresh token and will fail: ${capNames}.`,
       );
+      // The matrix already carries the exact scope + regeneration step per
+      // capability; a generic "see the README" pointer makes the operator
+      // rediscover which scope is actually missing.
+      for (const capability of requiredRtCaps) {
+        warnings.push(`  - ${capability.label}: ${capability.missingHint}`);
+      }
     }
 
     const optionalRtCaps = CLIQ_CAPABILITIES.filter(
@@ -201,6 +207,14 @@ function collectCliqCapabilityWarnings(params: {
       );
     }
   }
+
+  // Setup/maintenance scopes are deliberately NOT warned about here. Doctor
+  // is static by contract, so it cannot tell a runtime-only consent from a
+  // provisioning one, and an unconditional warning would degrade every
+  // correctly configured install. The real enforcement lives where the
+  // evidence exists: `openclaw cliq doctor` probes bot_read, and the
+  // provisioning service blocks a mutation whose scope is known-missing
+  // (see src/setup-provisioning.ts).
 
   return warnings;
 }

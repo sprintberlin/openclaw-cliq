@@ -362,12 +362,15 @@ describe("probeCliqCapability", () => {
     expect(result.status).toBe("probe_error");
   });
 
-  it("returns probe_error when no probe path is defined", async () => {
+  it("reports unprobeable — not probe_error — when no safe probe exists", async () => {
+    // "We cannot look" must stay distinguishable from "we looked and it
+    // broke": only the latter is a reason to retry.
     const cap = getCapabilityById("dm_send")!;
     const fetchImpl = mockFetch(200, "{}");
     const result = await probeCliqCapability(cap, apiBase, "token", fetchImpl);
-    expect(result.status).toBe("probe_error");
-    expect(result.error).toContain("No probe path");
+    expect(result.status).toBe("unprobeable");
+    expect(result.error).toBe(cap.unprobeableReason);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("returns probe_error on network error", async () => {
@@ -597,5 +600,112 @@ describe("grant type requirements", () => {
       expect(cap.scope).not.toBe("ZohoCliq.Users.READ");
       expect(cap.scope).not.toBe("ZohoCliq.Channels.READ");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Adversarial: misleading scope text must never become capability proof
+// ---------------------------------------------------------------------------
+
+describe("capability honesty invariants (issue #93)", () => {
+  it("never reports a capability without a probe path as probed-ok or probe-error", async () => {
+    const fetchImpl = vi.fn();
+    for (const capability of CLIQ_CAPABILITIES.filter((entry) => !entry.probePath)) {
+      const result = await probeCliqCapability(
+        capability,
+        "https://cliq.zoho.eu",
+        "token",
+        fetchImpl as unknown as typeof fetch,
+      );
+      expect(result.status).not.toBe("ok");
+      expect(result.status).not.toBe("probe_error");
+      expect(["unprobeable", "scope_reported_only"]).toContain(result.status);
+    }
+    // "No safe probe exists" must never cost a network call.
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("states an explicit reason for every capability that has no safe probe", () => {
+    for (const capability of CLIQ_CAPABILITIES.filter((entry) => !entry.probePath)) {
+      expect(capability.unprobeableReason, capability.id).toBeTruthy();
+      expect(capability.unprobeableReason!.length).toBeGreaterThan(10);
+    }
+  });
+
+  it("only ever probes with read-only GET requests", () => {
+    for (const capability of CLIQ_CAPABILITIES.filter((entry) => entry.probePath)) {
+      expect(capability.probeMethod, capability.id).toBe("GET");
+      expect(capability.probePath!, capability.id).toMatch(/^\/api\/v[23]\//);
+      expect(capability.probePath!, capability.id).not.toMatch(
+        /\/(messages|handlers|reactions)(\/|$|\?)/,
+      );
+    }
+  });
+
+  it("reports bot_create from consent only and never contacts the API for it", async () => {
+    const fetchImpl = vi.fn();
+    const botCreate = getCapabilityById("bot_create")!;
+    const result = await probeCliqCapability(
+      botCreate,
+      "https://cliq.zoho.eu",
+      "token",
+      fetchImpl as unknown as typeof fetch,
+    );
+    expect(result.status).toBe("scope_reported_only");
+    expect(result.httpStatus).toBeUndefined();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("does not let a token that echoes every scope pass when the API rejects it", async () => {
+    // The Zoho failure mode from learning 070: the token response reports the
+    // scope, the API still answers oauthtoken_scope_invalid.
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ code: "oauthtoken_scope_invalid" }), { status: 401 }),
+    );
+    const probeable = CLIQ_CAPABILITIES.filter((entry) => entry.probePath);
+    expect(probeable.length).toBeGreaterThan(0);
+    for (const capability of probeable) {
+      const result = await probeCliqCapability(
+        capability,
+        "https://cliq.zoho.eu",
+        "token",
+        fetchImpl as unknown as typeof fetch,
+      );
+      expect(result.status, capability.id).toBe("missing_scope");
+    }
+    // And the granted-scope evaluation alone must not claim those capabilities work.
+    const evaluation = evaluateCliqScopeSet(FULL_SCOPE_STRING);
+    expect(evaluation.granted.length).toBeGreaterThan(0);
+    expect(evaluation.scopeReportedOnly).toContain("bot_create");
+  });
+
+  it("treats a legacy two-scope consent as missing every other capability", () => {
+    const evaluation = evaluateCliqScopeSet(
+      "ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE",
+    );
+    expect(evaluation.available).toContain("dm_send");
+    expect(evaluation.missing).toContain("bot_read");
+    expect(evaluation.missing).toContain("bot_create");
+    expect(evaluation.canInspectBots).toBe(false);
+    expect(evaluation.canCreateBots).toBe(false);
+  });
+
+  it("keeps refresh-token capabilities distinct from client-credentials ones", () => {
+    const clientCredentialsOnly = CLIQ_CAPABILITIES
+      .filter((entry) => entry.grantType === "client_credentials")
+      .map((entry) => entry.scope);
+    const evaluation = evaluateCliqScopeSet(clientCredentialsOnly);
+    for (const capability of CLIQ_CAPABILITIES.filter(
+      (entry) => entry.grantType === "refresh_token",
+    )) {
+      expect(evaluation.missing, capability.id).toContain(capability.id);
+    }
+    expect(evaluation.available).toContain("dm_send");
+  });
+
+  it("does not mark a complete consent as proof that bot creation works", () => {
+    const evaluation = evaluateCliqScopeSet(FULL_SCOPE_STRING);
+    expect(evaluation.missing).toEqual([]);
+    expect(evaluation.scopeReportedOnly).toContain("bot_create");
   });
 });

@@ -3,6 +3,7 @@ import {
   provisionCliqBotAndHandlers,
   type CliqBotProvisioningService,
 } from "./setup-provisioning.js";
+import { evaluateCliqScopeSet, SETUP_SCOPE_STRING } from "./capabilities.js";
 import type { CliqBotRecord } from "./client.js";
 
 const URL_OK = "https://cliq.example.com/cliq/webhook";
@@ -119,5 +120,88 @@ describe("provisionCliqBotAndHandlers", () => {
     expect(result.plan.items.every((item) => item.conflict === "secret_mismatch")).toBe(true);
     expect(api.updateHandler).not.toHaveBeenCalled();
     expect(result.apply?.results.every((item) => item.outcome === "skipped_unconfirmed")).toBe(true);
+  });
+});
+
+describe("provisionCliqBotAndHandlers — capability evidence is required (issue #93)", () => {
+  it("never creates a bot when the bot listing failed rather than proving absence", async () => {
+    // A missing Bots.READ consent used to look exactly like "no such bot",
+    // so a token holding only Bots.CREATE created a duplicate bot per run.
+    const api = service({
+      listBots: vi.fn(async () => ({
+        kind: "missing_scope" as const,
+        detail: "Zoho refused the bot read with HTTP 403",
+        status: 403,
+      })),
+    });
+    const result = await run({ service: api, dryRun: false, confirmed: true });
+    expect(api.createBot).not.toHaveBeenCalled();
+    expect(result.createdBot).toBe(false);
+    expect(result.plan.status).toBe("blocked");
+    expect(result.plan.evidence.join(" ")).toMatch(/ZohoCliq\.Bots\.READ/);
+  });
+
+  it("blocks bot creation when the granted scope set has no Bots.CREATE", async () => {
+    const api = service({ listBots: vi.fn(async () => []) });
+    const result = await provisionCliqBotAndHandlers({
+      account: { botId: "franzi", botName: "Franzi", webhookSecret: SECRET },
+      publicWebhookUrl: URL_OK,
+      dryRun: false,
+      confirmed: true,
+      capabilities: evaluateCliqScopeSet(
+        "ZohoCliq.Bots.READ,ZohoCliq.Bots.UPDATE",
+      ),
+      service: api,
+    });
+    expect(api.createBot).not.toHaveBeenCalled();
+    expect(result.plan.status).toBe("blocked");
+    expect(result.plan.evidence.join(" ")).toContain("ZohoCliq.Bots.CREATE");
+  });
+
+  it("blocks handler provisioning when the granted scope set has no Bots.UPDATE", async () => {
+    const api = service();
+    const result = await provisionCliqBotAndHandlers({
+      account: { botId: "franzi", botName: "Franzi", webhookSecret: SECRET },
+      publicWebhookUrl: URL_OK,
+      dryRun: false,
+      confirmed: true,
+      capabilities: evaluateCliqScopeSet("ZohoCliq.Bots.READ"),
+      service: api,
+    });
+    expect(api.createHandler).not.toHaveBeenCalled();
+    expect(api.updateHandler).not.toHaveBeenCalled();
+    expect(result.plan.status).toBe("blocked");
+    expect(result.plan.evidence.join(" ")).toContain("ZohoCliq.Bots.UPDATE");
+  });
+
+  it("allows provisioning when the required scopes are consented", async () => {
+    const api = service({ listBots: vi.fn(async () => []) });
+    const result = await provisionCliqBotAndHandlers({
+      account: { botId: "franzi", botName: "Franzi", webhookSecret: SECRET },
+      publicWebhookUrl: URL_OK,
+      dryRun: false,
+      confirmed: true,
+      capabilities: evaluateCliqScopeSet(SETUP_SCOPE_STRING),
+      service: api,
+    });
+    expect(api.createBot).toHaveBeenCalled();
+    expect(result.plan.status).not.toBe("blocked");
+  });
+
+  it("does not fabricate a bot record when the post-create listing fails", async () => {
+    let created = false;
+    const api = service({
+      listBots: vi.fn(async () => {
+        if (!created) return [];
+        return { kind: "http" as const, detail: "Zoho answered HTTP 500", status: 500 };
+      }),
+      createBot: vi.fn(async () => {
+        created = true;
+        return { ok: true as const, bot: { id: "b-2", unique_name: "franzi", name: "Franzi" } };
+      }),
+    });
+    const result = await run({ service: api, dryRun: false, confirmed: true });
+    expect(api.createHandler).not.toHaveBeenCalled();
+    expect(result.plan.status).toBe("blocked");
   });
 });

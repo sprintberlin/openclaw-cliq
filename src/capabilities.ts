@@ -76,6 +76,20 @@ export interface CliqCapability {
    * which scope is missing and how to regenerate the token.
    */
   readonly missingHint: string;
+  /**
+   * Why no safe probe exists, for every capability with `probePath: null`.
+   *
+   * Required so that "we cannot look" is always a stated, reviewable fact
+   * rather than an omission — and so a future contributor cannot quietly
+   * bolt on a destructive probe (a real send, a live `PATCH`, a bot
+   * creation) to make an honest gap look green.
+   */
+  readonly unprobeableReason?: string;
+  /**
+   * The capability is reported from the granted scope set only. Zoho issues
+   * tokens that echo a scope the API later rejects (learning 070), so this
+   * is explicitly weaker than a probe and must never be rendered as proof.
+   */
   readonly scopeReportedOnly?: boolean;
 }
 
@@ -99,6 +113,8 @@ export const CLIQ_CAPABILITIES: readonly CliqCapability[] = [
     optional: false,
     probePath: null,
     probeMethod: "GET",
+    unprobeableReason:
+      "the only proof is posting a real DM, which would deliver a visible message; the read-only doctor stage must not send. Use --outbound-test to exercise it deliberately.",
     missingHint:
       "Bot DMs require the ZohoCliq.Webhooks.CREATE scope. Re-consent your self-client with this scope and regenerate the token.",
   },
@@ -112,6 +128,8 @@ export const CLIQ_CAPABILITIES: readonly CliqCapability[] = [
     optional: false,
     probePath: null,
     probeMethod: "GET",
+    unprobeableReason:
+      "the only proof is posting a real channel message, which would be visible to the channel; the read-only doctor stage must not send. Use --outbound-test to exercise it deliberately.",
     missingHint:
       "Channel @mention replies require the ZohoCliq.Channels.UPDATE scope on a user-context refresh token. Re-consent with this scope and re-run the authorization_code exchange (see README §3c).",
   },
@@ -125,6 +143,8 @@ export const CLIQ_CAPABILITIES: readonly CliqCapability[] = [
     optional: false,
     probePath: null,
     probeMethod: "GET",
+    unprobeableReason:
+      "the only proof is editing a real message, which requires an existing message id and mutates it. Exercised by the streaming/outbound send stage instead.",
     missingHint:
       "Live-edit streaming previews require the ZohoCliq.Messages.UPDATE scope on a user-context refresh token. Re-consent with this scope and re-run the authorization_code exchange (see README §3c).",
   },
@@ -139,6 +159,8 @@ export const CLIQ_CAPABILITIES: readonly CliqCapability[] = [
     optional: true,
     probePath: null,
     probeMethod: "GET",
+    unprobeableReason:
+      "the only proof is adding a real reaction to an existing message, which mutates that message.",
     missingHint:
       "Reactions require the ZohoCliq.messageactions.CREATE scope on a user-context refresh token. The react action will be unavailable until you re-consent with this scope.",
   },
@@ -152,6 +174,8 @@ export const CLIQ_CAPABILITIES: readonly CliqCapability[] = [
     optional: true,
     probePath: null,
     probeMethod: "GET",
+    unprobeableReason:
+      "the only proof is downloading a real attachment, which requires a file id that only arrives with live inbound media.",
     missingHint:
       "Inbound file/image/voice download requires the ZohoCliq.Attachments.READ scope on a user-context refresh token. Inbound media will degrade to name-only until you re-consent.",
   },
@@ -165,6 +189,8 @@ export const CLIQ_CAPABILITIES: readonly CliqCapability[] = [
     optional: true,
     probePath: null,
     probeMethod: "GET",
+    unprobeableReason:
+      "Zoho exposes no organization-wide message list; reading requires a concrete chat and message id that only exist for live traffic.",
     missingHint:
       "Resolving inbound attachment file ids and fetching quoted message text requires the ZohoCliq.Messages.READ scope on a user-context refresh token. Inbound images degrade to name-only without it.",
   },
@@ -178,6 +204,8 @@ export const CLIQ_CAPABILITIES: readonly CliqCapability[] = [
     optional: true,
     probePath: null,
     probeMethod: "GET",
+    unprobeableReason:
+      "the only proof is deleting a real message, which is destructive and irreversible.",
     missingHint:
       "The v3 message-delete endpoint requires the ZohoCliq.Messages.DELETE scope on a user-context refresh token. Only needed when apiVersion.delete is 'v3'.",
   },
@@ -191,6 +219,8 @@ export const CLIQ_CAPABILITIES: readonly CliqCapability[] = [
     optional: true,
     probePath: null,
     probeMethod: "GET",
+    unprobeableReason:
+      "the only proof is posting a real card to a channel, which would be visible to the channel.",
     missingHint:
       "The v3 channel-card endpoint requires the ZohoCliq.Channels.CREATE scope on a user-context refresh token. Only needed when apiVersion.channelCard is 'v3'.",
   },
@@ -230,7 +260,11 @@ export const CLIQ_CAPABILITIES: readonly CliqCapability[] = [
     profile: "setup",
     category: "setup",
     optional: false,
-    probePath: null,
+    // The same read the client already performs for bot inspection, capped
+    // at a single record. Purely non-destructive, and the gate every other
+    // provisioning step depends on — so it is worth proving rather than
+    // assuming.
+    probePath: "/api/v3/bots?limit=1",
     probeMethod: "GET",
     missingHint:
       "Bot inspection requires the ZohoCliq.Bots.READ scope. Re-consent your self-client with this scope and regenerate the token.",
@@ -245,6 +279,8 @@ export const CLIQ_CAPABILITIES: readonly CliqCapability[] = [
     optional: false,
     probePath: null,
     probeMethod: "GET",
+    unprobeableReason:
+      "the only proof is POST /api/v3/bots, which would create a real bot in the organization; reported from the granted scope set instead.",
     missingHint:
       "Creating a bot requires the ZohoCliq.Bots.CREATE scope. A token with only Bots.READ and Bots.UPDATE can inspect and update existing bots but POST /api/v3/bots will fail. Re-consent your self-client with ZohoCliq.Bots.CREATE and regenerate the token.",
     scopeReportedOnly: true,
@@ -259,6 +295,8 @@ export const CLIQ_CAPABILITIES: readonly CliqCapability[] = [
     optional: false,
     probePath: null,
     probeMethod: "GET",
+    unprobeableReason:
+      "the only proof is a PATCH of a live handler script, which would overwrite Zoho-held code that real inbound delivery depends on.",
     missingHint:
       "Bot and handler provisioning requires the ZohoCliq.Bots.UPDATE scope. Re-consent your self-client with this scope and regenerate the token.",
   },
@@ -384,7 +422,19 @@ export function evaluateCliqScopeSet(
 // Probe result types
 // ---------------------------------------------------------------------------
 
-export type CliqProbeStatus = "ok" | "missing_scope" | "probe_error";
+/**
+ * Outcome of a capability check.
+ *
+ * `unprobeable` and `scope_reported_only` exist so that "we could not look"
+ * is never conflated with "we looked and it broke" (`probe_error`), and
+ * neither is ever conflated with proof (`ok`).
+ */
+export type CliqProbeStatus =
+  | "ok"
+  | "missing_scope"
+  | "probe_error"
+  | "unprobeable"
+  | "scope_reported_only";
 
 export interface CliqCapabilityProbeResult {
   readonly capabilityId: string;
@@ -409,6 +459,16 @@ export interface CliqCapabilityReport {
   readonly missing: readonly string[];
   /** Capabilities that could not be probed (no probe path, or probe error). */
   readonly unprobed: readonly string[];
+  /**
+   * Capabilities with no safe read-only probe. Distinct from `unprobed`:
+   * these are known to be unverifiable by design, not merely unattempted.
+   */
+  readonly unprobeable?: readonly string[];
+  /**
+   * Capabilities reported from the granted scope set only. Weaker than a
+   * probe and never proof (learning 070).
+   */
+  readonly scopeReportedOnly?: readonly string[];
   /** Human-readable summary lines. */
   readonly summary: readonly string[];
 }
@@ -447,12 +507,27 @@ export async function probeCliqCapability(
   token: string,
   fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<CliqCapabilityProbeResult> {
+  if (capability.scopeReportedOnly) {
+    // Deliberately no request: the only proof would be destructive. Zoho
+    // also echoes scopes it later rejects (learning 070), so consent is
+    // reported as strictly weaker evidence than a probe.
+    return {
+      capabilityId: capability.id,
+      scope: capability.scope,
+      status: "scope_reported_only",
+      error:
+        capability.unprobeableReason ??
+        "Reported from the granted scope set, not proven by an API call.",
+    };
+  }
   if (!capability.probePath) {
     return {
       capabilityId: capability.id,
       scope: capability.scope,
-      status: "probe_error",
-      error: "No probe path defined for this capability.",
+      status: "unprobeable",
+      error:
+        capability.unprobeableReason ??
+        "No safe read-only probe exists for this capability.",
     };
   }
 
@@ -513,6 +588,45 @@ export async function probeCliqCapability(
  * capabilities with their likely scope and regeneration instructions,
  * and reports optional features as degraded rather than broken.
  */
+/**
+ * Render one capability line.
+ *
+ * The markers are deliberately distinct: `?` (the probe ran and failed) must
+ * not look like `–` (no safe probe exists) or `~` (consent-reported only).
+ * Collapsing them would let an unverifiable capability read as a verdict.
+ */
+function describeCapabilityLine(
+  cap: CliqCapability,
+  result: CliqCapabilityProbeResult | undefined,
+): string[] {
+  const status = result?.status ?? "unprobed";
+  const icon =
+    status === "ok"
+      ? "\u2713"
+      : status === "missing_scope"
+        ? "\u2717"
+        : status === "unprobeable"
+          ? "\u2013"
+          : status === "scope_reported_only"
+            ? "~"
+            : "?";
+  const grantLabel =
+    cap.grantType === "client_credentials" ? "client_credentials" : "refresh_token";
+  const lines = [`  ${icon} ${cap.label} \u2014 ${cap.scope} (${grantLabel})`];
+  if (status === "missing_scope" && result?.error) {
+    lines.push(`    \u2192 ${result.error}`);
+  } else if (status === "unprobeable") {
+    lines.push(
+      `    \u2192 not verified: ${result?.error ?? cap.unprobeableReason ?? "no safe read-only probe exists"}`,
+    );
+  } else if (status === "scope_reported_only") {
+    lines.push(
+      `    \u2192 reported from the granted scope set, not proven: ${result?.error ?? cap.unprobeableReason ?? ""}`.trimEnd(),
+    );
+  }
+  return lines;
+}
+
 export function formatCapabilityReport(report: CliqCapabilityReport): string[] {
   const lines: string[] = [];
   lines.push(`Capability report for account ${report.accountId} (${report.timestamp})`);
@@ -530,13 +644,7 @@ export function formatCapabilityReport(report: CliqCapabilityReport): string[] {
 
   lines.push("Runtime capabilities (required for messaging):");
   for (const { cap, result } of runtimeRequiredResults) {
-    const status = result?.status ?? "unprobed";
-    const icon = status === "ok" ? "✓" : status === "missing_scope" ? "✗" : "?";
-    const grantLabel = cap.grantType === "client_credentials" ? "client_credentials" : "refresh_token";
-    lines.push(`  ${icon} ${cap.label} — ${cap.scope} (${grantLabel})`);
-    if (status === "missing_scope" && result?.error) {
-      lines.push(`    → ${result.error}`);
-    }
+    lines.push(...describeCapabilityLine(cap, result));
   }
   lines.push("");
 
@@ -552,13 +660,7 @@ export function formatCapabilityReport(report: CliqCapabilityReport): string[] {
 
   lines.push("Runtime capabilities (optional — degrades features, not messaging):");
   for (const { cap, result } of runtimeOptionalResults) {
-    const status = result?.status ?? "unprobed";
-    const icon = status === "ok" ? "✓" : status === "missing_scope" ? "✗" : "?";
-    const grantLabel = cap.grantType === "client_credentials" ? "client_credentials" : "refresh_token";
-    lines.push(`  ${icon} ${cap.label} — ${cap.scope} (${grantLabel})`);
-    if (status === "missing_scope" && result?.error) {
-      lines.push(`    → ${result.error}`);
-    }
+    lines.push(...describeCapabilityLine(cap, result));
   }
   lines.push("");
 
@@ -572,13 +674,7 @@ export function formatCapabilityReport(report: CliqCapabilityReport): string[] {
 
   lines.push("Setup / maintenance capabilities:");
   for (const { cap, result } of setupResults) {
-    const status = result?.status ?? "unprobed";
-    const icon = status === "ok" ? "✓" : status === "missing_scope" ? "✗" : "?";
-    const grantLabel = cap.grantType === "client_credentials" ? "client_credentials" : "refresh_token";
-    lines.push(`  ${icon} ${cap.label} — ${cap.scope} (${grantLabel})`);
-    if (status === "missing_scope" && result?.error) {
-      lines.push(`    → ${result.error}`);
-    }
+    lines.push(...describeCapabilityLine(cap, result));
   }
   lines.push("");
 
