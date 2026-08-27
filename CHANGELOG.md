@@ -28,6 +28,16 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **The public webhook preflight now identifies itself explicitly at the edge
+  (issue #107).** Every reachability, secret-enforcement, and authenticated
+  probe request sends the documented User-Agent
+  `openclaw-cliq-preflight/<package-version> (+https://github.com/sprintberlin/openclaw-cliq)`
+  instead of relying on Node's runtime-dependent default or sending no identity
+  at all — avoiding false diagnostics when an edge WAF blocks unfamiliar bot
+  clients before they reach an otherwise healthy gateway. Operators can pass
+  `--user-agent <value>` to reproduce Zoho/Deluge's identity, and an HTTP `403`
+  is now classified as a probable edge/WAF/bot-rule block with allowlisting
+  guidance rather than blamed on the route or reverse proxy.
 - **A passing CLI preflight now records the inbound verification (issue
   #106).** `channels.cliq.inboundVerifiedAt` was only ever written by the setup
   wizard, so an operator who configured the channel by hand and verified the

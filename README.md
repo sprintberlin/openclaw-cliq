@@ -122,7 +122,7 @@ The plugin registers a single HTTP route at **`POST /cliq/webhook`** on your Ope
    openclaw cliq webhook-preflight https://<gateway-host>/cliq/webhook --no-write
    ```
 
-   `openclaw setup` runs the same check and will not report inbound Cliq as ready when it fails. For a full staged diagnostic of config, OAuth, capabilities, and inbound, see [`openclaw cliq doctor`](#cliq-doctor).
+   `openclaw setup` runs the same check and will not report inbound Cliq as ready when it fails. Every preflight request identifies itself as `openclaw-cliq-preflight/<package-version> (+https://github.com/sprintberlin/openclaw-cliq)` so edge/WAF rules can allowlist it deliberately (the version is this package's `package.json` version); use `--user-agent <value>` when you need to reproduce the identity your Zoho/Deluge delivery uses. An HTTP `403` is reported as a probable edge/WAF/bot-rule block with that remediation, not as proof that the route or reverse proxy is broken. For a full staged diagnostic of config, OAuth, capabilities, and inbound, see [`openclaw cliq doctor`](#cliq-doctor).
 
    To check only whether the gateway registered the route (no public path, no secret, no agent turn):
 

@@ -81,10 +81,11 @@ export default defineChannelPluginEntry({
           .argument("<url>", "Public webhook URL, e.g. https://host.example.com/cliq/webhook")
           .option("--secret <secret>", "Webhook shared secret (defaults to channels.cliq.webhookSecret)")
           .option("--no-write", "Do not record the result in channels.cliq verification status")
+          .option("--user-agent <userAgent>", "User-Agent the preflight identifies itself with to the edge")
           .option("--json", "Emit the machine-readable report")
           .action(async (
             url: string,
-            opts: { secret?: string; write?: boolean; json?: boolean },
+            opts: { secret?: string; write?: boolean; userAgent?: string; json?: boolean },
           ) => {
             const { runCliqWebhookPreflightCommand } = await import(
               "./src/webhook-preflight-command.js"
@@ -108,6 +109,7 @@ export default defineChannelPluginEntry({
               configuredUrl: readConfiguredCliqWebhookUrl(api.config as OpenClawConfig),
               foreignSecret,
               write: opts.write,
+              userAgent: opts.userAgent,
               json: opts.json,
             });
             process.exitCode = code;
