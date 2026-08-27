@@ -483,6 +483,36 @@ return response;
 > this script: content-derived dedupe identities expire after 60 seconds, so a
 > short redelivery is suppressed but a later identical command is processed.
 
+> **⚠️ Security: the handler script exposes the webhook secret.** The secret is
+> a literal in the Deluge script, so it is readable by **anyone who can edit the
+> bot** in the Cliq console and by **any token holding `ZohoCliq.Bots.READ`**
+> (`GET /api/v3/bots/<bot-id>/handlers/<type>` returns the stored script — the
+> secret included — and creating a handler echoes it back in the response body,
+> so terminal scrollback, logs, and diffs of that response capture a live
+> credential). Zoho offers no secret storage for handler scripts, so this
+> exposure cannot be closed on the OpenClaw side; it can only be contained:
+>
+> - **The blast radius is inbound dispatch for that one agent.** Whoever reads
+>   the secret can post to `/cliq/webhook` and drive that agent's turns. It
+>   grants no access to your Zoho credentials, OAuth tokens, or other channels.
+> - **Use a per-agent webhook secret** (a distinct high-entropy
+>   `channels.cliq.webhookSecret` per bot). This is the security reason for the
+>   practice: a leaked secret then compromises one agent, not all of them.
+> - **Rotate the secret whenever bot-edit access changes** — when someone with
+>   bot-edit rights or `Bots.READ` consent leaves, or when a handler script or
+>   provisioning response may have been captured. Rotation means updating both
+>   the Deluge script and `channels.cliq.webhookSecret`.
+> - **`Bots.READ` is more privileged than it looks.** Granting it for
+>   provisioning also grants "can read the inbound webhook secret of every bot
+>   in the org" — treat that consent accordingly.
+> - **The secret lives in two places, so they can drift.** If the handler and
+>   the gateway config hold different values, inbound delivery fails while a
+>   preflight can still report ready; see
+>   [issue #124](https://github.com/sprintberlin/openclaw-cliq/issues/124).
+>
+> The plugin's own tooling never logs handler script bodies or raw provisioning
+> API responses at any log level; this is enforced by a regression test.
+
 > **Do not use `parameters: payload.toString()`.** In Deluge, `invokeUrl`'s
 > `parameters:` key serializes the value as form-urlencoded data
 > (`handler=mention&message=...`), which is **not** the JSON body this

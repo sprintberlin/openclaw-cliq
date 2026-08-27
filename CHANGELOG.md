@@ -28,6 +28,16 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **Documented and contained the Deluge handler secret exposure (issue #113).**
+  Zoho stores the webhook secret as a literal in each handler script and
+  returns that script — secret included — to anyone with bot-edit access or
+  `ZohoCliq.Bots.READ`; handler creation responses also echo it. The setup
+  guide now explains the blast radius, requires distinct per-agent secrets,
+  recommends rotation whenever bot-edit access changes, warns that
+  `Bots.READ` grants secret-reading power, records Zoho's lack of handler
+  secret storage, and cross-links the two-copy drift diagnostic gap in #124.
+  A regression audit locks the invariant that plugin tooling never logs
+  handler scripts, raw provisioning responses, or configured secret values.
 - **`ZohoCliq.Bots.CREATE` added to the capability matrix (issue #110).**
   The setup/maintenance profile previously documented only `Bots.READ` and
   `Bots.UPDATE`, which suffice to inspect bots but not to create one: a token
