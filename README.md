@@ -378,6 +378,8 @@ The default account is configured directly under `channels.cliq`, as shown above
 
 The plugin defaults to the EU data center. For another region, add both `oauthBase` and `apiBase` at the same account level; see [Data centers](#data-centers).
 
+For multiple gateway deployments, see [Running multiple agents](https://github.com/sprintberlin/openclaw-cliq/blob/main/docs/setup/running-multiple-agents.md) before reusing credentials: the OAuth app can be shared, but each agent requires its own bot identity, webhook secret, public URL, and handlers.
+
 Every field except the required ones has a sensible default; `groups` / `thinking` / `pairing` are nested objects (see their descriptions).
 
 - **`clientId`** *(required)* — OAuth client id from the Zoho API Console.
