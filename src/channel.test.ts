@@ -18,6 +18,39 @@ describe("cliq plugin", () => {
     expect(account.botId).toBe("bot");
     expect(account.allowFrom).toEqual(["user1"]);
     expect(account.accountId).toBeNull();
+    expect(account.enabled).toBe(true);
+  });
+
+  it("resolves channels.cliq.enabled and exposes it through the channel adapter", async () => {
+    const enabled = cfgWith({
+      enabled: true,
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+    });
+    const disabled = cfgWith({
+      enabled: false,
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+    });
+    const enabledAccount = cliqPlugin.config.resolveAccount(enabled, undefined);
+    const disabledAccount = cliqPlugin.config.resolveAccount(disabled, undefined);
+
+    expect(enabledAccount.enabled).toBe(true);
+    expect(disabledAccount.enabled).toBe(false);
+    expect(await cliqPlugin.config.isEnabled!(enabledAccount, enabled)).toBe(true);
+    expect(await cliqPlugin.config.isEnabled!(disabledAccount, disabled)).toBe(false);
+    expect(await cliqPlugin.config.disabledReason!(disabledAccount, disabled)).toMatch(
+      /channels\.cliq\.enabled: false/,
+    );
+  });
+
+  it("defaults enabled to true when the key is omitted", async () => {
+    const cfg = cfgWith({ clientId: "id", clientSecret: "secret", botId: "bot" });
+    const account = cliqPlugin.config.resolveAccount(cfg, undefined);
+    expect(account.enabled).toBe(true);
+    expect(await cliqPlugin.config.isEnabled!(account, cfg)).toBe(true);
   });
 
   it("inspects configured account", () => {

@@ -106,6 +106,27 @@ describe("runCliqStartupMaintenance", () => {
     }
   });
 
+  it("skips OAuth pre-warm for an explicitly disabled account", async () => {
+    const log = captureLog();
+    const fetch = installFetch();
+    try {
+      await runCliqStartupMaintenance({
+        cfg: cfgWith({
+          enabled: false,
+          clientId: "id",
+          clientSecret: "s",
+          botId: "b",
+          webhookSecret: "wh",
+        }),
+        log: log.log,
+      });
+      expect(log.info.some((m) => m.includes("disabled via channels.cliq.enabled"))).toBe(true);
+      expect(fetch.oauthScopes).toEqual([]);
+    } finally {
+      fetch.restore();
+    }
+  });
+
   it("warns when the webhook secret is missing on a configured account", async () => {
     const log = captureLog();
     const fetch = installFetch();

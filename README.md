@@ -357,6 +357,7 @@ Add the `cliq` channel to your `openclaw.json` (or via `openclaw setup` / the se
 {
   "channels": {
     "cliq": {
+      "enabled": true,               // optional — omit or true keeps the channel running
       "clientId": "<OAuth client id from step 3a>",
       "clientSecret": "<OAuth client secret from step 3a>",
       "botId": "openclaw_agent",      // Bot Unique Name from step 1
@@ -388,6 +389,7 @@ For multiple gateway deployments, see [Running multiple agents](https://github.c
 
 Every field except the required ones has a sensible default; `groups` / `thinking` / `pairing` are nested objects (see their descriptions).
 
+- **`enabled`** *(optional)* — Channel-level on/off switch, matching the shape of bundled channels (`channels.telegram.enabled`). Omitted or `true` keeps the channel running; `false` keeps the credentials in place but stops the account from starting. Named accounts under `channels.cliq.accounts.<id>` can override this with their own `enabled`. This is **not** the same key as `plugins.entries.cliq.enabled`: that OpenClaw-owned switch unloads the plugin entirely, so a `channels.cliq.enabled: true` cannot re-enable a plugin that was turned off there. The setup wizard writes `channels.cliq.enabled: true`.
 - **`clientId`** *(required)* — OAuth client id from the Zoho API Console.
 - **`clientSecret`** *(required)* — OAuth client secret (sensitive).
 - **`botId`** *(required)* — Bot **Unique Name** (the path segment in the bot message API), not Zoho's internal `b-...` bot ID. Bot and handler provisioning CRUD requires that separate internal ID after resolving the unique name; see the [verified provisioning API contract](https://github.com/sprintberlin/openclaw-cliq/blob/main/docs/setup/provisioning-api-contract.md).

@@ -245,7 +245,9 @@ export function inspectCliqAccount(params: {
 
   return {
     accountId,
-    enabled: Boolean(section),
+    // A present section is enabled unless it explicitly opts out; an absent
+    // section is not an account at all (issue #125).
+    enabled: Boolean(section) && section?.enabled !== false,
     name: section?.botName,
     botId: section?.botId,
     scopes: CLIQ_OAUTH_SCOPES,

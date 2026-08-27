@@ -139,6 +139,17 @@ describe("resolveCliqConfig — per-account resolution", () => {
     expect(alpha.dmPolicy).toBe("allowlist");
   });
 
+  it("inherits top-level disablement and allows an explicit per-account override", () => {
+    const cfg = multiAccountCfg() as unknown as {
+      channels: { cliq: { enabled?: boolean; accounts: Record<string, Record<string, unknown>> } };
+    };
+    cfg.channels.cliq.enabled = false;
+    cfg.channels.cliq.accounts.alpha.enabled = true;
+
+    expect(resolveCliqConfig(cfg as unknown as OpenClawConfig, "alpha").enabled).toBe(true);
+    expect(resolveCliqConfig(cfg as unknown as OpenClawConfig, "beta").enabled).toBe(false);
+  });
+
   it("preserves per-account allowFrom (not the top-level one)", () => {
     const cfg = multiAccountCfg();
     expect(resolveCliqConfig(cfg, "alpha").allowFrom).toEqual(["user-a1"]);

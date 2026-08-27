@@ -40,9 +40,7 @@ export function describeCliqWebhookAccount(
   return describeWebhookAccountSnapshot({
     account: {
       accountId: account.accountId ?? CLIQ_DEFAULT_ACCOUNT_ID,
-      // Cliq has no per-account `enabled` flag: a resolvable account section
-      // is an enabled account, matching `inspectCliqAccount`.
-      enabled: true,
+      enabled: account.enabled !== false,
       name: named.name ?? account.botName ?? account.botId,
     },
     configured: isConfiguredCliqAccountShape(account),

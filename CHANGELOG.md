@@ -62,6 +62,15 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **`channels.cliq.enabled` is a valid channel switch (issue #125).** The
+  schema now accepts the boolean used by every bundled OpenClaw channel and
+  already written by this plugin's setup wizard, instead of rejecting it as
+  an additional property. Omitted/`true` keeps current behaviour; `false`
+  stops the account from starting while leaving credentials in place.
+  `plugins.entries.cliq.enabled: false` still unloads the plugin entirely and
+  cannot be overridden from the channel section. The documented
+  `channels.cliq.accounts.<id>` shape is now in the schema as well, so a
+  multi-account config no longer fails validation for the same reason.
 - **A green webhook preflight no longer falsely claims Zoho holds the same
   secret as the gateway (issue #124).** When `botId` and
   `ZohoCliq.Bots.READ` are available, a sixth stage reads the bot's Message and

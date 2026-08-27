@@ -103,6 +103,33 @@ describe("plugin entry load + /cliq/webhook smoke", () => {
     expect(dispatches).toBe(0);
   });
 
+  it("POST /cliq/webhook with enabled:false → 503 without dispatch (issue #125)", async () => {
+    let dispatches = 0;
+    const { webhook, api } = registerCliqPluginForTest();
+    api.config = createCliqTestConfig({
+      enabled: false,
+      clientId: "id",
+      clientSecret: "***",
+      botId: "bot",
+      botName: "openclaw-bot",
+      webhookSecret: "s3cr3t",
+    });
+    api.runtime = createTestRuntimeChannel(async () => {
+      dispatches += 1;
+    });
+    const res = createMockServerResponse();
+    const result = await webhook.handler(
+      createMockIncomingRequest("POST", createMentionDelugePayload(), {
+        "x-cliq-webhook-secret": "s3cr3t",
+      }),
+      res as unknown as any,
+    );
+    expect(result).toBe(true);
+    expect(res.statusCode).toBe(503);
+    expect(res.body).toBe("cliq channel disabled");
+    expect(dispatches).toBe(0);
+  });
+
   it("POST /cliq/webhook with configured secret but missing header → 401 without dispatch", async () => {
     let dispatches = 0;
     const { webhook, api } = registerCliqPluginForTest();

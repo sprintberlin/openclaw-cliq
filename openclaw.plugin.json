@@ -8,6 +8,7 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
+      "enabled": { "type": "boolean" },
       "clientId": { "type": "string" },
       "clientSecret": { "type": "string" },
       "botId": { "type": "string" },
@@ -169,6 +170,411 @@
             }
           }
         ]
+      },
+      "accounts": {
+        "type": "object",
+        "propertyNames": {
+          "type": "string"
+        },
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "clientId": {
+              "type": "string"
+            },
+            "clientSecret": {
+              "type": "string"
+            },
+            "botId": {
+              "type": "string"
+            },
+            "botName": {
+              "type": "string"
+            },
+            "webhookSecret": {
+              "type": "string"
+            },
+            "publicWebhookUrl": {
+              "type": "string"
+            },
+            "inboundVerifiedAt": {
+              "type": "string"
+            },
+            "inboundVerificationFailedAt": {
+              "type": "string"
+            },
+            "refreshToken": {
+              "type": "string"
+            },
+            "allowFrom": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "selfSenderIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "dmPolicy": {
+              "type": "string",
+              "enum": [
+                "open",
+                "allowlist",
+                "pairing",
+                "disabled"
+              ]
+            },
+            "trustedOrganization": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "acknowledged": {
+                  "type": "boolean"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "acknowledgedAt": {
+                  "type": "string"
+                }
+              }
+            },
+            "ackPolicy": {
+              "type": "string",
+              "enum": [
+                "after_dispatch",
+                "immediate"
+              ],
+              "default": "after_dispatch"
+            },
+            "replyToMode": {
+              "type": "string",
+              "enum": [
+                "off",
+                "first",
+                "all",
+                "batched"
+              ],
+              "default": "off"
+            },
+            "replyToModeByChatType": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "direct": {
+                  "type": "string",
+                  "enum": [
+                    "off",
+                    "first",
+                    "all",
+                    "batched"
+                  ]
+                },
+                "group": {
+                  "type": "string",
+                  "enum": [
+                    "off",
+                    "first",
+                    "all",
+                    "batched"
+                  ]
+                },
+                "channel": {
+                  "type": "string",
+                  "enum": [
+                    "off",
+                    "first",
+                    "all",
+                    "batched"
+                  ]
+                }
+              }
+            },
+            "groupPolicy": {
+              "type": "string",
+              "enum": [
+                "open",
+                "disabled",
+                "allowlist"
+              ]
+            },
+            "groups": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "requireMention": {
+                    "type": "boolean"
+                  },
+                  "ingest": {
+                    "type": "boolean"
+                  },
+                  "tools": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "allow": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "alsoAllow": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "deny": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  },
+                  "toolsBySender": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "allow": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "alsoAllow": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "deny": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "streaming": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "preview": {
+                  "type": "string",
+                  "enum": [
+                    "on",
+                    "off"
+                  ],
+                  "default": "off"
+                }
+              }
+            },
+            "reactions": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "agentGuidance": {
+                  "type": "string",
+                  "enum": [
+                    "minimal",
+                    "extensive",
+                    "off"
+                  ],
+                  "default": "minimal"
+                }
+              }
+            },
+            "thinking": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "off",
+                    "placeholder",
+                    "card"
+                  ],
+                  "default": "placeholder"
+                },
+                "text": {
+                  "type": "string",
+                  "default": "💭 …"
+                },
+                "thinkingText": {
+                  "type": "string",
+                  "default": "💭 thinking…"
+                },
+                "failureText": {
+                  "type": "string"
+                },
+                "confirm": {
+                  "type": "string",
+                  "enum": [
+                    "off",
+                    "sensitive",
+                    "always"
+                  ],
+                  "default": "off"
+                },
+                "confirmKeywords": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "confirmText": {
+                  "type": "string",
+                  "default": "⚠️ Confirm action?"
+                },
+                "confirmLabel": {
+                  "type": "string",
+                  "default": "Confirm"
+                },
+                "cancelLabel": {
+                  "type": "string",
+                  "default": "Cancel"
+                },
+                "cancelledText": {
+                  "type": "string",
+                  "default": "🚫 Cancelled."
+                },
+                "animate": {
+                  "type": "string",
+                  "enum": [
+                    "off",
+                    "dots",
+                    "spinner",
+                    "custom"
+                  ],
+                  "default": "dots"
+                },
+                "animateFrames": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "animateIntervalMs": {
+                  "type": "number"
+                }
+              }
+            },
+            "welcome": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "text": {
+                  "type": "string"
+                },
+                "textRejoin": {
+                  "type": "string"
+                }
+              }
+            },
+            "pairing": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "notifyOwnerTarget": {
+                  "type": "string"
+                },
+                "approveLabel": {
+                  "type": "string"
+                },
+                "denyLabel": {
+                  "type": "string"
+                },
+                "approvalTitle": {
+                  "type": "string"
+                },
+                "approvedOwnerText": {
+                  "type": "string"
+                },
+                "deniedOwnerText": {
+                  "type": "string"
+                }
+              }
+            },
+            "apiBase": {
+              "type": "string"
+            },
+            "oauthBase": {
+              "type": "string"
+            },
+            "apiVersion": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "v2",
+                    "v3"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "dmPost": {
+                      "type": "string",
+                      "enum": [
+                        "v2",
+                        "v3"
+                      ]
+                    },
+                    "channelPost": {
+                      "type": "string",
+                      "enum": [
+                        "v2",
+                        "v3"
+                      ]
+                    },
+                    "channelCard": {
+                      "type": "string",
+                      "enum": [
+                        "v2",
+                        "v3"
+                      ]
+                    },
+                    "delete": {
+                      "type": "string",
+                      "enum": [
+                        "v2",
+                        "v3"
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
       }
     }
   },
@@ -178,6 +584,7 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "enabled": { "type": "boolean" },
           "clientId": { "type": "string" },
           "clientSecret": { "type": "string" },
           "botId": { "type": "string" },
@@ -339,11 +746,418 @@
                 }
               }
             ]
+          },
+          "accounts": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "clientId": {
+                  "type": "string"
+                },
+                "clientSecret": {
+                  "type": "string"
+                },
+                "botId": {
+                  "type": "string"
+                },
+                "botName": {
+                  "type": "string"
+                },
+                "webhookSecret": {
+                  "type": "string"
+                },
+                "publicWebhookUrl": {
+                  "type": "string"
+                },
+                "inboundVerifiedAt": {
+                  "type": "string"
+                },
+                "inboundVerificationFailedAt": {
+                  "type": "string"
+                },
+                "refreshToken": {
+                  "type": "string"
+                },
+                "allowFrom": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "selfSenderIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "dmPolicy": {
+                  "type": "string",
+                  "enum": [
+                    "open",
+                    "allowlist",
+                    "pairing",
+                    "disabled"
+                  ]
+                },
+                "trustedOrganization": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "acknowledged": {
+                      "type": "boolean"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "acknowledgedAt": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "ackPolicy": {
+                  "type": "string",
+                  "enum": [
+                    "after_dispatch",
+                    "immediate"
+                  ],
+                  "default": "after_dispatch"
+                },
+                "replyToMode": {
+                  "type": "string",
+                  "enum": [
+                    "off",
+                    "first",
+                    "all",
+                    "batched"
+                  ],
+                  "default": "off"
+                },
+                "replyToModeByChatType": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "direct": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "first",
+                        "all",
+                        "batched"
+                      ]
+                    },
+                    "group": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "first",
+                        "all",
+                        "batched"
+                      ]
+                    },
+                    "channel": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "first",
+                        "all",
+                        "batched"
+                      ]
+                    }
+                  }
+                },
+                "groupPolicy": {
+                  "type": "string",
+                  "enum": [
+                    "open",
+                    "disabled",
+                    "allowlist"
+                  ]
+                },
+                "groups": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "requireMention": {
+                        "type": "boolean"
+                      },
+                      "ingest": {
+                        "type": "boolean"
+                      },
+                      "tools": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "allow": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "alsoAllow": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "deny": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      },
+                      "toolsBySender": {
+                        "type": "object",
+                        "propertyNames": {
+                          "type": "string"
+                        },
+                        "additionalProperties": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "allow": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "alsoAllow": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "deny": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "streaming": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "preview": {
+                      "type": "string",
+                      "enum": [
+                        "on",
+                        "off"
+                      ],
+                      "default": "off"
+                    }
+                  }
+                },
+                "reactions": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "agentGuidance": {
+                      "type": "string",
+                      "enum": [
+                        "minimal",
+                        "extensive",
+                        "off"
+                      ],
+                      "default": "minimal"
+                    }
+                  }
+                },
+                "thinking": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "mode": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "placeholder",
+                        "card"
+                      ],
+                      "default": "placeholder"
+                    },
+                    "text": {
+                      "type": "string",
+                      "default": "💭 …"
+                    },
+                    "thinkingText": {
+                      "type": "string",
+                      "default": "💭 thinking…"
+                    },
+                    "failureText": {
+                      "type": "string"
+                    },
+                    "confirm": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "sensitive",
+                        "always"
+                      ],
+                      "default": "off"
+                    },
+                    "confirmKeywords": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "confirmText": {
+                      "type": "string",
+                      "default": "⚠️ Confirm action?"
+                    },
+                    "confirmLabel": {
+                      "type": "string",
+                      "default": "Confirm"
+                    },
+                    "cancelLabel": {
+                      "type": "string",
+                      "default": "Cancel"
+                    },
+                    "cancelledText": {
+                      "type": "string",
+                      "default": "🚫 Cancelled."
+                    },
+                    "animate": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "dots",
+                        "spinner",
+                        "custom"
+                      ],
+                      "default": "dots"
+                    },
+                    "animateFrames": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "animateIntervalMs": {
+                      "type": "number"
+                    }
+                  }
+                },
+                "welcome": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "default": false
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "textRejoin": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "pairing": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "notifyOwnerTarget": {
+                      "type": "string"
+                    },
+                    "approveLabel": {
+                      "type": "string"
+                    },
+                    "denyLabel": {
+                      "type": "string"
+                    },
+                    "approvalTitle": {
+                      "type": "string"
+                    },
+                    "approvedOwnerText": {
+                      "type": "string"
+                    },
+                    "deniedOwnerText": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "apiBase": {
+                  "type": "string"
+                },
+                "oauthBase": {
+                  "type": "string"
+                },
+                "apiVersion": {
+                  "oneOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "v2",
+                        "v3"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "dmPost": {
+                          "type": "string",
+                          "enum": [
+                            "v2",
+                            "v3"
+                          ]
+                        },
+                        "channelPost": {
+                          "type": "string",
+                          "enum": [
+                            "v2",
+                            "v3"
+                          ]
+                        },
+                        "channelCard": {
+                          "type": "string",
+                          "enum": [
+                            "v2",
+                            "v3"
+                          ]
+                        },
+                        "delete": {
+                          "type": "string",
+                          "enum": [
+                            "v2",
+                            "v3"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "required": ["clientId", "clientSecret", "botId"]
       },
       "uiHints": {
+        "enabled": { "label": "Channel enabled (set false to keep the config but stop the channel)" },
+        "accounts": { "label": "Additional named accounts (each overrides the top-level section)" },
         "clientId": { "label": "OAuth client id" },
         "clientSecret": { "label": "OAuth client secret", "sensitive": true },
         "botId": { "label": "Bot unique name" },
