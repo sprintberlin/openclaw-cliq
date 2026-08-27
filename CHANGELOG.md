@@ -13,6 +13,16 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **Documented and contained the Deluge handler secret exposure (issue #113).**
+  Zoho stores the webhook secret as a literal in each handler script and
+  returns that script — secret included — to anyone with bot-edit access or
+  `ZohoCliq.Bots.READ`; handler creation responses also echo it. The setup
+  guide now explains the blast radius, requires distinct per-agent secrets,
+  recommends rotation whenever bot-edit access changes, warns that
+  `Bots.READ` grants secret-reading power, records Zoho's lack of handler
+  secret storage, and cross-links the two-copy drift diagnostic gap in #124.
+  A regression audit locks the invariant that plugin tooling never logs
+  handler scripts, raw provisioning responses, or configured secret values.
 - **Webhook accounts now report as running, configured, and event-driven
   (issue #98).** A configured Cliq account keeps a passive `startAccount`
   lifecycle so OpenClaw does not treat the webhook transport as `stopped` /
