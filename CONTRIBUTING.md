@@ -10,11 +10,9 @@ guide covers local development, conventions, and how changes ship.
 - **Ask a question** — use [Discussions / Q&A](https://github.com/sprintberlin/openclaw-cliq/discussions) rather than the issue tracker.
 - **Send a pull request** — see below.
 
-> **Note on the coding agent.** This plugin is developed iteratively by an
-> autonomous coding agent (OpenCode via GitHub Actions). That workflow only runs
-> for issues opened by repo maintainers (owner / member / collaborator) — a
-> public issue will **not** trigger it. Human PRs are always welcome and reviewed
-> normally.
+All contributions are developed and reviewed through the normal branch and pull
+request workflow. Multiple maintainers and contributors may work on the project;
+please keep each change focused and make the relevant checks reproducible locally.
 
 ## Local development
 

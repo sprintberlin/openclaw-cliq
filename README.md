@@ -909,13 +909,12 @@ the version history is in
 
 ## Development
 
-This plugin is developed iteratively by an autonomous coding agent (OpenCode via GitHub Actions). See
+This plugin is developed iteratively by the maintainers and contributors. See
 [AGENTS.md](https://github.com/sprintberlin/openclaw-cliq/blob/main/AGENTS.md)
 for project context and conventions, and
 [ROADMAP.md](https://github.com/sprintberlin/openclaw-cliq/blob/main/ROADMAP.md)
-for the open worklist / feature-parity target. **The coding-agent workflow only
-runs for issues opened by repo maintainers** (owner / member / collaborator) —
-a public issue will not trigger it.
+for the open worklist / feature-parity target. Changes are reviewed through the
+normal pull-request workflow.
 
 ## License
 

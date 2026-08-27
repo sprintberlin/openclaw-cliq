@@ -4,7 +4,6 @@ dist/
 *.d.ts
 *.map
 .DS_Store
-opencode.json
 oh-my-tokens.json
 /tmp/
 __pycache__/

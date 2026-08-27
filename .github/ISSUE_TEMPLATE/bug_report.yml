@@ -1,6 +1,5 @@
 name: 🐞 Bug report
 description: Something in the Zoho Cliq channel plugin isn't working as expected.
-labels: ["bug"]
 body:
   - type: markdown
     attributes:

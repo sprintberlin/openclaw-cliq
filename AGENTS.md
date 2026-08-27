@@ -75,7 +75,7 @@ openclaw-cliq/
 │   ├── channel.ts            # ChannelPlugin via createChatChannelPlugin
 │   ├── client.ts             # Zoho Cliq API client
 │   └── channel.test.ts       # Tests
-└── .github/                  # Coding agent infrastructure
+└── .github/                  # CI, compatibility, release and issue config
 ```
 
 ### Key SDK surfaces to implement
@@ -161,7 +161,9 @@ openclaw-cliq/
 
 ## How this repo works (Iterative Development)
 
-This project is developed **iteratively** by an autonomous coding agent (OpenCode via GitHub Actions). The human defines the **goal** (the Vision above); the agent evolves the **plan** and the code, one increment per run.
+This project is developed iteratively by the maintainers and contributors. Work may
+be performed by different people or development tools, but every change follows
+the repository rules below and is reviewed through the normal pull-request flow.
 
 ### The two working files
 
@@ -182,7 +184,9 @@ This project is developed **iteratively** by an autonomous coding agent (OpenCod
 4. **Update ROADMAP.md, keeping every line future-tense:** delete the line(s) you finished; for a partially-finished item, either delete it and add a fresh item for what remains, or rewrite it down to just the remaining work (no "X now works" status clause). Add newly discovered work to the right phase. Do NOT record what you did anywhere in the file.
 5. If you learned a lasting *technical* insight (SDK quirk, gotcha), record it as **at most one** new file under `docs/learnings/<slug>.md` (frontmatter with `title` + `files:` / `apis:` grep anchors, then a 2–4 sentence fact) and add one line to `docs/learnings/INDEX.md`. Check the INDEX first — do not duplicate an existing entry. Facts about the world, not "what I did". See the "Learnings (durable)" section below.
 6. Run `npx tsc --noEmit`, `npm test`, and `npm run smoke:gateway` and make them all pass — a CI **hard gate** blocks the push if any fails.
-7. Commit the code + the ROADMAP edit with a conventional-commit message ending in `Closes #N`. **Do NOT push** — the workflow pushes after the hard gate re-runs typecheck + tests + smoke, and the issue closes automatically via `Closes #N`. That commit, plus the verify-bot's comment, is the history record.
+7. Commit the code + the ROADMAP edit with a conventional-commit message. Include
+   `Closes #N` when the change fully resolves an issue, then open a pull request
+   for review. Do not assume that a local commit has been pushed or merged.
 
 ### Verifying your work
 
