@@ -54,7 +54,7 @@ DM the bot → it answers. To also reply to channel **@mentions** and stream liv
 - **🧩 Per-channel policy** — Group admission + per-channel `requireMention`, tool policy, and per-sender tool overrides.
 - **🔁 Reliability** — Durable-before-ack ingest, de-dup on redelivery, bot-loop / self-message protection, outbound retry with error classification (parses the v3 `{"message":"…"}` error envelope). Real Cliq message ids retain 30-minute replay protection; content-derived ids used when the Message Handler supplies no `message.id` expire after 60 seconds, so retry redeliveries are suppressed without swallowing a deliberate repeated command such as `/status`.
 - **🔒 Hardened webhook** — Constant-time secret compare, single-header auth, failed-auth rate limiting.
-- **🩺 Operations** — `openclaw status` / `channels` health probe, `openclaw directory` lookup, plugin doctor, interactive setup wizard, SecretRef credentials, security audit, session binding, multi-account, lifecycle hooks. Status reports the integration as a webhook/event-driven channel (`mode: webhook`, path `/cliq/webhook`); a configured account stays `running` for as long as the gateway is up, and `lastInboundAt` / `lastOutboundAt` fill in after real traffic.
+- **🩺 Operations** — `openclaw status` / `channels` health probe, `openclaw directory` lookup, staged `openclaw cliq doctor`, plugin doctor, interactive setup wizard, SecretRef credentials, security audit, session binding, multi-account, lifecycle hooks. Status reports the integration as a webhook/event-driven channel (`mode: webhook`, path `/cliq/webhook`); a configured account stays `running` for as long as the gateway is up, and `lastInboundAt` / `lastOutboundAt` fill in after real traffic.
 
 > **Known limitation:** the bot can *send* reactions, but *inbound* reaction notifications (being told when a user reacts) are not yet possible — the OpenClaw plugin SDK exposes no inbound non-message event hook for external channel plugins. Tracked upstream: [openclaw/openclaw#100447](https://github.com/openclaw/openclaw/issues/100447).
 
@@ -116,7 +116,7 @@ The plugin registers a single HTTP route at **`POST /cliq/webhook`** on your Ope
    openclaw cliq webhook-preflight https://<gateway-host>/cliq/webhook
    ```
 
-   `openclaw setup` runs the same check and will not report inbound Cliq as ready when it fails.
+   `openclaw setup` runs the same check and will not report inbound Cliq as ready when it fails. For a full staged diagnostic of config, OAuth, capabilities, and inbound, see [`openclaw cliq doctor`](#cliq-doctor).
 
    To check only whether the gateway registered the route (no public path, no secret, no agent turn):
 
@@ -363,10 +363,10 @@ Every field except the required ones has a sensible default; `groups` / `thinkin
 - **`botId`** *(required)* — Bot **Unique Name** (the path segment in the bot message API).
 - **`botName`** *(recommended)* — Bot display name. Used to strip the `@botName` mention from the text the agent sees.
 - **`webhookSecret`** *(required for inbound delivery)* — High-entropy shared secret the Deluge handler sends in the `x-cliq-webhook-secret` header. If unset or unresolved, `/cliq/webhook` fails closed with `503` and never dispatches an agent turn. A missing or wrong request header returns `401`.
-- **`publicWebhookUrl`** *(optional)* — The public HTTPS URL Zoho posts to, e.g. `https://cliq.example.com/cliq/webhook`. Recorded by `openclaw setup` so it can verify inbound delivery, and reused as the default target for `openclaw cliq webhook-preflight`. It does not change routing (the gateway always serves `/cliq/webhook`); it only tells the tooling which public URL to check. See [Expose the webhook publicly](https://github.com/sprintberlin/openclaw-cliq/blob/main/docs/setup/public-webhook.md).
+- **`publicWebhookUrl`** *(optional)* — The public HTTPS URL Zoho posts to, e.g. `https://cliq.example.com/cliq/webhook`. Recorded by `openclaw setup` so it can verify inbound delivery, and reused as the default target for `openclaw cliq webhook-preflight` and the public-webhook stage of `openclaw cliq doctor`. It does not change routing (the gateway always serves `/cliq/webhook`); it only tells the tooling which public URL to check. See [Expose the webhook publicly](https://github.com/sprintberlin/openclaw-cliq/blob/main/docs/setup/public-webhook.md).
 - **`inboundVerifiedAt`** *(written by setup)* — ISO timestamp of the last successful public webhook verification. Written by `openclaw setup` when the preflight passes and cleared when a later run fails, so setup status reports whether inbound delivery was actually proven rather than inferring it from the presence of credentials. Not read at runtime.
 - **`refreshToken`** *(recommended)* — User-context OAuth refresh token (sensitive). Obtained once via the self-client `authorization_code` flow (§3c). **Required for channel @mention replies and live-edit message edits** — without it, those paths fail with `oauthtoken_scope_invalid` (the `client_credentials` grant cannot obtain a usable token for `ZohoCliq.Channels.UPDATE` / `ZohoCliq.Messages.UPDATE`). DM-only setups can leave it unset.
-- **`ackPolicy`** *(optional)* — When the webhook acknowledges Cliq relative to the inbound dispatch. `"after_dispatch"` (default) awaits the full dispatch before sending HTTP 200 — a crash mid-dispatch means Cliq never sees the 200 and redelivers (no lost message). `"immediate"` fires-and-forgets (faster, but a crash between ack and dispatch loses the message). **Deluge timeout gotcha:** Zoho's `invokeUrl` in the bot Message handler has a ~40 s hard timeout. With the default `ackPolicy: "after_dispatch"` the webhook holds the connection until the whole agent turn finishes, so a slow turn (image analysis, cold model) trips Deluge's *"The task has been terminated since the API call is taking too long to respond"* even though the reply is delivered out-of-band. Operators with slow turns should set `ackPolicy: "immediate"` (fire-and-forget ack; documented lost-message-on-crash trade-off). Pairs naturally with `thinking.mode: "placeholder"` (the placeholder posts immediately while the agent works).
+- **`ackPolicy`** *(optional)* — When the webhook acknowledges Cliq relative to the inbound dispatch. `"after_dispatch"` (default) awaits the full dispatch before sending HTTP 200 — a crash mid-dispatch means Cliq never sees the 200 and redelivers (no lost message). `"immediate"` fires-and-forgets (faster, but a crash between ack and dispatch loses the message). **Do not use `"immediate"` on OpenClaw `2026.8.1-beta.3`:** that runtime can reject every post-ack turn with `GatewayDrainingError`; `openclaw cliq doctor` warns when this combination is configured. **Deluge timeout gotcha:** Zoho's `invokeUrl` in the bot Message handler has a ~40 s hard timeout. With `"after_dispatch"`, a slow turn (image analysis, cold model) can trip Deluge's *"The task has been terminated since the API call is taking too long to respond"* even though the reply is delivered out-of-band. Prefer `"after_dispatch"`; only consider `"immediate"` on an unaffected OpenClaw version when the timeout is otherwise unavoidable and you accept the lost-message risk. Pairs naturally with `thinking.mode: "placeholder"` (the placeholder posts immediately while the agent works).
 - **`allowFrom`** *(optional)* — Array of Zoho Cliq user ids allowed to DM the bot (only effective when `dmPolicy` is `allowlist` or `pairing`).
 - **`dmPolicy`** *(optional)* — DM admission policy. Default is `allowlist` (deny by default). `pairing` starts the OpenClaw pairing approval flow for unknown senders — by default the sender gets a reply with a pairing code and the bot owner runs `openclaw pairing approve cliq <code>` on the CLI; set `pairing.notifyOwnerTarget` (see the `pairing` row below) to instead post an Approve/Deny card to the owner so approval happens inline in Cliq. Accepted values: `open`, `allowlist`, `pairing`, `disabled` (schema-validated — unknown field names like `dmSecurity` are rejected).
 - **`groupPolicy`** *(optional)* — Group/channel admission policy. `open` lets the bot respond in any channel it's @mentioned in; `allowlist` (the effective default once a `groups` map is present) restricts it to channels listed under `groups`; `disabled` ignores all group messages.
@@ -666,6 +666,77 @@ send bot message v2, postMessageInChannelByChannelUniqueName
 If the agent is also allowed to repair the setup, add `add bot to channel`, `create bot handler`, `update bot`, `update bot handler`, `create function v2`, `create function handler v2`, `update function v2`, and `update function handler v2`. Do not enable delete actions for routine onboarding.
 
 The agent can then verify that the bot is active and published, inspect Message/Mention handler metadata and execution errors, confirm channel membership, and run DM/channel end-to-end tests. The MCP connection does **not** expose or export the OAuth `clientId`, `clientSecret`, `refreshToken`, or the shared `webhookSecret`; those values still have to be supplied securely to OpenClaw once. Some Zoho MCP wrappers may reject `get bot handler` or handler-execution requests even though the underlying Zoho Cliq REST API supports them. In that case, inspect the handler in the Cliq UI or call the REST API directly; do not overwrite an unreadable handler blindly.
+
+#### Cliq doctor
+
+`openclaw cliq doctor` is the staged diagnostic for a configured Cliq account. Default mode is **read-only**: it never sends a message, never updates a handler, never writes config, and never restarts a service. It reuses the existing doctor warnings, OAuth capability matrix, public webhook preflight, and directory listing instead of reimplementing those checks.
+
+```bash
+openclaw cliq doctor
+openclaw cliq doctor --account <accountId>
+openclaw cliq doctor --json
+openclaw cliq doctor --outbound-test --target <user-id> --kind dm --confirm
+openclaw cliq doctor --roundtrip --target <user-id> --kind dm --confirm
+openclaw cliq doctor --roundtrip --target <channel-unique-name> --kind group --confirm --timeout 180
+```
+
+Stages, in order:
+
+1. Config schema and secret resolution
+2. Runtime lifecycle/status (an OAuth-backed status probe; it cannot read the running gateway's route table — stage 6 verifies the live `/cliq/webhook` route)
+3. OAuth `client_credentials` and `refresh_token` grants
+4. Required API capability probes (only the scopes with a safe read-only probe are exercised; `dm_send`, `channel_send`, and `message_edit` have none, so that stage warns and points at `--outbound-test`)
+5. Bot existence, state, visibility, and handler inspection
+6. Public DNS, TLS, route, and webhook-secret enforcement
+7. Read-only user/channel discovery
+8. Optional consented outbound test (`--outbound-test`)
+9. Optional nonce-correlated inbound/agent/reply roundtrip (`--roundtrip`)
+
+Stage 5 needs the shared bot/handler inspection subsystem, which does not exist yet. Until it does, that stage reports `skipped` rather than guessing, and the run is `degraded` (exit `1`) instead of falsely `healthy`. Likewise, the required send scopes (`dm_send`, `channel_send`, `message_edit`) have no safe read-only probe, so a read-only run is `degraded` too — run with `--outbound-test` or `--roundtrip` to reach `healthy`.
+
+Each stage reports `pass`, `warn`, `fail`, or `skipped`, with redacted evidence and actionable remediation. Timeouts and partial failures name the failed boundary.
+
+`--outbound-test` and `--roundtrip` both require `--target`, `--kind dm|group`, and `--confirm`. `--roundtrip` posts one clearly labeled, copyable challenge. A human sends the complete `OPENCLAW_CLIQ_ROUNDTRIP_REQUEST <nonce> — reply exactly OPENCLAW_CLIQ_ROUNDTRIP_REPLY <nonce>` instruction through the real Cliq bot (a DM, or a group @mention); the agent must answer exactly `OPENCLAW_CLIQ_ROUNDTRIP_REPLY <nonce>`. Seeing the request proves Zoho delivered it to the inbound webhook; seeing the exact reply proves the agent turn, the configured policy, and the outbound reply all completed. Chat text is the only correlation signal a read-only diagnostic has, so to attribute an individual hop, grep the gateway logs for the same nonce. A DM roundtrip additionally needs a chat id from the send response (`apiVersion.dmPost: "v3"` returns one); without it the doctor fails at `roundtrip_correlation` rather than polling blindly.
+
+The config stage also warns when a multi-user Cliq bot still resolves `session.dmScope` to `main` (shared conversation context and delivery route) and whenever `ackPolicy: "immediate"` is configured (a crash after the ack loses the message, and on OpenClaw `2026.8.1-beta.3` post-ack turns can fail with `GatewayDrainingError`).
+
+`--json` emits a stable report. The documented keys are:
+
+```json
+{
+  "schemaVersion": 1,
+  "command": "cliq doctor",
+  "mode": "read_only",
+  "accountId": "default",
+  "startedAt": "2026-08-27T10:00:00.000Z",
+  "completedAt": "2026-08-27T10:00:01.000Z",
+  "outcome": "healthy",
+  "exitCode": 0,
+  "readOnly": true,
+  "stages": [
+    {
+      "id": "config",
+      "label": "Config schema and secret resolution",
+      "status": "pass",
+      "evidence": ["…"],
+      "remediation": []
+    }
+  ]
+}
+```
+
+`correlation` is present only after a roundtrip attempt (`nonce`, `targetKind`, `requestObserved`, `replyObserved`). `invocationError` is present only for an invalid invocation. `boundary` is present on a stage that named a failed or inconclusive hop.
+
+Exit codes:
+
+- `0` — healthy (every applicable stage passed)
+- `1` — degraded (warnings, or a stage skipped for a missing subsystem)
+- `2` — failed
+- `3` — invalid invocation
+
+Secrets, tokens, auth codes, and sensitive Zoho response bodies are redacted from every report.
+
+A green public-webhook stage still cannot see the secret hardcoded in the Zoho Deluge handler. If the handler secret diverges from `channels.cliq.webhookSecret`, inbound delivery 401s even when the preflight is green. Until the bot/handler inspection subsystem can compare those values, treat a mismatch as a remaining operator check.
 
 #### Smoke testing with curl
 

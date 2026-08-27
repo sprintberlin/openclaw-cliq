@@ -110,6 +110,45 @@ export default defineChannelPluginEntry({
             });
             process.exitCode = code;
           });
+        cliq
+          .command("doctor")
+          .description(
+            "Run the staged Cliq diagnostic pipeline (config, runtime, OAuth, capabilities, bot/handlers, public webhook, discovery)",
+          )
+          .option("--account <accountId>", "Cliq account id (defaults to the single-account config)")
+          .option("--outbound-test", "Send one clearly labeled test message after explicit confirmation")
+          .option("--roundtrip", "Run the nonce-correlated inbound and reply roundtrip after explicit confirmation")
+          .option("--target <target>", "Target user id (dm) or channel unique name (group)")
+          .option("--kind <kind>", "Target kind: dm or group")
+          .option("--confirm", "Confirm that a diagnostic message may be sent")
+          .option("--timeout <seconds>", "Roundtrip timeout in seconds (default 120)")
+          .option("--json", "Emit the stable machine-readable report")
+          .action(
+            async (opts: {
+              account?: string;
+              outboundTest?: boolean;
+              roundtrip?: boolean;
+              target?: string;
+              kind?: string;
+              confirm?: boolean;
+              timeout?: string;
+              json?: boolean;
+            }) => {
+              const { runCliqDoctorCommand } = await import("./src/doctor-command.js");
+              const code = await runCliqDoctorCommand({
+                cfg: api.config as OpenClawConfig,
+                accountId: opts.account,
+                outboundTest: opts.outboundTest,
+                roundtrip: opts.roundtrip,
+                target: opts.target,
+                kind: opts.kind,
+                confirm: opts.confirm,
+                timeout: opts.timeout,
+                json: opts.json,
+              });
+              process.exitCode = code;
+            },
+          );
       },
       {
         descriptors: [

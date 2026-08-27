@@ -50,6 +50,9 @@ openclaw cliq webhook-preflight https://<public-host>/cliq/webhook
 
 # Stable machine-readable report for automation / doctor integration
 openclaw cliq webhook-preflight https://<public-host>/cliq/webhook --json
+
+# Or run the full staged doctor, which reuses this preflight as one stage
+openclaw cliq doctor --json
 ```
 
 By default the command uses `channels.cliq.webhookSecret` from the resolved
@@ -200,8 +203,11 @@ constant-time secret check and expects the request to arrive unmodified.
 > answers only after the agent turn completes, which is what drives Cliq's
 > native "bot is processing" indicator. If your proxy's read timeout is
 > shorter than a slow turn, raise it (as above) rather than lowering the
-> plugin's guarantees. If you cannot, switch to `ackPolicy: "immediate"` and
-> accept the documented lost-message risk on a crash between ack and dispatch.
+> plugin's guarantees. If you cannot, `ackPolicy: "immediate"` trades the
+> documented lost-message-on-crash risk for a fast ack — but do not use it on
+> OpenClaw `2026.8.1-beta.3`, where post-ack turns can fail with
+> `GatewayDrainingError`. `openclaw cliq doctor` warns whenever `immediate` is
+> configured.
 
 ---
 
