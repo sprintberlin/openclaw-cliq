@@ -10,13 +10,16 @@
  *
  * This helper drives a paginated endpoint to completion (or `maxItems`),
  * preferring `next_token` when the response provides one and falling back to
- * `from`/`limit` offset pagination for v2 endpoints that don't return a
- * cursor. It is the single pagination primitive the client's list methods
- * (`listUsers`, `listChannels`) and the future v3 CRUD list endpoints
- * (Phase 4) build on — so the directory list calls are already
- * forward-compatible with v3's `next_token` model even though they stay on
- * the v2 `/users` / `/channels` paths today (v3 has no org-directory
- * equivalent — see docs/learnings/094).
+ * `from`/`limit` offset pagination for endpoints that accept an offset but
+ * return no cursor. Endpoints without an offset parameter — the v2 directory
+ * lists, which answer an unknown `from` key with HTTP 400 — pass
+ * `cursorOnly` so the walk ends with the last cursor-bearing page. It is the
+ * single pagination primitive the client's list methods (`listUsers`,
+ * `listChannels`) and the future v3 CRUD list endpoints (Phase 4) build on —
+ * so the directory list calls are already forward-compatible with v3's
+ * `next_token` model even though they stay on the v2 `/users` / `/channels`
+ * paths today (v3 has no org-directory equivalent — see
+ * docs/learnings/094).
  *
  * Ref: <https://www.zoho.com/cliq/help/restapi/v3/pagination/>.
  */
@@ -38,10 +41,19 @@ export interface PaginateOptions {
   /** Maximum total records to collect across all pages. */
   maxItems: number;
   /**
-   * Page size requested from the API per call. Clamped to `[1, 200]` (Cliq's
-   * max page size for the directory endpoints).
+   * Page size requested from the API per call. Clamped to `[1, 200]` (the
+   * largest page size any Cliq list endpoint documents; per-endpoint maxima
+   * can be lower and are the caller's responsibility).
    */
   pageSize: number;
+  /**
+   * Stop after a page that carries no `next_token` instead of continuing with
+   * `from`/`limit` offset pagination. Required for endpoints that have no
+   * offset parameter at all — the v2 directory lists reject an unknown `from`
+   * key with HTTP 400, so retrying without a cursor would either fail or
+   * re-read the same page forever.
+   */
+  cursorOnly?: boolean;
 }
 
 /**
@@ -91,6 +103,8 @@ export async function paginateList<T>(
       from += page.items.length;
       continue;
     }
+    // Cursor-only endpoint: no cursor means no further page to ask for.
+    if (opts.cursorOnly) break;
     // Offset mode (no cursor returned). A non-full page is the last page.
     if (page.items.length < limit) break;
     nextToken = undefined;

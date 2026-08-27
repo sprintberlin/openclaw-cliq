@@ -769,6 +769,8 @@ Stages, in order:
 8. Optional consented outbound test (`--outbound-test`)
 9. Optional nonce-correlated inbound/agent/reply roundtrip (`--roundtrip`)
 
+Stage 7 is an aid for choosing a target, not a precondition for reaching one: if a directory read fails, the stage warns (the run is `degraded`, exit `1`), target resolution is unavailable, but stages 8 and 9 still run against an explicit `--target`. A failure in any earlier stage does block the consented send.
+
 Stage 5 needs the shared bot/handler inspection subsystem, which does not exist yet. Until it does, that stage reports `skipped` rather than guessing, and the run is `degraded` (exit `1`) instead of falsely `healthy`. Likewise, the required send scopes (`dm_send`, `channel_send`, `message_edit`) have no safe read-only probe, so a read-only run is `degraded` too — run with `--outbound-test` or `--roundtrip` to reach `healthy`.
 
 Each stage reports `pass`, `warn`, `fail`, or `skipped`, with redacted evidence and actionable remediation. Timeouts and partial failures name the failed boundary.
