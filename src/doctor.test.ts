@@ -120,6 +120,41 @@ describe("collectCliqPreviewWarnings", () => {
     expect(warnings.some((w) => /not a signed tenant claim/.test(w))).toBe(true);
   });
 
+  it("notes that streaming.preview=on needs a refreshToken for live-edit", () => {
+    const warnings = collectCliqPreviewWarnings({
+      cfg: cfgWith({
+        clientId: "id",
+        clientSecret: "secret",
+        botId: "bot",
+        webhookSecret: "s",
+        dmPolicy: "open",
+        allowFrom: ["u1"],
+        streaming: { preview: "on" },
+      }),
+      doctorFixCommand: DOCTOR_FIX,
+    });
+    expect(
+      warnings.some((w) => /streaming\.preview/.test(w) && /refreshToken/.test(w)),
+    ).toBe(true);
+  });
+
+  it("does not warn about streaming.preview when a refreshToken is present", () => {
+    const warnings = collectCliqPreviewWarnings({
+      cfg: cfgWith({
+        clientId: "id",
+        clientSecret: "secret",
+        botId: "bot",
+        refreshToken: "rt",
+        webhookSecret: "s",
+        dmPolicy: "open",
+        allowFrom: ["u1"],
+        streaming: { preview: "on" },
+      }),
+      doctorFixCommand: DOCTOR_FIX,
+    });
+    expect(warnings.some((w) => /streaming\.preview/.test(w))).toBe(false);
+  });
+
   it("does not warn about wildcard allowFrom under allowlist dmPolicy (covered by empty/open checks)", () => {
     const warnings = collectCliqPreviewWarnings({
       cfg: cfgWith({

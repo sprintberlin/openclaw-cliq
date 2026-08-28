@@ -22,6 +22,13 @@ const EU_OAUTH_BASE = "https://accounts.zoho.eu";
 
 const MESSAGE_CHAR_LIMIT = 5000;
 
+/**
+ * Default minimum wall-clock distance between two in-place preview edits of
+ * the same draft when `streaming.preview` is `"on"` (issue #175). Matches the
+ * 1s block-coalesce window the channel publishes to the SDK.
+ */
+export const DEFAULT_CLIQ_STREAMING_MIN_EDIT_INTERVAL_MS = 1_000;
+
 
 /** REST API generation used for outbound calls that have a v3 equivalent. */
 export type CliqApiVersion = "v2" | "v3";
@@ -236,11 +243,14 @@ export interface CliqChannelConfig {
    * live-edit-in-place (editing a single message as the draft grows) is not
    * exposed by the SDK; block streaming is the available progressive-delivery
    * mechanism.
-   * - `preview: "on"` opts this account into block streaming (the SDK's
-   *   `agents.defaults.blockStreamingDefault` must also permit it).
-   * - `preview: "off"` (default) keeps the legacy single-final-reply behavior.
-   */
-  streaming?: { preview?: "on" | "off" };
+    * - `preview: "on"` opts this account into block streaming (the SDK's
+    *   `agents.defaults.blockStreamingDefault` must also permit it).
+    * - `preview: "off"` (default) keeps the legacy single-final-reply behavior.
+    * - `minEditIntervalMs` (optional) is the minimum wall-clock distance
+    *   between two in-place preview edits of the same draft. Intermediate
+    *   blocks inside the window are coalesced. Defaults to 1000 ms.
+    */
+  streaming?: { preview?: "on" | "off"; minEditIntervalMs?: number };
   /**
    * Optional user-context OAuth **refresh token** obtained once via the
    * self-client `authorization_code` flow (see README §3). When set, the
@@ -268,14 +278,14 @@ export interface CliqChannelConfig {
    */
   reactions?: CliqReactionGuidanceConfig;
   /**
-   * Instant acknowledgement / "thinking" placeholder. When `mode === "placeholder"`
-   * and a `refreshToken` is configured and streaming preview is OFF, the
-   * inbound path posts a lightweight placeholder message (e.g. `💭 …`) the
-   * moment a message is accepted, then edits it in place into the final
-   * agent reply — exactly one message, no duplicate. Defaults to an animated
-   * placeholder (`mode: "placeholder"`, `animate: "dots"`); operators can set
-   * either field to `"off"`. See issues #47 and #89.
-   */
+    * Instant acknowledgement / "thinking" placeholder. When `mode === "placeholder"`
+    * (or `"card"`) and a `refreshToken` is configured, the inbound path posts
+    * a lightweight placeholder immediately, then the first `deliver` edits
+    * that same message into the reply (or the first streaming preview block)
+    * — exactly one progress surface, no duplicate. Defaults to an animated
+    * placeholder (`mode: "placeholder"`, `animate: "dots"`); operators can set
+    * either field to `"off"`. See issues #47, #89, and #175.
+    */
   thinking?: CliqThinkingConfig;
   /**
    * Welcome-message-on-subscribe config. When the Deluge Welcome Handler
@@ -570,6 +580,12 @@ export interface ResolvedCliqAccount {
   /** Whether progressive (block-streaming) reply delivery is opted-in for this account. */
   blockStreaming: boolean;
   /**
+   * Minimum wall-clock distance between two in-place preview edits of the
+   * same draft when `blockStreaming` is on. Intermediate blocks inside the
+   * window are coalesced. See {@link CliqChannelConfig.streaming}.
+   */
+  streamingMinEditIntervalMs?: number;
+  /**
    * Optional user-context refresh token (see `CliqChannelConfig.refreshToken`).
    * When set, channel posts + message edits mint access tokens via the
    * refresh-token grant; otherwise those paths fall back to
@@ -596,10 +612,11 @@ export interface ResolvedCliqAccount {
    * Resolved instant-acknowledgement config. `mode` defaults to `"placeholder"`; `text`
    * defaults to {@link DEFAULT_CLIQ_THINKING_TEXT} when `mode === "placeholder"`
    * and to {@link DEFAULT_CLIQ_THINKING_CARD_TEXT} when `mode === "card"`.
-   * The inbound path only acts when `mode` is `"placeholder"` OR `"card"` AND a
-   * `refreshToken` is configured AND streaming preview is off (the live-edit
-   * path already shows progress otherwise).
-   */
+    * The inbound path only acts when `mode` is `"placeholder"` OR `"card"` AND a
+    * `refreshToken` is configured. When streaming preview is also on, the
+    * placeholder is the same message the live-edit path then edits into the
+    * growing reply (issue #175) — one progress surface, never two.
+    */
   thinking: {
     mode: "off" | "placeholder" | "card";
     text: string;
@@ -660,6 +677,13 @@ export function resolveCliqConfig(
   const ackPolicy: "after_dispatch" | "immediate" =
     ackPolicyRaw === "immediate" ? "immediate" : "after_dispatch";
   const blockStreaming = section?.streaming?.preview === "on";
+  const streamingMinEditIntervalMsRaw = section?.streaming?.minEditIntervalMs;
+  const streamingMinEditIntervalMs =
+    typeof streamingMinEditIntervalMsRaw === "number" &&
+    Number.isFinite(streamingMinEditIntervalMsRaw) &&
+    streamingMinEditIntervalMsRaw >= 0
+      ? Math.floor(streamingMinEditIntervalMsRaw)
+      : DEFAULT_CLIQ_STREAMING_MIN_EDIT_INTERVAL_MS;
   const webhookSecret = resolveCliqSecretString({
     cfg,
     value: section?.webhookSecret,
@@ -690,6 +714,7 @@ export function resolveCliqConfig(
      ackPolicy,
     selfSenderIds: section?.selfSenderIds ?? [],
     blockStreaming,
+    streamingMinEditIntervalMs,
     refreshToken: refreshToken || undefined,
     apiBase: section?.apiBase || undefined,
     oauthBase: section?.oauthBase || undefined,

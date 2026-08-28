@@ -400,6 +400,145 @@ describe("createLiveEditDeliver — enabled (live-edit)", () => {
     expect(stats!.edits).toBe(2);
     expect(stats!.editFailures).toBe(0);
   });
+
+  it("skips an edit when a repeated block does not change the accumulated content", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+    });
+    await deliver({ text: "hello" });
+    await deliver({ text: "world" });
+    await deliver({ text: "world" });
+    expect(fake.sends).toHaveLength(1);
+    expect(fake.edits).toHaveLength(1);
+    expect(fake.edits[0].text).toBe("hello\n\nworld");
+    const stats = getLiveEditDeliverStats(deliver);
+    expect(stats?.edits).toBe(1);
+    expect(stats?.skippedUnchanged).toBe(1);
+  });
+
+  it("throttles preview edits and coalesces the latest pending block", async () => {
+    let now = 1_000;
+    const sleeps: number[] = [];
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      minEditIntervalMs: 1_000,
+      now: () => now,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        now += ms;
+      },
+    });
+    await deliver({ text: "hello" });
+    now += 10;
+    const second = deliver({ text: "world" });
+    now += 10;
+    const third = deliver({ text: "more" });
+    await Promise.all([second, third]);
+    expect(fake.sends).toHaveLength(1);
+    expect(fake.edits).toHaveLength(1);
+    expect(fake.edits[0].text).toBe("hello\n\nworld\n\nmore");
+    expect(sleeps.some((ms) => ms > 0)).toBe(true);
+    const stats = getLiveEditDeliverStats(deliver);
+    expect(stats?.edits).toBe(1);
+    expect(stats?.coalesced).toBeGreaterThanOrEqual(1);
+  });
+
+  it("flushes a coalesced preview immediately on the final block", async () => {
+    let now = 5_000;
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      minEditIntervalMs: 5_000,
+      now: () => now,
+      sleep: async () => undefined,
+    });
+    await deliver({ text: "hello" });
+    now += 1;
+    await deliver({ text: "world" }, { final: true });
+    expect(fake.edits).toHaveLength(1);
+    expect(fake.edits[0].text).toBe("hello\n\nworld");
+  });
+
+  it("does not apply a late slower edit over newer accumulated content", async () => {
+    let now = 10_000;
+    let releaseFirst: (() => void) | undefined;
+    const firstEditGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    let editCalls = 0;
+    fake.editMessage = vi.fn(async (o) => {
+      editCalls++;
+      fake.edits.push(o);
+      if (editCalls === 1) await firstEditGate;
+      return { messageId: o.messageId, chatId: o.chatId };
+    });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      minEditIntervalMs: 0,
+      sleep: async () => undefined,
+      now: () => now,
+    });
+    await deliver({ text: "hello" });
+    const first = deliver({ text: "world" });
+    await vi.waitFor(() => expect(editCalls).toBe(1));
+    now += 50;
+    const second = deliver({ text: "more" });
+    releaseFirst?.();
+    await Promise.all([first, second]);
+    expect(fake.edits.at(-1)?.text).toBe("hello\n\nworld\n\nmore");
+  });
+
+  it("backs off after a 429 before retrying the latest preview", async () => {
+    let now = 20_000;
+    const sleeps: number[] = [];
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    let editCalls = 0;
+    fake.editMessage = vi.fn(async (o) => {
+      editCalls++;
+      fake.edits.push(o);
+      if (editCalls === 1) {
+        const err = new Error("cliq: send failed [transient] status=429");
+        (err as { status?: number }).status = 429;
+        (err as { retryAfterMs?: number }).retryAfterMs = 1_500;
+        throw err;
+      }
+      return { messageId: o.messageId, chatId: o.chatId };
+    });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      minEditIntervalMs: 0,
+      now: () => now,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        now += ms;
+      },
+    });
+    await deliver({ text: "hello" });
+    await deliver({ text: "world" });
+    expect(sleeps).toContain(1_500);
+    expect(fake.edits.at(-1)?.text).toBe("hello\n\nworld");
+    const stats = getLiveEditDeliverStats(deliver);
+    expect(stats?.edits).toBe(1);
+    expect(stats?.editFailures).toBe(0);
+  });
 });
 
 describe("createLiveEditDeliver — initialDraft (thinking placeholder)", () => {
@@ -582,6 +721,22 @@ describe("createLiveEditDeliver — initialDraft (thinking placeholder)", () => 
     expect(fake.sends[0].text).toBe("first");
     const stats = getLiveEditDeliverStats(deliver);
     expect(stats?.editFailures).toBe(1);
+  });
+
+  it("live-edit mode: a later block after placeholder-edit failure still falls back without throwing", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1", editFails: true });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+    });
+    await expect(deliver({ text: "first" })).resolves.toBeUndefined();
+    await expect(deliver({ text: "second" })).resolves.toBeUndefined();
+    expect(fake.deletes).toHaveLength(1);
+    expect(fake.sends[0].text).toBe("first");
+    expect(fake.sends.at(-1)?.text).toContain("second");
   });
 });
 
