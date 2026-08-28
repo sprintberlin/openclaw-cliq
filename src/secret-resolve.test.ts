@@ -44,6 +44,62 @@ describe("resolveCliqSecretString", () => {
     expect(resolveCliqSecretString({ cfg, value: "   ", path: "p" })).toBe("");
   });
 
+  it("resolves $NAME and ${NAME} shorthands through the default env provider", () => {
+    const env = { [ENV_KEY]: "env-secret-value" } as NodeJS.ProcessEnv;
+    for (const value of [`$${ENV_KEY}`, `\${${ENV_KEY}}`]) {
+      expect(
+        resolveCliqSecretString({ cfg: cfgWith({}), value, path: "p", env }),
+      ).toBe("env-secret-value");
+    }
+  });
+
+  it("returns '' for env shorthands whose env var is missing or empty", () => {
+    for (const value of [`$${ENV_KEY}`, `\${${ENV_KEY}}`]) {
+      expect(
+        resolveCliqSecretString({
+          cfg: cfgWith({}),
+          value,
+          path: "p",
+          env: { [ENV_KEY]: "" } as NodeJS.ProcessEnv,
+        }),
+      ).toBe("");
+    }
+  });
+
+  it("resolves env shorthand through secrets.defaults.env and its allowlist", () => {
+    const cfg = cfgWith({}, {
+      defaults: { env: "myenv" },
+      providers: {
+        myenv: { source: "env", allowlist: [ENV_KEY] },
+      },
+    });
+    expect(
+      resolveCliqSecretString({
+        cfg,
+        value: `$${ENV_KEY}`,
+        path: "p",
+        env: { [ENV_KEY]: "allowed" } as NodeJS.ProcessEnv,
+      }),
+    ).toBe("allowed");
+  });
+
+  it("rejects env shorthand denied by the configured provider allowlist", () => {
+    const cfg = cfgWith({}, {
+      defaults: { env: "myenv" },
+      providers: {
+        myenv: { source: "env", allowlist: ["OTHER_VAR"] },
+      },
+    });
+    expect(() =>
+      resolveCliqSecretString({
+        cfg,
+        value: `\${${ENV_KEY}}`,
+        path: "p",
+        env: { [ENV_KEY]: "denied" } as NodeJS.ProcessEnv,
+      }),
+    ).toThrow(/not allowlisted/);
+  });
+
   it("resolves an env-backed SecretRef via process.env", () => {
     process.env[ENV_KEY] = "env-secret-value";
     const cfg = cfgWith({});
@@ -205,6 +261,23 @@ describe("resolveCliqConfig with SecretRef credentials", () => {
     expect(account.refreshToken).toBe("resolved-refresh-token");
   });
 
+  it("resolves all secret-bearing fields from env shorthand", () => {
+    process.env[ENV_SECRET] = "resolved-client-secret";
+    process.env[ENV_WH] = "resolved-webhook-secret";
+    process.env[ENV_RT] = "resolved-refresh-token";
+    const cfg = cfgWith({
+      clientId: "cid",
+      botId: "bot",
+      clientSecret: `$${ENV_SECRET}`,
+      webhookSecret: `\${${ENV_WH}}`,
+      refreshToken: `$${ENV_RT}`,
+    });
+    const account = resolveCliqConfig(cfg, null);
+    expect(account.clientSecret).toBe("resolved-client-secret");
+    expect(account.webhookSecret).toBe("resolved-webhook-secret");
+    expect(account.refreshToken).toBe("resolved-refresh-token");
+  });
+
   it("throws on a required SecretRef whose env var is unset", () => {
     delete process.env[ENV_SECRET];
     const cfg = cfgWith({
@@ -314,6 +387,67 @@ describe("inspectCliqSecretFields — unresolved refs and unavailable providers 
     )!;
     expect(finding.status).toBe("plaintext");
     expect(JSON.stringify(finding)).not.toContain("literal-secret");
+  });
+
+  it.each([`$${ENV_ID}`, `\${${ENV_ID}}`])(
+    "reports resolved shorthand %s as ref-backed without revealing its value",
+    (value) => {
+      const secretValue = "shorthand-secret-value";
+      const cfg = cfgWith({ clientSecret: value });
+      const finding = inspectCliqSecretFields({
+        cfg,
+        env: { [ENV_ID]: secretValue } as NodeJS.ProcessEnv,
+      }).find((entry) => entry.field === "clientSecret")!;
+      expect(finding).toEqual({
+        field: "clientSecret",
+        status: "resolved",
+        ref: `env:default:${ENV_ID}`,
+      });
+      expect(JSON.stringify(finding)).not.toContain(secretValue);
+    },
+  );
+
+  it("reports missing shorthand as unresolved instead of resolved literal text", () => {
+    const cfg = cfgWith({ clientSecret: `\${${ENV_ID}}` });
+    const finding = inspectCliqSecretFields({ cfg, env: {} }).find(
+      (entry) => entry.field === "clientSecret",
+    )!;
+    expect(finding.status).toBe("unresolved");
+    expect(finding.ref).toBe(`env:default:${ENV_ID}`);
+    expect(JSON.stringify(finding)).not.toContain(`\${${ENV_ID}}`);
+  });
+
+  it("classifies shorthand with its custom default provider and allowlist", () => {
+    const cfg = cfgWith(
+      { clientSecret: `$${ENV_ID}` },
+      {
+        defaults: { env: "custom" },
+        providers: { custom: { source: "env", allowlist: [ENV_ID] } },
+      },
+    );
+    const finding = inspectCliqSecretFields({
+      cfg,
+      env: { [ENV_ID]: "custom-secret-value" } as NodeJS.ProcessEnv,
+    }).find((entry) => entry.field === "clientSecret")!;
+    expect(finding.status).toBe("resolved");
+    expect(finding.ref).toBe(`env:custom:${ENV_ID}`);
+  });
+
+  it("reports shorthand denied by its provider allowlist as provider unavailable", () => {
+    const cfg = cfgWith(
+      { clientSecret: `$${ENV_ID}` },
+      {
+        defaults: { env: "custom" },
+        providers: { custom: { source: "env", allowlist: ["OTHER"] } },
+      },
+    );
+    const finding = inspectCliqSecretFields({
+      cfg,
+      env: { [ENV_ID]: "denied-secret-value" } as NodeJS.ProcessEnv,
+    }).find((entry) => entry.field === "clientSecret")!;
+    expect(finding.status).toBe("provider_unavailable");
+    expect(finding.ref).toBe(`env:custom:${ENV_ID}`);
+    expect(JSON.stringify(finding)).not.toContain("denied-secret-value");
   });
 
   it("does not treat $ENV interpolation as plaintext", () => {

@@ -1149,6 +1149,38 @@ describe("cliq doctor — SecretRef diagnostics (issue #95)", () => {
     expect(config.evidence.join(" ")).toMatch(/UNRESOLVED/);
   });
 
+  it("reports a resolved env shorthand as ref-backed rather than plaintext", async () => {
+    process.env.CLIQ_DOCTOR_SECRET = "doctor-secret-never-print";
+    const report = await runCliqDoctor(
+      cfgWith({ clientSecret: "${CLIQ_DOCTOR_SECRET}" }),
+      {},
+      createDeps(),
+    );
+    const evidence = stageOf(report, "config").evidence.join(" ");
+    expect(evidence).toContain(
+      "clientSecret resolved without exposing its value (env:default:CLIQ_DOCTOR_SECRET)",
+    );
+    expect(evidence).not.toContain("clientSecret is stored as plaintext");
+    expect(JSON.stringify(report)).not.toContain("doctor-secret-never-print");
+    delete process.env.CLIQ_DOCTOR_SECRET;
+  });
+
+  it("identifies a missing env shorthand as unresolved rather than literal text", async () => {
+    delete process.env.CLIQ_DOCTOR_UNSET;
+    const report = await runCliqDoctor(
+      cfgWith({ webhookSecret: "$CLIQ_DOCTOR_UNSET" }),
+      {},
+      createDeps(),
+    );
+    const config = stageOf(report, "config");
+    expect(config.status).toBe("warn");
+    expect(config.boundary).toBe("secret_resolution");
+    expect(config.evidence.join(" ")).toContain(
+      "env:default:CLIQ_DOCTOR_UNSET",
+    );
+    expect(JSON.stringify(report)).not.toContain("$CLIQ_DOCTOR_UNSET");
+  });
+
   it("identifies an unavailable provider without revealing the environment value", async () => {
     process.env.CLIQ_DOCTOR_SECRET = "live-value-never-print";
     const report = await runCliqDoctor(
