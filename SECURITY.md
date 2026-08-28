@@ -15,6 +15,19 @@ When reporting, please include:
 - a description of the issue and its impact;
 - reproduction steps or a proof of concept, if available.
 
+## Dependency security updates
+
+The repository maintainers review Dependabot alerts and pull requests for npm
+and GitHub Actions updates. Dependabot never auto-merges changes: every update
+must pass typecheck, tests, build, gateway smoke, and the supported OpenClaw
+compatibility matrix before a maintainer merges it.
+
+The pinned `openclaw` development dependency is intentionally excluded from
+grouped updates because it is coupled to `.github/openclaw-compat.json` and
+requires an explicit compatibility review. Breaking dependency updates should
+use a dedicated pull request that explains the migration and audit impact; do
+not apply `npm audit fix --force` blindly.
+
 ## Scope
 
 This plugin handles Zoho Cliq bot credentials (OAuth client secret, refresh
