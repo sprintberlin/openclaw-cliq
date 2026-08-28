@@ -163,6 +163,10 @@ export default defineChannelPluginEntry({
           .option("--kind <kind>", "Target kind: dm or group")
           .option("--confirm", "Confirm that a diagnostic message may be sent")
           .option("--timeout <seconds>", "Roundtrip timeout in seconds (default 120)")
+          .option(
+            "--adopt-handler-url",
+            "Store the verified Zoho handler URL as channels.cliq.publicWebhookUrl after a passing preflight",
+          )
           .option("--json", "Emit the stable machine-readable report")
           .action(
             async (opts: {
@@ -174,6 +178,7 @@ export default defineChannelPluginEntry({
               confirm?: boolean;
               timeout?: string;
               json?: boolean;
+              adoptHandlerUrl?: boolean;
             }) => {
               const { runCliqDoctorCommand } = await import("./src/doctor-command.js");
               const code = await runCliqDoctorCommand({
@@ -186,6 +191,7 @@ export default defineChannelPluginEntry({
                 confirm: opts.confirm,
                 timeout: opts.timeout,
                 json: opts.json,
+                adoptHandlerUrl: opts.adoptHandlerUrl,
               });
               process.exitCode = code;
             },

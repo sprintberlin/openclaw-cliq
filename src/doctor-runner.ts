@@ -27,8 +27,13 @@ import { resolveCliqClient } from "./runtime-api.js";
 import { runCliqWebhookPreflight, type CliqPreflightReport } from "./webhook-preflight.js";
 import {
   createCliqHandlerScriptReader,
+  proposeCliqHandlerUrlAdoption,
   type CliqHandlerScriptRecord,
 } from "./handler-consistency.js";
+import {
+  persistCliqHandlerUrlAdoption,
+  type PersistCliqInboundVerificationResult,
+} from "./inbound-verification-store.js";
 
 export const CLIQ_DOCTOR_SCHEMA_VERSION = 1 as const;
 export const CLIQ_DOCTOR_EXIT = {
@@ -40,7 +45,7 @@ export const CLIQ_DOCTOR_EXIT = {
 
 export type CliqDoctorStageStatus = "pass" | "warn" | "fail" | "skipped";
 export type CliqDoctorOutcome = "healthy" | "degraded" | "failed" | "invalid";
-export type CliqDoctorMode = "read_only" | "outbound_test" | "roundtrip";
+export type CliqDoctorMode = "read_only" | "outbound_test" | "roundtrip" | "adopt_handler_url";
 export type CliqDoctorTargetKind = "dm" | "group";
 
 export type CliqDoctorStageId =
@@ -94,6 +99,7 @@ export interface CliqDoctorOptions {
   confirmed?: boolean;
   timeoutMs?: number;
   json?: boolean;
+  adoptHandlerUrl?: boolean;
   invocationError?: string;
 }
 
@@ -135,6 +141,12 @@ export interface CliqDoctorDeps {
     account: ResolvedCliqAccount;
     publicWebhookUrl: string | undefined;
   }) => Promise<CliqDoctorBotInspectionResult>;
+  persistHandlerUrlAdoption?: (params: {
+    url: string;
+    configuredUrl: string | undefined;
+    accountId?: string;
+    now?: Date;
+  }) => Promise<PersistCliqInboundVerificationResult>;
   randomUUID: () => string;
   sleep: (milliseconds: number) => Promise<void>;
   now: () => Date;
@@ -161,7 +173,9 @@ const defaultDeps: CliqDoctorDeps = {
   probeStatus: async (account) => probeCliqStatus(account),
   probeCapability: (capability, apiBase, token) =>
     probeCliqCapability(capability, apiBase, token),
-  runPreflight: ({ url, secret }) => runCliqWebhookPreflight({ url, secret }),
+  runPreflight: ({ url, secret, readHandlers }) =>
+    runCliqWebhookPreflight({ url, secret, readHandlers }),
+  persistHandlerUrlAdoption: persistCliqHandlerUrlAdoption,
   randomUUID,
   sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   now: () => new Date(),
@@ -296,7 +310,10 @@ function validateOptions(options: CliqDoctorOptions): string | null {
 }
 
 function modeOf(options: CliqDoctorOptions): CliqDoctorMode {
-  return options.roundtrip ? "roundtrip" : options.outboundTest ? "outbound_test" : "read_only";
+  if (options.roundtrip) return "roundtrip";
+  if (options.outboundTest) return "outbound_test";
+  if (options.adoptHandlerUrl) return "adopt_handler_url";
+  return "read_only";
 }
 
 function outcomeOf(stages: readonly CliqDoctorStage[]): Exclude<CliqDoctorOutcome, "invalid"> {
@@ -677,51 +694,167 @@ async function buildBotStage(
   }
 }
 
-async function buildPublicWebhookStage(
-  account: ResolvedCliqAccount | null,
-  publicWebhookUrl: string | undefined,
+function handlerScriptReader(
+  account: ResolvedCliqAccount,
+  client: CliqDoctorClient | null,
+) {
+  return client?.readBotHandlerScript && client.listBots
+    ? createCliqHandlerScriptReader({
+        account,
+        readHandlerScript: (handlerType, botId) =>
+          client.readBotHandlerScript!(handlerType, botId),
+        listBots: (maxItems) => client.listBots!(maxItems),
+      }) ?? undefined
+    : undefined;
+}
+
+function preflightStageFromReport(
+  report: CliqPreflightReport,
+  values: readonly string[],
+): CliqDoctorStage {
+  const evidence = report.stages.map(
+    (item) => `${item.id}=${item.status}: ${redactCliqDoctorText(item.detail, values)}`,
+  );
+  const failedStage = report.stages.find((item) => item.status === "fail");
+  const warnedStage = report.stages.find((item) => item.status === "warn");
+  return stage(
+    "public_webhook",
+    report.ok ? "pass" : failedStage ? "fail" : "warn",
+    evidence,
+    report.ok
+      ? []
+      : ["Apply the remediation named by the first failed preflight boundary, then rerun `openclaw cliq doctor`."],
+    failedStage?.id ?? warnedStage?.id,
+  );
+}
+
+async function buildMissingPublicWebhookStage(
+  account: ResolvedCliqAccount,
+  accountId: string | undefined,
   client: CliqDoctorClient | null,
   deps: CliqDoctorDeps,
   values: readonly string[],
+  adoptHandlerUrl: boolean,
 ): Promise<CliqDoctorStage> {
-  if (!account) return skipped("public_webhook", "not run: config and secret resolution failed");
-  if (!publicWebhookUrl) {
+  const missing = "publicWebhookUrl is not configured; no DNS, TLS, route, or secret-enforcement request was sent";
+  const setManually = "Set channels.cliq.publicWebhookUrl to the public HTTPS /cliq/webhook URL and rerun the doctor.";
+  const readHandlers = handlerScriptReader(account, client);
+  if (!readHandlers) {
+    return stage("public_webhook", "warn", [missing], [setManually], "public_url");
+  }
+  let records: readonly CliqHandlerScriptRecord[];
+  try {
+    records = await readHandlers();
+  } catch (err) {
     return stage(
       "public_webhook",
       "warn",
-      ["publicWebhookUrl is not configured; no DNS, TLS, route, or secret-enforcement request was sent"],
-      ["Set channels.cliq.publicWebhookUrl to the public HTTPS /cliq/webhook URL and rerun the doctor."],
+      [missing, safeError(err, values)],
+      [setManually],
+      "public_url",
+    );
+  }
+  const proposal = proposeCliqHandlerUrlAdoption({
+    handlers: records,
+    configSecret: account.webhookSecret,
+  });
+  if (!proposal.ok) {
+    return stage(
+      "public_webhook",
+      "warn",
+      [missing, redactCliqDoctorText(proposal.reason, values)],
+      [setManually],
+      "public_url",
+    );
+  }
+  if (!adoptHandlerUrl) {
+    return stage(
+      "public_webhook",
+      "warn",
+      [
+        `${missing}; both handlers agree on ${proposal.url}`,
+      ],
+      [
+        `Rerun with --adopt-handler-url to store ${proposal.url} after a passing preflight.`,
+      ],
       "public_url",
     );
   }
   try {
-    const readHandlers = client?.readBotHandlerScript && client.listBots
-      ? createCliqHandlerScriptReader({
-          account,
-          readHandlerScript: (handlerType, botId) =>
-            client.readBotHandlerScript!(handlerType, botId),
-          listBots: (maxItems) => client.listBots!(maxItems),
-        }) ?? undefined
-      : undefined;
     const report = await deps.runPreflight({
-      url: publicWebhookUrl,
+      url: proposal.url,
       secret: account.webhookSecret,
       readHandlers,
     });
+    if (!report.ok) return preflightStageFromReport(report, values);
+    const handlerStage = report.stages.find((item) => item.id === "handler_secret");
+    if (handlerStage?.status !== "pass") {
+      return stage(
+        "public_webhook",
+        "warn",
+        [
+          ...report.stages.map(
+            (item) => `${item.id}=${item.status}: ${redactCliqDoctorText(item.detail, values)}`,
+          ),
+          "the full preflight did not conclusively re-verify both Zoho handlers, so config was not changed",
+        ],
+        ["Restore ZohoCliq.Bots.READ handler inspection and rerun `openclaw cliq doctor --adopt-handler-url`."],
+        "handler_secret",
+      );
+    }
+    const persist = deps.persistHandlerUrlAdoption ?? persistCliqHandlerUrlAdoption;
+    const result = await persist({
+      url: proposal.url,
+      configuredUrl: undefined,
+      accountId,
+      now: deps.now(),
+    });
+    if (!result.written) {
+      return stage(
+        "public_webhook",
+        "fail",
+        [redactCliqDoctorText(result.reason, values)],
+        ["Retry `openclaw cliq doctor --adopt-handler-url` after confirming the config file is writable."],
+        "public_url",
+      );
+    }
     const evidence = report.stages.map(
       (item) => `${item.id}=${item.status}: ${redactCliqDoctorText(item.detail, values)}`,
     );
-    const failedStage = report.stages.find((item) => item.status === "fail");
-    const warnedStage = report.stages.find((item) => item.status === "warn");
+    evidence.push(redactCliqDoctorText(result.reason, values));
+    return stage("public_webhook", "pass", evidence);
+  } catch (err) {
     return stage(
       "public_webhook",
-      report.ok ? "pass" : failedStage ? "fail" : "warn",
-      evidence,
-      report.ok
-        ? []
-        : ["Apply the remediation named by the first failed preflight boundary, then rerun `openclaw cliq doctor`."],
-      failedStage?.id ?? warnedStage?.id,
+      "fail",
+      [safeError(err, values)],
+      ["Verify public DNS, TLS, reverse-proxy forwarding, /cliq/webhook registration, and shared-secret enforcement."],
+      "public_transport",
     );
+  }
+}
+
+async function buildPublicWebhookStage(
+  account: ResolvedCliqAccount | null,
+  accountId: string | undefined,
+  publicWebhookUrl: string | undefined,
+  client: CliqDoctorClient | null,
+  deps: CliqDoctorDeps,
+  values: readonly string[],
+  adoptHandlerUrl: boolean,
+): Promise<CliqDoctorStage> {
+  if (!account) return skipped("public_webhook", "not run: config and secret resolution failed");
+  if (!publicWebhookUrl) {
+    return buildMissingPublicWebhookStage(account, accountId, client, deps, values, adoptHandlerUrl);
+  }
+  try {
+    const readHandlers = handlerScriptReader(account, client);
+    const report = await deps.runPreflight({
+      url: publicWebhookUrl,
+      secret: account.webhookSecret,
+      ...(readHandlers ? { readHandlers } : {}),
+    });
+    return preflightStageFromReport(report, values);
   } catch (err) {
     return stage(
       "public_webhook",
@@ -1084,10 +1217,12 @@ export async function runCliqDoctor(
   stages.push(await buildBotStage(config.account, publicWebhookUrl, client, deps, values));
   stages.push(await buildPublicWebhookStage(
     config.account,
+    options.accountId,
     publicWebhookUrl,
     client,
     deps,
     values,
+    Boolean(options.adoptHandlerUrl),
   ));
   stages.push(await buildDiscoveryStage(config.account, client, values));
   const outbound = await buildOutboundStage(

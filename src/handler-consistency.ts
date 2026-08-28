@@ -220,6 +220,107 @@ export function checkCliqHandlerConsistency(
   };
 }
 
+export type CliqHandlerUrlAdoptionProposal =
+  | { ok: true; url: string }
+  | { ok: false; reason: string };
+
+function canonicalWebhookUrl(raw: string): string {
+  try {
+    const url = new URL(raw);
+    return `${url.protocol}//${url.host.toLowerCase()}${url.pathname.replace(/\/+$/, "")}${url.search}`;
+  } catch {
+    return raw.trim().replace(/\/+$/, "");
+  }
+}
+
+function validateAdoptableWebhookUrl(raw: string): CliqHandlerUrlAdoptionProposal {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return { ok: false, reason: `not a valid URL: ${raw}` };
+  }
+  if (parsed.protocol === "http:") {
+    return {
+      ok: false,
+      reason: "must use https — Zoho Cliq refuses to deliver to a plaintext http endpoint",
+    };
+  }
+  if (parsed.protocol !== "https:") {
+    return { ok: false, reason: `unsupported protocol ${parsed.protocol} — must be https` };
+  }
+  if (parsed.pathname.replace(/\/+$/, "") !== "/cliq/webhook") {
+    return {
+      ok: false,
+      reason: `path is "${parsed.pathname}" but the plugin registers "/cliq/webhook"`,
+    };
+  }
+  return { ok: true, url: canonicalWebhookUrl(raw) };
+}
+
+/**
+ * Propose adopting the Zoho-held handler URL into config (issue #172).
+ *
+ * A candidate exists only when both inbound handlers can be read, their
+ * secret fingerprints match the configured `webhookSecret`, and they agree
+ * on exactly one valid HTTPS `/cliq/webhook` URL. Absence, disagreement,
+ * or an unrecognised script is never guessed into a URL.
+ */
+export function proposeCliqHandlerUrlAdoption(options: {
+  handlers: readonly CliqHandlerScriptRecord[];
+  configSecret: string | undefined;
+}): CliqHandlerUrlAdoptionProposal {
+  for (const type of CLIQ_INBOUND_HANDLER_TYPES) {
+    const handler = options.handlers.find((record) => record.type === type);
+    const label = describeHandler(type);
+    if (!handler) {
+      return {
+        ok: false,
+        reason: `${label} was not read, so there is no agreed handler URL to adopt`,
+      };
+    }
+    if (handler.error || typeof handler.script !== "string" || handler.script.length === 0) {
+      return {
+        ok: false,
+        reason: `${label} could not be read (${handler.error ?? "no script body was returned"})`,
+      };
+    }
+  }
+  const secretCheck = checkCliqHandlerConsistency({
+    handlers: options.handlers,
+    configSecret: options.configSecret,
+  });
+  if (secretCheck.status !== "pass") {
+    return { ok: false, reason: secretCheck.detail };
+  }
+  const urls = new Map<string, string>();
+  for (const type of CLIQ_INBOUND_HANDLER_TYPES) {
+    const handler = options.handlers.find((record) => record.type === type)!;
+    const label = describeHandler(type);
+    const handlerUrl = extractDelugeStringAssignment(handler.script!, "webhookUrl");
+    if (handlerUrl === null || handlerUrl.trim().length === 0) {
+      return {
+        ok: false,
+        reason: `${label} does not declare a recognisable webhookUrl = "…" literal, so there is no handler URL to adopt`,
+      };
+    }
+    const validated = validateAdoptableWebhookUrl(handlerUrl);
+    if (!validated.ok) return validated;
+    urls.set(type, validated.url);
+  }
+  const distinct = [...new Set(urls.values())];
+  if (distinct.length !== 1) {
+    const rendered = [...urls.entries()]
+      .map(([type, url]) => `${describeHandler(type)} posts to ${url}`)
+      .join(", ");
+    return {
+      ok: false,
+      reason: `the handlers do not agree on a delivery URL (${rendered})`,
+    };
+  }
+  return { ok: true, url: distinct[0]! };
+}
+
 /**
  * Build the handler reader the preflight consumes, backed by a live client.
  *

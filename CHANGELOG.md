@@ -17,6 +17,8 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
+- **Doctor can adopt a verified Zoho handler URL when `publicWebhookUrl` is missing (issue #172).** Default `openclaw cliq doctor` stays read-only: if both Message and Mention handlers agree on one valid HTTPS `/cliq/webhook` URL and their secret fingerprints match config, it names that candidate and points at `--adopt-handler-url`. That explicit path runs a full authenticated preflight first, then writes the URL and `inboundVerifiedAt` in one mutation. Disagreement, an invalid URL, a secret mismatch, a failed or inconclusive preflight, a foreign-secret probe, or a write error leaves config unchanged and never mutates Zoho handlers.
+
 - **Guided Cliq onboarding is now one resumable flow (issue #92).** `openclaw setup` integrates the existing capability, SecretRef, provisioning, preflight, doctor, and first-contact work into a single wizard: it checks the installed OpenClaw package against the shared support matrix, names the unavoidable Zoho Self Client and Deluge UI actions, stores newly entered secrets as canonical env-backed SecretRefs, validates generated config, offers the read-only doctor plus an optional consented roundtrip, and prints a machine-readable final report covering config, OAuth, bot, handlers, lifecycle, webhook, admission, and delivery. Reruns preserve existing credentials and handlers unless a change is confirmed. Partial completion reports the next required action; cancelled optional message tests are not treated as failures.
 
 ### Fixed
