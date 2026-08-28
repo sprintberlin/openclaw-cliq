@@ -32,6 +32,7 @@ import {
   type CliqRuntime,
 } from "./inbound.js";
 import { verifyWebhookSecret } from "./webhook-security.js";
+import { lookupCliqChatId, resetCliqTypingState } from "./heartbeat.js";
 import type { ResolvedCliqAccount } from "./client.js";
 
 function account(overrides: Partial<ResolvedCliqAccount> = {}): ResolvedCliqAccount {
@@ -1038,6 +1039,20 @@ describe("dispatchCliqInbound context fields", () => {
     expect(capture.ctxPayload?.GroupChannel).toBeUndefined();
     expect(capture.ctxPayload?.GroupSubject).toBeUndefined();
     expect(capture.ctxPayload?.ChatType).toBe("direct");
+  });
+
+  it("remembers the inbound DM chat id for native typing", async () => {
+    resetCliqTypingState();
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    expect(parsed).not.toBeNull();
+    await dispatchCliqInbound({
+      runtime: mockRuntime({}),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account(),
+      parsed: parsed!,
+    });
+    expect(lookupCliqChatId(null, "cliq:user:u1")).toBe("CT_dm_chat-B1");
+    expect(lookupCliqChatId(null, "u1")).toBe("CT_dm_chat-B1");
   });
 
   it("falls back to chatId in From when channel unique name is absent", async () => {

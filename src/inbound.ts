@@ -14,6 +14,7 @@ import {
 } from "./client.js";
 import { stripCliqMentions } from "./mentions.js";
 import { resolveCliqClient } from "./runtime-api.js";
+import { rememberCliqChatId } from "./heartbeat.js";
 import { createLiveEditDeliver, getLiveEditPlaceholderConsumed, editStatusCardPhase } from "./live-edit.js";
 import { startThinkingAnimation, type ThinkingAnimation } from "./thinking-animate.js";
 import { readInboundProcessedOutcome } from "./sdk-compat.js";
@@ -951,6 +952,13 @@ export async function dispatchCliqInbound(params: {
   const deliverTo = parsed.isGroup
     ? (parsed.channelUniqueName ?? parsed.chatId)
     : parsed.senderId;
+  rememberCliqChatId({
+    accountId: account.accountId,
+    chatId: parsed.chatId,
+    senderId: parsed.senderId,
+    channelUniqueName: parsed.channelUniqueName,
+    isGroup: parsed.isGroup,
+  });
 
   // Confirm gate — cancel short-circuit (Phase 3). When the inbound message
   // is a Cancel button click (sentinel posted by `invoke.bot`), post the

@@ -373,6 +373,7 @@ describe("collectCliqPreviewWarnings — capability warnings", () => {
     expect(rtRequired).toBeDefined();
     expect(rtRequired!).toContain("Channel send");
     expect(rtRequired!).toContain("Message edit / streaming");
+    expect(rtRequired!).toContain("Native chat typing");
   });
 
   it("warns about degraded optional features when refreshToken is missing", () => {

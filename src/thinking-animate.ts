@@ -1,8 +1,9 @@
 /**
  * Animated "thinking" placeholder (issue #86).
  *
- * Cliq has no native typing indicator; the plugin simulates one by posting a
- * placeholder and editing it into the reply. This module optionally cycles the
+ * Native v3 typing is a separate capability (issue #178); this module still
+ * cycles a visible in-chat placeholder because Cliq client UI for typing is
+ * unconfirmed. This module optionally cycles the
  * placeholder through a set of text frames on an interval (via the existing
  * `editMessage` path) while the agent turn runs, then the caller stops the
  * animation the moment the reply arrives and does the final edit-into-reply.

@@ -75,7 +75,7 @@ One line per durable learning; full fact + tags in the linked file. `rg` this fo
 - [Plugin-channel streaming previews are block-streaming, not live-edit-in-place](071-plugin-channel-streaming-previews-are-block-streaming-not.md)
 - [Inbound `deliver` must chunk against the 5000-char cap](072-inbound-deliver-must-chunk-against-the-5000-char.md)
 - [Inbound media → agent context wiring](073-inbound-media-agent-context-wiring.md)  — apis: /api/v2/files/{FILE_ID},ZohoCliq.Attachments.READ
-- [Cliq v3 has bot typing via chat activities](074-cliq-has-no-bot-typing-rest-api.md)  — files: src/heartbeat.ts,src/capabilities.ts · apis: /api/v3/chats/{CHAT_ID}/activities,ZohoCliq.Chats.UPDATE
+- [Cliq v3 has bot typing via chat activities](074-cliq-has-no-bot-typing-rest-api.md)  — files: src/heartbeat.ts,src/capabilities.ts,src/client.ts · apis: /api/v3/chats/{CHAT_ID}/activities,ZohoCliq.Chats.UPDATE
 - [Instant acknowledgement / "thinking" placeholder (issue #47)](075-instant-acknowledgement-thinking-placeholder-issue-47.md)  — apis: ZohoCliq.Messages.UPDATE,/api/v3/chats/{CHAT_ID}/activities,ZohoCliq.Chats.UPDATE
 - [Cliq does not expose a reliable `is_bot` flag on the webhook sender](076-cliq-does-not-expose-a-reliable-is-bot.md)
 - [Cliq Markdown delimiters](077-cliq-markdown-delimiters.md)
