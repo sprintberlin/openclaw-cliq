@@ -122,6 +122,7 @@ export interface LiveEditDeliverInfo {
   final?: boolean;
   /** The SDK's delivery kind (`"block"` / `"final"` / …), when available. */
   kind?: string;
+  snapshot?: boolean;
 }
 
 export interface LiveEditDeliverStats {
@@ -237,6 +238,7 @@ export function createLiveEditDeliver(
   let draftChatId: string | undefined = opts.initialDraft?.chatId;
   let draftChatIdResolved = Boolean(draftChatId);
   let accumulated = ""; // plain (pre-markdown-conversion) text
+  let latestSnapshot = "";
   /**
    * The rendered text last written (or being written) to the current draft.
    * Guards two contracts from issue #175: an unchanged draft is never
@@ -340,6 +342,13 @@ export function createLiveEditDeliver(
   ): Promise<boolean> => {
     if (!draftMessageId || !draftChatId) return false;
     if (appliedDraftText === richText) {
+      stats.skippedUnchanged++;
+      return true;
+    }
+    if (
+      appliedDraftText !== undefined &&
+      richText.length < appliedDraftText.length
+    ) {
       stats.skippedUnchanged++;
       return true;
     }
@@ -611,6 +620,7 @@ export function createLiveEditDeliver(
     info?: LiveEditDeliverInfo,
   ) => {
     const isFinalBlock = info?.final === true || info?.kind === "final";
+    const isSnapshot = info?.snapshot === true;
     // A card reply (channelData.cliqCard) bypasses the in-place text-edit
     // loop — see `deliverCard`. Commands (/model, /models) emit a card with
     // little/no top-level text; without this branch the empty-text guard
@@ -620,7 +630,17 @@ export function createLiveEditDeliver(
     const text = payload.text;
     if (!text) return;
 
-    if (accumulated) {
+    if (isSnapshot) {
+      if (
+        latestSnapshot &&
+        text.length <= latestSnapshot.length &&
+        latestSnapshot.startsWith(text)
+      ) {
+        stats.skippedUnchanged++;
+        return;
+      }
+      latestSnapshot = text;
+    } else if (accumulated) {
       const lastBlock = accumulated.includes("\n\n")
         ? accumulated.slice(accumulated.lastIndexOf("\n\n") + 2)
         : accumulated;
@@ -631,13 +651,27 @@ export function createLiveEditDeliver(
     }
 
     if (!draftMessageId) {
-      // First block of the turn (or after an overflow reset): send + capture.
+      if (isSnapshot) return;
       await sendNew(text);
       return;
     }
 
-    const candidate = accumulated ? `${accumulated}\n\n${text}` : text;
+    const base = accumulated || latestSnapshot;
+    const candidate = isSnapshot
+      ? text
+      : base && text.startsWith(base)
+        ? text
+        : base && base.startsWith(text) && text.length < base.length
+          ? base
+          : base
+            ? `${base}\n\n${text}`
+            : text;
+    if (!isSnapshot && base && candidate === base && text.length < base.length) {
+      stats.skippedUnchanged++;
+      return;
+    }
     const richCandidate = markdownToCliq(candidate);
+    if (isSnapshot && richCandidate.length > limit) return;
 
     if (richCandidate.length > limit) {
       // Accumulated text would overflow the current draft's cap.
@@ -705,14 +739,14 @@ export function createLiveEditDeliver(
     // Record the newest accumulated text BEFORE awaiting the (possibly
     // throttled) edit: a later block must build on this content even while
     // this edit is still waiting for its throttle window.
-    const hadPlaceholderPending = Boolean(opts.initialDraft) && !accumulated;
-    accumulated = candidate;
+    const hadPlaceholderPending = Boolean(opts.initialDraft) && !placeholderConsumed;
+    if (!isSnapshot) accumulated = candidate;
     if (await editDraft(richCandidate, { throttle: true, final: isFinalBlock })) {
       // The placeholder (if any) is now the live draft showing the reply.
       if (hadPlaceholderPending) placeholderConsumed = true;
       return;
     }
-    accumulated = candidate;
+    if (!isSnapshot) accumulated = candidate;
     // Edit failed (and recovery failed). Degrade to a new message carrying
     // the accumulated text so no content is lost; that new message becomes
     // the editable draft going forward. When an `initialDraft` was the
