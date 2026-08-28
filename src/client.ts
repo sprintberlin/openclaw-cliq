@@ -1,6 +1,6 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import type { SecretInput } from "openclaw/plugin-sdk/secret-input-runtime";
-import { withSendRetry, type RetryOptions } from "./send-retry.js";
+import { classifyCliqSendResponse, CliqSendError, parseRetryAfterMs, withSendRetry, type RetryOptions } from "./send-retry.js";
 import {
   getCliqDefaultLogger,
   truncateForLog,
@@ -449,8 +449,9 @@ export type CliqThinkingConfig = {
    * Optional lightweight animation for the "thinking" placeholder (issue #86).
    * While the agent turn runs, the placeholder is edited on an interval through
    * a set of text frames (cycling), then edited into the final reply when the
-   * reply arrives. Cliq has no native typing indicator; this simulates one via
-   * periodic edits. The interval is hard-floored (≥ 800 ms) and the total
+   * reply arrives. Native v3 typing is a separate unconfirmed-UI capability
+   * (issue #178); this simulates a visible in-chat substitute via periodic
+   * edits. The interval is hard-floored (≥ 800 ms) and the total
    * animation duration is capped (default 60 s) so a long turn does not hammer
    * the edit endpoint. A failed frame edit stops the animation but never
    * breaks the turn (the reply is still delivered).
@@ -2434,6 +2435,61 @@ export class CliqClient {
       this.retryOptions,
     );
     return res.status >= 200 && res.status < 300;
+  }
+
+  /**
+   * Native v3 chat activity (issue #178):
+   * `POST /api/v3/chats/{chatId}/activities` with `{"action":"typing"}` or
+   * `{"action":"text_cleared"}`. Success is empty HTTP 204. Requires
+   * `ZohoCliq.Chats.UPDATE` on a user-context refresh token. A user id is
+   * not a chat id (`chat_access_denied` / 403). HTTP 204 is API acceptance
+   * only — Cliq client UI visibility is unconfirmed. Single-shot (no retry):
+   * activities are limited to 100 req/min/user and exceeding that can lock
+   * the caller for up to 50 minutes. Throws {@link CliqSendError} on
+   * non-2xx so the heartbeat adapter can stop on 429 without delaying the
+   * agent turn.
+   */
+  async sendChatActivity(opts: {
+    chatId: string;
+    action: "typing" | "text_cleared";
+  }): Promise<void> {
+    const token = await this.resolveOutboundToken(
+      "ZohoCliq.Chats.UPDATE",
+      true,
+    );
+    const url = `${this.apiBase}/api/v3/chats/${encodeURIComponent(opts.chatId)}/activities`;
+    this.logger.info?.(
+      `[cliq] activity: chatId=${opts.chatId} action=${opts.action}`,
+    );
+    const r = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Zoho-oauthtoken ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ action: opts.action }),
+    });
+    const body = await r.text().catch(() => "");
+    if (r.ok) {
+      this.logger.info?.(
+        `[cliq] activity ok: status=${r.status} chatId=${opts.chatId} action=${opts.action}`,
+      );
+      return;
+    }
+    this.logger.warn?.(
+      `[cliq] activity non-2xx: status=${r.status} chatId=${opts.chatId} action=${opts.action} body=${truncateForLog(body)}`,
+    );
+    const kind = classifyCliqSendResponse({
+      status: r.status,
+      body,
+      headers: r.headers,
+    }) ?? "fatal";
+    throw new CliqSendError(
+      kind,
+      r.status,
+      body,
+      parseRetryAfterMs(r.headers.get("retry-after")),
+    );
   }
 
   /**

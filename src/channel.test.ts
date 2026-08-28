@@ -802,6 +802,77 @@ describe("CliqClient.editMessage — Cliq message edit API (streaming preview bu
   });
 });
 
+describe("CliqClient.sendChatActivity — native v3 typing (issue #178)", () => {
+  it("POSTs {action:typing} to /api/v3/chats/{chatId}/activities with a refresh-token grant", async () => {
+    setCliqClientRegistry(null);
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient(
+      "id",
+      "secret",
+      "bot",
+      undefined,
+      undefined,
+      { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1, sleep: async () => {}, random: () => 0 },
+      undefined,
+      "rt-secret",
+    );
+    const seen: { url: string; method?: string; body?: string }[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      seen.push({ url: urlStr, method: init?.method, body: init?.body as string });
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(JSON.stringify({ access_token: "rt-tok", expires_in: 3600 }), { status: 200 });
+      }
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+    try {
+      await client.sendChatActivity({ chatId: "CT_dm", action: "typing" });
+    } finally {
+      globalThis.fetch = original;
+    }
+    const oauth = seen.find((s) => s.url.includes("/oauth/v2/token"));
+    expect(oauth?.url).toContain("grant_type=refresh_token");
+    const post = seen.find((s) => s.method === "POST" && s.url.includes("/activities"));
+    expect(post).toBeDefined();
+    expect(post!.url).toContain("/api/v3/chats/CT_dm/activities");
+    expect(JSON.parse(post!.body!)).toEqual({ action: "typing" });
+  });
+
+  it("throws CliqSendError on a 429 without retrying", async () => {
+    setCliqClientRegistry(null);
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient(
+      "id",
+      "secret",
+      "bot",
+      undefined,
+      undefined,
+      { maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 5, sleep: async () => {}, random: () => 0 },
+      undefined,
+      "rt-secret",
+    );
+    let activityCalls = 0;
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(JSON.stringify({ access_token: "t", expires_in: 3600 }), { status: 200 });
+      }
+      activityCalls++;
+      return new Response("rate", { status: 429, headers: { "Retry-After": "2" } });
+    }) as typeof fetch;
+    try {
+      await expect(
+        client.sendChatActivity({ chatId: "CT_dm", action: "typing" }),
+      ).rejects.toMatchObject({ status: 429, kind: "transient" });
+      expect(activityCalls).toBe(1);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});
+
 describe("CliqClient.sendMessage message-ref parsing", () => {
   it("extracts messageId + chatId from a bot-DM message_details response", async () => {
     setCliqClientRegistry(null);
