@@ -93,6 +93,8 @@ export interface InspectedCliqAccountConfig {
   ackPolicy: "after_dispatch" | "immediate";
   /** Whether progressive (block-streaming) reply delivery is opted-in. */
   streamingPreview: "on" | "off";
+  /** Minimum wall-clock distance between two in-place preview edits of one draft. */
+  streamingMinEditIntervalMs?: number;
   /** Per-family resolved REST API generation (dmPost / channelPost / channelCard / delete). */
   apiVersion: Record<CliqApiFamily, CliqApiVersion>;
 }
@@ -287,6 +289,7 @@ export function inspectCliqAccount(params: {
       ackPolicy: resolved?.ackPolicy ?? "after_dispatch",
       streamingPreview:
         (section?.streaming?.preview === "on" ? "on" : "off"),
+      streamingMinEditIntervalMs: resolved?.streamingMinEditIntervalMs,
       apiVersion: {
         dmPost: resolveCliqApiVersion(resolved?.apiVersion, "dmPost"),
         channelPost: resolveCliqApiVersion(resolved?.apiVersion, "channelPost"),

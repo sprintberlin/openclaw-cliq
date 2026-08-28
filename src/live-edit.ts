@@ -44,10 +44,10 @@
  * the edit cannot be performed cleanly (chat id unresolvable, edit API
  * rejects, …), the placeholder is DELETED and the reply is sent as a fresh
  * message — the "no stray `💭 …` left behind" contract. The placeholder
- * flow is only used when `thinking.mode` is `"placeholder"` OR `"card"`, a `refreshToken`
- * is configured (editing needs a user-context token), and streaming preview
- * is off (live-edit already shows progress); the inbound path enforces this
- * gate before passing `initialDraft`.
+  * flow is used when `thinking.mode` is `"placeholder"` OR `"card"` and a
+  * `refreshToken` is configured (editing needs a user-context token). When
+  * streaming preview is also on, the placeholder is the same draft the
+  * live-edit path then grows in place (issue #175) — one progress surface.
  */
 import { chunkMessage, type CliqClient } from "./client.js";
 import { markdownToCliq } from "./markdown.js";
@@ -95,12 +95,73 @@ export interface LiveEditDeliverOptions {
    * it); it is resolved lazily via `resolveChannelChatId` on the first edit.
    */
   initialDraft?: { messageId: string; chatId?: string };
+  /**
+   * Minimum wall-clock distance between two preview edits of the same draft
+   * (issue #175). Intermediate blocks that arrive inside the window are
+   * coalesced into the next edit instead of issuing one API call per block,
+   * so a chatty agent turn cannot hammer the Cliq edit endpoint. The final
+   * block of a turn bypasses the wait so the answer is never delayed.
+   * Defaults to {@link DEFAULT_LIVE_EDIT_MIN_INTERVAL_MS}.
+   */
+  minEditIntervalMs?: number;
+  /** Clock source (tests inject a deterministic one). */
+  now?: () => number;
+  /** Sleep used for throttling + rate-limit backoff (tests inject their own). */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/** Per-block metadata the inbound dispatch path forwards to the deliver callback. */
+export interface LiveEditDeliverInfo {
+  /**
+   * Whether this payload is the turn's final answer. A final payload is
+   * flushed immediately (no throttle wait) so the answer never lags behind
+   * the preview window.
+   */
+  final?: boolean;
+  /** The SDK's delivery kind (`"block"` / `"final"` / …), when available. */
+  kind?: string;
 }
 
 export interface LiveEditDeliverStats {
   sends: number;
   edits: number;
   editFailures: number;
+  /** Edits not issued because the rendered draft text was already current. */
+  skippedUnchanged: number;
+  /** Blocks folded into an in-flight edit instead of issuing their own call. */
+  coalesced: number;
+  /** Edits retried after a Cliq rate-limit (429) response. */
+  rateLimitRetries: number;
+}
+
+/**
+ * Default minimum distance between two preview edits of one draft. Matches the
+ * 1s block-coalesce window the channel publishes to the SDK, so the plugin
+ * issues at most roughly one edit per second per in-flight turn.
+ */
+export const DEFAULT_LIVE_EDIT_MIN_INTERVAL_MS = 1_000;
+
+/** Maximum number of rate-limit (429) retries for a single preview edit. */
+const MAX_EDIT_RATE_LIMIT_RETRIES = 2;
+
+/** Fallback backoff when a 429 carries no usable `Retry-After` hint. */
+const DEFAULT_EDIT_RATE_LIMIT_BACKOFF_MS = 1_000;
+
+/**
+ * Whether an edit rejection is a Cliq rate-limit (HTTP 429). `CliqSendError`
+ * exposes `status` + `retryAfterMs`; a plain error is matched on its message
+ * so a wrapped/rethrown rejection is still recognized.
+ */
+function readEditRateLimit(err: unknown): { retryAfterMs?: number } | null {
+  if (!err || typeof err !== "object") return null;
+  const status = (err as { status?: unknown }).status;
+  const message = String((err as { message?: unknown }).message ?? "");
+  const isRateLimited = status === 429 || /\bstatus=429\b/.test(message);
+  if (!isRateLimited) return null;
+  const retryAfterMs = (err as { retryAfterMs?: unknown }).retryAfterMs;
+  return typeof retryAfterMs === "number" && Number.isFinite(retryAfterMs) && retryAfterMs >= 0
+    ? { retryAfterMs }
+    : {};
 }
 
 /**
@@ -124,13 +185,27 @@ export type LiveEditPlaceholderConsumed = boolean;
  */
 export function createLiveEditDeliver(
   opts: LiveEditDeliverOptions,
-): (payload: { text?: string; mediaUrl?: string; channelData?: unknown }) => Promise<void> {
+): (
+  payload: { text?: string; mediaUrl?: string; channelData?: unknown },
+  info?: LiveEditDeliverInfo,
+) => Promise<void> {
   const limit = opts.charLimit ?? DEFAULT_CHAR_LIMIT;
   const client = opts.client;
   const to = opts.to;
   const isDm = opts.isDm;
+  const minEditIntervalMs = Math.max(0, opts.minEditIntervalMs ?? 0);
+  const now = opts.now ?? (() => Date.now());
+  const sleep =
+    opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
-  const stats: LiveEditDeliverStats = { sends: 0, edits: 0, editFailures: 0 };
+  const stats: LiveEditDeliverStats = {
+    sends: 0,
+    edits: 0,
+    editFailures: 0,
+    skippedUnchanged: 0,
+    coalesced: 0,
+    rateLimitRetries: 0,
+  };
   /**
    * Set to `true` the moment a `deliver` call resolves the placeholder's
    * fate (edited into a reply, deleted after a failed edit, or superseded by
@@ -140,7 +215,12 @@ export function createLiveEditDeliver(
    */
   let placeholderConsumed = !opts.initialDraft;
 
-  const attach = <F extends (payload: { text?: string; mediaUrl?: string; channelData?: unknown }) => Promise<void>>(
+  const attach = <
+    F extends (
+      payload: { text?: string; mediaUrl?: string; channelData?: unknown },
+      info?: LiveEditDeliverInfo,
+    ) => Promise<void>,
+  >(
     fn: F,
   ): F => {
     (fn as unknown as { __stats: LiveEditDeliverStats }).__stats = stats;
@@ -155,6 +235,25 @@ export function createLiveEditDeliver(
   let draftChatId: string | undefined = opts.initialDraft?.chatId;
   let draftChatIdResolved = Boolean(draftChatId);
   let accumulated = ""; // plain (pre-markdown-conversion) text
+  /**
+   * The rendered text last written (or being written) to the current draft.
+   * Guards two contracts from issue #175: an unchanged draft is never
+   * re-sent, and a slower earlier edit can never overwrite newer content —
+   * when this no longer matches the text an in-flight edit was issued for,
+   * that edit's result is discarded and the newest text is written instead.
+   */
+  let appliedDraftText: string | undefined;
+  /** Wall-clock time of the last issued edit, for the throttle window. */
+  let lastEditAt: number | undefined;
+  /**
+   * Serializes issued API edits so two PUT calls never race the same draft.
+   * A newer block that arrives while an edit is in-flight coalesces onto
+   * `pendingDraftText` instead of starting a second PUT.
+   */
+  let editInFlight: Promise<boolean> | null = null;
+  /** Newest rendered text waiting to be written after the in-flight PUT. */
+  let pendingDraftText: string | undefined;
+  let pendingDraftIsFinal = false;
 
   /** Resolve the chat id for a group draft when missing (cached on the client). */
   const resolveDraftChatId = async (): Promise<string | undefined> => {
@@ -209,6 +308,8 @@ export function createLiveEditDeliver(
       }
       draftChatIdResolved = true;
       accumulated = plainText;
+      appliedDraftText = chunks[0];
+      lastEditAt = now();
       return;
     }
     // The block itself exceeds the message cap → deliver as separate
@@ -221,6 +322,7 @@ export function createLiveEditDeliver(
     draftMessageId = undefined;
     draftChatId = undefined;
     accumulated = "";
+    appliedDraftText = undefined;
   };
 
   /**
@@ -230,37 +332,127 @@ export function createLiveEditDeliver(
    * success, `false` on failure (caller decides whether to fall back to a
    * new send or delete a stray placeholder).
    */
-  const editDraft = async (richText: string): Promise<boolean> => {
+  const editDraft = async (
+    richText: string,
+    editOpts: { throttle?: boolean; final?: boolean } = {},
+  ): Promise<boolean> => {
     if (!draftMessageId || !draftChatId) return false;
-    try {
-      await client.editMessage({
-        chatId: draftChatId,
-        messageId: draftMessageId,
-        text: richText,
-      });
-      stats.edits++;
+    if (appliedDraftText === richText) {
+      stats.skippedUnchanged++;
       return true;
-    } catch {
-      if (!isDm && draftChatId) {
-        try {
-          const recent = await client.listChatMessages(draftChatId, { limit: 50 });
-          const match = recent.find((m) => m.messageId === draftMessageId);
-          if (match && match.chatId && match.chatId !== draftChatId) {
-            await client.editMessage({
-              chatId: match.chatId,
-              messageId: draftMessageId,
-              text: richText,
-            });
-            draftChatId = match.chatId;
-            stats.edits++;
-            return true;
-          }
-        } catch {
-          // recovery failed — fall through
-        }
-      }
-      return false;
     }
+    if (!editOpts.throttle) {
+      return performEdit(richText);
+    }
+    // An older, shorter draft arriving after a newer one is already applied
+    // (or pending) must never overwrite it.
+    const newestKnown = pendingDraftText ?? appliedDraftText;
+    if (
+      newestKnown !== undefined &&
+      newestKnown.length > richText.length &&
+      newestKnown.startsWith(richText)
+    ) {
+      stats.coalesced++;
+      return true;
+    }
+    if (editInFlight) {
+      // Fold this block into the in-flight PUT: when that PUT settles the
+      // waiter writes the newest pending text (or skips it if unchanged).
+      stats.coalesced++;
+      pendingDraftText = richText;
+      pendingDraftIsFinal = pendingDraftIsFinal || Boolean(editOpts.final);
+      return editInFlight;
+    }
+    const run = (async (): Promise<boolean> => {
+      let target = richText;
+      let isFinal = Boolean(editOpts.final);
+      for (;;) {
+        if (!isFinal && minEditIntervalMs > 0 && lastEditAt !== undefined) {
+          const waitMs = lastEditAt + minEditIntervalMs - now();
+          if (waitMs > 0) {
+            await sleep(waitMs);
+            if (pendingDraftText !== undefined) {
+              target = pendingDraftText;
+              isFinal = pendingDraftIsFinal;
+              pendingDraftText = undefined;
+              pendingDraftIsFinal = false;
+            }
+          }
+        }
+        if (appliedDraftText === target) {
+          stats.skippedUnchanged++;
+          return true;
+        }
+        const ok = await performEdit(target);
+        if (!ok) return false;
+        if (pendingDraftText === undefined) return true;
+        target = pendingDraftText;
+        isFinal = pendingDraftIsFinal;
+        pendingDraftText = undefined;
+        pendingDraftIsFinal = false;
+      }
+    })();
+    editInFlight = run;
+    try {
+      return await run;
+    } finally {
+      if (editInFlight === run) editInFlight = null;
+    }
+  };
+
+  /** Issue one edit call, honoring a Cliq 429 with a bounded backoff retry. */
+  const performEdit = async (richText: string): Promise<boolean> => {
+    if (!draftMessageId || !draftChatId) return false;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await client.editMessage({
+          chatId: draftChatId,
+          messageId: draftMessageId,
+          text: richText,
+        });
+        stats.edits++;
+        appliedDraftText = richText;
+        lastEditAt = now();
+        return true;
+      } catch (err) {
+        const rateLimited = readEditRateLimit(err);
+        if (rateLimited && attempt < MAX_EDIT_RATE_LIMIT_RETRIES) {
+          stats.rateLimitRetries++;
+          await sleep(rateLimited.retryAfterMs ?? DEFAULT_EDIT_RATE_LIMIT_BACKOFF_MS);
+          continue;
+        }
+        return await recoverEdit(richText);
+      }
+    }
+  };
+
+  /**
+   * One-shot group recovery for a failed edit: the canonical chat id may
+   * differ from the resolved one (see `listChatMessages` in the module docs).
+   */
+  const recoverEdit = async (richText: string): Promise<boolean> => {
+    if (!isDm && draftChatId) {
+      try {
+        const recent = await client.listChatMessages(draftChatId, { limit: 50 });
+        const match = recent.find((m) => m.messageId === draftMessageId);
+        if (match && match.chatId && match.chatId !== draftChatId) {
+          if (!draftMessageId) return false;
+          await client.editMessage({
+            chatId: match.chatId,
+            messageId: draftMessageId,
+            text: richText,
+          });
+          draftChatId = match.chatId;
+          stats.edits++;
+          appliedDraftText = richText;
+          lastEditAt = now();
+          return true;
+        }
+      } catch {
+        // recovery failed — fall through
+      }
+    }
+    return false;
   };
 
   /**
@@ -344,6 +536,7 @@ export function createLiveEditDeliver(
       draftMessageId = undefined;
       draftChatId = undefined;
       accumulated = "";
+      appliedDraftText = undefined;
     }
     return true;
   };
@@ -386,6 +579,7 @@ export function createLiveEditDeliver(
             draftMessageId = undefined;
             draftChatId = undefined;
             accumulated = "";
+            appliedDraftText = undefined;
             return;
           }
           // Edit failed — fall through to delete + fresh send.
@@ -396,6 +590,7 @@ export function createLiveEditDeliver(
         await safeDeleteDraft();
         draftMessageId = undefined;
         draftChatId = undefined;
+        appliedDraftText = undefined;
       }
 
       for (const chunk of chunks) {
@@ -405,11 +600,15 @@ export function createLiveEditDeliver(
     });
   }
 
-  const returned = async (payload: {
-    text?: string;
-    mediaUrl?: string;
-    channelData?: unknown;
-  }) => {
+  const returned = async (
+    payload: {
+      text?: string;
+      mediaUrl?: string;
+      channelData?: unknown;
+    },
+    info?: LiveEditDeliverInfo,
+  ) => {
+    const isFinalBlock = info?.final === true || info?.kind === "final";
     // A card reply (channelData.cliqCard) bypasses the in-place text-edit
     // loop — see `deliverCard`. Commands (/model, /models) emit a card with
     // little/no top-level text; without this branch the empty-text guard
@@ -418,6 +617,16 @@ export function createLiveEditDeliver(
     if (await deliverCard(payload)) return;
     const text = payload.text;
     if (!text) return;
+
+    if (accumulated) {
+      const lastBlock = accumulated.includes("\n\n")
+        ? accumulated.slice(accumulated.lastIndexOf("\n\n") + 2)
+        : accumulated;
+      if (text === lastBlock) {
+        stats.skippedUnchanged++;
+        return;
+      }
+    }
 
     if (!draftMessageId) {
       // First block of the turn (or after an overflow reset): send + capture.
@@ -446,6 +655,7 @@ export function createLiveEditDeliver(
           draftMessageId = undefined;
           draftChatId = undefined;
           accumulated = "";
+          appliedDraftText = undefined;
           return;
         }
         // Could not edit cleanly — delete the stray placeholder and send the
@@ -454,6 +664,7 @@ export function createLiveEditDeliver(
         await safeDeleteDraft();
         draftMessageId = undefined;
         draftChatId = undefined;
+        appliedDraftText = undefined;
         for (const chunk of chunks) {
           await client.sendMessage({ to, text: chunk, isDm });
           stats.sends++;
@@ -479,6 +690,7 @@ export function createLiveEditDeliver(
           await safeDeleteDraft();
           draftMessageId = undefined;
           draftChatId = undefined;
+          appliedDraftText = undefined;
           await sendNew(candidate);
           return;
         }
@@ -488,23 +700,29 @@ export function createLiveEditDeliver(
       }
     }
 
-    if (await editDraft(richCandidate)) {
+    // Record the newest accumulated text BEFORE awaiting the (possibly
+    // throttled) edit: a later block must build on this content even while
+    // this edit is still waiting for its throttle window.
+    const hadPlaceholderPending = Boolean(opts.initialDraft) && !accumulated;
+    accumulated = candidate;
+    if (await editDraft(richCandidate, { throttle: true, final: isFinalBlock })) {
       // The placeholder (if any) is now the live draft showing the reply.
-      if (opts.initialDraft && !accumulated) placeholderConsumed = true;
-      accumulated = candidate;
+      if (hadPlaceholderPending) placeholderConsumed = true;
       return;
     }
+    accumulated = candidate;
     // Edit failed (and recovery failed). Degrade to a new message carrying
     // the accumulated text so no content is lost; that new message becomes
     // the editable draft going forward. When an `initialDraft` was the
     // target of the failed edit, delete it so it is not left stray.
     stats.editFailures++;
-    if (opts.initialDraft && !accumulated) {
+    if (hadPlaceholderPending) {
       placeholderConsumed = true;
       await safeDeleteDraft();
     }
     draftMessageId = undefined;
     draftChatId = undefined;
+    appliedDraftText = undefined;
     await sendNew(candidate);
   };
 

@@ -104,6 +104,12 @@ function collectCliqPreviewWarnings(params: {
       `- channels.cliq: dmPolicy is "allowlist" but allowFrom is empty. No DM will be admitted until at least one sender id is added (or dmPolicy is set to "open").`,
     );
   }
+  const streaming = section.streaming as { preview?: unknown } | undefined;
+  if (streaming?.preview === "on" && !hasConfiguredSecretInput(section.refreshToken)) {
+    warnings.push(
+      `- channels.cliq: streaming.preview is "on" but no refreshToken is configured. Live-edit of one Cliq response needs ZohoCliq.Messages.UPDATE on a user-context refresh token; without it, preview edits fall back to a normal final response.`,
+    );
+  }
   if (section.ackPolicy === "immediate") {
     warnings.push(
       `- channels.cliq: ackPolicy is "immediate". A crash between ack and dispatch loses the inbound message. On OpenClaw >= 2026.8.1-beta.3, post-ack work must be wrapped in runDetachedWebhookWork before responding or the healthy gateway refuses it with GatewayDrainingError; this plugin version applies that wrapper dynamically when available. Use immediate only when the Deluge invokeUrl timeout is tighter than the agent round-trip.`,

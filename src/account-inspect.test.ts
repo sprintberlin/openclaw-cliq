@@ -175,6 +175,19 @@ describe("inspectCliqAccount", () => {
     expect(r.config.streamingPreview).toBe("off");
   });
 
+  it("reports the live-edit throttle when streaming.preview is on", () => {
+    const r = inspectCliqAccount({
+      cfg: cfgWith({
+        clientId: "id",
+        clientSecret: "secret",
+        botId: "bot",
+        streaming: { preview: "on", minEditIntervalMs: 2_000 },
+      }),
+    });
+    expect(r.config.streamingPreview).toBe("on");
+    expect(r.config.streamingMinEditIntervalMs).toBe(2_000);
+  });
+
   it("treats a missing channels.cliq section as unconfigured", () => {
     const r = inspectCliqAccount({ cfg: {} as OpenClawConfig });
     expect(r.configured).toBe(false);

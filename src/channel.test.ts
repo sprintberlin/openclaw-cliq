@@ -182,6 +182,28 @@ describe("cliq plugin", () => {
     expect(section.streaming).toEqual({ preview: "on" });
   });
 
+  it("resolves streaming.minEditIntervalMs onto the account", () => {
+    const cfg = cfgWith({
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+      streaming: { preview: "on", minEditIntervalMs: 2_500 },
+    });
+    const account = resolveCliqConfig(cfg);
+    expect(account.blockStreaming).toBe(true);
+    expect(account.streamingMinEditIntervalMs).toBe(2_500);
+  });
+
+  it("defaults streaming.minEditIntervalMs conservatively when unset", () => {
+    const cfg = cfgWith({
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+      streaming: { preview: "on" },
+    });
+    expect(resolveCliqConfig(cfg).streamingMinEditIntervalMs).toBeGreaterThanOrEqual(800);
+  });
+
   it("wires the threading adapter (not the legacy topLevelReplyToMode shape)", () => {
     const threading = cliqPlugin.threading as {
       resolveReplyToMode?: unknown;

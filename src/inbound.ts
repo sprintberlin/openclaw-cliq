@@ -7,7 +7,11 @@ import {
 import type { IncomingMessage } from "node:http";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import type { CliqClient, ResolvedCliqAccount } from "./client.js";
-import { DEFAULT_CLIQ_CONFIRM_TEXT, DEFAULT_CLIQ_CANCELLED_TEXT } from "./client.js";
+import {
+  DEFAULT_CLIQ_CONFIRM_TEXT,
+  DEFAULT_CLIQ_CANCELLED_TEXT,
+  DEFAULT_CLIQ_STREAMING_MIN_EDIT_INTERVAL_MS,
+} from "./client.js";
 import { stripCliqMentions } from "./mentions.js";
 import { resolveCliqClient } from "./runtime-api.js";
 import { createLiveEditDeliver, getLiveEditPlaceholderConsumed, editStatusCardPhase } from "./live-edit.js";
@@ -1144,22 +1148,19 @@ export async function dispatchCliqInbound(params: {
       CommandAuthorized: true,
     } : {}),
   });
-  // Instant acknowledgement / "thinking" placeholder (issue #47): when
-  // opted in (`thinking.mode` is `"placeholder"` OR `"card"`), streaming
-  // preview is OFF (live-edit already shows progress otherwise), and a
+  // Instant acknowledgement / "thinking" placeholder (issue #47 / #175):
+  // when opted in (`thinking.mode` is `"placeholder"` OR `"card"`) and a
   // `refreshToken` is configured (editing a message needs the user-context
-  // token), post a lightweight placeholder message immediately so the user
-  // sees the bot is working, then have the deliver callback edit that
-  // placeholder into the final reply (no duplicate message). `placeholder`
-  // mode posts plain text (`💭 …`); `card` mode posts a v3 Message Card
-  // status indicator (a `modern-inline` card titled `Generating…`) via
-  // `sendCard` — a real card on `apiVersion: "v3"`, degrading to plain text
-  // on v2. The placeholder post is swallowed on failure so a rejected post
-  // never breaks or delays the agent turn (the deliver then just sends a
-  // fresh message as usual). DMs and channel posts both support this; the
-  // group case carries no chatId in the send response, so
-  // `createLiveEditDeliver` resolves it lazily on the first edit (cached per
-  // account).
+  // token), post a lightweight placeholder immediately so the user sees the
+  // bot is working. The first `deliver` then EDITS that same message into
+  // the reply (or the first streaming preview block), so only one progress
+  // surface is visible. `placeholder` mode posts plain text (`�� …`);
+  // `card` mode posts a v3 Message Card status indicator via `sendCard` —
+  // a real card on `apiVersion: "v3"`, degrading to plain text on v2. The
+  // placeholder post is swallowed on failure so a rejected post never
+  // breaks or delays the agent turn. DMs and channel posts both support
+  // this; the group case carries no chatId in the send response, so
+  // `createLiveEditDeliver` resolves it lazily on the first edit.
   let initialDraft: { messageId: string; chatId?: string } | undefined;
   // Animated "thinking" placeholder (issue #86): held so the reply deliver
   // and the no-reply cleanup can stop a late frame edit before the final
@@ -1170,7 +1171,6 @@ export async function dispatchCliqInbound(params: {
   if (
     (account.thinking?.mode === "placeholder" ||
       account.thinking?.mode === "card") &&
-    !account.blockStreaming &&
     account.refreshToken &&
     !isAbort &&
     !isLikelyRedelivery
@@ -1235,7 +1235,7 @@ export async function dispatchCliqInbound(params: {
         // duration capped (see `thinking-animate.ts`). A failed frame edit
         // stops the animation but never breaks the turn. Only runs when the
         // preconditions for the placeholder are already met (a message id, a
-        // refreshToken, streaming preview off) — the gate above enforces those.
+        // refreshToken) — the gate above enforces those.
         if (account.thinking?.animate && account.thinking.animate !== "off") {
           thinkingAnimation = startThinkingAnimation({
             client,
@@ -1269,6 +1269,8 @@ export async function dispatchCliqInbound(params: {
     isDm: !parsed.isGroup,
     enabled: account.blockStreaming,
     initialDraft,
+    minEditIntervalMs:
+      account.streamingMinEditIntervalMs ?? DEFAULT_CLIQ_STREAMING_MIN_EDIT_INTERVAL_MS,
   });
   const handleOnError =
     onError ??
@@ -1350,7 +1352,10 @@ export async function dispatchCliqInbound(params: {
           dispatchReplyWithBufferedBlockDispatcher:
             runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher,
           delivery: {
-            deliver: async (replyPayload: { text?: string; channelData?: unknown }) => {
+            deliver: async (
+              replyPayload: { text?: string; channelData?: unknown },
+              info?: { kind?: string; final?: boolean },
+            ) => {
               // Stop the animation the moment the reply arrives so a late
               // frame edit cannot clobber the final edit-into-reply.
               thinkingAnimation?.stop();
@@ -1359,10 +1364,16 @@ export async function dispatchCliqInbound(params: {
               // live-edit deliver routes cards through `sendCard`. Stripping
               // it here (the pre-fix behavior) dropped command card replies
               // whenever the thinking placeholder was active (issue #90).
-              await deliver({
-                text: replyPayload?.text,
-                channelData: replyPayload?.channelData,
-              });
+              await deliver(
+                {
+                  text: replyPayload?.text,
+                  channelData: replyPayload?.channelData,
+                },
+                {
+                  kind: info?.kind,
+                  final: info?.final === true || info?.kind === "final",
+                },
+              );
             },
             onError: handleOnError,
           },

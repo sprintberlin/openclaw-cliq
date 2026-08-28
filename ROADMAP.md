@@ -110,9 +110,9 @@ Mostly v3-independent; **dynamic agents** in particular is high-value and can be
 - **`write-secret` pattern.** Let a user store a secret (e.g. an API key) into a file by alias
   without ever exposing the plaintext to the model. Build on the existing SecretRef plumbing
   (`src/secret-*.ts`). (Prior art: octo.)
-- **`<think>` / reasoning normalization + throttle.** Normalize reasoning-tag variants
-  (`<thinking>` / `<thought>` → `<think>`) and throttle streaming-preview edits so live-edit does
-  not hammer the Cliq edit API. Builds on `src/live-edit.ts`. (Prior art: wecom.)
+- **`<think>` / reasoning normalization.** Normalize reasoning-tag variants
+  (`<thinking>` / `<thought>` → `<think>`) so hidden chain-of-thought never
+  reaches a Cliq preview. Builds on `src/live-edit.ts`. (Prior art: wecom.)
 - **Native v3 chat typing in `heartbeat.sendTyping`.** Post `{"action":"typing"}` to
   `POST /api/v3/chats/{chat_id}/activities` (scope `ZohoCliq.Chats.UPDATE`, success 204) instead
   of only pre-warming the OAuth token. Use a real chat id, never a bare user id; stay under the
