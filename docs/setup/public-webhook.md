@@ -53,6 +53,10 @@ openclaw cliq webhook-preflight https://<public-host>/cliq/webhook --json
 
 # Or run the full staged doctor, which reuses this preflight as one stage
 openclaw cliq doctor --json
+
+# If publicWebhookUrl is missing but both Zoho handlers already agree on one
+# verified HTTPS /cliq/webhook URL, store that URL after a passing preflight
+openclaw cliq doctor --adopt-handler-url
 ```
 
 By default the command uses `channels.cliq.webhookSecret` from the resolved
@@ -67,9 +71,20 @@ the result is recorded in the config: a passing run writes
 `channels.cliq.inboundVerificationFailedAt` and clears any stale verification —
 so verifying from the CLI counts exactly like verifying inside the wizard, and
 a formerly working install cannot keep claiming a stale verification after its
-endpoint broke. The write only ever happens for the configured URL (running
-the command against a third-party endpoint never touches your config) and can
-be suppressed for a pure read-only probe:
+endpoint broke.
+
+If `publicWebhookUrl` is missing, `openclaw cliq webhook-preflight` still
+refuses to persist: there is no configured install URL to record against.
+`openclaw cliq doctor` stays read-only by default and, when both Zoho handlers
+agree on one valid HTTPS `/cliq/webhook` URL with matching secret fingerprints,
+names that candidate. `openclaw cliq doctor --adopt-handler-url` is the
+explicit repair: it preflights the candidate, then writes the URL and
+`inboundVerifiedAt` together. A failed or inconclusive check leaves config
+unchanged.
+
+The write only ever happens for the configured URL (or, with
+`--adopt-handler-url`, for the agreed handler URL after a passing preflight)
+and can be suppressed for a pure read-only probe:
 
 ```bash
 openclaw cliq webhook-preflight https://<public-host>/cliq/webhook --no-write

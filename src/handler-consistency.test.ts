@@ -6,6 +6,7 @@ import {
   createCliqHandlerScriptReader,
   extractDelugeStringAssignment,
   fingerprintCliqSecret,
+  proposeCliqHandlerUrlAdoption,
 } from "./handler-consistency.js";
 import { formatCliqPreflightReport } from "./webhook-preflight.js";
 
@@ -271,5 +272,104 @@ describe("checkCliqHandlerConsistency (issue #124)", () => {
     expect(lines.join("\n")).toMatch(/does NOT prove Zoho holds the same webhook secret/i);
     const readme = readFileSync(join(new URL(".", import.meta.url).pathname, "..", "README.md"), "utf8");
     expect(readme).toMatch(/does \*\*not\*\* prove Zoho holds/i);
+  });
+});
+
+describe("proposeCliqHandlerUrlAdoption (issue #172)", () => {
+  it("proposes the URL when both handlers agree on one valid HTTPS /cliq/webhook and matching secrets", () => {
+    const result = proposeCliqHandlerUrlAdoption({
+      handlers: handlers(script()),
+      configSecret: SECRET,
+    });
+    expect(result).toEqual({ ok: true, url: HOOK_URL });
+  });
+
+  it("canonicalizes a trailing slash and host case without guessing a different host", () => {
+    const result = proposeCliqHandlerUrlAdoption({
+      handlers: handlers(
+        script(SECRET, "https://AGENT.example.com/cliq/webhook/"),
+        script(SECRET, "https://agent.example.com/cliq/webhook"),
+      ),
+      configSecret: SECRET,
+    });
+    expect(result).toEqual({ ok: true, url: HOOK_URL });
+  });
+
+  it("refuses when the two handlers post to different URLs", () => {
+    const other = "https://other.example.com/cliq/webhook";
+    const result = proposeCliqHandlerUrlAdoption({
+      handlers: handlers(script(SECRET, other), script()),
+      configSecret: SECRET,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/do not agree/i);
+    expect(result.reason).toContain(other);
+    expect(result.reason).toContain(HOOK_URL);
+    expect(result.reason).not.toContain(SECRET);
+  });
+
+  it("refuses handler URLs that differ by query string", () => {
+    const result = proposeCliqHandlerUrlAdoption({
+      handlers: handlers(
+        script(SECRET, `${HOOK_URL}?source=message`),
+        script(SECRET, `${HOOK_URL}?source=mention`),
+      ),
+      configSecret: SECRET,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/do not agree/i);
+  });
+
+  it("refuses when a handler URL is missing or unrecognised", () => {
+    const result = proposeCliqHandlerUrlAdoption({
+      handlers: handlers(`webhookSecret = "${SECRET}";\npayload = Map();`),
+      configSecret: SECRET,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/webhookUrl/i);
+    expect(result.reason).not.toContain(SECRET);
+  });
+
+  it("refuses an http or non-/cliq/webhook handler URL", () => {
+    const http = proposeCliqHandlerUrlAdoption({
+      handlers: handlers(script(SECRET, "http://agent.example.com/cliq/webhook")),
+      configSecret: SECRET,
+    });
+    const path = proposeCliqHandlerUrlAdoption({
+      handlers: handlers(script(SECRET, "https://agent.example.com/hooks/cliq")),
+      configSecret: SECRET,
+    });
+    expect(http.ok).toBe(false);
+    expect(path.ok).toBe(false);
+    if (!http.ok) expect(http.reason).toMatch(/https/i);
+    if (!path.ok) expect(path.reason).toMatch(/\/cliq\/webhook/);
+  });
+
+  it("refuses when handler secret fingerprints do not match the configured webhookSecret", () => {
+    const handlerSecret = "zoho-held-different-secret";
+    const result = proposeCliqHandlerUrlAdoption({
+      handlers: handlers(script(handlerSecret)),
+      configSecret: SECRET,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/secret/i);
+    expect(result.reason).toContain(fingerprintCliqSecret(SECRET));
+    expect(result.reason).toContain(fingerprintCliqSecret(handlerSecret));
+    expect(result.reason).not.toContain(SECRET);
+    expect(result.reason).not.toContain(handlerSecret);
+  });
+
+  it("refuses when only one inbound handler could be read", () => {
+    const result = proposeCliqHandlerUrlAdoption({
+      handlers: [{ type: "message_handler", script: script() }],
+      configSecret: SECRET,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/mention/i);
   });
 });

@@ -137,4 +137,18 @@ describe("cliq doctor command (issue #97)", () => {
     await runCliqDoctorCommand({ cfg }, deps({ runDoctor }), { pollIntervalMs: 5 });
     expect(runDoctor).toHaveBeenCalledWith(cfg, expect.any(Object), { pollIntervalMs: 5 });
   });
+
+  it("forwards --adopt-handler-url as an explicit repair request (issue #172)", async () => {
+    const received: CliqDoctorOptions[] = [];
+    await runCliqDoctorCommand(
+      { cfg, adoptHandlerUrl: true },
+      deps({
+        runDoctor: async (_cfg, options) => {
+          received.push(options);
+          return report({ readOnly: false });
+        },
+      }),
+    );
+    expect(received[0]?.adoptHandlerUrl).toBe(true);
+  });
 });

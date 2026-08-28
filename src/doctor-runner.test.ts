@@ -681,6 +681,230 @@ describe("cliq doctor — stage 6 public webhook preflight", () => {
   });
 });
 
+describe("cliq doctor — adopt a verified handler URL (issue #172)", () => {
+  const HANDLER_URL = "https://agent.example.com/cliq/webhook";
+
+  function handlerScript(url = HANDLER_URL, secret = WEBHOOK_SECRET): string {
+    return `webhookUrl = "${url}";\nwebhookSecret = "${secret}";\npayload = Map();`;
+  }
+
+  function handlerClient(scriptBody: string = handlerScript()): CliqDoctorClient {
+    return createClient({
+      listBots: vi.fn(async () => [{ id: "b-1", unique_name: "openclaw-bot" }]),
+      readBotHandlerScript: vi.fn(async () => ({ script: scriptBody })),
+    });
+  }
+
+  function passingAdoptPreflight(url = HANDLER_URL): CliqPreflightReport {
+    return {
+      ...passingPreflight(),
+      url,
+      stages: [
+        ...passingPreflight().stages,
+        {
+          id: "handler_secret",
+          label: "Zoho handler secret and URL consistency",
+          status: "pass",
+          detail: "both handler fingerprints and URLs match",
+        },
+      ],
+    };
+  }
+
+  it("names a candidate in read-only mode and does not preflight, write, or mutate Zoho", async () => {
+    const persistHandlerUrlAdoption = vi.fn(async () => ({ written: true, reason: "should not run", at: "t" }));
+    const runPreflight = vi.fn(async () => passingAdoptPreflight());
+    const client = handlerClient();
+    const report = await runDefault(
+      cfgWith({ publicWebhookUrl: undefined }),
+      createDeps({
+        getClient: () => client,
+        runPreflight,
+        persistHandlerUrlAdoption,
+        inspectBot: vi.fn(async () => ({ status: "pass" as const, evidence: ["handlers agree"] })),
+      }),
+    );
+    const preflight = stageOf(report, "public_webhook");
+    expect(report.readOnly).toBe(true);
+    expect(runPreflight).not.toHaveBeenCalled();
+    expect(persistHandlerUrlAdoption).not.toHaveBeenCalled();
+    expect(client.sendMessage).not.toHaveBeenCalled();
+    expect(preflight.status).toBe("warn");
+    expect(preflight.evidence.join(" ")).toContain(HANDLER_URL);
+    expect(preflight.remediation.join(" ")).toMatch(/--adopt-handler-url/);
+    expect(JSON.stringify(report)).not.toContain(WEBHOOK_SECRET);
+    expect(JSON.stringify(report)).not.toContain("payload = Map()");
+  });
+
+  it("adopts the candidate after an explicit request and a passing preflight", async () => {
+    const persistHandlerUrlAdoption = vi.fn(async () => ({
+      written: true,
+      at: "2026-08-27T10:00:00.000Z",
+      reason: "recorded channels.cliq.publicWebhookUrl and inboundVerifiedAt",
+    }));
+    const runPreflight = vi.fn(async () => passingAdoptPreflight());
+    const client = handlerClient();
+    const report = await runDefault(
+      cfgWith({ publicWebhookUrl: undefined }),
+      createDeps({
+        getClient: () => client,
+        runPreflight,
+        persistHandlerUrlAdoption,
+        inspectBot: vi.fn(async () => ({ status: "pass" as const, evidence: ["handlers agree"] })),
+      }),
+      { adoptHandlerUrl: true },
+    );
+    const preflight = stageOf(report, "public_webhook");
+    expect(report.readOnly).toBe(false);
+    expect(runPreflight).toHaveBeenCalledWith(
+      expect.objectContaining({ url: HANDLER_URL, secret: WEBHOOK_SECRET }),
+    );
+    expect(persistHandlerUrlAdoption).toHaveBeenCalledWith(
+      expect.objectContaining({ url: HANDLER_URL, configuredUrl: undefined }),
+    );
+    expect(preflight.status).toBe("pass");
+    expect(preflight.evidence.join(" ")).toMatch(/inboundVerifiedAt/);
+    expect(JSON.stringify(report)).not.toContain(WEBHOOK_SECRET);
+  });
+
+  it("does not write when handlers disagree on the URL", async () => {
+    const persistHandlerUrlAdoption = vi.fn(async () => ({ written: true, reason: "should not run" }));
+    const runPreflight = vi.fn(async () => passingAdoptPreflight());
+    const client = createClient({
+      listBots: vi.fn(async () => [{ id: "b-1", unique_name: "openclaw-bot" }]),
+      readBotHandlerScript: vi.fn(async (type: string) => ({
+        script: handlerScript(
+          type === "message_handler" ? HANDLER_URL : "https://other.example.com/cliq/webhook",
+        ),
+      })),
+    });
+    const report = await runDefault(
+      cfgWith({ publicWebhookUrl: undefined }),
+      createDeps({
+        getClient: () => client,
+        runPreflight,
+        persistHandlerUrlAdoption,
+        inspectBot: vi.fn(async () => ({ status: "warn" as const, evidence: ["handlers differ"] })),
+      }),
+      { adoptHandlerUrl: true },
+    );
+    expect(runPreflight).not.toHaveBeenCalled();
+    expect(persistHandlerUrlAdoption).not.toHaveBeenCalled();
+    expect(stageOf(report, "public_webhook").status).toBe("warn");
+    expect(stageOf(report, "public_webhook").evidence.join(" ")).toMatch(/do not agree|differ/i);
+  });
+
+  it("does not write when handler secret fingerprints do not match config", async () => {
+    const persistHandlerUrlAdoption = vi.fn(async () => ({ written: true, reason: "should not run" }));
+    const runPreflight = vi.fn(async () => passingAdoptPreflight());
+    const client = handlerClient(handlerScript(HANDLER_URL, "other-secret"));
+    const report = await runDefault(
+      cfgWith({ publicWebhookUrl: undefined }),
+      createDeps({
+        getClient: () => client,
+        runPreflight,
+        persistHandlerUrlAdoption,
+        inspectBot: vi.fn(async () => ({ status: "fail" as const, evidence: ["secret mismatch"] })),
+      }),
+      { adoptHandlerUrl: true },
+    );
+    expect(runPreflight).not.toHaveBeenCalled();
+    expect(persistHandlerUrlAdoption).not.toHaveBeenCalled();
+    expect(JSON.stringify(report)).not.toContain("other-secret");
+    expect(JSON.stringify(report)).not.toContain(WEBHOOK_SECRET);
+  });
+
+  it("does not write when the candidate URL is not a valid HTTPS /cliq/webhook", async () => {
+    const persistHandlerUrlAdoption = vi.fn(async () => ({ written: true, reason: "should not run" }));
+    const runPreflight = vi.fn(async () => passingAdoptPreflight());
+    const client = handlerClient(handlerScript("http://agent.example.com/cliq/webhook"));
+    await runDefault(
+      cfgWith({ publicWebhookUrl: undefined }),
+      createDeps({
+        getClient: () => client,
+        runPreflight,
+        persistHandlerUrlAdoption,
+        inspectBot: vi.fn(async () => ({ status: "pass" as const, evidence: ["ok"] })),
+      }),
+      { adoptHandlerUrl: true },
+    );
+    expect(runPreflight).not.toHaveBeenCalled();
+    expect(persistHandlerUrlAdoption).not.toHaveBeenCalled();
+  });
+
+  it("leaves config unchanged when preflight does not pass", async () => {
+    const persistHandlerUrlAdoption = vi.fn(async () => ({ written: true, reason: "should not run" }));
+    const runPreflight = vi.fn(async () => ({
+      ...passingAdoptPreflight(),
+      ok: false,
+      stages: [
+        { id: "reachability" as const, label: "DNS", status: "fail" as const, detail: "DNS did not resolve" },
+      ],
+    }));
+    const report = await runDefault(
+      cfgWith({ publicWebhookUrl: undefined }),
+      createDeps({
+        getClient: () => handlerClient(),
+        runPreflight,
+        persistHandlerUrlAdoption,
+        inspectBot: vi.fn(async () => ({ status: "pass" as const, evidence: ["ok"] })),
+      }),
+      { adoptHandlerUrl: true },
+    );
+    expect(persistHandlerUrlAdoption).not.toHaveBeenCalled();
+    expect(stageOf(report, "public_webhook").status).toBe("fail");
+  });
+
+  it("leaves config unchanged when preflight handler verification is inconclusive", async () => {
+    const persistHandlerUrlAdoption = vi.fn(async () => ({ written: true, reason: "should not run" }));
+    const report = await runDefault(
+      cfgWith({ publicWebhookUrl: undefined }),
+      createDeps({
+        getClient: () => handlerClient(),
+        runPreflight: vi.fn(async () => ({
+          ...passingAdoptPreflight(),
+          ok: true,
+          stages: [
+            ...passingPreflight().stages,
+            {
+              id: "handler_secret" as const,
+              label: "Zoho handler secret and URL consistency",
+              status: "skipped" as const,
+              detail: "handler read became unavailable",
+            },
+          ],
+        })),
+        persistHandlerUrlAdoption,
+        inspectBot: vi.fn(async () => ({ status: "pass" as const, evidence: ["ok"] })),
+      }),
+      { adoptHandlerUrl: true },
+    );
+    expect(persistHandlerUrlAdoption).not.toHaveBeenCalled();
+    expect(stageOf(report, "public_webhook").status).toBe("warn");
+  });
+
+  it("leaves config unchanged when the atomic write fails", async () => {
+    const persistHandlerUrlAdoption = vi.fn(async () => ({
+      written: false,
+      reason: "the config changed before it could be written, so no verification state was recorded",
+    }));
+    const report = await runDefault(
+      cfgWith({ publicWebhookUrl: undefined }),
+      createDeps({
+        getClient: () => handlerClient(),
+        runPreflight: vi.fn(async () => passingAdoptPreflight()),
+        persistHandlerUrlAdoption,
+        inspectBot: vi.fn(async () => ({ status: "pass" as const, evidence: ["ok"] })),
+      }),
+      { adoptHandlerUrl: true },
+    );
+    const preflight = stageOf(report, "public_webhook");
+    expect(persistHandlerUrlAdoption).toHaveBeenCalled();
+    expect(preflight.status).toBe("fail");
+    expect(preflight.evidence.join(" ")).toMatch(/could not be written|changed before/i);
+  });
+});
+
 describe("cliq doctor — stage 7 discovery", () => {
   it("passes when read-only user and channel discovery succeed", async () => {
     const report = await runDefault();

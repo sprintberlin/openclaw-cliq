@@ -16,6 +16,7 @@ export interface CliqDoctorCommandOptions {
   confirm?: boolean;
   timeout?: string;
   json?: boolean;
+  adoptHandlerUrl?: boolean;
 }
 
 export interface CliqDoctorCommandDeps {
@@ -61,6 +62,7 @@ export async function runCliqDoctorCommand(
       confirmed: options.confirm,
       timeoutMs: parseTimeout(options.timeout),
       json: options.json,
+      adoptHandlerUrl: options.adoptHandlerUrl,
       invocationError: invalidKind ? "--kind must be dm or group" : undefined,
     },
     doctorDeps,

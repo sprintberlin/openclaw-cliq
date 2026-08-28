@@ -5,7 +5,10 @@ import {
   describeCliqInboundVerification,
   isSameWebhookUrl,
 } from "./inbound-verification.js";
-import { persistCliqInboundVerification } from "./inbound-verification-store.js";
+import {
+  persistCliqHandlerUrlAdoption,
+  persistCliqInboundVerification,
+} from "./inbound-verification-store.js";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/setup";
 import { createCliqTestConfig as cfgWith } from "./test-api.js";
 
@@ -243,6 +246,112 @@ describe("persistCliqInboundVerification (issue #106)", () => {
       configuredUrl: URL_OK,
       outcome: "pass",
       foreignSecret: true,
+      now,
+      mutator,
+    });
+    expect(result.written).toBe(false);
+    expect(calls()).toBe(0);
+  });
+});
+
+describe("persistCliqHandlerUrlAdoption (issue #172)", () => {
+  const now = new Date("2026-08-27T09:00:00.000Z");
+
+  it("writes the verified URL and inboundVerifiedAt in one mutation when the field is missing", async () => {
+    const cfg = cfgWith({ publicWebhookUrl: undefined });
+    const { mutator, calls } = mutatorOver(cfg);
+    const result = await persistCliqHandlerUrlAdoption({
+      url: URL_OK,
+      configuredUrl: undefined,
+      now,
+      mutator,
+    });
+    expect(result.written).toBe(true);
+    expect(calls()).toBe(1);
+    expect(section(cfg).publicWebhookUrl).toBe(URL_OK);
+    expect(section(cfg).inboundVerifiedAt).toBe("2026-08-27T09:00:00.000Z");
+    expect(section(cfg).inboundVerificationFailedAt).toBeUndefined();
+  });
+
+  it("leaves config unchanged when the mutator fails after applying the draft", async () => {
+    const cfg = cfgWith({ publicWebhookUrl: undefined });
+    const result = await persistCliqHandlerUrlAdoption({
+      url: URL_OK,
+      configuredUrl: undefined,
+      now,
+      mutator: async (mutate) => {
+        mutate(cfg);
+        throw new Error("config write failed");
+      },
+    });
+    expect(result.written).toBe(false);
+    expect(result.reason).toMatch(/could not be written|failed/i);
+    expect(section(cfg).publicWebhookUrl).toBeUndefined();
+    expect(section(cfg).inboundVerifiedAt).toBeUndefined();
+  });
+
+  it("declines when the live config already has a different publicWebhookUrl", async () => {
+    const cfg = cfgWith({ publicWebhookUrl: "https://moved.example.com/cliq/webhook" });
+    const { mutator } = mutatorOver(cfg);
+    const result = await persistCliqHandlerUrlAdoption({
+      url: URL_OK,
+      configuredUrl: undefined,
+      now,
+      mutator,
+    });
+    expect(result.written).toBe(false);
+    expect(section(cfg).publicWebhookUrl).toBe("https://moved.example.com/cliq/webhook");
+    expect(section(cfg).inboundVerifiedAt).toBeUndefined();
+  });
+
+  it("never writes for a --secret/foreign-secret probe", async () => {
+    const cfg = cfgWith({ publicWebhookUrl: undefined });
+    const { mutator, calls } = mutatorOver(cfg);
+    const result = await persistCliqHandlerUrlAdoption({
+      url: URL_OK,
+      configuredUrl: undefined,
+      foreignSecret: true,
+      now,
+      mutator,
+    });
+    expect(result.written).toBe(false);
+    expect(calls()).toBe(0);
+    expect(section(cfg).publicWebhookUrl).toBeUndefined();
+    expect(section(cfg).inboundVerifiedAt).toBeUndefined();
+  });
+
+  it("writes a named account without changing the top-level fallback", async () => {
+    const cfg = cfgWith({
+      accounts: {
+        team: {
+          publicWebhookUrl: undefined,
+          inboundVerificationFailedAt: "2026-01-01T00:00:00.000Z",
+        },
+      },
+    });
+    const { mutator } = mutatorOver(cfg);
+    const result = await persistCliqHandlerUrlAdoption({
+      url: URL_OK,
+      configuredUrl: undefined,
+      accountId: "team",
+      now,
+      mutator,
+    });
+    const root = section(cfg);
+    const team = (root.accounts as Record<string, Record<string, unknown>>).team;
+    expect(result.written).toBe(true);
+    expect(root.publicWebhookUrl).toBeUndefined();
+    expect(team.publicWebhookUrl).toBe(URL_OK);
+    expect(team.inboundVerifiedAt).toBe("2026-08-27T09:00:00.000Z");
+    expect(team.inboundVerificationFailedAt).toBeUndefined();
+  });
+
+  it("never overwrites an already-configured publicWebhookUrl", async () => {
+    const cfg = cfgWith({ publicWebhookUrl: URL_OK });
+    const { mutator, calls } = mutatorOver(cfg);
+    const result = await persistCliqHandlerUrlAdoption({
+      url: URL_OK,
+      configuredUrl: URL_OK,
       now,
       mutator,
     });
