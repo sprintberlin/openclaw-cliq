@@ -45,10 +45,11 @@
  * the edit cannot be performed cleanly (chat id unresolvable, edit API
  * rejects, …), the placeholder is DELETED and the reply is sent as a fresh
  * message — the "no stray `💭 …` left behind" contract. The placeholder
-  * flow is used when `thinking.mode` is `"placeholder"` OR `"card"` and a
-  * `refreshToken` is configured (editing needs a user-context token). When
-  * streaming preview is also on, the placeholder is the same draft the
-  * live-edit path then grows in place (issue #175) — one progress surface.
+   * flow is used when `thinking.mode` is `"placeholder"` OR `"card"` and a
+   * `refreshToken` is configured (editing needs a user-context token). When
+   * streaming preview is also on, the placeholder is the same draft the
+   * live-edit path then grows in place (issue #175) — one progress surface.
+   * The thinking animator must not edit that draft (issue #184).
  */
 import { chunkMessage, type CliqClient } from "./client.js";
 import { markdownToCliq } from "./markdown.js";

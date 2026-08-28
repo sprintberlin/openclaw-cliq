@@ -1244,7 +1244,16 @@ export async function dispatchCliqInbound(params: {
         // stops the animation but never breaks the turn. Only runs when the
         // preconditions for the placeholder are already met (a message id, a
         // refreshToken) — the gate above enforces those.
-        if (account.thinking?.animate && account.thinking.animate !== "off") {
+        //
+        // Issue #184: when block streaming is on, the placeholder is the same
+        // draft the live-edit path grows in place. Frame edits on that id
+        // overwrite streaming previews (textLen 4/5/6 cycling until the final
+        // answer). Keep the animator for the static-placeholder path only.
+        if (
+          !account.blockStreaming &&
+          account.thinking?.animate &&
+          account.thinking.animate !== "off"
+        ) {
           thinkingAnimation = startThinkingAnimation({
             client,
             draft: initialDraft,

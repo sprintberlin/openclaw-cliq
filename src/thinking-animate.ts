@@ -14,7 +14,9 @@
  * holds the last frame. A failed frame edit stops the animation but never
  * breaks the turn (the reply is still delivered). Only one animation runs per
  * in-flight message: the caller holds a single {@link ThinkingAnimation} ref
- * and calls `stop()` before the final edit-into-reply.
+ * and calls `stop()` before the final edit-into-reply. The inbound path does
+ * not start this animator when block streaming is on (issue #184): both loops
+ * would otherwise PUT the same `{chatId, messageId}`.
  */
 import type { CliqClient } from "./client.js";
 import {

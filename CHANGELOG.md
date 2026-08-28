@@ -42,6 +42,8 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **Thinking animator no longer overwrites the block-streaming preview (issue #184).** With `streaming.preview: "on"` (the default) and `thinking.animate: "dots"`, both loops previously PUT the same Cliq message, so users saw only `💭 .` / `💭 ..` / `💭 ...` until the final answer. The animator now runs only when block streaming is off; the placeholder remains the same draft the live-edit path grows. `thinking.animate` is unchanged for the explicit `streaming.preview: "off"` path. A separate live observation — no intermediate block edits even with the animator off — is tracked as issue #185.
+
 - **Transient gateway startup failures no longer erase valid inbound
   verification (issue #171).** The public webhook preflight now retries bounded
   `502`, `503`, `504`, connection-refused/reset, and timeout outcomes at the

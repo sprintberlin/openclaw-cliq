@@ -2110,6 +2110,77 @@ describe("dispatchCliqInbound — thinking placeholder (issue #47)", () => {
     expect(client.edits[0].text).toBe("the final reply");
   });
 
+  it("animated placeholder still runs when block streaming is off (issue #184)", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    const frames = ["💭 .", "💭 ..", "💭 ..."];
+    let releaseTurn: (() => void) | undefined;
+    const turnGate = new Promise<void>((resolve) => {
+      releaseTurn = resolve;
+    });
+    const runtime: CliqRuntime = {
+      channel: {
+        routing: {
+          resolveAgentRoute: () => ({
+            agentId: "agent-1",
+            sessionKey: "sess-1",
+            accountId: "default",
+          }),
+        },
+        session: {
+          resolveStorePath: () => "/tmp/store",
+          readSessionUpdatedAt: () => undefined,
+          recordInboundSession: () => undefined,
+        },
+        reply: {
+          resolveEnvelopeFormatOptions: () => ({}),
+          formatAgentEnvelope: (p: Record<string, unknown>) => String(p.body ?? ""),
+          finalizeInboundContext: (fields: Record<string, unknown>) => fields,
+          dispatchReplyWithBufferedBlockDispatcher: async () => undefined,
+        },
+        inbound: {
+          run: async (params) => {
+            const adapter = (params as unknown as {
+              adapter: { resolveTurn: (...args: unknown[]) => unknown };
+            }).adapter;
+            const turn = adapter.resolveTurn({}, {}, {}) as unknown as {
+              delivery: {
+                deliver: (payload: { text?: string }) => Promise<void>;
+              };
+            };
+            await turnGate;
+            await turn.delivery.deliver({ text: "the final reply" });
+          },
+        },
+        pairing: {
+          buildPairingReply: () => "",
+          upsertPairingRequest: async () => ({ code: "CODE", created: true }),
+        },
+      },
+    };
+    const dispatch = dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: {
+          mode: "placeholder",
+          text: "💭 …",
+          animate: "dots",
+          animateIntervalMs: 800,
+        },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    expect(client.edits.some((e) => frames.includes(e.text))).toBe(true);
+    releaseTurn?.();
+    await dispatch;
+    expect(client.edits.at(-1)?.text).toBe("the final reply");
+  });
+
   it("animated placeholder (issue #86): degrades to the static placeholder when animate is 'off'", async () => {
     const client = makeMockClient({ placeholderChatId: "chat-u1" });
     const parsed = parseCliqWebhookPayload(dmPayload());
@@ -2268,6 +2339,93 @@ describe("dispatchCliqInbound — thinking placeholder (issue #47)", () => {
     expect(client.edits[1].chatId).toBe("chat-u1");
     expect(client.edits[1].text).toBe("the final reply");
     expect(client.deletes).toHaveLength(0);
+  });
+
+  it("does not let thinking.animate overwrite the streaming preview (issue #184)", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    const frames = ["💭 .", "💭 ..", "💭 ..."];
+    let deliverTurn: {
+      deliver: (payload: { text?: string }, info?: { final?: boolean }) => Promise<void>;
+    } | undefined;
+    let releaseTurn: (() => void) | undefined;
+    const turnGate = new Promise<void>((resolve) => {
+      releaseTurn = resolve;
+    });
+    const runtime: CliqRuntime = {
+      channel: {
+        routing: {
+          resolveAgentRoute: () => ({
+            agentId: "agent-1",
+            sessionKey: "sess-1",
+            accountId: "default",
+          }),
+        },
+        session: {
+          resolveStorePath: () => "/tmp/store",
+          readSessionUpdatedAt: () => undefined,
+          recordInboundSession: () => undefined,
+        },
+        reply: {
+          resolveEnvelopeFormatOptions: () => ({}),
+          formatAgentEnvelope: (p: Record<string, unknown>) => String(p.body ?? ""),
+          finalizeInboundContext: (fields: Record<string, unknown>) => fields,
+          dispatchReplyWithBufferedBlockDispatcher: async () => undefined,
+        },
+        inbound: {
+          run: async (params) => {
+            const adapter = (params as unknown as {
+              adapter: { resolveTurn: (...args: unknown[]) => unknown };
+            }).adapter;
+            const turn = adapter.resolveTurn({}, {}, {}) as unknown as {
+              delivery: {
+                deliver: (payload: { text?: string }, info?: { final?: boolean }) => Promise<void>;
+              };
+            };
+            deliverTurn = turn.delivery;
+            await turnGate;
+            await turn.delivery.deliver({ text: "first" });
+            await turn.delivery.deliver({ text: "second" });
+            await turn.delivery.deliver({ text: "final answer" }, { final: true });
+          },
+        },
+        pairing: {
+          buildPairingReply: () => "",
+          upsertPairingRequest: async () => ({ code: "CODE", created: true }),
+        },
+      },
+    };
+    const dispatch = dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: {
+          mode: "placeholder",
+          text: "💭 …",
+          animate: "dots",
+          animateIntervalMs: 800,
+        },
+        refreshToken: "rt",
+        blockStreaming: true,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    await vi.waitFor(() => expect(deliverTurn).toBeDefined());
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    expect(client.edits).toHaveLength(0);
+    releaseTurn?.();
+    await dispatch;
+    const previewEdits = client.edits.filter((e) => !frames.includes(e.text));
+    expect(previewEdits.map((e) => e.text)).toEqual([
+      "first",
+      "first\n\nsecond",
+      "first\n\nsecond\n\nfinal answer",
+    ]);
+    expect(previewEdits.every((e) => e.messageId === "ph-1")).toBe(true);
+    const lengths = previewEdits.map((e) => e.text.length);
+    expect(lengths).toEqual([...lengths].sort((a, b) => a - b));
+    expect(client.sends).toHaveLength(1);
   });
 
   it("streams successive blocks into one preview message and one final answer", async () => {

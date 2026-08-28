@@ -451,6 +451,30 @@ describe("createLiveEditDeliver — enabled (live-edit)", () => {
     expect(stats?.coalesced).toBeGreaterThanOrEqual(1);
   });
 
+  it("grows the same draft monotonically across successive deliver() calls (issue #184)", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+      minEditIntervalMs: 0,
+    });
+    await deliver({ text: "first" });
+    await deliver({ text: "second" });
+    await deliver({ text: "final answer" }, { final: true });
+    expect(fake.sends).toHaveLength(0);
+    expect(fake.edits.map((e) => e.text)).toEqual([
+      "first",
+      "first\n\nsecond",
+      "first\n\nsecond\n\nfinal answer",
+    ]);
+    expect(fake.edits.every((e) => e.messageId === "ph-1")).toBe(true);
+    const lengths = fake.edits.map((e) => e.text.length);
+    expect(lengths).toEqual([...lengths].sort((a, b) => a - b));
+  });
+
   it("flushes a coalesced preview immediately on the final block", async () => {
     let now = 5_000;
     const fake = makeFakeClient({ dmChatId: "chat-u1" });

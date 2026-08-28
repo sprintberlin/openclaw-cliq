@@ -504,6 +504,17 @@ describe("cliq streaming manifest defaults (issue #181)", () => {
     }));
     expect(resolved.blockStreaming).toBe(false);
   });
+
+  it("resolves streaming.preview=on together with thinking.animate=dots (issue #184)", () => {
+    const resolved = resolveCliqConfig(cfgWith({
+      clientId: "id", clientSecret: "s", botId: "b",
+      streaming: { preview: "on" },
+      thinking: { mode: "placeholder", animate: "dots" },
+    }));
+    expect(resolved.blockStreaming).toBe(true);
+    expect(resolved.thinking.mode).toBe("placeholder");
+    expect(resolved.thinking.animate).toBe("dots");
+  });
 });
 
 describe("cliq thinking manifest defaults (issue #89)", () => {

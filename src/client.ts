@@ -456,7 +456,10 @@ export type CliqThinkingConfig = {
    * edits. The interval is hard-floored (≥ 800 ms) and the total
    * animation duration is capped (default 60 s) so a long turn does not hammer
    * the edit endpoint. A failed frame edit stops the animation but never
-   * breaks the turn (the reply is still delivered).
+   * breaks the turn (the reply is still delivered). The inbound path skips
+   * this animator when block streaming is on (issue #184): the placeholder is
+   * the same draft the live-edit path grows, and frame edits would overwrite
+   * streaming previews.
    *  - `"off"`: no animation (static placeholder).
    *  - `"dots"` (default): cycle `💭 .` → `💭 ..` → `💭 …` (loop).
    *  - `"spinner"`: cycle braille-spinner frames prefixed with a fixed label
@@ -618,10 +621,12 @@ export interface ResolvedCliqAccount {
    * Resolved instant-acknowledgement config. `mode` defaults to `"placeholder"`; `text`
    * defaults to {@link DEFAULT_CLIQ_THINKING_TEXT} when `mode === "placeholder"`
    * and to {@link DEFAULT_CLIQ_THINKING_CARD_TEXT} when `mode === "card"`.
-    * The inbound path only acts when `mode` is `"placeholder"` OR `"card"` AND a
-    * `refreshToken` is configured. When streaming preview is also on, the
-    * placeholder is the same message the live-edit path then edits into the
-    * growing reply (issue #175) — one progress surface, never two.
+     * The inbound path only acts when `mode` is `"placeholder"` OR `"card"` AND a
+     * `refreshToken` is configured. When streaming preview is also on, the
+     * placeholder is the same message the live-edit path then edits into the
+     * growing reply (issue #175) — one progress surface, never two. The
+     * thinking animator is skipped in that case (issue #184) so frame edits
+     * cannot overwrite the growing draft.
     */
   thinking: {
     mode: "off" | "placeholder" | "card";
