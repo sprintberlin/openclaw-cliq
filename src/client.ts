@@ -24,7 +24,7 @@ const MESSAGE_CHAR_LIMIT = 5000;
 
 /**
  * Default minimum wall-clock distance between two in-place preview edits of
- * the same draft when `streaming.preview` is `"on"` (issue #175). Matches the
+ * the same draft while the streaming preview is active (issue #175). Matches the
  * 1s block-coalesce window the channel publishes to the SDK.
  */
 export const DEFAULT_CLIQ_STREAMING_MIN_EDIT_INTERVAL_MS = 1_000;
@@ -243,9 +243,11 @@ export interface CliqChannelConfig {
    * live-edit-in-place (editing a single message as the draft grows) is not
    * exposed by the SDK; block streaming is the available progressive-delivery
    * mechanism.
-    * - `preview: "on"` opts this account into block streaming (the SDK's
-    *   `agents.defaults.blockStreamingDefault` must also permit it).
-    * - `preview: "off"` (default) keeps the legacy single-final-reply behavior.
+    * - `preview: "on"` (the default when `streaming` / `preview` is unset)
+    *   enables block streaming for this account through the inbound turn's
+    *   `replyOptions.disableBlockStreaming: false`.
+    * - `preview: "off"` is the explicit opt-out back to the
+    *   single-final-reply behavior.
     * - `minEditIntervalMs` (optional) is the minimum wall-clock distance
     *   between two in-place preview edits of the same draft. Intermediate
     *   blocks inside the window are coalesced. Defaults to 1000 ms.
@@ -419,8 +421,8 @@ export type CliqThinkingConfig = {
    * `cancelledText`. The button clicks arrive as ordinary inbound messages
    * via the bot's Message handler (`invoke.bot`) — no Cliq Context handler
    * is required. Card-mode only; ignored for `"placeholder"` / `"off"`. The
-   * gate also inherits the thinking-card preconditions (a `refreshToken`,
-   * streaming preview off) which the inbound path enforces separately.
+    * gate also inherits the thinking-card precondition (a `refreshToken`)
+    * which the inbound path enforces separately.
    *  - `"off"` (default): no gating.
    *  - `"sensitive"`: gate only when the cleaned text matches a
    *    `confirmKeywords` entry (case-insensitive word-boundary match; defaults
@@ -578,7 +580,10 @@ export interface ResolvedCliqAccount {
   trustedOrganization?: CliqTrustedOrganizationConfig;
   ackPolicy: "after_dispatch" | "immediate";
   selfSenderIds: string[];
-  /** Whether progressive (block-streaming) reply delivery is opted-in for this account. */
+  /**
+   * Whether progressive (block-streaming) reply delivery is active for this
+   * account. Defaults to true; an explicit `streaming.preview: "off"` opts out.
+   */
   blockStreaming: boolean;
   /**
    * Minimum wall-clock distance between two in-place preview edits of the
@@ -677,7 +682,7 @@ export function resolveCliqConfig(
   const ackPolicyRaw = section?.ackPolicy;
   const ackPolicy: "after_dispatch" | "immediate" =
     ackPolicyRaw === "immediate" ? "immediate" : "after_dispatch";
-  const blockStreaming = section?.streaming?.preview === "on";
+  const blockStreaming = section?.streaming?.preview !== "off";
   const streamingMinEditIntervalMsRaw = section?.streaming?.minEditIntervalMs;
   const streamingMinEditIntervalMs =
     typeof streamingMinEditIntervalMsRaw === "number" &&

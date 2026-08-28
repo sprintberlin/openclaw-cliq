@@ -138,6 +138,55 @@ describe("collectCliqPreviewWarnings", () => {
     ).toBe(true);
   });
 
+  it("notes that the default-on streaming preview needs a refreshToken", () => {
+    const warnings = collectCliqPreviewWarnings({
+      cfg: cfgWith({
+        clientId: "id",
+        clientSecret: "secret",
+        botId: "bot",
+        webhookSecret: "s",
+        dmPolicy: "open",
+        allowFrom: ["u1"],
+      }),
+      doctorFixCommand: DOCTOR_FIX,
+    });
+    expect(
+      warnings.some((w) => /streaming\.preview/.test(w) && /refreshToken/.test(w)),
+    ).toBe(true);
+  });
+
+  it("does not warn about streaming.preview when it is explicitly off", () => {
+    const warnings = collectCliqPreviewWarnings({
+      cfg: cfgWith({
+        clientId: "id",
+        clientSecret: "secret",
+        botId: "bot",
+        webhookSecret: "s",
+        dmPolicy: "open",
+        allowFrom: ["u1"],
+        streaming: { preview: "off" },
+      }),
+      doctorFixCommand: DOCTOR_FIX,
+    });
+    expect(warnings.some((w) => /streaming\.preview/.test(w))).toBe(false);
+  });
+
+  it("does not warn about the default-on streaming preview when a refreshToken is present", () => {
+    const warnings = collectCliqPreviewWarnings({
+      cfg: cfgWith({
+        clientId: "id",
+        clientSecret: "secret",
+        botId: "bot",
+        refreshToken: "rt",
+        webhookSecret: "s",
+        dmPolicy: "open",
+        allowFrom: ["u1"],
+      }),
+      doctorFixCommand: DOCTOR_FIX,
+    });
+    expect(warnings.some((w) => /streaming\.preview/.test(w))).toBe(false);
+  });
+
   it("does not warn about streaming.preview when a refreshToken is present", () => {
     const warnings = collectCliqPreviewWarnings({
       cfg: cfgWith({

@@ -162,11 +162,21 @@ describe("cliq plugin", () => {
     expect(account.blockStreaming).toBe(true);
   });
 
-  it("defaults blockStreaming=false when streaming.preview is unset", () => {
+  it("defaults blockStreaming=true when streaming.preview is unset", () => {
     const cfg = cfgWith({
       clientId: "id",
       clientSecret: "secret",
       botId: "bot",
+    });
+    expect(resolveCliqConfig(cfg).blockStreaming).toBe(true);
+  });
+
+  it("keeps blockStreaming=false when streaming.preview is explicitly off", () => {
+    const cfg = cfgWith({
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+      streaming: { preview: "off" },
     });
     expect(resolveCliqConfig(cfg).blockStreaming).toBe(false);
   });
@@ -201,7 +211,18 @@ describe("cliq plugin", () => {
       botId: "bot",
       streaming: { preview: "on" },
     });
-    expect(resolveCliqConfig(cfg).streamingMinEditIntervalMs).toBeGreaterThanOrEqual(800);
+    expect(resolveCliqConfig(cfg).streamingMinEditIntervalMs).toBe(1000);
+  });
+
+  it("keeps the 1000 ms edit throttle when streaming.preview is omitted", () => {
+    const cfg = cfgWith({
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+    });
+    const account = resolveCliqConfig(cfg);
+    expect(account.blockStreaming).toBe(true);
+    expect(account.streamingMinEditIntervalMs).toBe(1000);
   });
 
   it("wires the threading adapter (not the legacy topLevelReplyToMode shape)", () => {

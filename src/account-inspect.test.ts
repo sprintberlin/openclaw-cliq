@@ -168,9 +168,21 @@ describe("inspectCliqAccount", () => {
     expect(r.config.streamingPreview).toBe("on");
   });
 
-  it("defaults streamingPreview=off when unset", () => {
+  it("defaults streamingPreview=on when unset", () => {
     const r = inspectCliqAccount({
       cfg: cfgWith({ clientId: "id", clientSecret: "s", botId: "b" }),
+    });
+    expect(r.config.streamingPreview).toBe("on");
+  });
+
+  it("reports streamingPreview=off when explicitly disabled", () => {
+    const r = inspectCliqAccount({
+      cfg: cfgWith({
+        clientId: "id",
+        clientSecret: "secret",
+        botId: "bot",
+        streaming: { preview: "off" },
+      }),
     });
     expect(r.config.streamingPreview).toBe("off");
   });

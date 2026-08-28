@@ -13,11 +13,24 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Changed
 
+- **Block streaming is now the default (issue #181).** An unset
+  `channels.cliq.streaming.preview` resolves to `"on"`, so complete response
+  blocks live-edit one Cliq message instead of arriving as a single final
+  reply. This applies on upgrade too: installs that never set the key change
+  behavior without a config edit, and no migration rewrites their config. Set
+  `channels.cliq.streaming.preview: "off"` (per account under
+  `channels.cliq.accounts.<id>` if needed) to opt out explicitly; an explicit
+  `"on"` is unchanged. The edit throttle/coalescing default stays 1000 ms.
+  Live-edit still needs a user-context `refreshToken`
+  (`ZohoCliq.Messages.UPDATE`) — without one, previews degrade to one normal
+  final response and `openclaw doctor` now warns for the default-on case, not
+  only for an explicit opt-in.
+
 - **The OpenClaw build floor is now `2026.8.1-beta.3` (issue #156).** Typecheck, build, and the development tree pin that version. Existing installs on `2026.7.1-2` remain supported and are still runtime-smoked.
 
 ### Added
 
-- **Block-streaming live-edit of one Cliq response (issue #175).** Opt in with `channels.cliq.streaming.preview: "on"` (existing installs keep a single final reply). Complete response blocks update one message; the thinking placeholder, when present, is that same message rather than a second progress surface. Preview edits are throttled and coalesced (`streaming.minEditIntervalMs`, default 1000 ms), unchanged content is not sent, and a late edit cannot overwrite newer content. A 429 backs off before retrying the latest preview. Edit failures fall back to one normal final response without failing the turn. Message edit stays on the v2 chat-messages path. Independent of native v3 typing (issue #178); no live Cliq DM round-trip was run in this increment.
+- **Block-streaming live-edit of one Cliq response (issue #175).** `channels.cliq.streaming.preview` controls whether complete response blocks update one message; it now defaults to `"on"` (issue #181), while `"off"` keeps one final reply. The thinking placeholder, when present, is that same message rather than a second progress surface. Preview edits are throttled and coalesced (`streaming.minEditIntervalMs`, default 1000 ms), unchanged content is not sent, and a late edit cannot overwrite newer content. A 429 backs off before retrying the latest preview. Edit failures fall back to one normal final response without failing the turn. Message edit stays on the v2 chat-messages path. Independent of native v3 typing (issue #178); no live Cliq DM round-trip was run in this increment.
 
 - **Native v3 chat typing (issue #178).** `heartbeat.sendTyping` posts `{"action":"typing"}` to `POST /api/v3/chats/{chat_id}/activities` (scope `ZohoCliq.Chats.UPDATE`, success is empty HTTP 204) when a refresh token is configured and a real inbound chat id is known. A user id is never used as a chat id. Pulses are throttled to at most one request every 4.5 s and stop after 60 s; a 429 stops further activity for the rest of the turn; `clearTyping` posts `text_cleared`. Failures never fail or delay the agent turn. HTTP 204 is API acceptance only — Cliq client UI visibility is unconfirmed and currently looks negative. Independent of block-streaming live-edit (issue #175).
 

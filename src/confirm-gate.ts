@@ -149,8 +149,8 @@ export function parseCliqConfirmAction(raw: string): CliqConfirmParse {
  * Whether the confirm gate is armed for this account — i.e. `thinking.mode
  * === "card"` (the card surface the prompt renders on) AND `thinking.confirm`
  * is `"sensitive"` or `"always"`. The gate also inherits the thinking-card
- * preconditions (a `refreshToken` for edits, streaming preview off) which the
- * inbound path enforces separately before posting any card.
+ * precondition (a `refreshToken`) which the inbound path enforces separately
+ * before posting any card.
  */
 export function isConfirmGateArmed(account: ResolvedCliqAccount): boolean {
   if (account.thinking.mode !== "card") return false;

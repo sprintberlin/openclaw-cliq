@@ -1,7 +1,8 @@
 /**
  * Live-edit streaming delivery for the inbound dispatch path.
  *
- * When block streaming is enabled for an account (`channels.cliq.streaming.preview: "on"`),
+ * When block streaming is enabled for an account (the default; opt out with
+ * `channels.cliq.streaming.preview: "off"`),
  * the SDK's buffered block dispatcher delivers the agent's reply as a sequence of
  * coalesced "block" payloads (one `deliver` call per block). Without live-edit,
  * each block becomes a SEPARATE Cliq message — a long agent reply clutters the
@@ -26,7 +27,7 @@
  *     reference pattern) and retry the edit once. If recovery also fails, we
  *     gracefully degrade to a new message — the draft is simply not reused.
  *
- * When block streaming is OFF (the default), each agent reply is a single `deliver`
+ * When block streaming is OFF (the explicit opt-out), each agent reply is a single `deliver`
  * call with the full text. The legacy path sends it as one message; this module
  * additionally chunks it against the 5000-char limit (a latent gap — the inbound
  * `deliver` previously did not chunk, so a >5000-char reply would be rejected by
