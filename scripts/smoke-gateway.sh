@@ -77,6 +77,7 @@ SMOKE_HOME="$(mktemp -d)"
 export HOME="$SMOKE_HOME"
 export OPENCLAW_STATE_DIR="$SMOKE_HOME/state"
 export OPENCLAW_CONFIG_PATH="$SMOKE_HOME/state/openclaw.json"
+unset OPENROUTER_API_KEY PERPLEXITY_API_KEY
 PROFILE="ci-smoke"
 GATEWAY_PID=""
 MOCK_PID=""
