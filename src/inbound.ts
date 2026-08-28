@@ -1370,6 +1370,18 @@ export async function dispatchCliqInbound(params: {
             runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher,
           replyOptions: {
             disableBlockStreaming: !account.blockStreaming,
+            ...(account.blockStreaming
+              ? {
+                  onPartialReply: (payload: { text?: string }) => {
+                    const text = payload?.text;
+                    if (!text) return;
+                    thinkingAnimation?.stop();
+                    return deliver({ text }, { snapshot: true }).catch((err) => {
+                      handleOnError(err, { kind: "partial-preview" });
+                    });
+                  },
+                }
+              : {}),
           },
           delivery: {
             deliver: async (

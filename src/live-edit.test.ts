@@ -451,6 +451,89 @@ describe("createLiveEditDeliver — enabled (live-edit)", () => {
     expect(stats?.coalesced).toBeGreaterThanOrEqual(1);
   });
 
+  it("does not send a new message from a snapshot when there is no draft", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      minEditIntervalMs: 0,
+    });
+    await deliver({ text: "Hel" }, { snapshot: true });
+    await deliver({ text: "Hello world" }, { snapshot: true });
+    expect(fake.sends).toHaveLength(0);
+    expect(fake.edits).toHaveLength(0);
+    await deliver({ text: "Hello world, this is the answer." }, { final: true });
+    expect(fake.sends).toHaveLength(1);
+    expect(fake.sends[0].text).toBe("Hello world, this is the answer.");
+  });
+
+  it("does not overflow the draft from a partial snapshot", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      charLimit: 10,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+      minEditIntervalMs: 0,
+    });
+    await deliver({ text: "12345678901" }, { snapshot: true });
+    expect(fake.sends).toHaveLength(0);
+    expect(fake.edits).toHaveLength(0);
+    await deliver({ text: "123456789012345" }, { final: true });
+    expect(fake.edits[0].text).toHaveLength(10);
+    expect(fake.sends).toHaveLength(1);
+    expect(fake.sends[0].text).toBe("12345");
+  });
+
+  it("replaces the draft with growing onPartialReply snapshots (issue #185)", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+      minEditIntervalMs: 0,
+    });
+    await deliver({ text: "Hel" }, { snapshot: true });
+    await deliver({ text: "Hello w" }, { snapshot: true });
+    await deliver({ text: "Hello world, this is growing" }, { snapshot: true });
+    await deliver(
+      { text: "Hello world, this is growing into the final answer." },
+      { final: true },
+    );
+    expect(fake.sends).toHaveLength(0);
+    expect(fake.edits.map((e) => e.text)).toEqual([
+      "Hel",
+      "Hello w",
+      "Hello world, this is growing",
+      "Hello world, this is growing into the final answer.",
+    ]);
+    expect(fake.edits.every((e) => e.messageId === "ph-1")).toBe(true);
+    const lengths = fake.edits.map((e) => e.text.length);
+    expect(lengths).toEqual([...lengths].sort((a, b) => a - b));
+  });
+
+  it("does not shrink a snapshot draft when the final block is a prefix of it", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+      minEditIntervalMs: 0,
+    });
+    await deliver({ text: "Hello world, this is growing" }, { snapshot: true });
+    await deliver({ text: "Hello world" }, { final: true });
+    expect(fake.edits.map((e) => e.text)).toEqual(["Hello world, this is growing"]);
+    expect(fake.edits.every((e) => e.messageId === "ph-1")).toBe(true);
+  });
+
   it("grows the same draft monotonically across successive deliver() calls (issue #184)", async () => {
     const fake = makeFakeClient({ dmChatId: "chat-u1" });
     const deliver = createLiveEditDeliver({
