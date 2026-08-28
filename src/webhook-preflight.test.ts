@@ -97,6 +97,143 @@ describe("runCliqWebhookPreflight (issue #96)", () => {
     };
   });
 
+  it("retries a transient gateway 502 and continues through all stages once the route is ready", async () => {
+    let getAttempts = 0;
+    const delays: number[] = [];
+    const report = await runCliqWebhookPreflight({
+      url: URL_OK,
+      secret,
+      fetchImpl: async (url, init) => {
+        if ((init?.method ?? "GET") === "GET" && ++getAttempts === 1) {
+          return { status: 502, text: async () => "temporary upstream failure" };
+        }
+        return healthyFetch(url, init);
+      },
+      retry: { sleep: async (milliseconds) => {
+          delays.push(milliseconds);
+        } },
+    });
+    expect(report.ok).toBe(true);
+    expect(getAttempts).toBe(2);
+    expect(delays).toEqual([250]);
+    expect(stageOf(report, "reachability").detail).toMatch(/2 attempts|250 ms/i);
+    expect(stageOf(report, "secret").status).toBe("pass");
+    expect(stageOf(report, "probe").status).toBe("pass");
+  });
+
+  it.each([502, 503, 504])(
+    "reports exhausted transient HTTP %s readiness as inconclusive with bounded evidence",
+    async (status) => {
+      const delays: number[] = [];
+      let attempts = 0;
+      const report = await runCliqWebhookPreflight({
+        url: URL_OK,
+        secret,
+        fetchImpl: async () => {
+          attempts += 1;
+          return { status, text: async () => `response contains ${secret}` };
+        },
+        retry: { sleep: async (milliseconds) => {
+          delays.push(milliseconds);
+        } },
+      });
+      expect(report.ok).toBe(false);
+      expect(attempts).toBe(3);
+      expect(delays).toEqual([250, 500]);
+      expect(report.stages.some((stage) => stage.status === "fail")).toBe(false);
+      const method = stageOf(report, "method");
+      expect(method.status).toBe("warn");
+      expect(method.detail).toMatch(new RegExp(`${status}.*3 attempts.*750 ms`, "i"));
+      expect(JSON.stringify(report)).not.toContain(secret);
+    },
+  );
+
+  it.each(["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT"])(
+    "retries transient transport error %s and passes when the route becomes ready",
+    async (code) => {
+      const delays: number[] = [];
+      let getAttempts = 0;
+      const report = await runCliqWebhookPreflight({
+        url: URL_OK,
+        secret,
+        fetchImpl: async (url, init) => {
+          if ((init?.method ?? "GET") === "GET" && ++getAttempts === 1) {
+            throw Object.assign(new Error("temporary transport failure"), { code });
+          }
+          return healthyFetch(url, init);
+        },
+        retry: { sleep: async (milliseconds) => {
+          delays.push(milliseconds);
+        } },
+      });
+      expect(report.ok).toBe(true);
+      expect(getAttempts).toBe(2);
+      expect(delays).toEqual([250]);
+      expect(stageOf(report, "reachability").detail).toMatch(/2 attempts|250 ms/i);
+    },
+  );
+
+  it("retries an AbortError timeout and passes when the route becomes ready", async () => {
+    const delays: number[] = [];
+    let getAttempts = 0;
+    const report = await runCliqWebhookPreflight({
+      url: URL_OK,
+      secret,
+      fetchImpl: async (url, init) => {
+        if ((init?.method ?? "GET") === "GET" && ++getAttempts === 1) {
+          throw Object.assign(new Error("request timed out"), { name: "AbortError" });
+        }
+        return healthyFetch(url, init);
+      },
+      retry: { sleep: async (milliseconds) => {
+          delays.push(milliseconds);
+        } },
+    });
+    expect(report.ok).toBe(true);
+    expect(getAttempts).toBe(2);
+    expect(delays).toEqual([250]);
+  });
+
+  it("reports exhausted connection failures as inconclusive rather than failed", async () => {
+    const delays: number[] = [];
+    let attempts = 0;
+    const report = await runCliqWebhookPreflight({
+      url: URL_OK,
+      secret,
+      fetchImpl: async () => {
+        attempts += 1;
+        throw Object.assign(new Error("connection refused"), { code: "ECONNREFUSED" });
+      },
+      retry: { sleep: async (milliseconds) => {
+          delays.push(milliseconds);
+        } },
+    });
+    expect(attempts).toBe(3);
+    expect(delays).toEqual([250, 500]);
+    expect(report.stages.some((stage) => stage.status === "fail")).toBe(false);
+    expect(stageOf(report, "reachability").status).toBe("warn");
+    expect(stageOf(report, "reachability").detail).toMatch(/3 attempts.*750 ms/i);
+  });
+
+  it("does not retry a stable permanent 404 failure", async () => {
+    const delays: number[] = [];
+    let attempts = 0;
+    const report = await runCliqWebhookPreflight({
+      url: URL_OK,
+      secret,
+      fetchImpl: async () => {
+        attempts += 1;
+        return { status: 404, text: async () => "not found" };
+      },
+      retry: { sleep: async (milliseconds) => {
+          delays.push(milliseconds);
+        } },
+    });
+    expect(attempts).toBe(1);
+    expect(delays).toEqual([]);
+    expect(stageOf(report, "method").status).toBe("fail");
+  });
+
   it("passes every network stage and explicitly skips the Zoho-held secret check when no handler reader is available", async () => {
     const report = await runCliqWebhookPreflight({ url: URL_OK, secret, fetchImpl: healthyFetch });
     expect(report.ok).toBe(true);

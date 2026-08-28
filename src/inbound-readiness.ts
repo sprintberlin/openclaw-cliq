@@ -24,6 +24,7 @@ export interface CliqInboundReadinessInput {
 
 export interface CliqInboundReadiness {
   ready: boolean;
+  inconclusive?: boolean;
   reason: string;
 }
 
@@ -64,11 +65,19 @@ export function resolveCliqInboundReadiness(
   }
   if (!input.preflight.ok) {
     const detail = firstFailure(input.preflight);
+    if (!detail) {
+      const warning = input.preflight.stages.find((stage) => stage.status === "warn")?.detail;
+      return {
+        ready: false,
+        inconclusive: true,
+        reason: warning
+          ? `the public webhook preflight was inconclusive: ${warning}`
+          : "the public webhook preflight was inconclusive",
+      };
+    }
     return {
       ready: false,
-      reason: detail
-        ? `the public webhook preflight failed: ${detail}`
-        : "the public webhook preflight failed",
+      reason: `the public webhook preflight failed: ${detail}`,
     };
   }
   return {
