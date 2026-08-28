@@ -91,6 +91,23 @@ describe("CLIQ_CAPABILITIES", () => {
     expect(edit.profile).toBe("runtime");
   });
 
+  it("Native chat typing is a required runtime refresh_token capability", () => {
+    const typing = getCapabilityById("chat_typing")!;
+    expect(typing).toBeDefined();
+    expect(typing.label).toBe("Native chat typing (v3 activities)");
+    expect(typing.scope).toBe("ZohoCliq.Chats.UPDATE");
+    expect(typing.grantType).toBe("refresh_token");
+    expect(typing.profile).toBe("runtime");
+    expect(typing.category).toBe("rich");
+    expect(typing.optional).toBe(false);
+    expect(typing.probePath).toBeNull();
+    expect(typing.probeMethod).toBe("GET");
+    expect(typing.unprobeableReason).toBeTruthy();
+    expect(typing.missingHint).toContain("ZohoCliq.Chats.UPDATE");
+    expect(typing.missingHint).toMatch(/re-consent/i);
+    expect(typing.missingHint).toMatch(/regenerate the refresh token/i);
+  });
+
   it("Bot read is setup profile", () => {
     const botRead = getCapabilityById("bot_read")!;
     expect(botRead).toBeDefined();
@@ -250,6 +267,10 @@ describe("scope sets", () => {
     expect(SETUP_SCOPES).toContain("ZohoCliq.Bots.UPDATE");
   });
 
+  it("RUNTIME_REQUIRED_SCOPES includes required native chat typing", () => {
+    expect(RUNTIME_REQUIRED_SCOPES).toContain("ZohoCliq.Chats.UPDATE");
+  });
+
   it("RUNTIME_REQUIRED_SCOPES does not include setup scopes", () => {
     for (const scope of SETUP_SCOPES) {
       expect(RUNTIME_REQUIRED_SCOPES).not.toContain(scope);
@@ -262,12 +283,15 @@ describe("scope sets", () => {
 // ---------------------------------------------------------------------------
 
 describe("canonical scope strings", () => {
-  it("RUNTIME_SCOPE_STRING contains all runtime scopes (required + optional)", () => {
-    const runtimeCaps = CLIQ_CAPABILITIES.filter((c) => c.profile === "runtime");
-    const runtimeScopes = new Set(runtimeCaps.map((c) => c.scope));
-    for (const scope of runtimeScopes) {
-      expect(RUNTIME_SCOPE_STRING).toContain(scope);
-    }
+  it("RUNTIME_SCOPE_STRING is derived exactly from unique runtime matrix scopes", () => {
+    const runtimeScopes = [
+      ...new Set(
+        CLIQ_CAPABILITIES
+          .filter((capability) => capability.profile === "runtime")
+          .map((capability) => capability.scope),
+      ),
+    ];
+    expect(RUNTIME_SCOPE_STRING).toBe(runtimeScopes.join(","));
   });
 
   it("RUNTIME_SCOPE_STRING is comma-separated with no spaces", () => {
@@ -277,6 +301,17 @@ describe("canonical scope strings", () => {
     for (const part of parts) {
       expect(part).toMatch(/^ZohoCliq\./);
     }
+  });
+
+  it("RUNTIME_SCOPE_STRING and FULL_SCOPE_STRING include ZohoCliq.Chats.UPDATE", () => {
+    expect(RUNTIME_SCOPE_STRING).toContain("ZohoCliq.Chats.UPDATE");
+    expect(FULL_SCOPE_STRING).toContain("ZohoCliq.Chats.UPDATE");
+    expect(RUNTIME_SCOPE_STRING).not.toContain(" ");
+    expect(FULL_SCOPE_STRING).not.toContain(" ");
+    const runtimeParts = RUNTIME_SCOPE_STRING.split(",");
+    const fullParts = FULL_SCOPE_STRING.split(",");
+    expect(new Set(runtimeParts).size).toBe(runtimeParts.length);
+    expect(new Set(fullParts).size).toBe(fullParts.length);
   });
 
   it("SETUP_SCOPE_STRING contains Bots.READ, Bots.CREATE, and Bots.UPDATE", () => {
@@ -561,6 +596,7 @@ describe("getRequiredScopesForProfile", () => {
     expect(scopes).toContain("ZohoCliq.Messages.UPDATE");
     expect(scopes).toContain("ZohoCliq.Users.READ");
     expect(scopes).toContain("ZohoCliq.Channels.READ");
+    expect(scopes).toContain("ZohoCliq.Chats.UPDATE");
     // Optional scopes should NOT be included
     expect(scopes).not.toContain("ZohoCliq.messageactions.CREATE");
     expect(scopes).not.toContain("ZohoCliq.Attachments.READ");

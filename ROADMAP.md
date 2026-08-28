@@ -113,6 +113,11 @@ Mostly v3-independent; **dynamic agents** in particular is high-value and can be
 - **`<think>` / reasoning normalization + throttle.** Normalize reasoning-tag variants
   (`<thinking>` / `<thought>` → `<think>`) and throttle streaming-preview edits so live-edit does
   not hammer the Cliq edit API. Builds on `src/live-edit.ts`. (Prior art: wecom.)
+- **Native v3 chat typing in `heartbeat.sendTyping`.** Post `{"action":"typing"}` to
+  `POST /api/v3/chats/{chat_id}/activities` (scope `ZohoCliq.Chats.UPDATE`, success 204) instead
+  of only pre-warming the OAuth token. Use a real chat id, never a bare user id; stay under the
+  100 req/min/user activities limit. Tracked as issue #175. Ref:
+  <https://www.zoho.com/cliq/help/restapi/v3/chats/>.
 
 ---
 

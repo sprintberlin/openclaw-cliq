@@ -145,7 +145,7 @@ openclaw-cliq/
 
 - **EU endpoint:** `accounts.zoho.eu` for OAuth, `cliq.zoho.eu` for API calls (NOT `.com`)
 - **OAuth grant:** `client_credentials` (no refresh token needed, plugin fetches new access token on expiry)
-- **Scopes:** `ZohoCliq.Webhooks.CREATE` (bot DMs), `ZohoCliq.Channels.UPDATE` (channel posts via channelsbyname), `ZohoCliq.Channels.READ`, `ZohoCliq.Users.READ`, `ZohoCliq.Messages.UPDATE` (edit in place)
+- **Scopes:** `ZohoCliq.Webhooks.CREATE` (bot DMs), `ZohoCliq.Channels.UPDATE` (channel posts via channelsbyname), `ZohoCliq.Channels.READ`, `ZohoCliq.Users.READ`, `ZohoCliq.Messages.UPDATE` (edit in place), `ZohoCliq.Chats.UPDATE` (v3 typing activities)
 - **Webhook:** Deluge script in the Cliq Bot handler sends POST to our endpoint with `x-cliq-webhook-secret` header
 - **Bot responses:** DMs POST to `https://cliq.zoho.eu/api/v2/bots/{bot_unique_name}/message` with `userids`; channel posts POST to `https://cliq.zoho.eu/api/v2/channelsbyname/{channel_unique_name}/message?bot_unique_name={bot_unique_name}` (the bot-message endpoint rejects `chatid` — see issue #26)
 - **Message limit:** Cliq has a 5000 character limit per message (need chunking)

@@ -8,7 +8,7 @@
  *
  * Profiles (canonical scope strings for README + setup):
  *  - **Runtime** — DM send, channel send, user lookup, channel lookup,
- *    message edit/streaming, reactions, media download.
+ *    message edit/streaming, native chat typing, reactions, media download.
  *  - **Setup/Maintenance** — bot read, bot update, handler provisioning.
  *
  * The matrix is the single source of truth for code, doctor, setup, and docs.
@@ -251,6 +251,26 @@ export const CLIQ_CAPABILITIES: readonly CliqCapability[] = [
     missingHint:
       "Channel directory lookup requires the ZohoCliq.Channels.READ scope. Re-consent your self-client with this scope and regenerate the token.",
   },
+  {
+    id: "chat_typing",
+    label: "Native chat typing (v3 activities)",
+    scope: "ZohoCliq.Chats.UPDATE",
+    // Operators consent this on the Self Client refresh-token string. The
+    // client_credentials grant can mint a token that reports the scope and a
+    // live POST /api/v3/chats/{chat_id}/activities {"action":"typing"} 204
+    // has been observed with that grant, but listing chats is a different
+    // capability (GET /api/v2/chats still returns oauthtoken_scope_invalid).
+    grantType: "refresh_token",
+    profile: "runtime",
+    category: "rich",
+    optional: false,
+    probePath: null,
+    probeMethod: "GET",
+    unprobeableReason:
+      "the only proof is POST /api/v3/chats/{chat_id}/activities with action typing, which is a live side effect (rate-limited at 100 req/min/user; exceeding can lock for up to 50 minutes). Doctor must not fire activities.",
+    missingHint:
+      "Native v3 chat typing requires the ZohoCliq.Chats.UPDATE scope on a user-context refresh token. Re-consent your Self Client including this scope and regenerate the refresh token (see README §3c). client_credentials can mint a token that reports the scope, but operators still consent it on the Self Client string. Previously consented tokens without this scope fail typing with oauthtoken_scope_invalid.",
+  },
   // ── Setup / Maintenance ───────────────────────────────────────────────
   {
     id: "bot_read",
@@ -339,16 +359,11 @@ export const SETUP_SCOPES: readonly string[] = [
  * superset.
  */
 export const RUNTIME_SCOPE_STRING = [
-  "ZohoCliq.Webhooks.CREATE",
-  "ZohoCliq.Channels.UPDATE",
-  "ZohoCliq.Channels.CREATE",
-  "ZohoCliq.Channels.READ",
-  "ZohoCliq.Users.READ",
-  "ZohoCliq.Messages.UPDATE",
-  "ZohoCliq.Messages.READ",
-  "ZohoCliq.Messages.DELETE",
-  "ZohoCliq.messageactions.CREATE",
-  "ZohoCliq.Attachments.READ",
+  ...new Set(
+    CLIQ_CAPABILITIES
+      .filter((capability) => capability.profile === "runtime")
+      .map((capability) => capability.scope),
+  ),
 ].join(",");
 
 /**
