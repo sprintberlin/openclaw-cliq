@@ -162,6 +162,45 @@ describe("cliq plugin", () => {
     expect(account.blockStreaming).toBe(true);
   });
 
+  it("resolves the OpenClaw config-set shape (issue #184)", () => {
+    // `openclaw config set channels.cliq.streaming.preview on` writes a nested
+    // `channels.cliq.streaming` object, not a flattened `streaming.preview` key.
+    const cfg = {
+      channels: {
+        cliq: {
+          clientId: "id",
+          clientSecret: "secret",
+          botId: "bot",
+          streaming: { preview: "on", minEditIntervalMs: 1000 },
+        },
+      },
+    } as unknown as OpenClawConfig;
+    const account = cliqPlugin.config.resolveAccount(cfg, undefined);
+    expect(account.blockStreaming).toBe(true);
+    expect(account.streamingMinEditIntervalMs).toBe(1000);
+  });
+
+  it("inherits top-level streaming.preview=on into a nested account", () => {
+    const cfg = {
+      channels: {
+        cliq: {
+          clientId: "id",
+          clientSecret: "secret",
+          botId: "bot",
+          streaming: { preview: "on" },
+          accounts: {
+            franzi: {
+              clientId: "id-f",
+              clientSecret: "secret-f",
+              botId: "bot-f",
+            },
+          },
+        },
+      },
+    } as unknown as OpenClawConfig;
+    expect(cliqPlugin.config.resolveAccount(cfg, "franzi").blockStreaming).toBe(true);
+  });
+
   it("defaults blockStreaming=true when streaming.preview is unset", () => {
     const cfg = cfgWith({
       clientId: "id",
