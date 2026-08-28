@@ -78,8 +78,13 @@ openclaw cliq webhook-preflight https://<public-host>/cliq/webhook --no-write
 Nothing is recorded when the run cannot speak for this install: `--secret`
 overrides the configured secret (so the run proves nothing about the secret
 Zoho actually uses), and an inconclusive run — an upstream `429` before the
-plugin's own check, or no resolvable secret — leaves the previous state alone
-rather than destroying a genuine verification.
+plugin's own check, no resolvable secret, or an exhausted transient startup
+condition — leaves both timestamps alone rather than destroying genuine prior
+evidence. The method/reachability boundary retries `502`, `503`, `504`,
+connection-refused/reset, and timeout outcomes three times with 250 ms then
+500 ms backoff. Human and JSON output include the bounded attempt count and
+elapsed retry delay, never a response body or secret; if readiness stays
+inconclusive, the command exits non-zero without recording a failure.
 
 Setup status reports three distinct states rather than a blanket "NOT
 verified": `verified <timestamp>`, `last check FAILED <timestamp>`, and `never
@@ -384,7 +389,8 @@ keep the traffic path entirely under your control.
 | HTML page instead of the route | Login page, captcha, or bot-challenge in front of the route |
 | OpenClaw web UI instead of the route | The request reached the gateway, but the plugin route is not registered — install/enable the plugin and configure `channels.cliq` |
 | `404` | Proxy does not forward `/cliq/webhook`, or the channel is not configured (the plugin registers the route only when `channels.cliq` exists) |
-| `503` | `webhookSecret` is not set — the plugin fails closed |
+| `502` / `503` / `504` on the reachability `GET`, or connection refused/reset/timeout | Gateway, proxy, or tunnel may still be starting. The preflight retries three bounded attempts, then reports inconclusive and preserves existing verification timestamps. A later `405` continues through authentication normally |
+| `503` after the route returned `405` | `webhookSecret` is not set — the plugin fails closed |
 | `401` | Header missing or the secret does not match |
 | `403` | Probable edge/WAF/bot-rule block before the request reached the plugin. Allow `openclaw-cliq-preflight/<package-version> (+https://github.com/sprintberlin/openclaw-cliq)` (or `openclaw-cliq-preflight/*`) or the Zoho source; do **not** reconfigure a working reverse proxy based on this result alone |
 | `429` | An upstream rate limiter answered before the plugin — the preflight reports the secret stage as inconclusive rather than passing it |

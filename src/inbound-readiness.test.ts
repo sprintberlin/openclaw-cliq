@@ -35,6 +35,25 @@ describe("resolveCliqInboundReadiness (issue #96)", () => {
     expect(result.reason).toMatch(/preflight/i);
   });
 
+  it("marks a warn-only preflight as inconclusive", () => {
+    const result = resolve({
+      preflight: {
+        ...FAILING,
+        stages: [
+          {
+            id: "method",
+            label: "Route",
+            status: "warn",
+            detail: "gateway returned 502 after bounded readiness retries",
+          },
+        ],
+      },
+    });
+    expect(result.ready).toBe(false);
+    expect(result.inconclusive).toBe(true);
+    expect(result.reason).toMatch(/inconclusive|502/i);
+  });
+
   it("refuses to mark inbound ready when the channel is not configured", () => {
     const result = resolve({ configured: false });
     expect(result.ready).toBe(false);

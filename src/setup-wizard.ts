@@ -557,6 +557,7 @@ export function applyCliqInboundVerification(
   readiness: CliqInboundReadiness,
   now: Date = new Date(),
 ): OpenClawConfig {
+  if (readiness.inconclusive) return cfg;
   const at = now.toISOString();
   return patchCliqSection(cfg, {
     inboundVerifiedAt: readiness.ready ? at : undefined,

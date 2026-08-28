@@ -113,6 +113,12 @@ const PROXY_ERROR_CODES = new Set([
   "ENETUNREACH",
   "EPIPE",
 ]);
+const TRANSIENT_READINESS_STATUSES = new Set([502, 503, 504]);
+const DEFAULT_READINESS_RETRY = {
+  maxAttempts: 3,
+  baseDelayMs: 250,
+  maxDelayMs: 500,
+} as const;
 
 export type CliqPreflightErrorKind = "dns" | "tls" | "proxy" | "network";
 
@@ -121,6 +127,13 @@ function readErrorCode(err: unknown, depth = 0): string | null {
   const code = (err as { code?: unknown }).code;
   if (typeof code === "string") return code;
   return readErrorCode((err as { cause?: unknown }).cause, depth + 1);
+}
+
+function isPreflightTimeoutError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const name = (err as { name?: unknown }).name;
+  if (name === "AbortError" || name === "TimeoutError") return true;
+  return /timed?\s*out/i.test(String((err as { message?: unknown }).message ?? ""));
 }
 
 /**
@@ -136,6 +149,7 @@ export function classifyPreflightNetworkError(err: unknown): CliqPreflightErrorK
     if (PROXY_ERROR_CODES.has(code)) return "proxy";
     if (code.startsWith("ERR_TLS") || code.includes("CERT")) return "tls";
   }
+  if (isPreflightTimeoutError(err)) return "proxy";
   return "network";
 }
 
@@ -248,6 +262,13 @@ function skipRemaining(recorder: StageRecorder, reason: string): void {
   }
 }
 
+export interface CliqPreflightRetryOptions {
+  maxAttempts?: number;
+  baseDelayMs?: number;
+  maxDelayMs?: number;
+  sleep?: (milliseconds: number) => Promise<void>;
+}
+
 export interface RunCliqWebhookPreflightOptions {
   /** Full public webhook URL, e.g. `https://host.example.com/cliq/webhook`. */
   url: string;
@@ -257,6 +278,7 @@ export interface RunCliqWebhookPreflightOptions {
   fetchImpl?: CliqPreflightFetch;
   /** Per-request timeout in milliseconds. */
   timeoutMs?: number;
+  retry?: CliqPreflightRetryOptions;
   /** User-Agent sent to the public endpoint. */
   userAgent?: string;
   /**
@@ -339,31 +361,71 @@ export async function runCliqWebhookPreflight(
   );
 
   // ---- Stage 2 + 3: reachability and method -------------------------------
-  let getRes: CliqPreflightResponse;
-  try {
-    getRes = await fetchImpl(options.url, {
-      method: "GET",
-      headers: { "user-agent": userAgent },
-      redirect: "manual",
-    });
-  } catch (err) {
-    const kind = classifyPreflightNetworkError(err);
-    const detail =
-      kind === "dns"
-        ? `DNS did not resolve ${urlCheck.hostname} — the public hostname has no record yet`
-        : kind === "tls"
-          ? `TLS failed for ${urlCheck.hostname} — certificate hostname, validity, or chain is wrong`
-          : kind === "proxy"
-            ? `could not connect to ${urlCheck.hostname} — the reverse proxy or tunnel is not accepting connections`
-            : `network failure contacting ${urlCheck.hostname}: ${String(err)}`;
-    recorder.record("reachability", STAGE_LABELS.reachability, "fail", detail);
-    return fail(detail);
+  const retry = {
+    maxAttempts: Math.max(1, Math.floor(options.retry?.maxAttempts ?? DEFAULT_READINESS_RETRY.maxAttempts)),
+    baseDelayMs: Math.max(0, Math.floor(options.retry?.baseDelayMs ?? DEFAULT_READINESS_RETRY.baseDelayMs)),
+    maxDelayMs: Math.max(0, Math.floor(options.retry?.maxDelayMs ?? DEFAULT_READINESS_RETRY.maxDelayMs)),
+    sleep: options.retry?.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds))),
+  };
+  let getRes: CliqPreflightResponse | undefined;
+  let lastTransientError: unknown;
+  let attempts = 0;
+  let elapsedDelayMs = 0;
+  for (let attempt = 1; attempt <= retry.maxAttempts; attempt += 1) {
+    attempts = attempt;
+    try {
+      const response = await fetchImpl(options.url, {
+        method: "GET",
+        headers: { "user-agent": userAgent },
+        redirect: "manual",
+      });
+      if (!TRANSIENT_READINESS_STATUSES.has(response.status)) {
+        getRes = response;
+        break;
+      }
+      getRes = response;
+      lastTransientError = undefined;
+    } catch (err) {
+      if (classifyPreflightNetworkError(err) !== "proxy") {
+        const kind = classifyPreflightNetworkError(err);
+        const detail =
+          kind === "dns"
+            ? `DNS did not resolve ${urlCheck.hostname} — the public hostname has no record yet`
+            : kind === "tls"
+              ? `TLS failed for ${urlCheck.hostname} — certificate hostname, validity, or chain is wrong`
+              : `network failure contacting ${urlCheck.hostname}: ${String(err)}`;
+        recorder.record("reachability", STAGE_LABELS.reachability, "fail", detail);
+        return fail(detail);
+      }
+      getRes = undefined;
+      lastTransientError = err;
+    }
+    if (attempt < retry.maxAttempts) {
+      const delayMs = Math.min(retry.maxDelayMs, retry.baseDelayMs * 2 ** (attempt - 1));
+      elapsedDelayMs += delayMs;
+      await retry.sleep(delayMs);
+    }
+  }
+  const retryEvidence =
+    attempts > 1 ? ` after ${attempts} attempts and ${elapsedDelayMs} ms retry delay` : "";
+  if (!getRes || TRANSIENT_READINESS_STATUSES.has(getRes.status)) {
+    const detail = getRes
+      ? `inconclusive: the gateway or reverse proxy answered transient HTTP ${getRes.status}${retryEvidence}; retry once startup is complete`
+      : `inconclusive: could not connect to ${urlCheck.hostname}${retryEvidence}; the gateway, reverse proxy, or tunnel may still be starting (${classifyPreflightNetworkError(lastTransientError)})`;
+    recorder.record(
+      getRes ? "method" : "reachability",
+      getRes ? STAGE_LABELS.method : STAGE_LABELS.reachability,
+      "warn",
+      detail,
+    );
+    skipRemaining(recorder, "not reached: the readiness probe was inconclusive");
+    return { ok: false, url: options.url, nonce, dispatched: false, stages: recorder.stages };
   }
   recorder.record(
     "reachability",
     STAGE_LABELS.reachability,
     "pass",
-    `DNS, TLS, and transport to ${urlCheck.hostname} are healthy`,
+    `DNS, TLS, and transport to ${urlCheck.hostname} are healthy${retryEvidence}`,
   );
 
   const getBody = await getRes.text();

@@ -21,6 +21,15 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **Transient gateway startup failures no longer erase valid inbound
+  verification (issue #171).** The public webhook preflight now retries bounded
+  `502`, `503`, `504`, connection-refused/reset, and timeout outcomes at the
+  method/reachability boundary. A route that becomes ready continues through
+  secret enforcement normally; exhausted transient conditions are reported as
+  inconclusive with attempt and retry-delay evidence, return a nonzero exit,
+  and preserve both `inboundVerifiedAt` and `inboundVerificationFailedAt`.
+  Stable route, edge/WAF, and secret-enforcement failures remain definitive.
+
 - **`$NAME` / `${NAME}` env shorthands are resolved instead of used as
   literal credentials (issue #170).** The security audit already classified
   those strings as SecretRefs, but runtime resolution and the staged doctor

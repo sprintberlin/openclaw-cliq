@@ -184,7 +184,12 @@ describe("cliq webhook-preflight persists the verification (issue #106)", () => 
           dispatched: false,
           stages: [
             { id: "url", label: "URL", status: "pass", detail: "ok" },
-            { id: "secret", label: "Secret", status: "warn", detail: "429 rate limited" },
+            {
+              id: "method",
+              label: "Route",
+              status: "warn",
+              detail: "inconclusive: gateway returned 502 after 3 attempts and 750 ms retry delay",
+            },
             { id: "probe", label: "Probe", status: "skipped", detail: "not reached" },
           ],
         }),

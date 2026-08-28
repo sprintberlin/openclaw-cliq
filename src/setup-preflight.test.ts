@@ -172,6 +172,23 @@ describe("applyCliqInboundVerification (issue #96)", () => {
     expect(typeof section.inboundVerificationFailedAt).toBe("string");
   });
 
+  it("preserves both verification timestamps when a later run is inconclusive", () => {
+    const cfg = cfgWith({
+      botId: "b",
+      inboundVerifiedAt: "2026-08-27T08:00:00.000Z",
+      inboundVerificationFailedAt: "2026-08-26T08:00:00.000Z",
+    });
+    const next = applyCliqInboundVerification(cfg, {
+      ready: false,
+      inconclusive: true,
+      reason: "gateway returned 502 after bounded readiness retries",
+    });
+    const section = (next as never as { channels: { cliq: Record<string, unknown> } }).channels.cliq;
+    expect(next).toBe(cfg);
+    expect(section.inboundVerifiedAt).toBe("2026-08-27T08:00:00.000Z");
+    expect(section.inboundVerificationFailedAt).toBe("2026-08-26T08:00:00.000Z");
+  });
+
   it("clears a recorded failure once a later run verifies successfully", () => {
     const failed = applyCliqInboundVerification(cfgWith({ botId: "b" }), {
       ready: false,
@@ -220,6 +237,28 @@ describe("verifyCliqInboundDuringSetup (issue #96)", () => {
     });
     expect(result.ready).toBe(false);
     expect(result.reason).toContain("404 from the proxy");
+  });
+
+  it("returns an inconclusive setup result for a warn-only transient preflight", async () => {
+    const result = await verifyCliqInboundDuringSetup({
+      cfg: cfgWith({ clientId: "c", clientSecret: "s", botId: "b", webhookSecret: "w" }),
+      url: "https://host.example.com/cliq/webhook",
+      prompter: prompter(),
+      runPreflight: async () => ({
+        ...FAIL,
+        stages: [
+          {
+            id: "method",
+            label: "Route",
+            status: "warn",
+            detail: "gateway returned 502 after bounded readiness retries",
+          },
+        ],
+      }) as never,
+    });
+    expect(result.ready).toBe(false);
+    expect(result.inconclusive).toBe(true);
+    expect(result.reason).toMatch(/inconclusive|502/i);
   });
 
   it("REFUSES to report inbound ready when no public URL was provided", async () => {
