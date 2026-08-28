@@ -450,7 +450,7 @@ The three sensitive fields accept **three interchangeable representations**, at 
 
 A SecretRef requires all three of `source`, `provider`, and `id`; `source` is one of `env`, `file`, or `exec`. `provider` must match `^[a-z][a-z0-9_-]{0,63}$` and, for `env`, `id` must match `^[A-Z][A-Z0-9_]{0,127}$`. Anything else is rejected by config validation rather than silently accepted.
 
-At runtime the plugin resolves **plaintext and `env`-backed refs** synchronously, matching the bundled Telegram channel. `file` and `exec` refs are reported by `openclaw cliq doctor` as configured-but-unresolved rather than being silently treated as absent.
+At runtime the plugin resolves **plaintext, `$NAME` / `${NAME}` env shorthands, and `env`-backed refs** synchronously, matching the bundled Telegram channel. Shorthand strings follow the same `secrets.defaults.env` and provider-allowlist rules as structured SecretRefs; a missing or empty environment value is reported as unresolved rather than using the placeholder text as the credential. `file` and `exec` refs are reported by `openclaw cliq doctor` as configured-but-unresolved rather than being silently treated as absent.
 
 To migrate literal secrets out of `openclaw.json`:
 

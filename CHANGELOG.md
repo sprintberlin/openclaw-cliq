@@ -21,6 +21,15 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **`$NAME` / `${NAME}` env shorthands are resolved instead of used as
+  literal credentials (issue #170).** The security audit already classified
+  those strings as SecretRefs, but runtime resolution and the staged doctor
+  treated them as available plaintext, so OAuth, webhook, and refresh secrets
+  could become the placeholder text itself. All three secret-bearing fields
+  now coerce the shorthand first, honor `secrets.defaults.env` and provider
+  allowlists, report a missing or empty environment value as unresolved, and
+  never print the resolved value.
+
 - **Multi-user Cliq bots no longer enter service with a shared DM session
   silently (issue #104).** `channels.cliq.dmPolicy` / `allowFrom` control who
   may contact the bot, but only global `session.dmScope` isolates those users'

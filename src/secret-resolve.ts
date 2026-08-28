@@ -1,5 +1,6 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import {
+  coerceSecretRef,
   resolveSecretInputString,
   normalizeSecretInputString,
 } from "openclaw/plugin-sdk/secret-input-runtime";
@@ -30,6 +31,13 @@ function readSecretsConfig(cfg: OpenClawConfig): {
       defaults?: { env?: string; file?: string; exec?: string };
     };
   }).secrets;
+}
+
+function canonicalizeSecretInput(
+  value: unknown,
+  defaults: { env?: string; file?: string; exec?: string } | undefined,
+): unknown {
+  return coerceSecretRef(value, defaults) ?? value;
 }
 
 /**
@@ -107,7 +115,7 @@ export function resolveCliqSecretString(params: {
 }): string {
   const secrets = readSecretsConfig(params.cfg);
   const resolved = resolveSecretInputString({
-    value: params.value,
+    value: canonicalizeSecretInput(params.value, secrets?.defaults),
     path: params.path,
     defaults: secrets?.defaults,
     mode: "inspect",
@@ -188,7 +196,7 @@ export function inspectCliqSecretFields(params: {
     let resolved: ReturnType<typeof resolveSecretInputString>;
     try {
       resolved = resolveSecretInputString({
-        value,
+        value: canonicalizeSecretInput(value, secrets?.defaults),
         path,
         defaults: secrets?.defaults,
         mode: "inspect",
@@ -206,14 +214,10 @@ export function inspectCliqSecretFields(params: {
       continue;
     }
     if (resolved.status === "available") {
-      // A literal value in config; `$VAR` interpolation is already expanded
-      // by the SDK and must not be reported as plaintext.
-      const isInterpolated =
-        typeof value === "string" && /^\$\{?[A-Za-z_]/.test(value.trim());
       findings.push({
         field,
-        status: isInterpolated ? "resolved" : "plaintext",
-        ...(isInterpolated ? {} : { detail: `${path} holds a literal secret value` }),
+        status: "plaintext",
+        detail: `${path} holds a literal secret value`,
       });
       continue;
     }
