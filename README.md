@@ -142,7 +142,7 @@ The plugin registers a single HTTP route at **`POST /cliq/webhook`** on your Ope
 The plugin uses **two** OAuth grant types, because the **`client_credentials`** grant CANNOT obtain a usable token for the `ZohoCliq.Channels.UPDATE` or `ZohoCliq.Messages.UPDATE` scopes — Zoho issues a token whose response *reports* the scope, but the API rejects it on use with `{"code":"oauthtoken_scope_invalid"}`. So:
 
 - **Bot DMs** (`/bots/{botId}/message`, scope `ZohoCliq.Webhooks.CREATE`) → `client_credentials` (the plugin fetches a fresh access token automatically when the cached one expires; no refresh token, no user interaction).
-- **Channel posts** (`/channelsbyname/{unique_name}/message`, scope `ZohoCliq.Channels.UPDATE`) and **message edits** (`/chats/{chatId}/messages/{messageId}`, scope `ZohoCliq.Messages.UPDATE`) → a **user-context refresh token** obtained once via the self-client `authorization_code` flow. The plugin mints short-lived access tokens from it via `grant_type=refresh_token` and caches them until they expire (~1h). Without a refresh token, channel replies and live-edit streaming previews will fail with `oauthtoken_scope_invalid` — DM-only setups keep working.
+- **Channel posts** (`/channelsbyname/{unique_name}/message`, scope `ZohoCliq.Channels.UPDATE`) and **message edits** (`/chats/{chatId}/messages/{messageId}`, scope `ZohoCliq.Messages.UPDATE`) → a **user-context refresh token** obtained once via the self-client `authorization_code` flow. Native v3 typing (`/api/v3/chats/{chat_id}/activities`, scope `ZohoCliq.Chats.UPDATE`) is consented on the same Self Client refresh-token string. The plugin mints short-lived access tokens from the refresh token via `grant_type=refresh_token` and caches them until they expire (~1h). Without a refresh token, channel replies and live-edit streaming previews will fail with `oauthtoken_scope_invalid` — DM-only setups keep working. `client_credentials` can mint a token that reports `Chats.UPDATE`, and a live typing call has returned 204 with that grant, but operators must still add it to the Self Client string and regenerate the user-context refresh token used by the runtime profile.
 
 #### 3a. Create the OAuth client
 
@@ -162,7 +162,7 @@ The plugin uses **two** OAuth grant types, because the **`client_credentials`** 
 
 #### 3b. Consent the scopes
 
-When registering / re-consenting the self-client, request **all ten** scopes so both the `client_credentials` (DM) and refresh-token (channel/edit/delete/card/media) paths work:
+When registering / re-consenting the self-client, request **all eleven** scopes so both the `client_credentials` (DM) and refresh-token (channel/edit/delete/card/media/typing) paths work:
 
 Each scope's grant is shown in parentheses — *client_credentials* is fetched automatically; *refresh token* requires the one-time [§3c](#3c-obtain-the-user-context-refresh-token-required-for-channel-posts--edits) token.
 
@@ -172,6 +172,7 @@ Each scope's grant is shown in parentheses — *client_credentials* is fetched a
 - **`ZohoCliq.Channels.READ`** *(client_credentials)* — Read channel / chat metadata.
 - **`ZohoCliq.Users.READ`** *(client_credentials)* — Resolve sender user info.
 - **`ZohoCliq.Messages.UPDATE`** *(refresh token)* — Edit a sent message in place (live-edit streaming previews).
+- **`ZohoCliq.Chats.UPDATE`** *(refresh token)* — Native v3 typing via `POST /api/v3/chats/{chat_id}/activities` with body `{"action":"typing"}` (success is empty HTTP 204). A user id is not a chat id. This scope does not unlock `GET /api/v2/chats`.
 - **`ZohoCliq.Messages.READ`** *(refresh token)* — Read recent chat messages to resolve an inbound file attachment's file id (a Cliq bot Message handler delivers `attachments` as bare file-name strings — the plugin fetches the file message via `GET /api/v2/chats/{chatId}/messages` to recover the downloadable id). Skip it for a text-only bot and inbound images degrade to name-only (no bytes reach the agent); the quote/reply parent-text fetch also uses this scope.
 - **`ZohoCliq.Messages.DELETE`** *(refresh token)* — Delete a sent message via the v3 bulk-delete endpoint (only when the `delete` family resolves to v3 — the v2 single-message delete reuses `Messages.UPDATE`; opt-in, see [§4](#4-openclaw-configuration)).
 - **`ZohoCliq.messageactions.CREATE`** *(refresh token)* — Add / remove message reactions (the `message(action=react)` tool).
@@ -186,7 +187,7 @@ Each scope's grant is shown in parentheses — *client_credentials* is fetched a
 > path but cannot analyze its contents. The turn degrades gracefully (no orphaned
 > placeholder) — but the image content is not described to the agent.
 
-> If you previously consented with only the original three scopes, you must re-consent (generate a fresh self-client token) with `ZohoCliq.Channels.UPDATE` and `ZohoCliq.Messages.UPDATE` added — channel replies will be rejected with `invalid_scope` / 401 until you do. `ZohoCliq.Messages.DELETE` and `ZohoCliq.Channels.CREATE` are only needed when you opt the corresponding family into v3 (`delete` / `channelCard` — see [§4](#4-openclaw-configuration)); the v2 paths reuse `Messages.UPDATE` / `Channels.UPDATE` respectively, so if you keep those families on the `"v2"` default you can skip them. The v3 bot-DM endpoint (the `dmPost` default) uses the *same* `ZohoCliq.Webhooks.CREATE` scope as v2 DMs (`client_credentials`, no extra scope) — though some orgs may additionally require `ZohoCliq.BotMessages.CREATE`; if yours does, fall back with `apiVersion: { dmPost: "v2" }`. Reactions (`ZohoCliq.messageactions.CREATE`) are optional — skip the scope if you don't need the `react` action, and the plugin will simply not advertise reaction support. `ZohoCliq.Messages.READ` is only needed for **inbound image / file attachments** (resolving a bot-handler file name to a downloadable id) and the quote/reply parent-text fetch — skip it for a text-only bot and those features degrade gracefully. Likewise `ZohoCliq.Attachments.READ` is only needed for **inbound media** (downloading the resolved images / files / voice a user sends) — skip it for a text-only bot and the plugin degrades to "no media" for those messages.
+> If you previously consented with only the original three scopes, you must re-consent (generate a fresh self-client token) with `ZohoCliq.Channels.UPDATE` and `ZohoCliq.Messages.UPDATE` added — channel replies will be rejected with `invalid_scope` / 401 until you do. Tokens minted before `ZohoCliq.Chats.UPDATE` was required fail native v3 typing with `oauthtoken_scope_invalid` until you re-consent the Self Client including that scope and regenerate the refresh token. `ZohoCliq.Messages.DELETE` and `ZohoCliq.Channels.CREATE` are only needed when you opt the corresponding family into v3 (`delete` / `channelCard` — see [§4](#4-openclaw-configuration)); the v2 paths reuse `Messages.UPDATE` / `Channels.UPDATE` respectively, so if you keep those families on the `"v2"` default you can skip them. The v3 bot-DM endpoint (the `dmPost` default) uses the *same* `ZohoCliq.Webhooks.CREATE` scope as v2 DMs (`client_credentials`, no extra scope) — though some orgs may additionally require `ZohoCliq.BotMessages.CREATE`; if yours does, fall back with `apiVersion: { dmPost: "v2" }`. Reactions (`ZohoCliq.messageactions.CREATE`) are optional — skip the scope if you don't need the `react` action, and the plugin will simply not advertise reaction support. `ZohoCliq.Messages.READ` is only needed for **inbound image / file attachments** (resolving a bot-handler file name to a downloadable id) and the quote/reply parent-text fetch — skip it for a text-only bot and those features degrade gracefully. Likewise `ZohoCliq.Attachments.READ` is only needed for **inbound media** (downloading the resolved images / files / voice a user sends) — skip it for a text-only bot and the plugin degrades to "no media" for those messages.
 
 #### Capability profiles
 
@@ -199,7 +200,7 @@ features. Copy this comma-separated string into the Zoho API Console's Generate 
 scope field:
 
 ```
-ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Channels.CREATE,ZohoCliq.Channels.READ,ZohoCliq.Users.READ,ZohoCliq.Messages.UPDATE,ZohoCliq.Messages.READ,ZohoCliq.Messages.DELETE,ZohoCliq.messageactions.CREATE,ZohoCliq.Attachments.READ
+ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Messages.UPDATE,ZohoCliq.messageactions.CREATE,ZohoCliq.Attachments.READ,ZohoCliq.Messages.READ,ZohoCliq.Messages.DELETE,ZohoCliq.Channels.CREATE,ZohoCliq.Users.READ,ZohoCliq.Channels.READ,ZohoCliq.Chats.UPDATE
 ```
 
 | Capability | Scope | Grant | Required |
@@ -207,6 +208,7 @@ ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Channels.CREATE,ZohoC
 | DM send | `ZohoCliq.Webhooks.CREATE` | client_credentials | yes |
 | Channel send | `ZohoCliq.Channels.UPDATE` | refresh_token | yes |
 | Message edit / streaming | `ZohoCliq.Messages.UPDATE` | refresh_token | yes |
+| Native chat typing (v3 activities) | `ZohoCliq.Chats.UPDATE` | refresh_token | yes |
 | User lookup | `ZohoCliq.Users.READ` | client_credentials | yes |
 | Channel lookup | `ZohoCliq.Channels.READ` | client_credentials | yes |
 | Channel card (v3) | `ZohoCliq.Channels.CREATE` | refresh_token | no |
@@ -246,7 +248,7 @@ internal `b-...` bot ID requirement — are recorded in the
 **Combined profile** — runtime + setup in a single consent:
 
 ```
-ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Channels.CREATE,ZohoCliq.Channels.READ,ZohoCliq.Users.READ,ZohoCliq.Messages.UPDATE,ZohoCliq.Messages.READ,ZohoCliq.Messages.DELETE,ZohoCliq.messageactions.CREATE,ZohoCliq.Attachments.READ,ZohoCliq.Bots.READ,ZohoCliq.Bots.CREATE,ZohoCliq.Bots.UPDATE
+ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Messages.UPDATE,ZohoCliq.messageactions.CREATE,ZohoCliq.Attachments.READ,ZohoCliq.Messages.READ,ZohoCliq.Messages.DELETE,ZohoCliq.Channels.CREATE,ZohoCliq.Users.READ,ZohoCliq.Channels.READ,ZohoCliq.Chats.UPDATE,ZohoCliq.Bots.READ,ZohoCliq.Bots.CREATE,ZohoCliq.Bots.UPDATE
 ```
 
 #### 3c. Obtain the user-context refresh token (required for channel posts + edits)
@@ -308,7 +310,7 @@ exchange for a permanent **refresh token**.
 1. In the **[Zoho API Console](https://api-console.zoho.com)** ([your data center](#data-centers)) → your **Self Client** → tab **Generate Code**.
 2. **Scope** (the Self Client field is comma-separated, no spaces):
    ```
-   ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Channels.CREATE,ZohoCliq.Channels.READ,ZohoCliq.Users.READ,ZohoCliq.Messages.UPDATE,ZohoCliq.Messages.READ,ZohoCliq.Messages.DELETE,ZohoCliq.messageactions.CREATE,ZohoCliq.Attachments.READ,ZohoCliq.Bots.READ,ZohoCliq.Bots.CREATE,ZohoCliq.Bots.UPDATE
+   ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Messages.UPDATE,ZohoCliq.messageactions.CREATE,ZohoCliq.Attachments.READ,ZohoCliq.Messages.READ,ZohoCliq.Messages.DELETE,ZohoCliq.Channels.CREATE,ZohoCliq.Users.READ,ZohoCliq.Channels.READ,ZohoCliq.Chats.UPDATE,ZohoCliq.Bots.READ,ZohoCliq.Bots.CREATE,ZohoCliq.Bots.UPDATE
    ```
 3. **Time Duration:** 10 minutes. **Scope Description:** anything (e.g. `openclaw`). Pick your **portal/org** if prompted.
 4. Click **Create** and copy the code — it looks like `1000.<hex>.<hex>`.
@@ -346,11 +348,13 @@ From then on the plugin mints its own short-lived access tokens from it automati
 
 > **Troubleshooting:**
 > - `invalid_code` on exchange → the code expired (>10 min) or was already used once. Generate a fresh one.
-> - Channel replies still `oauthtoken_scope_invalid` → the `refreshToken` is missing from config, or was minted without `ZohoCliq.Channels.UPDATE`. Re-run 3c with the full scope list.
+   > - Native typing still `oauthtoken_scope_invalid` → the `refreshToken` was minted without `ZohoCliq.Chats.UPDATE`. Re-consent the Self Client with the full scope list and regenerate the refresh token.
+   > - Channel replies still `oauthtoken_scope_invalid` → the `refreshToken` is missing from config, or was minted without `ZohoCliq.Channels.UPDATE`. Re-run 3c with the full scope list.
 > - `channel_not_exists` on a real channel → the bot is not a **participant** of that channel (invite it: channel ⋯ → **Bots**), or you used the channel's *display name* instead of its **unique name** (the technical name — e.g. a channel shown as "Finance" may have the unique name `invest`).
 
 If you skip 3c entirely, the plugin still works for **bot DMs** (the `client_credentials`
-path); only channel @mention replies and live-edit message edits require the refresh token.
+path); channel @mention replies, live-edit message edits, and native v3 typing require the
+user-context refresh token.
 
 ### 4. OpenClaw Configuration
 
@@ -477,7 +481,7 @@ Every field except the required ones has a sensible default; `groups` / `thinkin
 - **`publicWebhookUrl`** *(optional)* — The public HTTPS URL Zoho posts to, e.g. `https://cliq.example.com/cliq/webhook`. Recorded by `openclaw setup` so it can verify inbound delivery, and used to identify whether `openclaw cliq webhook-preflight <url>` is checking this install (and may record its result) or an unrelated endpoint (which must stay read-only). It is also reused by the public-webhook stage of `openclaw cliq doctor`. When the field is missing, the doctor can name the URL both Zoho handlers already agree on; `openclaw cliq doctor --adopt-handler-url` stores that verified URL and `inboundVerifiedAt` after a passing preflight. It does not change routing (the gateway always serves `/cliq/webhook`); it only tells the tooling which public URL belongs to this install. See [Expose the webhook publicly](https://github.com/sprintberlin/openclaw-cliq/blob/main/docs/setup/public-webhook.md).
 - **`inboundVerifiedAt`** *(written by setup or the preflight CLI)* — ISO timestamp of the last successful public webhook verification. Written by `openclaw setup` when the preflight passes, and also by `openclaw cliq webhook-preflight <url>` when the checked URL is the configured `publicWebhookUrl` (pass `--no-write` for a read-only probe); cleared when a later check proves a permanent failure, but preserved when bounded startup/readiness retries end inconclusively. Not read at runtime.
 - **`inboundVerificationFailedAt`** *(written by setup or the preflight CLI)* — ISO timestamp of the last *proven failed* public webhook verification. Set when a check against the configured `publicWebhookUrl` proves a permanent failure and cleared by a later passing one, so status output can distinguish "never checked" from "last check failed" instead of folding both into "NOT verified". Transient/inconclusive runs preserve this and `inboundVerifiedAt`. Not read at runtime.
-- **`refreshToken`** *(recommended)* — User-context OAuth refresh token (sensitive). Obtained once via the self-client `authorization_code` flow (§3c). **Required for channel @mention replies and live-edit message edits** — without it, those paths fail with `oauthtoken_scope_invalid` (the `client_credentials` grant cannot obtain a usable token for `ZohoCliq.Channels.UPDATE` / `ZohoCliq.Messages.UPDATE`). DM-only setups can leave it unset.
+- **`refreshToken`** *(recommended)* — User-context OAuth refresh token (sensitive). Obtained once via the self-client `authorization_code` flow (§3c). **Required for channel @mention replies, live-edit message edits, and native v3 typing** — without it, those paths fail with `oauthtoken_scope_invalid` (the runtime profile uses refresh-token consent for `ZohoCliq.Channels.UPDATE`, `ZohoCliq.Messages.UPDATE`, and `ZohoCliq.Chats.UPDATE`). DM-only setups can leave it unset.
 - **`ackPolicy`** *(optional)* — When the webhook acknowledges Cliq relative to the inbound dispatch. `"after_dispatch"` (default) awaits the full dispatch before sending HTTP 200 — a crash mid-dispatch means Cliq never sees the 200 and redelivers (no lost message), and it works on every supported OpenClaw version. `"immediate"` acknowledges first (faster, but a crash after the ack can lose the message). **Deluge timeout gotcha:** Zoho's `invokeUrl` in the bot Message handler has a ~40 s hard timeout. With `"after_dispatch"`, a slow turn (image analysis, cold model) can trip Deluge's *"The task has been terminated since the API call is taking too long to respond"* even though the reply is delivered out-of-band; Deluge may then redeliver while the original turn is still running, and [#123](https://github.com/sprintberlin/openclaw-cliq/issues/123) prevents that redelivery from becoming a spurious *"Couldn't process that message"* placeholder. `"immediate"` is the escape hatch when that timeout is unavoidable: on OpenClaw `2026.7.1-2` it uses the legacy fire-and-forget path, while on `>= 2026.8.1-beta.3` this plugin wraps the continuation in the SDK's `runDetachedWebhookWork` **before** writing the 200 ([#122](https://github.com/sprintberlin/openclaw-cliq/issues/122)); without that wrapper the healthy gateway refuses the post-ack turn with `GatewayDrainingError` and the user sees *"Couldn't process that message"*. Prefer `"after_dispatch"` when turns stay below the Deluge timeout; use `"immediate"` for slower turns only when you accept the crash-after-ack loss risk. Pairs naturally with `thinking.mode: "placeholder"` (the placeholder posts immediately while the agent works).
 - **`allowFrom`** *(optional)* — Array of Zoho Cliq user ids allowed to DM the bot (only effective when `dmPolicy` is `allowlist` or `pairing`). This is an **admission** control, not session isolation; multiple allowed senders still share context unless global `session.dmScope` is `per-channel-peer` (or `per-account-channel-peer`).
 - **`dmPolicy`** *(optional)* — DM **admission** policy, not conversation isolation (see the multi-user privacy warning above). Default is `allowlist` (deny by default). `pairing` starts the OpenClaw pairing approval flow for unknown senders — by default the sender gets a reply with a pairing code and the bot owner runs `openclaw pairing approve cliq <code>` on the CLI; set `pairing.notifyOwnerTarget` (see the `pairing` row below) to instead post an Approve/Deny card to the owner so approval happens inline in Cliq. Accepted values: `open`, `allowlist`, `pairing`, `disabled` (schema-validated — unknown field names like `dmSecurity` are rejected).
