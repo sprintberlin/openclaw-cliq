@@ -21,6 +21,13 @@ describe("OpenClaw compatibility manifest", () => {
     devDependencies: Record<string, string>;
     openclaw: { build?: { openclawVersion?: string } };
   };
+  const tsconfig = readJson("tsconfig.json") as {
+    compilerOptions: {
+      noUncheckedSideEffectImports?: boolean;
+      rootDir?: string;
+      types?: string[];
+    };
+  };
 
   it("declares a build floor and at least two supported versions", () => {
     expect(typeof compat.build).toBe("string");
@@ -36,6 +43,17 @@ describe("OpenClaw compatibility manifest", () => {
     // Exact, not a range: typecheck and smoke must be reproducible.
     expect(pkg.devDependencies.openclaw).toBe(compat.build);
     expect(pkg.devDependencies.openclaw).not.toMatch(/^[\^~]/);
+  });
+
+  it("pins the TypeScript native compiler and its Node globals", () => {
+    expect(pkg.devDependencies.typescript).toMatch(/^7\.\d+\.\d+$/);
+    expect(pkg.devDependencies["@types/node"]).toMatch(/^\^22\./);
+  });
+
+  it("makes TypeScript 6/7 default changes explicit", () => {
+    expect(tsconfig.compilerOptions.noUncheckedSideEffectImports).toBe(true);
+    expect(tsconfig.compilerOptions.rootDir).toBe(".");
+    expect(tsconfig.compilerOptions.types).toEqual(["node", "vitest/globals"]);
   });
 
   it("records the same build version in the plugin build metadata", () => {
