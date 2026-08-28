@@ -1262,13 +1262,13 @@ export async function dispatchCliqInbound(params: {
       onError?.(err, { kind: "thinking-placeholder" });
     }
   }
-  // Live-edit-in-place: when block streaming is opted in for the account,
+  // Live-edit-in-place: block streaming is on by default for the account, so
   // the buffered block dispatcher delivers the agent's reply as progressive
   // blocks. Instead of sending each block as a separate message, edit a
   // single draft message in place as the reply grows (overflowing to a new
-  // message at the 5000-char cap). When block streaming is off (default),
-  // the single final reply is chunked and sent (the live-edit loop's
-  // disabled path). When `initialDraft` is set (thinking placeholder), the
+  // message at the 5000-char cap). When block streaming is opted out
+  // (`streaming.preview: "off"`), the single final reply is chunked and sent
+  // (the live-edit loop's disabled path). When `initialDraft` is set (thinking placeholder), the
   // first deliver EDITS that placeholder into the reply instead of sending
   // a new message. See `live-edit.ts` for chatId-resolution caveats.
   const deliver = createLiveEditDeliver({
@@ -1359,6 +1359,9 @@ export async function dispatchCliqInbound(params: {
           recordInboundSession: runtime.channel.session.recordInboundSession,
           dispatchReplyWithBufferedBlockDispatcher:
             runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher,
+          replyOptions: {
+            disableBlockStreaming: !account.blockStreaming,
+          },
           delivery: {
             deliver: async (
               replyPayload: { text?: string; channelData?: unknown },

@@ -57,6 +57,9 @@ function isWildcardAllowFrom(allowFrom: string[]): boolean {
  *    user can drive the agent — call this out as a security note),
  *  - `dmPolicy: "allowlist"` with an empty `allowFrom` (no DM can be admitted
  *    until the operator adds at least one sender id),
+ *  - `streaming.preview` defaulting to `"on"` without a `refreshToken`
+ *    (live-edit degrades to a single final reply; operators can set
+ *    `streaming.preview: "off"` to opt out),
  *  - an `ackPolicy: "immediate"` opt-in (lost-message risk on crash — opt-in
  *    only when the Deluge `invokeUrl` timeout is tighter than the agent
  *    round-trip).
@@ -105,9 +108,18 @@ function collectCliqPreviewWarnings(params: {
     );
   }
   const streaming = section.streaming as { preview?: unknown } | undefined;
-  if (streaming?.preview === "on" && !hasConfiguredSecretInput(section.refreshToken)) {
+  const hasCoreCredentials =
+    Boolean(section.clientId) &&
+    section.clientSecret !== undefined &&
+    hasConfiguredSecretInput(section.clientSecret) &&
+    Boolean(section.botId);
+  if (
+    hasCoreCredentials &&
+    streaming?.preview !== "off" &&
+    !hasConfiguredSecretInput(section.refreshToken)
+  ) {
     warnings.push(
-      `- channels.cliq: streaming.preview is "on" but no refreshToken is configured. Live-edit of one Cliq response needs ZohoCliq.Messages.UPDATE on a user-context refresh token; without it, preview edits fall back to a normal final response.`,
+      `- channels.cliq: streaming.preview is "on" (the default) but no refreshToken is configured. Live-edit of one Cliq response needs ZohoCliq.Messages.UPDATE on a user-context refresh token; without it, preview edits fall back to a normal final response. Set streaming.preview to "off" to keep a single final reply deliberately.`,
     );
   }
   if (section.ackPolicy === "immediate") {
@@ -268,7 +280,8 @@ function shouldSkipDefaultEmptyGroupAllowlistWarning(
  *    doctor looks for it there and only there.
  *  - `collectPreviewWarnings` — missing credentials, missing webhook secret,
  *    wildcard + open DM policy, empty allowlist under "allowlist" policy,
- *    and the `ackPolicy: "immediate"` lost-message opt-in.
+ *    streaming preview on without a refresh token, and the
+ *    `ackPolicy: "immediate"` lost-message opt-in.
  *  - `collectMutableAllowlistWarnings` — wildcard allowlist doctor will not
  *    auto-edit.
  *  - `shouldSkipDefaultEmptyGroupAllowlistWarning` — Cliq groups are gated by

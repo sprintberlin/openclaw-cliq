@@ -185,6 +185,9 @@ describe("promptCliqCredentials — fresh setup (no existing config)", () => {
       webhookSecret: "WH",
       refreshToken: "RT",
     });
+    const refreshTokenPrompt = calls.filter((call) => call.method === "text")[5];
+    expect(refreshTokenPrompt?.args.message).toMatch(/streaming preview defaults to on/i);
+    expect(refreshTokenPrompt?.args.message).toMatch(/streaming\.preview.*off/i);
     // No "keep existing" confirms, since nothing is configured.
     const confirms = calls.filter((c) => c.method === "confirm");
     expect(confirms).toHaveLength(0);

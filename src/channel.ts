@@ -324,8 +324,9 @@ export const cliqPlugin = createChatChannelPlugin<ResolvedCliqAccount, CliqStatu
       // (getChannelPlugin(id)?.streaming?.blockStreamingCoalesceDefaults).
       // Tuned for Cliq's 5000-char message limit: min 800 chars before a
       // block flushes (avoids tiny fragments), 1s idle coalesce window
-      // (balances perceived responsiveness against API chatter). Operators
-      // opt an account in via `channels.cliq.streaming.preview: "on"`.
+      // (balances perceived responsiveness against API chatter). Streaming is
+      // on by default; operators opt out via
+      // `channels.cliq.streaming.preview: "off"`.
       blockStreamingCoalesceDefaults: { minChars: 800, idleMs: 1_000 },
     },
     config: {

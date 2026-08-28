@@ -2031,6 +2031,34 @@ describe("dispatchCliqInbound — thinking placeholder (issue #47)", () => {
     return client;
   }
 
+  it.each([
+    { blockStreaming: true, disableBlockStreaming: false },
+    { blockStreaming: false, disableBlockStreaming: true },
+  ])(
+    "passes blockStreaming=$blockStreaming through to the dispatcher",
+    async ({ blockStreaming, disableBlockStreaming }) => {
+      let replyOptions: { disableBlockStreaming?: boolean } | undefined;
+      const runtime = mockRuntimeWithDeliver("reply");
+      runtime.channel.inbound.run = async (params) => {
+        const adapter = (params as unknown as {
+          adapter: { resolveTurn: (...args: unknown[]) => unknown };
+        }).adapter;
+        const turn = adapter.resolveTurn({}, {}, {}) as {
+          replyOptions?: { disableBlockStreaming?: boolean };
+        };
+        replyOptions = turn.replyOptions;
+      };
+      await dispatchCliqInbound({
+        runtime,
+        cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+        account: account({ blockStreaming }),
+        parsed: parseCliqWebhookPayload(dmPayload())!,
+        client: makeMockClient(),
+      });
+      expect(replyOptions?.disableBlockStreaming).toBe(disableBlockStreaming);
+    },
+  );
+
   it("posts a placeholder and edits it into the final reply (DM, streaming off, refreshToken set)", async () => {
     const client = makeMockClient({ placeholderChatId: "chat-u1" });
     const parsed = parseCliqWebhookPayload(dmPayload());

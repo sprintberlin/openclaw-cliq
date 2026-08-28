@@ -469,6 +469,43 @@ describe("cliq resolveCliqConfig reads thinking (issue #47)", () => {
   });
 });
 
+describe("cliq streaming manifest defaults (issue #181)", () => {
+  const channelSchema = manifest.channelConfigs.cliq.schema;
+  const topLevelSchema = manifest.configSchema;
+  const accountSchema = channelSchema.properties?.accounts?.additionalProperties as JsonSchema | undefined;
+  const topLevelAccountSchema = topLevelSchema.properties?.accounts?.additionalProperties as JsonSchema | undefined;
+
+  it("declares streaming.preview default as 'on' in every schema copy", () => {
+    expect(channelSchema.properties?.streaming?.properties?.preview?.default).toBe("on");
+    expect(topLevelSchema.properties?.streaming?.properties?.preview?.default).toBe("on");
+    expect(accountSchema?.properties?.streaming?.properties?.preview?.default).toBe("on");
+    expect(topLevelAccountSchema?.properties?.streaming?.properties?.preview?.default).toBe("on");
+  });
+
+  it("keeps streaming.minEditIntervalMs default at 1000 in every schema copy", () => {
+    expect(channelSchema.properties?.streaming?.properties?.minEditIntervalMs?.default).toBe(1000);
+    expect(topLevelSchema.properties?.streaming?.properties?.minEditIntervalMs?.default).toBe(1000);
+    expect(accountSchema?.properties?.streaming?.properties?.minEditIntervalMs?.default).toBe(1000);
+    expect(topLevelAccountSchema?.properties?.streaming?.properties?.minEditIntervalMs?.default).toBe(1000);
+  });
+
+  it("omitted streaming block resolves to blockStreaming=true through the full config-resolution path", () => {
+    const resolved = resolveCliqConfig(cfgWith({
+      clientId: "id", clientSecret: "s", botId: "b",
+    }));
+    expect(resolved.blockStreaming).toBe(true);
+    expect(resolved.streamingMinEditIntervalMs).toBe(1000);
+  });
+
+  it("preserves an explicit streaming.preview opt-out", () => {
+    const resolved = resolveCliqConfig(cfgWith({
+      clientId: "id", clientSecret: "s", botId: "b",
+      streaming: { preview: "off" },
+    }));
+    expect(resolved.blockStreaming).toBe(false);
+  });
+});
+
 describe("cliq thinking manifest defaults (issue #89)", () => {
   const channelSchema = manifest.channelConfigs.cliq.schema;
   const topLevelSchema = manifest.configSchema;
