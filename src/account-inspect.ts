@@ -220,7 +220,7 @@ export function inspectCliqAccount(params: {
   cfg: OpenClawConfig;
   accountId?: string | null;
 }): InspectedCliqAccount {
-  const accountId = (params.accountId ?? null) ?? DEFAULT_ACCOUNT_ID;
+  const accountId = params.accountId ?? DEFAULT_ACCOUNT_ID;
   const section = readSection(params.cfg, params.accountId);
   const configured = isConfiguredSection(section);
 
