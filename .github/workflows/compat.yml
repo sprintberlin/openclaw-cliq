@@ -4,7 +4,8 @@ name: OpenClaw compatibility
 #
 # The declared build floor is the exact OpenClaw version used for install,
 # typecheck, and build. The resulting artifact must then load on every version
-# in the supported matrix, including the retained 2026.7.1-2 runtime baseline.
+# in the supported matrix. The current minimum and only matrix entry is
+# 2026.8.1-beta.3.
 #
 # The strategy is therefore:
 #   - typecheck + BUILD against the floor version (`build` in

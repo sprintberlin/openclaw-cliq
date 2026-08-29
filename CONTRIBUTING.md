@@ -35,13 +35,11 @@ publishes.
 
 To load the checkout into a running gateway, link it (see
 [Install from a local checkout](README.md#install-from-a-local-checkout) in the
-README for the version-specific `--force` rule):
+README for the supported OpenClaw `2026.8.1-beta.3` minimum):
 
 ```bash
 # OpenClaw 2026.8.1-beta.3+: --force acknowledges the non-ClawHub source warning
 openclaw plugins install --link --force .
-# OpenClaw 2026.7.1-2: --force is rejected with --link
-openclaw plugins install --link .
 ```
 
 `--link` points at this working tree, so every later `git pull` needs a rebuild

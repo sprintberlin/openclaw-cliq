@@ -7,15 +7,12 @@ const readme = readFileSync(join(ROOT, "README.md"), "utf8");
 const contributing = readFileSync(join(ROOT, "CONTRIBUTING.md"), "utf8");
 
 describe("local checkout install documentation (issue #126)", () => {
-  it("documents the supported-version split instead of claiming one command works everywhere", () => {
+  it("documents the supported install command for the Beta 3 minimum runtime", () => {
     expect(readme).toContain(
       "openclaw plugins install --link --force ~/github_repos/openclaw-cliq",
     );
-    expect(readme).toContain(
-      "openclaw plugins install --link ~/github_repos/openclaw-cliq",
-    );
     expect(readme).toMatch(/2026\.8\.1-beta\.3[\s\S]*outside ClawHub review and trust metadata/i);
-    expect(readme).toMatch(/2026\.7\.1-2[\s\S]*rejected[\s\S]*--link/i);
+    expect(readme).toMatch(/Older OpenClaw runtimes are no longer supported/i);
   });
 
   it("states that --force is an explicit trust acknowledgement", () => {

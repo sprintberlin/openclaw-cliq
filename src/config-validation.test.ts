@@ -88,7 +88,7 @@ describe("validateGeneratedCliqConfig (issue #95)", () => {
 
   it("fails closed when no validator is available instead of claiming a pass", async () => {
     // Setup must never report success on the strength of a check that never
-    // ran; both supported OpenClaw versions do expose the validator.
+    // ran; the supported OpenClaw runtime exposes the validator.
     const result = await validateGeneratedCliqConfig(
       { ...BASE, clientSecret: ENV_REF, webhookSecret: "wh" },
       undefined,

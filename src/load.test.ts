@@ -901,7 +901,7 @@ describe("durable-before-ack ingest (issue #12)", () => {
     expect(runResolved).toBe(true);
   });
 
-  it("ackPolicy=immediate still acks and dispatches when the helper is absent (2026.7.1-2)", async () => {
+  it("ackPolicy=immediate still acks and dispatches when the helper is absent", async () => {
     let runStarted = false;
     let runResolved = false;
     setCliqDetachedWebhookWorkForTest(null);
