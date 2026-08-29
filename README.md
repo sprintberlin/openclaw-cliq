@@ -441,6 +441,8 @@ Add the `cliq` channel to your `openclaw.json` (or via `openclaw setup` / the se
 
 The default account is configured directly under `channels.cliq`, as shown above. Do not put it under `accounts.default`: the plugin treats the reserved id `default` as the top-level account. For multiple Cliq accounts, keep the default credentials at the top level and add only named secondary accounts under `channels.cliq.accounts.<accountId>`.
 
+> **Inbound webhook traffic is resolved against the root account only.** The gateway registers a single `POST /cliq/webhook` route and authenticates plus dispatches it with `resolveCliqConfig(cfg, null)` — there is no header, path, or payload multiplexing into `channels.cliq.accounts.<id>`. Named accounts are currently outbound/diagnostics-only (`sendText({ accountId })`, `openclaw cliq doctor --account <id>`). Running multiple conversational bots requires **separate gateway deployments** (one per bot): each bot needs its own `botId`, `webhookSecret`, public URL, and handlers. See [Running multiple agents](https://github.com/sprintberlin/openclaw-cliq/blob/main/docs/setup/running-multiple-agents.md). A second bot configured only as a named account on one gateway will fail admission (wrong secret / bot identity) or land in the default account's agent.
+
 #### Secret representation (`clientSecret`, `webhookSecret`, `refreshToken`)
 
 The three sensitive fields accept **three interchangeable representations**, at the channel root and inside `channels.cliq.accounts.<id>`. All three are accepted identically on every supported OpenClaw version (`2026.8.1-beta.3` and later) — there is no version-gated fallback:

@@ -87,6 +87,7 @@ Mostly v3-independent; **dynamic agents** in particular is high-value and can be
 - **Live provisioning acceptance run.** Confirm on a real organization that the setup dry-run
   matches the Franzi Message/Mention handlers without mutating them, and exercise create plus the
   minimal-create-then-`PATCH` fallback against an isolated test bot rather than a production one.
+- **Inbound multi-account webhook multiplexing.** Route `POST /cliq/webhook` into `channels.cliq.accounts.<id>` instead of resolving only the root account (`resolveCliqConfig(cfg, null)`). Named accounts are currently outbound/diagnostics-only; until this lands, multiple conversational bots still need one gateway deployment each (`docs/setup/running-multiple-agents.md`).
 - **Dynamic agents + workspace templates.** Give each DM sender and each channel its own
   dynamically provisioned **agent and workspace**, seeded on first contact from a configurable
   template (`AGENTS.md` and friends). This is stricter than the basic conversation isolation
