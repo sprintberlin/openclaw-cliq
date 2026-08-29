@@ -9,7 +9,7 @@ import {
 const URL_OK = "https://cliq.example.com/cliq/webhook";
 const SECRET = "config-secret";
 
-function script(secret = SECRET, url = URL_OK, extra = ""): string {
+function script(secret = SECRET, url = URL_OK, extra = 'payload.put("eventId", eventId);'): string {
   return `webhookUrl = "${url}";\nwebhookSecret = "${secret}";\npayload = Map();\n${extra}`;
 }
 
@@ -45,6 +45,12 @@ describe("buildCliqHandlerScript", () => {
     expect(body).toContain("body   : payload.toString()");
     expect(body).toContain('headers.put("Content-Type", "application/json")');
     expect(body).not.toContain("parameters");
+    expect(body).toContain('eventId = zoho.currenttime.toString("yyyyMMddHHmmss") + "-" + randomNumber(100000,999999) + randomNumber(100000,999999)');
+    expect(body).toContain('payload.put("eventId", eventId)');
+    const eventIdLine = body.indexOf('payload.put("eventId"');
+    const invokeUrl = body.indexOf("invokeUrl");
+    expect(eventIdLine).toBeGreaterThan(-1);
+    expect(invokeUrl).toBeGreaterThan(eventIdLine);
   });
 
   it("omits attachments from the mention handler, which Zoho does not provide", () => {
@@ -55,6 +61,7 @@ describe("buildCliqHandlerScript", () => {
     });
     expect(body).toContain('payload.put("handler", "mention")');
     expect(body).not.toContain("attachments");
+    expect(body).toContain('payload.put("eventId"');
   });
 
   it("never produces byte-identical message and mention scripts", () => {
@@ -80,6 +87,7 @@ describe("buildCliqHandlerScript", () => {
     expect(body).toContain('payload.put("handler", "welcome")');
     expect(body).toContain("newuser");
     expect(body).not.toContain("attachments");
+    expect(body).toContain('payload.put("eventId"');
   });
 });
 
@@ -89,6 +97,21 @@ describe("planCliqHandlerProvisioning — read-only", () => {
     expect(result.status).toBe("in_sync");
     expect(result.botId).toBe("b-464329000000074001");
     expect(result.items.map((item) => item.action)).toEqual(["none", "none"]);
+  });
+
+  it("plans a confirmed repair for a legacy handler with no eventId (issue #196)", async () => {
+    const result = await plan({
+      reader: reader({
+        readHandlerScript: vi.fn(async () => ({ script: script(SECRET, URL_OK, "") })),
+      }),
+    });
+    expect(result.status).toBe("conflict");
+    for (const item of result.items) {
+      expect(item.action).toBe("repair");
+      expect(item.conflict).toBe("stale_script");
+      expect(item.requiresConfirmation).toBe(true);
+      expect(item.reason).toContain("eventId");
+    }
   });
 
   it("plans a create for a handler Zoho does not have yet", async () => {

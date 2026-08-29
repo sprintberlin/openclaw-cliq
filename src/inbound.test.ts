@@ -692,6 +692,63 @@ describe("parseCliqWebhookPayload", () => {
       expect(parsed).not.toBeNull();
       expect(parsed!.messageId).toBe("real-id-123");
     });
+
+    it("uses a Deluge eventId as MessageSid when message.id is absent (issue #196)", () => {
+      const parsed = parseCliqWebhookPayload({
+        handler: "message",
+        message: "/new",
+        eventId: "abc123def456",
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm" },
+      } as CliqWebhookPayload);
+      expect(parsed).not.toBeNull();
+      expect(parsed!.messageId).toBe("evt:abc123def456");
+    });
+
+    it("keeps two identical commands independent when each has its own eventId (issue #196)", () => {
+      const first = parseCliqWebhookPayload({
+        handler: "message",
+        message: "/new",
+        eventId: "evt-1",
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm" },
+      } as CliqWebhookPayload);
+      const second = parseCliqWebhookPayload({
+        handler: "message",
+        message: "/new",
+        eventId: "evt-2",
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm" },
+      } as CliqWebhookPayload);
+      expect(first!.messageId).toBe("evt:evt-1");
+      expect(second!.messageId).toBe("evt:evt-2");
+      expect(first!.messageId).not.toBe(second!.messageId);
+    });
+
+    it("replays the same eventId as the same MessageSid (issue #196)", () => {
+      const payload = {
+        handler: "message",
+        message: "/new",
+        eventId: "same-delivery",
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm" },
+      } as CliqWebhookPayload;
+      const a = parseCliqWebhookPayload(payload);
+      const b = parseCliqWebhookPayload(payload);
+      expect(a!.messageId).toBe("evt:same-delivery");
+      expect(b!.messageId).toBe(a!.messageId);
+    });
+
+    it("prefers a real message.id over a Deluge eventId (issue #196)", () => {
+      const parsed = parseCliqWebhookPayload({
+        handler: "message",
+        message: { text: "/new", id: "real-id-123" },
+        eventId: "evt-ignored",
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm" },
+      } as CliqWebhookPayload);
+      expect(parsed!.messageId).toBe("real-id-123");
+    });
   });
 
   it("parses replyTo from message.reply_to (string id)", () => {

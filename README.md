@@ -54,7 +54,7 @@ DM the bot → it answers. To also reply to channel **@mentions** and stream liv
 - **🔐 OAuth 2.0** — `client_credentials` for DMs; a user-context **refresh token** for channel posts / message edits. Works on any Zoho [data center](#data-centers).
 - **🛡️ DM security** — `allowlist` / `pairing` / `open` / `disabled` policies with an approval flow.
 - **🧩 Per-channel policy** — Group admission + per-channel `requireMention`, tool policy, and per-sender tool overrides.
-- **🔁 Reliability** — Durable-before-ack ingest, de-dup on redelivery, bot-loop / self-message protection, outbound retry with error classification (parses the v3 `{"message":"…"}` error envelope). Real Cliq message ids retain 30-minute replay protection; content-derived ids used when the Message Handler supplies no `message.id` expire after 60 seconds, so retry redeliveries are suppressed without swallowing a deliberate repeated command such as `/status`.
+- **🔁 Reliability** — Durable-before-ack ingest, de-dup on redelivery, bot-loop / self-message protection, outbound retry with error classification (parses the v3 `{"message":"…"}` error envelope). The generated Deluge handler mints a per-execution `eventId`, so a real Cliq `message.id` or that `eventId` retains 30-minute replay protection while two deliberate identical commands (`/new` twice) stay independent turns. Legacy handler scripts that forward no `eventId` fall back to a content-derived id that expires after 60 seconds.
 - **🔒 Hardened webhook** — Constant-time secret compare, single-header auth, failed-auth rate limiting.
 - **🩺 Operations** — `openclaw status` / `channels` health probe, `openclaw directory` lookup, staged `openclaw cliq doctor`, plugin doctor, interactive setup wizard, SecretRef credentials, security audit, session binding, multi-account, lifecycle hooks. Status reports the integration as a webhook/event-driven channel (`mode: webhook`, path `/cliq/webhook`); a configured account stays `running` for as long as the gateway is up, and `lastInboundAt` / `lastOutboundAt` fill in after real traffic. `openclaw security audit` includes Cliq-specific findings in its default sweep; `--deep` is only needed for live gateway probes.
 
@@ -580,6 +580,13 @@ payload.put("handler", "message");   // <-- use "mention" in the Mention Handler
 payload.put("message", message);
 payload.put("user", user);
 payload.put("chat", chat);
+// Per-execution event id (issue #196). Cliq's bot Message Handler exposes no
+// native message/event id, so the handler mints one itself. It is created once
+// per handler execution and reused if the same POST body is retried, so an
+// exact webhook replay is still deduped while two deliberate identical
+// commands (e.g. `/new` twice) stay independent turns.
+eventId = zoho.currenttime.toString("yyyyMMddHHmmss") + "-" + randomNumber(100000,999999) + randomNumber(100000,999999);
+payload.put("eventId", eventId);
 // Message Handler only — the Mention Handler does not receive `attachments`,
 // so this block must be removed there (see the note below the script).
 if (attachments != null) {
@@ -619,9 +626,16 @@ return response;
 > (`execution_handler_update_failed` — see the
 > [verified provisioning API contract](https://github.com/sprintberlin/openclaw-cliq/blob/main/docs/setup/provisioning-api-contract.md)).
 > In live Cliq Message Handlers, `message` may be a bare string with no
-> `message.id` or `message.time`. The plugin handles that shape without changing
-> this script: content-derived dedupe identities expire after 60 seconds, so a
-> short redelivery is suppressed but a later identical command is processed.
+> `message.id` or `message.time`. The `eventId` line above is what gives the
+> plugin a retry-stable identity for that shape. Message identity resolves in
+> this order: Cliq's native `message.id` when present, then the forwarded
+> `eventId` (surfaced as `MessageSid` and given full 30-minute replay
+> protection), then — only for older handler scripts that forward no `eventId` —
+> a content-derived `syn:` hash whose dedupe identity expires after 60 seconds.
+> **Re-run `openclaw setup` after upgrading** so its read-only handler plan detects
+> missing `eventId` as a stale script and offers a confirmation-gated repair.
+> Alternatively, re-paste both handler scripts manually to pick up the
+> `eventId` line.
 
 > **⚠️ Security: the handler script exposes the webhook secret.** The secret is
 > a literal in the Deluge script, so it is readable by **anyone who can edit the

@@ -223,7 +223,7 @@ export function registerCliqPluginForTest(
  * `/cliq/webhook` handler.
  */
 export function createTestRuntimeChannel(
-  inboundRun: () => Promise<unknown>,
+  inboundRun: (...args: unknown[]) => Promise<unknown>,
 ): Record<string, unknown> {
   return {
     channel: {
