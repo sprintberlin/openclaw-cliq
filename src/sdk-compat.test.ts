@@ -146,7 +146,7 @@ describe("resolveRunDetachedWebhookWork (issue #122)", () => {
     expect(factory).toHaveBeenCalledOnce();
   });
 
-  it("returns null when the symbol is absent (2026.7.1-2)", async () => {
+  it("returns null when the symbol is absent", async () => {
     vi.doMock(WEBHOOK_GUARDS_MODULE, () => ({ someOtherGuard: vi.fn() }));
 
     const { resolveRunDetachedWebhookWork } = await loadResolver();

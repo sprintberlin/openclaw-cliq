@@ -16,8 +16,8 @@ import { CLIQ_SECRET_FIELDS } from "./secret-contract.js";
  *
  * The accepted shape is not invented here; it mirrors the construct the
  * bundled Slack channel uses for `botToken` / `signingSecret` / `relay.authToken`,
- * so no version-gated fallback is required — both supported OpenClaw
- * versions accept the same representation.
+  * so no version-gated fallback is required — every supported OpenClaw
+  * version accepts the same representation.
  */
 
 const here = dirname(fileURLToPath(import.meta.url));

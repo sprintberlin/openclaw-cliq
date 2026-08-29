@@ -29,10 +29,10 @@ describe("OpenClaw compatibility manifest", () => {
     };
   };
 
-  it("declares a build floor and at least two supported versions", () => {
+  it("declares a build floor and at least one supported version", () => {
     expect(typeof compat.build).toBe("string");
     expect(Array.isArray(compat.supported)).toBe(true);
-    expect(compat.supported.length).toBeGreaterThanOrEqual(2);
+    expect(compat.supported.length).toBeGreaterThanOrEqual(1);
   });
 
   it("includes the build floor in the supported set", () => {

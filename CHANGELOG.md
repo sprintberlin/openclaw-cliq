@@ -13,6 +13,8 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Changed
 
+- **Breaking: OpenClaw `2026.8.1-beta.3` is now the minimum supported runtime (issue #189).** Older OpenClaw versions are no longer supported or tested. The plugin API range, minimum gateway version, peer dependency, compatibility matrix, and current installation guidance now require Beta 3 or later; the build metadata and development dependency remain pinned to exactly `2026.8.1-beta.3`.
+
 - **Block streaming is now the default (issue #181).** An unset
   `channels.cliq.streaming.preview` resolves to `"on"`, so complete response
   blocks live-edit one Cliq message instead of arriving as a single final
@@ -26,7 +28,7 @@ publish workflow extracts the matching section as the release notes (see
   final response and `openclaw doctor` now warns for the default-on case, not
   only for an explicit opt-in.
 
-- **The OpenClaw build floor is now `2026.8.1-beta.3` (issue #156).** Typecheck, build, and the development tree pin that version. Existing installs on `2026.7.1-2` remain supported and are still runtime-smoked.
+- **The OpenClaw build floor is now `2026.8.1-beta.3` (issue #156).** Typecheck, build, and the development tree pin that version. At the time of this change, existing installs on `2026.7.1-2` remained supported and runtime-smoked.
 
 ### Added
 

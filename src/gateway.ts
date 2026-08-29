@@ -18,7 +18,7 @@ type ChannelGatewayAdapter<ResolvedAccount = unknown> = NonNullable<
  * and keep it there until the channel reports readiness; a channel that never
  * advances it stays "starting" forever and is eventually judged unhealthy.
  * `channelReadyPatch` is the SDK's canonical way to say "ready", but it does
- * not exist on the older supported versions, so it is resolved dynamically and
+  * not exist on older OpenClaw runtimes, so it is resolved dynamically and
  * falls back to the running/connected fields those versions understand.
  *
  * `connected: true` is deliberate and honest here: the health policy treats

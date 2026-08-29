@@ -105,8 +105,8 @@ openclaw-cliq/
       "blurb": "Connect OpenClaw to Zoho Cliq."
     },
     "compat": {
-      "pluginApi": ">=2026.6.6",
-      "minGatewayVersion": "2026.6.6"
+      "pluginApi": ">=2026.8.1-beta.3",
+      "minGatewayVersion": "2026.8.1-beta.3"
     }
   }
 }

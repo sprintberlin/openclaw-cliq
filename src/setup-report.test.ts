@@ -38,7 +38,7 @@ describe("guided setup final report (issue #92)", () => {
       lifecycle: "ready",
       compatibility: {
         installedVersion: "2025.1.0",
-        supportedVersions: ["2026.7.1-2"],
+        supportedVersions: ["2026.8.1-beta.3"],
         status: "unsupported",
       },
     });
