@@ -2634,6 +2634,7 @@ export class CliqClient {
     return this.writeBotJson("/api/v3/bots", "POST", {
       name,
       scope: "organization",
+      description: "OpenClaw channel bot",
     }, "ZohoCliq.Bots.CREATE").then((result) => {
       if (!result.ok) return result;
       const value = result.data as { data?: unknown } | unknown;

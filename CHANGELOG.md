@@ -44,6 +44,8 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **Fresh bot provisioning now includes Zoho's required description (issue #193).** `openclaw setup` sends a non-empty `description` in `POST /api/v3/bots`; omitting it is rejected by Zoho with `param_missing`. Zoho still derives `unique_name` from the display name, so the plugin does not send that field.
+
 - **Gateway smoke no longer auto-installs Perplexity from a developer shell (issue #182).** `scripts/smoke-gateway.sh` now unsets `OPENROUTER_API_KEY` and `PERPLEXITY_API_KEY` so OpenClaw cannot auto-enable `@openclaw/perplexity-plugin` from inherited provider credentials and refuse to report the gateway ready.
 
 - **Block-streaming previews now grow during generation, even with `thinking.animate: "off"` (issue #185).** OpenClaw's buffered `deliver()` only flushes coalesced blocks, so a long turn could sit on the static placeholder until one final edit. The inbound path now also forwards `onPartialReply` snapshots into that same Cliq message, so `textLen` grows monotonically while the model is still writing. Independent of the thinking animator (issue #184).

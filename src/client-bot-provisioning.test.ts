@@ -53,10 +53,20 @@ describe("CliqClient bot/handler provisioning API", () => {
     }
     expect(mock.requests[0].url.pathname).toBe("/api/v3/bots");
     expect(mock.requests[0].method).toBe("POST");
-    expect(JSON.parse(mock.requests[0].body!)).toEqual({
+    const body = JSON.parse(mock.requests[0].body!) as {
+      name?: unknown;
+      scope?: unknown;
+      description?: unknown;
+      unique_name?: unknown;
+    };
+    expect(body).toEqual({
       name: "Franzi",
       scope: "organization",
+      description: "OpenClaw channel bot",
     });
+    expect(typeof body.description).toBe("string");
+    expect((body.description as string).trim().length).toBeGreaterThan(0);
+    expect(body).not.toHaveProperty("unique_name");
     expect(mock.requests[0].body).not.toContain("unique_name");
   });
 

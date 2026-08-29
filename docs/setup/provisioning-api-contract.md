@@ -1,6 +1,6 @@
 # Verified Zoho Cliq provisioning API contract
 
-This document records the Zoho Cliq REST API behavior verified live against the EU data center on 2026-08-26. It is the contract for bot and handler provisioning work; it is not a substitute for the normal manual setup instructions in the [README](../../README.md).
+This document records the Zoho Cliq REST API behavior verified live against the EU data center. Bot create currently requires a non-empty `description` in addition to `name` and `scope: "organization"` (EU, 2026-08-29). It is the contract for bot and handler provisioning work; it is not a substitute for the normal manual setup instructions in the [README](../../README.md).
 
 ## Bot endpoints
 
@@ -15,11 +15,13 @@ The request must include:
 ```json
 {
   "name": "Laura",
-  "scope": "organization"
+  "scope": "organization",
+  "description": "OpenClaw channel bot"
 }
 ```
 
 - `scope` is required. `organization` is accepted; `org` returns `input_pattern_mismatch`.
+- `description` is required and must be non-empty; omitting it returns `param_missing`.
 - Do not send `unique_name`; Zoho derives it from `name` (`Laura` produced `unique_name: laura`).
 - Bot creation requires `ZohoCliq.Bots.CREATE`.
 - `POST /api/v2/bots` is not a valid create route and returns `request_method_invalid`.
