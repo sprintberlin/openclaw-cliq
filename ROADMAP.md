@@ -145,6 +145,14 @@ blocker is resolved.
   **openclaw/openclaw#130773**. Once it lands, assert the real count in the gateway smoke and
   drop the workaround note from `openclaw cliq webhook-route` / README §2 /
   `docs/setup/public-webhook.md`.
+- **Live `onPartialReply` snapshots during openai-completions thinking turns.** The plugin
+  already forwards `replyOptions.onPartialReply` into the live-edit draft when
+  `streaming.preview` is on. OpenClaw `2026.8.1-beta.3` stamps
+  `openclawDelivery.textPhaseRequiresTerminal: true` on those streams and returns before
+  `emitAssistantStreamData`, so Core never invokes the callback. Live DMs stay on the
+  placeholder until one final edit. Tracked upstream: **openclaw/openclaw#132615**. Do not
+  claim token-level growth until that lands and a live Cliq DM proves monotonically
+  increasing `textLen` on one `messageId`.
 
 ---
 

@@ -13,6 +13,8 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Changed
 
+- **Block-streaming live-edit no longer claims token-level growth on OpenClaw `2026.8.1-beta.3` (issue #195).** The plugin still wires `onPartialReply` into the same Cliq draft, but Core returns before `emitAssistantStreamData` for openai-completions streams with `thinking` (`openclawDelivery.textPhaseRequiresTerminal`). Live DMs therefore stay on the placeholder until one final edit. Tracked upstream as [openclaw/openclaw#132615](https://github.com/openclaw/openclaw/issues/132615).
+
 - **README now documents that named Cliq accounts are outbound/diagnostics-only (issue #191).** Inbound `POST /cliq/webhook` traffic is resolved against the root account only. Running multiple conversational bots still requires a separate gateway deployment per bot, as described in `docs/setup/running-multiple-agents.md`.
 
 - **New installations are now directed to the combined 14-scope OAuth profile first (issue #192).** README §3b recommends one initial consent covering runtime messaging plus bot/handler inspection and provisioning. The 11-scope runtime-only profile remains available as an explicitly minimal alternative, with a warning that Zoho does not add scopes retroactively: expanding it later requires re-consent and a regenerated refresh token.
