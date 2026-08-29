@@ -374,4 +374,72 @@ describe("beginCliqContentTurn (issue #123)", () => {
     );
     expect(turn).toBeNull();
   });
+
+  it("does not track a Deluge eventId as content-derived (issue #196)", () => {
+    const turn: CliqContentTurn | null = beginCliqContentTurn(
+      parsed({ messageId: "evt:abc123", text: "/new" }),
+      account,
+    );
+    expect(turn).toBeNull();
+  });
+});
+
+describe("Deluge eventId handoff (issue #196)", () => {
+  beforeEach(() => {
+    resetCliqDedupeForTest();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2024-01-01T00:00:00Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    resetCliqDedupeForTest();
+  });
+
+  it("lets two identical commands through when each has its own eventId", async () => {
+    const first = parseCliqWebhookPayload({
+      handler: "message",
+      message: "/new",
+      eventId: "delivery-1",
+      user: { id: "u1", name: "Alice" },
+      chat: { id: "CT_dm" },
+    });
+    const second = parseCliqWebhookPayload({
+      handler: "message",
+      message: "/new",
+      eventId: "delivery-2",
+      user: { id: "u1", name: "Alice" },
+      chat: { id: "CT_dm" },
+    });
+    expect(first!.messageId).toBe("evt:delivery-1");
+    expect(second!.messageId).toBe("evt:delivery-2");
+
+    const c1 = await claimCliqMessage(first!, account);
+    expect(c1!.kind).toBe("claimed");
+    await commitCliqMessage(c1!.key);
+    const c2 = await claimCliqMessage(second!, account);
+    expect(c2!.kind).toBe("claimed");
+  });
+
+  it("dedupes an exact webhook replay of the same eventId past the content TTL", async () => {
+    const payload = {
+      handler: "message",
+      message: "/new",
+      eventId: "same-delivery",
+      user: { id: "u1", name: "Alice" },
+      chat: { id: "CT_dm" },
+    };
+    const first = parseCliqWebhookPayload(payload);
+    const replay = parseCliqWebhookPayload(payload);
+    expect(first!.messageId).toBe(replay!.messageId);
+
+    const c1 = await claimCliqMessage(first!, account);
+    expect(c1!.kind).toBe("claimed");
+    await commitCliqMessage(c1!.key);
+
+    vi.advanceTimersByTime(5 * 60 * 1000);
+    const c2 = await claimCliqMessage(replay!, account);
+    expect(c2!.kind).toBe("duplicate");
+    expect(c2!.key).toBe("cliq:default:mid:evt:same-delivery");
+  });
 });

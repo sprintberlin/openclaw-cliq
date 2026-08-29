@@ -24,9 +24,11 @@
  *   - On retryable failure → `releaseCliqMessage` so the next redelivery can
  *     re-enter the pipeline (the slot is not recorded).
  *
- * The dedupe key prefers the Cliq `message.id`. Content-derived fallback
- * identities are retained only for Cliq's short practical redelivery window,
- * while real message ids use the longer replay-protection TTL.
+ * The dedupe key prefers a native Cliq `message.id`, then a Deluge-minted
+ * `evt:` transport identity (issue #196). Content-derived fallback identities
+ * (`syn:` / composite) are retained only for Cliq's short practical
+ * redelivery window, while real message ids and `evt:` ids use the longer
+ * replay-protection TTL.
  */
 
 import { createClaimableDedupe } from "openclaw/plugin-sdk/persistent-dedupe";
@@ -106,8 +108,10 @@ export function buildCliqDedupeKey(
 export type CliqDedupeClaimKind = "claimed" | "duplicate" | "inflight";
 
 const CLIQ_SYNTHETIC_ID_PREFIX = "syn:";
+const CLIQ_EVENT_ID_PREFIX = "evt:";
 
 function usesContentDedupe(parsed: ParsedCliqInbound): boolean {
+  if (parsed.messageId.startsWith(CLIQ_EVENT_ID_PREFIX)) return false;
   return (
     !parsed.messageId || parsed.messageId.startsWith(CLIQ_SYNTHETIC_ID_PREFIX)
   );
@@ -154,8 +158,10 @@ export function releaseCliqMessage(key: string | null, error?: unknown): void {
 }
 
 function resolveCliqDedupeForKey(key: string): ClaimableDedupe {
+  const isEventId = key.includes(`:mid:${CLIQ_EVENT_ID_PREFIX}`);
   const isContentDerived =
-    key.includes(":cmp:") || key.includes(`:mid:${CLIQ_SYNTHETIC_ID_PREFIX}`);
+    !isEventId &&
+    (key.includes(":cmp:") || key.includes(`:mid:${CLIQ_SYNTHETIC_ID_PREFIX}`));
   return isContentDerived ? getContentCliqDedupe() : getLongLivedCliqDedupe();
 }
 

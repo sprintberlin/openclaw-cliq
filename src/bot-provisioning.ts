@@ -37,6 +37,7 @@ export type CliqHandlerPlanConflict =
   | "secret_mismatch"
   | "url_mismatch"
   | "unrecognised_script"
+  | "stale_script"
   | "unreadable"
   | "missing";
 
@@ -102,6 +103,8 @@ export function buildCliqHandlerScript(params: {
       'payload.put("handler", "welcome");',
       'payload.put("user", user);',
       'payload.put("newuser", newuser);',
+      'eventId = zoho.currenttime.toString("yyyyMMddHHmmss") + "-" + randomNumber(100000,999999) + randomNumber(100000,999999);',
+      'payload.put("eventId", eventId);',
       "",
       "headers = Map();",
       'headers.put("Content-Type", "application/json");',
@@ -133,6 +136,8 @@ export function buildCliqHandlerScript(params: {
     'payload.put("message", message);',
     'payload.put("user", user);',
     'payload.put("chat", chat);',
+    'eventId = zoho.currenttime.toString("yyyyMMddHHmmss") + "-" + randomNumber(100000,999999) + randomNumber(100000,999999);',
+    'payload.put("eventId", eventId);',
     attachments,
     "headers = Map();",
     'headers.put("Content-Type", "application/json");',
@@ -295,6 +300,15 @@ function classifyHandler(params: {
       action: "repair",
       conflict: "secret_mismatch",
       reason: `${name} carries a webhook secret that differs from the configured one (handler ${fingerprintCliqSecret(handlerSecret)} vs config ${fingerprintCliqSecret(params.configSecret)}); a matching URL is not proof this handler belongs to this deployment`,
+      requiresConfirmation: true,
+    };
+  }
+  if (!read.script.includes('payload.put("eventId"')) {
+    return {
+      type: params.type,
+      action: "repair",
+      conflict: "stale_script",
+      reason: `${name} does not forward a per-execution eventId, so repeated identical messages can be dropped by OpenClaw inbound dedupe`,
       requiresConfirmation: true,
     };
   }

@@ -128,13 +128,15 @@ export interface CliqRuntime {
  * Shape of the JSON payload the Deluge bot handler POSTs to our webhook.
  *
  * The Deluge mention/message handlers build a Map with `handler`, `message`,
- * `user`, `chat`, and (for mentions) `mentions`, then `invokeUrl` it as JSON.
- * Zoho is inconsistent: `message` may be a string or an object with `text`,
- * `chat` may carry channel info under different keys, and a wrapped `params`
- * shape sometimes appears. We tolerate all of these.
+ * `user`, `chat`, optional `eventId`, and (for mentions) `mentions`, then
+ * `invokeUrl` it as JSON. Zoho is inconsistent: `message` may be a string or
+ * an object with `text`, `chat` may carry channel info under different keys,
+ * and a wrapped `params` shape sometimes appears. We tolerate all of these.
  */
 export interface CliqWebhookPayload {
   handler?: string;
+  eventId?: string;
+  event_id?: string;
   message?:
     | string
     | {
@@ -412,8 +414,26 @@ function buildUserName(user: NonNullable<CliqWebhookPayload["user"]>): string {
  * (`message.time`); when absent, the hash is stable across Cliq
  * redeliveries (which call `new Date().toISOString()` fresh each time).
  * Because identical user messages produce the same synthetic id, the dedupe
- * layer retains `syn:` ids only for the short redelivery window.
+ * layer retains `syn:` ids only for the short redelivery window. Prefer a
+ * Deluge-minted `eventId` (issue #196) over this content hash whenever the
+ * handler forwarded one.
  */
+const CLIQ_EVENT_ID_PREFIX = "evt:";
+
+function normalizeCliqEventId(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  const trimmed = raw.trim();
+  const value = trimmed.startsWith(CLIQ_EVENT_ID_PREFIX)
+    ? trimmed.slice(CLIQ_EVENT_ID_PREFIX.length)
+    : trimmed;
+  if (!value || value.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(value)) return "";
+  return `${CLIQ_EVENT_ID_PREFIX}${value}`;
+}
+
+function extractEventId(payload: CliqWebhookPayload): string {
+  return normalizeCliqEventId(payload.eventId ?? payload.event_id);
+}
+
 function buildSyntheticMessageId(
   senderId: string,
   chatId: string,
@@ -578,13 +598,15 @@ export function parseCliqWebhookPayload(
     pairingParsed.kind ? pairingParsed.text : confirmParsed.text;
 
   const resolvedTimestamp = time || new Date().toISOString();
-  // Derive a stable synthetic message id when the Deluge bot handler omits
-  // the real `message.id` (issue #88). Without a stable id, `MessageSid` is
-  // empty and the dispatch path can self-conflict on retries. Pass the raw
-  // `time` from the payload (not the resolved timestamp) so the hash is
-  // stable across Cliq redeliveries (which generate fresh timestamps).
+  const eventId = extractEventId(payload);
+  // Identity order (issue #196): native Cliq `message.id`, then the
+  // Deluge-minted per-execution `eventId`, then the content-derived `syn:`
+  // fallback for older handlers that never forwarded an event id. Pass the
+  // raw payload `time` (not the resolved timestamp) into the content hash so
+  // it stays stable across Cliq redeliveries that generate a fresh ISO time.
   const resolvedMessageId =
     messageId ||
+    eventId ||
     (attachments.length > 0 || bodyText
       ? buildSyntheticMessageId(user.id, chatId, attachments, time, bodyText)
       : "");
