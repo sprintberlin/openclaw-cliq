@@ -162,7 +162,9 @@ The plugin uses **two** OAuth grant types, because the **`client_credentials`** 
 
 #### 3b. Consent the scopes
 
-When registering / re-consenting the self-client, request **all eleven** scopes so both the `client_credentials` (DM) and refresh-token (channel/edit/delete/card/media/typing) paths work:
+> **Consent once with everything you might need.** Zoho **scopes are not added retroactively** to an existing consent. If you start with the runtime-only string and later want bot inspection or handler provisioning from `openclaw setup`, you must re-consent the Self Client with the larger scope string and regenerate the refresh token — a second Generate Code round trip with a fresh 10-minute code. Pasting the combined profile below on the first attempt avoids that entirely; consenting a scope you never use costs nothing at runtime.
+
+For a new installation, paste the **combined profile** from [Capability profiles](#capability-profiles) into the Self Client's Generate Code scope field. The individual scopes and what each one unlocks are listed here; both the `client_credentials` (DM) and refresh-token (channel/edit/delete/card/media/typing) paths need to be covered:
 
 Each scope's grant is shown in parentheses — *client_credentials* is fetched automatically; *refresh token* requires the one-time [§3c](#3c-obtain-the-user-context-refresh-token-required-for-channel-posts--edits) token.
 
@@ -195,9 +197,23 @@ The plugin defines two **capability profiles** — each a named set of OAuth sco
 with a specific grant type. The capability matrix in `src/capabilities.ts` is the
 single source of truth; `openclaw doctor` validates capabilities at setup time.
 
-**Runtime profile** — scopes required for normal DM/channel messaging and optional
-features. Copy this comma-separated string into the Zoho API Console's Generate Code
-scope field:
+**Combined profile (recommended)** — runtime + setup in a single consent (14
+scopes). This is the string to use for a new installation: one paste, one code
+exchange, and both normal messaging and bot/handler provisioning from
+`openclaw setup` work without a second consent. Copy it into the Zoho API
+Console's Generate Code scope field:
+
+```
+ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Messages.UPDATE,ZohoCliq.messageactions.CREATE,ZohoCliq.Attachments.READ,ZohoCliq.Messages.READ,ZohoCliq.Messages.DELETE,ZohoCliq.Channels.CREATE,ZohoCliq.Users.READ,ZohoCliq.Channels.READ,ZohoCliq.Chats.UPDATE,ZohoCliq.Bots.READ,ZohoCliq.Bots.CREATE,ZohoCliq.Bots.UPDATE
+```
+
+The two tables below break that string into its runtime and setup halves.
+
+**Runtime-only profile (minimal alternative)** — the 11 scopes required for
+normal DM/channel messaging and optional messaging features, with no bot
+inspection or provisioning. Use this only if you are certain you will never
+provision bots or handlers from `openclaw setup`; adding those scopes later
+means re-consenting and regenerating the refresh token:
 
 ```
 ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Messages.UPDATE,ZohoCliq.messageactions.CREATE,ZohoCliq.Attachments.READ,ZohoCliq.Messages.READ,ZohoCliq.Messages.DELETE,ZohoCliq.Channels.CREATE,ZohoCliq.Users.READ,ZohoCliq.Channels.READ,ZohoCliq.Chats.UPDATE
@@ -244,12 +260,6 @@ ZohoCliq.Bots.READ,ZohoCliq.Bots.CREATE,ZohoCliq.Bots.UPDATE
 The bot/handler endpoint, method, and body details verified live — including the
 internal `b-...` bot ID requirement — are recorded in the
 [verified provisioning API contract](https://github.com/sprintberlin/openclaw-cliq/blob/main/docs/setup/provisioning-api-contract.md).
-
-**Combined profile** — runtime + setup in a single consent:
-
-```
-ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Messages.UPDATE,ZohoCliq.messageactions.CREATE,ZohoCliq.Attachments.READ,ZohoCliq.Messages.READ,ZohoCliq.Messages.DELETE,ZohoCliq.Channels.CREATE,ZohoCliq.Users.READ,ZohoCliq.Channels.READ,ZohoCliq.Chats.UPDATE,ZohoCliq.Bots.READ,ZohoCliq.Bots.CREATE,ZohoCliq.Bots.UPDATE
-```
 
 #### 3c. Obtain the user-context refresh token (required for channel posts + edits)
 
@@ -308,7 +318,7 @@ exchange for a permanent **refresh token**.
 **Step 1 — generate the code (valid 10 minutes):**
 
 1. In the **[Zoho API Console](https://api-console.zoho.com)** ([your data center](#data-centers)) → your **Self Client** → tab **Generate Code**.
-2. **Scope** (the Self Client field is comma-separated, no spaces):
+2. **Scope:** paste the **combined 14-scope profile** below (comma-separated, no spaces). Zoho scopes are not added retroactively: choosing the runtime-only alternative now and adding setup/provisioning later requires a new consent and a regenerated refresh token.
    ```
    ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Messages.UPDATE,ZohoCliq.messageactions.CREATE,ZohoCliq.Attachments.READ,ZohoCliq.Messages.READ,ZohoCliq.Messages.DELETE,ZohoCliq.Channels.CREATE,ZohoCliq.Users.READ,ZohoCliq.Channels.READ,ZohoCliq.Chats.UPDATE,ZohoCliq.Bots.READ,ZohoCliq.Bots.CREATE,ZohoCliq.Bots.UPDATE
    ```

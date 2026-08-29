@@ -13,6 +13,8 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Changed
 
+- **New installations are now directed to the combined 14-scope OAuth profile first (issue #192).** README §3b recommends one initial consent covering runtime messaging plus bot/handler inspection and provisioning. The 11-scope runtime-only profile remains available as an explicitly minimal alternative, with a warning that Zoho does not add scopes retroactively: expanding it later requires re-consent and a regenerated refresh token.
+
 - **Breaking: OpenClaw `2026.8.1-beta.3` is now the minimum supported runtime (issue #189).** Older OpenClaw versions are no longer supported or tested. The plugin API range, minimum gateway version, peer dependency, compatibility matrix, and current installation guidance now require Beta 3 or later; the build metadata and development dependency remain pinned to exactly `2026.8.1-beta.3`.
 
 - **Block streaming is now the default (issue #181).** An unset
