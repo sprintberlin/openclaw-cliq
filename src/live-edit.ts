@@ -96,7 +96,7 @@ export interface LiveEditDeliverOptions {
    * `chatId` may be omitted for group posts (the send response does not carry
    * it); it is resolved lazily via `resolveChannelChatId` on the first edit.
    */
-  initialDraft?: { messageId: string; chatId?: string };
+  initialDraft?: { messageId: string; chatId?: string; text?: string };
   /**
    * Minimum wall-clock distance between two preview edits of the same draft
    * (issue #175). Intermediate blocks that arrive inside the window are
@@ -631,6 +631,15 @@ export function createLiveEditDeliver(
     if (!text) return;
 
     if (isSnapshot) {
+      const placeholderLength = opts.initialDraft?.text?.trim().length ?? 0;
+      if (
+        opts.initialDraft &&
+        !placeholderConsumed &&
+        text.trim().length <= placeholderLength
+      ) {
+        stats.skippedUnchanged++;
+        return;
+      }
       if (
         latestSnapshot &&
         text.length <= latestSnapshot.length &&

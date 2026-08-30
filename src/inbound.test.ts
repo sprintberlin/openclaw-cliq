@@ -3579,6 +3579,49 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
     expect(client.deletes).toHaveLength(0);
   });
 
+  it("ignores tiny onPartialReply snapshots so the thinking placeholder is preserved (issue #203)", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    const thinkingAccount = account({
+      thinking: { mode: "placeholder", text: "⏳ …" },
+      refreshToken: "rt",
+      blockStreaming: true,
+    });
+    const cfg = {
+      channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } },
+    } as never;
+
+    const runtime = mockRuntimeNoReply();
+    runtime.channel.inbound.run = async (params) => {
+      const adapter = (params as unknown as {
+        adapter: { resolveTurn: (...args: unknown[]) => unknown };
+      }).adapter;
+      const turn = adapter.resolveTurn({}, {}, {}) as unknown as {
+        replyOptions: { onPartialReply?: (payload: { text?: string }) => Promise<void> | void };
+        delivery: { deliver: (payload: { text?: string }, info?: { final?: boolean }) => Promise<void> };
+      };
+      // Send a 1-character snapshot (as observed live on Mara), then a 2-char snapshot.
+      await turn.replyOptions.onPartialReply?.({ text: "1" });
+      await turn.replyOptions.onPartialReply?.({ text: "12" });
+      expect(client.edits).toHaveLength(0);
+      // Then deliver the full final answer.
+      await turn.delivery.deliver({ text: "The final answer with full content." }, { final: true });
+    };
+
+    await dispatchCliqInbound({
+      runtime,
+      cfg,
+      account: thinkingAccount,
+      parsed: parsed!,
+      client,
+    });
+
+    expect(client.sends).toHaveLength(1);
+    expect(client.sends[0].text).toBe("⏳ …");
+    expect(client.edits).toHaveLength(1);
+    expect(client.edits[0].text).toBe("The final answer with full content.");
+  });
+
   it("posts no placeholder for a redelivery while an equivalent turn is in flight (issue #123)", async () => {
     const client = makeMockClient({ placeholderChatId: "chat-u1" });
     const parsed = parseCliqWebhookPayload(dmPayload());

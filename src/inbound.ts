@@ -1202,7 +1202,7 @@ export async function dispatchCliqInbound(params: {
   // breaks or delays the agent turn. DMs and channel posts both support
   // this; the group case carries no chatId in the send response, so
   // `createLiveEditDeliver` resolves it lazily on the first edit.
-  let initialDraft: { messageId: string; chatId?: string } | undefined;
+  let initialDraft: { messageId: string; chatId?: string; text?: string } | undefined;
   // Animated "thinking" placeholder (issue #86): held so the reply deliver
   // and the no-reply cleanup can stop a late frame edit before the final
   // edit-into-reply. `null` when no animation is running.
@@ -1256,7 +1256,11 @@ export async function dispatchCliqInbound(params: {
             isDm: !parsed.isGroup,
           });
       if (ref.messageId) {
-        initialDraft = { messageId: ref.messageId, chatId: ref.chatId };
+        initialDraft = {
+          messageId: ref.messageId,
+          chatId: ref.chatId,
+          text: placeholderText,
+        };
         // Card mode: transition the status card thinking → generating
         // before dispatching the agent turn.
         if (cardMode) {

@@ -6,12 +6,18 @@ const ROOT = join(new URL(".", import.meta.url).pathname, "..");
 const readme = readFileSync(join(ROOT, "README.md"), "utf8");
 const changelog = readFileSync(join(ROOT, "CHANGELOG.md"), "utf8");
 
-describe("README streaming caveats (issue #195)", () => {
-  it("does not promise token-level growth on the pinned runtime", () => {
+describe("README streaming caveats (issues #195 and #203)", () => {
+  it("does not promise reliable token-level growth on the pinned runtime", () => {
     expect(readme).toContain(
-      "Live DMs therefore stay on the placeholder until one final edit",
+      "Live DMs therefore usually stay on the placeholder until one final edit",
     );
-    expect(readme).toContain("do not expect token-level growth");
+    expect(readme).toContain("do not expect reliable token-level growth");
+  });
+
+  it("documents that snapshots can arrive and guards a tiny first snapshot", () => {
+    expect(readme).toContain("the first one can be tiny");
+    expect(readme).toContain("starting at `textLen=1`");
+    expect(changelog).toContain("issue #203");
   });
 
   it("links the Core partial-reply blocker", () => {
