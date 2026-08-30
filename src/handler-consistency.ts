@@ -185,6 +185,15 @@ export function checkCliqHandlerConsistency(
         );
       }
     }
+
+    if (
+      handlerSecret !== null &&
+      !handler.script.includes('payload.put("eventId"')
+    ) {
+      failures.push(
+        `${label} does not forward a per-execution eventId, so repeated identical messages can be dropped by OpenClaw inbound dedupe`,
+      );
+    }
   }
 
   // Two handlers that disagree with each other mean one of them is stale,
@@ -286,13 +295,6 @@ export function proposeCliqHandlerUrlAdoption(options: {
       };
     }
   }
-  const secretCheck = checkCliqHandlerConsistency({
-    handlers: options.handlers,
-    configSecret: options.configSecret,
-  });
-  if (secretCheck.status !== "pass") {
-    return { ok: false, reason: secretCheck.detail };
-  }
   const urls = new Map<string, string>();
   for (const type of CLIQ_INBOUND_HANDLER_TYPES) {
     const handler = options.handlers.find((record) => record.type === type)!;
@@ -307,6 +309,13 @@ export function proposeCliqHandlerUrlAdoption(options: {
     const validated = validateAdoptableWebhookUrl(handlerUrl);
     if (!validated.ok) return validated;
     urls.set(type, validated.url);
+  }
+  const secretCheck = checkCliqHandlerConsistency({
+    handlers: options.handlers,
+    configSecret: options.configSecret,
+  });
+  if (secretCheck.status !== "pass") {
+    return { ok: false, reason: secretCheck.detail };
   }
   const distinct = [...new Set(urls.values())];
   if (distinct.length !== 1) {

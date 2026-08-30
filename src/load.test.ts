@@ -850,6 +850,79 @@ describe("durable-before-ack ingest (issue #12)", () => {
     expect(sids).toEqual(["evt:delivery-1", "evt:delivery-2"]);
   });
 
+  it("dispatches two identical /new commands from a params-wrapped eventId (issue #204)", async () => {
+    const sids: string[] = [];
+    let runCalled = 0;
+    const { webhook } = buildDurableRegistration({
+      inboundRun: async (...args: unknown[]) => {
+        runCalled++;
+        const params = args[0] as { raw?: { messageId?: string } } | undefined;
+        if (params?.raw?.messageId) sids.push(params.raw.messageId);
+        return undefined;
+      },
+    });
+    const firstPayload = {
+      handler: "mention",
+      mentions: [{ id: "bot", name: "openclaw-bot", type: "bot" }],
+      params: {
+        message: { text: "/new" },
+        eventId: "wrapped-1",
+        user: { id: "fake-user", name: "Test User" },
+        chat: {
+          id: "CT_channel",
+          type: "channel",
+          chat_type: "channel",
+          channel_unique_name: "dev-team",
+          title: "#dev-team",
+        },
+      },
+    };
+    const replayPayload = firstPayload;
+    const secondPayload = {
+      handler: "mention",
+      mentions: [{ id: "bot", name: "openclaw-bot", type: "bot" }],
+      params: {
+        message: { text: "/new" },
+        eventId: "wrapped-2",
+        user: { id: "fake-user", name: "Test User" },
+        chat: {
+          id: "CT_channel",
+          type: "channel",
+          chat_type: "channel",
+          channel_unique_name: "dev-team",
+          title: "#dev-team",
+        },
+      },
+    };
+
+    const first = createMockServerResponse();
+    await webhook.handler(
+      createMockIncomingRequest("POST", firstPayload, {
+        "x-cliq-webhook-secret": "s3cr3t",
+      }),
+      first as unknown as any,
+    );
+    const replay = createMockServerResponse();
+    await webhook.handler(
+      createMockIncomingRequest("POST", replayPayload, {
+        "x-cliq-webhook-secret": "s3cr3t",
+      }),
+      replay as unknown as any,
+    );
+    const second = createMockServerResponse();
+    await webhook.handler(
+      createMockIncomingRequest("POST", secondPayload, {
+        "x-cliq-webhook-secret": "s3cr3t",
+      }),
+      second as unknown as any,
+    );
+    expect(first.statusCode).toBe(200);
+    expect(replay.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(runCalled).toBe(2);
+    expect(sids).toEqual(["evt:wrapped-1", "evt:wrapped-2"]);
+  });
+
   it("acks 200 (not 400) for a caption-less image with attachments forwarded (issue #84)", async () => {
     const { webhook } = buildDurableRegistration({
       inboundRun: async () => undefined,

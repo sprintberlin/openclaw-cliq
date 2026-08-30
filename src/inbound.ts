@@ -225,7 +225,16 @@ export interface CliqWebhookPayload {
     message?: { text?: string; id?: string };
     user?: { id?: string; name?: string };
     channel?: { id?: string; name?: string; unique_name?: string };
-    chat?: { id?: string };
+    chat?: {
+      id?: string;
+      type?: string;
+      chat_type?: string;
+      title?: string;
+      channel_unique_name?: string;
+      channel_id?: string;
+    };
+    eventId?: string;
+    event_id?: string;
   };
   /**
    * Quote / reply context (issue #49). A reply's parent message id may be
@@ -477,6 +486,8 @@ export function parseCliqWebhookPayload(
       user: payload.params.user ?? payload.user,
       channel: payload.params.channel ?? payload.channel,
       chat: payload.params.chat ?? payload.chat,
+      eventId: payload.params.eventId ?? payload.eventId,
+      event_id: payload.params.event_id ?? payload.event_id,
     };
   }
 
@@ -1438,7 +1449,8 @@ export async function dispatchCliqInbound(params: {
     });
     turnOutcome = {
       skippedBenignly:
-        isLikelyRedelivery || (await isBenignlySkippedTurn(runResult)),
+        isLikelyRedelivery ||
+        (await isBenignlySkippedTurn(runResult, parsed.messageId)),
     };
   } catch (err) {
     if (isLikelyRedelivery && isCliqSessionConflictError(err)) {
@@ -1461,7 +1473,42 @@ const CLIQ_BENIGN_SKIP_REASONS = new Set([
   "deferred",
 ]);
 
-async function isBenignlySkippedTurn(runResult: unknown): Promise<boolean> {
+function isCoreSilentSkip(runResult: unknown, messageId: string): boolean {
+  if (!messageId.startsWith("syn:")) return false;
+  if (!runResult || typeof runResult !== "object" || Array.isArray(runResult)) {
+    return false;
+  }
+  const record = runResult as {
+    admission?: { kind?: unknown };
+    dispatched?: unknown;
+    dispatchResult?: unknown;
+  };
+  if (record.admission?.kind !== "dispatch" || record.dispatched !== true) {
+    return false;
+  }
+  const dispatchResult = record.dispatchResult;
+  if (!dispatchResult || typeof dispatchResult !== "object" || Array.isArray(dispatchResult)) {
+    return false;
+  }
+  const result = dispatchResult as {
+    queuedFinal?: unknown;
+    deferredToActiveRun?: unknown;
+    counts?: { tool?: unknown; block?: unknown; final?: unknown };
+  };
+  if (result.queuedFinal === true || result.deferredToActiveRun === true) {
+    return false;
+  }
+  const counts = result.counts;
+  if (!counts || typeof counts !== "object") return false;
+  return [counts.tool, counts.block, counts.final].every(
+    (value) => value === 0 || value === undefined,
+  );
+}
+
+async function isBenignlySkippedTurn(
+  runResult: unknown,
+  messageId: string,
+): Promise<boolean> {
   if (!runResult || typeof runResult !== "object" || Array.isArray(runResult)) {
     return false;
   }
@@ -1475,9 +1522,11 @@ async function isBenignlySkippedTurn(runResult: unknown): Promise<boolean> {
     return true;
   }
   const processed = await readInboundProcessedOutcome(runResult);
-  if (!processed || processed.outcome !== "skipped") return false;
-  const reason = processed.reason?.trim().toLowerCase();
-  return Boolean(reason && CLIQ_BENIGN_SKIP_REASONS.has(reason));
+  if (processed?.outcome === "skipped") {
+    const reason = processed.reason?.trim().toLowerCase();
+    return Boolean(reason && CLIQ_BENIGN_SKIP_REASONS.has(reason));
+  }
+  return isCoreSilentSkip(runResult, messageId);
 }
 
 async function deleteStrayPlaceholder(opts: {
