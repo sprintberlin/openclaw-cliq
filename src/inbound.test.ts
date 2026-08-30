@@ -20,6 +20,7 @@ vi.mock("openclaw/plugin-sdk/media-store", () => ({
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
 import type { IncomingMessage } from "node:http";
+import type { GetReplyOptions } from "openclaw/plugin-sdk/reply-runtime";
 import {
   parseCliqWebhookPayload,
   readJsonBody,
@@ -33,7 +34,7 @@ import {
 } from "./inbound.js";
 import { verifyWebhookSecret } from "./webhook-security.js";
 import { lookupCliqChatId, resetCliqTypingState } from "./heartbeat.js";
-import type { ResolvedCliqAccount } from "./client.js";
+import { resolveCliqConfig, type ResolvedCliqAccount } from "./client.js";
 
 function account(overrides: Partial<ResolvedCliqAccount> = {}): ResolvedCliqAccount {
   return {
@@ -4423,4 +4424,750 @@ describe("isCliqSessionConflictError (issue #84)", () => {
     expect(isCliqSessionConflictError(new Error("api down"))).toBe(false);
     expect(isCliqSessionConflictError("dispatch failed")).toBe(false);
   });
+});
+
+describe("dispatchCliqInbound — complete streaming turns (issue #210)", () => {
+  type ClientCall =
+    | { op: "send"; messageId: string; to: string; text: string; isDm?: boolean }
+    | { op: "edit"; messageId: string; chatId: string; text: string; accepted: boolean }
+    | { op: "delete"; messageId: string; chatId: string; accepted: boolean }
+    | { op: "card"; messageId: string; to: string; text?: string; isDm?: boolean };
+
+  type ScriptedTurn = {
+    replyOptions?: GetReplyOptions;
+    delivery: {
+      deliver: (
+        payload: { text?: string; mediaUrl?: string; channelData?: unknown },
+        info?: { kind?: string; final?: boolean },
+      ) => Promise<void>;
+      onError: (err: unknown, info: { kind: string }) => void;
+    };
+  };
+
+  function makeCompleteTurnClient(opts: {
+    placeholderChatId?: string;
+    channelChatId?: string;
+    failEdit?: (call: { messageId: string; chatId: string; text: string; attempt: number }) => boolean;
+    failDelete?: boolean;
+    failSend?: boolean;
+  } = {}) {
+    let nextId = 1;
+    const calls: ClientCall[] = [];
+    const visible = new Map<string, { text: string; deleted: boolean }>();
+    let editAttempts = 0;
+
+    const recordVisibleSend = (messageId: string, text: string) => {
+      visible.set(messageId, { text, deleted: false });
+    };
+
+    const client = {
+      calls,
+      visible,
+      sendMessage: vi.fn(async (o: { to: string; text: string; isDm?: boolean }) => {
+        if (opts.failSend) throw new Error("send rejected");
+        const messageId = `m${nextId++}`;
+        calls.push({ op: "send", messageId, to: o.to, text: o.text, isDm: o.isDm });
+        recordVisibleSend(messageId, o.text);
+        return o.isDm
+          ? { messageId, chatId: opts.placeholderChatId ?? `chat-${o.to}` }
+          : { messageId };
+      }),
+      sendCard: vi.fn(async (o: { to: string; text?: string; isDm?: boolean; theme?: string }) => {
+        if (opts.failSend) throw new Error("send rejected");
+        const messageId = `card-${nextId++}`;
+        calls.push({ op: "card", messageId, to: o.to, text: o.text, isDm: o.isDm });
+        recordVisibleSend(messageId, o.text ?? "[card]");
+        return o.isDm
+          ? { messageId, chatId: opts.placeholderChatId ?? `chat-${o.to}` }
+          : { messageId };
+      }),
+      editMessage: vi.fn(async (o: { chatId: string; messageId: string; text: string }) => {
+        editAttempts++;
+        const shouldFail = opts.failEdit?.({
+          messageId: o.messageId,
+          chatId: o.chatId,
+          text: o.text,
+          attempt: editAttempts,
+        }) ?? false;
+        if (shouldFail) {
+          calls.push({ op: "edit", messageId: o.messageId, chatId: o.chatId, text: o.text, accepted: false });
+          throw new Error("edit rejected");
+        }
+        calls.push({ op: "edit", messageId: o.messageId, chatId: o.chatId, text: o.text, accepted: true });
+        visible.set(o.messageId, { text: o.text, deleted: false });
+        return { messageId: o.messageId, chatId: o.chatId };
+      }),
+      deleteMessage: vi.fn(async (o: { chatId: string; messageId: string }) => {
+        if (opts.failDelete) {
+          calls.push({ op: "delete", messageId: o.messageId, chatId: o.chatId, accepted: false });
+          throw new Error("delete rejected");
+        }
+        calls.push({ op: "delete", messageId: o.messageId, chatId: o.chatId, accepted: true });
+        const existing = visible.get(o.messageId);
+        if (existing) {
+          existing.deleted = true;
+        } else {
+          visible.set(o.messageId, { text: "", deleted: true });
+        }
+        return true;
+      }),
+      resolveChannelChatId: vi.fn(async () => opts.channelChatId ?? undefined),
+      listChatMessages: vi.fn(async () => []),
+      downloadAttachment: vi.fn(async () => {
+        throw new Error("download attachment not mocked");
+      }),
+    };
+    return client;
+  }
+
+  function makeScriptedRuntime(
+    runner: (turn: ScriptedTurn) => Promise<unknown>,
+  ): CliqRuntime {
+    return {
+      channel: {
+        routing: {
+          resolveAgentRoute: () => ({
+            agentId: "agent-1",
+            sessionKey: "sess-1",
+            accountId: "default",
+          }),
+        },
+        session: {
+          resolveStorePath: () => "/tmp/store",
+          readSessionUpdatedAt: () => undefined,
+          recordInboundSession: () => undefined,
+        },
+        reply: {
+          resolveEnvelopeFormatOptions: () => ({}),
+          formatAgentEnvelope: (p: Record<string, unknown>) => String(p.body ?? ""),
+          finalizeInboundContext: (fields: Record<string, unknown>) => fields,
+          dispatchReplyWithBufferedBlockDispatcher: async () => undefined,
+        },
+        inbound: {
+          run: async (params) => {
+            const adapter = (params as unknown as {
+              adapter: { resolveTurn: (...args: unknown[]) => unknown };
+            }).adapter;
+            const turn = adapter.resolveTurn({}, {}, {}) as ScriptedTurn;
+            return await runner(turn);
+          },
+        },
+        pairing: {
+          buildPairingReply: () => "",
+          upsertPairingRequest: async () => ({ code: "CODE", created: true }),
+        },
+      },
+    };
+  }
+
+  function visibleNonDeletedEntries(client: ReturnType<typeof makeCompleteTurnClient>) {
+    return [...client.visible.entries()]
+      .filter(([, value]) => !value.deleted)
+      .map(([id, value]) => ({ id, text: value.text }));
+  }
+
+  it("runs tool progress without onPartialReply and finalizes one message", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = makeCompleteTurnClient({ placeholderChatId: "chat-u1" });
+      let exposedOptions: GetReplyOptions | undefined;
+      const runtime = makeScriptedRuntime(async (turn) => {
+        exposedOptions = turn.replyOptions;
+        expect(turn.replyOptions?.onPartialReply).toBeUndefined();
+        expect(turn.replyOptions?.suppressDefaultToolProgressMessages).toBe(true);
+        expect(turn.replyOptions?.preserveProgressCallbackStartOrder).toBe(true);
+
+        await turn.replyOptions?.onToolStart?.({
+          name: "read",
+          args: { path: "docs.md" },
+        });
+        await turn.replyOptions?.onItemEvent?.({
+          kind: "preamble",
+          progressText: "Checking the docs",
+        });
+        await turn.replyOptions?.onToolStart?.({
+          name: "exec",
+          args: { command: "npm test" },
+        });
+
+        await vi.advanceTimersByTimeAsync(1_500);
+
+        const acceptedProgressEdits = client.calls.filter(
+          (c): c is Extract<ClientCall, { op: "edit" }> =>
+            c.op === "edit" && c.accepted && c.text.includes("Checking the docs"),
+        );
+        expect(acceptedProgressEdits.length).toBeGreaterThanOrEqual(1);
+
+        if (!turn.replyOptions?.suppressDefaultToolProgressMessages) {
+          await turn.delivery.deliver({ text: "standalone tool progress" }, { kind: "tool" });
+        }
+
+        await turn.delivery.deliver(
+          { text: "Everything passed cleanly." },
+          { final: true },
+        );
+      });
+
+      await dispatchCliqInbound({
+        runtime,
+        cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+        account: account({
+          thinking: { mode: "placeholder", text: "💭 …", animate: "off" },
+          refreshToken: "rt",
+          blockStreaming: true,
+          streaming: { mode: "progress", progress: {} },
+          streamingMinEditIntervalMs: 0,
+        }),
+        parsed: parseCliqWebhookPayload(dmPayload())!,
+        client,
+      });
+
+      expect(exposedOptions?.onPartialReply).toBeUndefined();
+      expect(client.calls.filter((c) => c.op === "send")).toHaveLength(1);
+      const sends = client.calls.filter((c): c is Extract<ClientCall, { op: "send" }> => c.op === "send");
+      expect(sends[0]).toMatchObject({ messageId: "m1", text: "💭 …" });
+
+      const edits = client.calls.filter((c): c is Extract<ClientCall, { op: "edit" }> => c.op === "edit");
+      expect(edits.length).toBeGreaterThanOrEqual(2);
+      expect(edits.every((e) => e.messageId === "m1" && e.accepted)).toBe(true);
+      expect(edits.at(-1)?.text).toBe("Everything passed cleanly.");
+      expect(client.calls.filter((c) => c.op === "delete")).toHaveLength(0);
+
+      const remaining = visibleNonDeletedEntries(client);
+      expect(remaining).toEqual([{ id: "m1", text: "Everything passed cleanly." }]);
+      expect(remaining.some((entry) => /Checking the docs|Working|standalone tool progress/.test(entry.text))).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not flash progress for a fast plain turn", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = makeCompleteTurnClient({ placeholderChatId: "chat-u1" });
+      const runtime = makeScriptedRuntime(async (turn) => {
+        await turn.replyOptions?.onToolStart?.({ name: "read" });
+        await turn.delivery.deliver({ text: "Instant final answer" }, { final: true });
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+
+      await dispatchCliqInbound({
+        runtime,
+        cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+        account: account({
+          thinking: { mode: "off", text: "" },
+          refreshToken: "rt",
+          blockStreaming: true,
+          streaming: { mode: "progress", progress: {} },
+          streamingMinEditIntervalMs: 0,
+        }),
+        parsed: parseCliqWebhookPayload(dmPayload())!,
+        client,
+      });
+
+      expect(client.calls).toEqual([
+        { op: "send", messageId: "m1", to: "u1", text: "Instant final answer", isDm: true },
+      ]);
+      expect(visibleNonDeletedEntries(client)).toEqual([
+        { id: "m1", text: "Instant final answer" },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("replaces and truncates plan/tool lines", async () => {
+    const client = makeCompleteTurnClient({ placeholderChatId: "chat-u1" });
+    const runtime = makeScriptedRuntime(async (turn) => {
+      await turn.replyOptions?.onPlanUpdate?.({
+        phase: "update",
+        explanation: "Initial plan",
+        steps: [
+          { step: "Read documentation carefully", status: "in_progress" },
+          { step: "Run tests", status: "pending" },
+        ],
+      });
+
+      await turn.replyOptions?.onItemEvent?.({
+        itemId: "item-1",
+        kind: "tool",
+        name: "read",
+        progressText: "Reading very long source documentation filepath for inspection",
+      });
+
+      const itemEdits = client.calls.filter(
+        (c): c is Extract<ClientCall, { op: "edit" }> => c.op === "edit" && c.accepted,
+      );
+      const firstItemEdit = itemEdits[itemEdits.length - 1];
+      expect(firstItemEdit?.text).toContain("…");
+
+      await turn.replyOptions?.onItemEvent?.({
+        itemId: "item-1",
+        kind: "preamble",
+        progressText: "Reading updated shorter path",
+      });
+
+      const replacementEdits = client.calls.filter(
+        (c): c is Extract<ClientCall, { op: "edit" }> => c.op === "edit" && c.accepted,
+      );
+      const replacementEdit = replacementEdits[replacementEdits.length - 1];
+      expect(replacementEdit?.text).not.toContain(
+        "Reading very long source documentation filepath for inspection",
+      );
+      expect(replacementEdit?.text).toContain("Reading updated shorter path");
+
+      await turn.replyOptions?.onItemEvent?.({
+        itemId: "item-2",
+        kind: "tool",
+        name: "search",
+        progressText: "Searching issues",
+      });
+
+      await turn.replyOptions?.onItemEvent?.({
+        itemId: "item-3",
+        kind: "tool",
+        name: "status",
+        progressText: "Checking status",
+      });
+
+      await turn.replyOptions?.onItemEvent?.({
+        itemId: "item-4",
+        kind: "tool",
+        name: "exec",
+        progressText: "Running test suite",
+      });
+
+      await turn.replyOptions?.onPlanUpdate?.({
+        phase: "update",
+        explanation: "Finalizing plan",
+        steps: [
+          { step: "Read documentation carefully", status: "completed" },
+          { step: "Run tests", status: "completed" },
+        ],
+      });
+
+      const draftEdits = client.calls.filter(
+        (c): c is Extract<ClientCall, { op: "edit" }> => c.op === "edit" && c.accepted,
+      );
+      expect(draftEdits.length).toBeGreaterThanOrEqual(2);
+      const latestProgress = draftEdits.at(-1)?.text ?? "";
+      expect(latestProgress).not.toContain(
+        "Reading very long source documentation filepath for inspection",
+      );
+      expect(latestProgress.split("\n").filter(Boolean)).toHaveLength(4);
+      expect(latestProgress).toContain("✅ Read documentation carefully");
+      expect(latestProgress).not.toContain("Initial plan");
+
+      await turn.delivery.deliver({ text: "Plan and tools completed." }, { final: true });
+    });
+
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "💭 …", animate: "off" },
+        refreshToken: "rt",
+        blockStreaming: true,
+        streaming: {
+          mode: "progress",
+          progress: {
+            label: false,
+            narration: false,
+            maxLines: 3,
+            maxLineChars: 30,
+          },
+        },
+        streamingMinEditIntervalMs: 0,
+      }),
+      parsed: parseCliqWebhookPayload(dmPayload())!,
+      client,
+    });
+
+    const edits = client.calls.filter((c): c is Extract<ClientCall, { op: "edit" }> => c.op === "edit");
+    expect(edits.every((e) => e.messageId === "m1" && e.accepted)).toBe(true);
+    expect(edits.at(-1)?.text).toBe("Plan and tools completed.");
+    expect(visibleNonDeletedEntries(client)).toEqual([
+      { id: "m1", text: "Plan and tools completed." },
+    ]);
+  });
+
+  it("shows approval wait and resumes work on the same message", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = makeCompleteTurnClient({ placeholderChatId: "chat-u1" });
+      const runtime = makeScriptedRuntime(async (turn) => {
+        await turn.replyOptions?.onApprovalEvent?.({
+          phase: "requested",
+          status: "pending",
+          title: "Command approval requested",
+          approvalId: "approval-1",
+          command: "deploy --dry-run",
+        });
+
+        await vi.advanceTimersByTimeAsync(1_500);
+
+        const approvalEdits = client.calls.filter(
+          (c): c is Extract<ClientCall, { op: "edit" }> =>
+            c.op === "edit" && c.accepted && c.text.includes("approval requested"),
+        );
+        expect(approvalEdits.length).toBeGreaterThanOrEqual(1);
+
+        await turn.replyOptions?.onApprovalEvent?.({
+          phase: "resolved",
+          status: "approved",
+          title: "Command approval resolved",
+          approvalId: "approval-1",
+        });
+
+        await turn.replyOptions?.onCommandOutput?.({
+          phase: "end",
+          name: "exec",
+          toolCallId: "call-1",
+          title: "deploy",
+          status: "completed",
+          exitCode: 0,
+        });
+
+        await vi.advanceTimersByTimeAsync(1_500);
+
+        const resumedEdits = client.calls.filter(
+          (c): c is Extract<ClientCall, { op: "edit" }> =>
+            c.op === "edit" && c.accepted && c.text.includes("deploy"),
+        );
+        expect(resumedEdits.length).toBeGreaterThanOrEqual(1);
+
+        await turn.delivery.deliver({ text: "Deployment check succeeded." }, { final: true });
+      });
+
+      await dispatchCliqInbound({
+        runtime,
+        cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+        account: account({
+          thinking: { mode: "placeholder", text: "💭 …", animate: "off" },
+          refreshToken: "rt",
+          blockStreaming: true,
+          streaming: { mode: "progress", progress: {} },
+          streamingMinEditIntervalMs: 0,
+        }),
+        parsed: parseCliqWebhookPayload(dmPayload())!,
+        client,
+      });
+
+      const edits = client.calls.filter((c): c is Extract<ClientCall, { op: "edit" }> => c.op === "edit");
+      expect(edits.every((e) => e.messageId === "m1" && e.accepted)).toBe(true);
+      expect(edits.at(-1)?.text).toBe("Deployment check succeeded.");
+      expect(visibleNonDeletedEntries(client)).toEqual([
+        { id: "m1", text: "Deployment check succeeded." },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    {
+      outcome: "no_reply",
+      run: async (turn: ScriptedTurn) => {
+        await turn.replyOptions?.onPlanUpdate?.({
+          phase: "update",
+          steps: [{ step: "Researching", status: "in_progress" }],
+        });
+      },
+      expectFailureNotice: true,
+      expectMinimalMarker: false,
+    },
+    {
+      outcome: "error",
+      run: async (turn: ScriptedTurn) => {
+        await turn.replyOptions?.onPlanUpdate?.({
+          phase: "update",
+          steps: [{ step: "Researching", status: "in_progress" }],
+        });
+        throw new Error("fatal turn failure");
+      },
+      expectFailureNotice: true,
+      expectMinimalMarker: false,
+    },
+    {
+      outcome: "cancellation_settled",
+      run: async (turn: ScriptedTurn) => {
+        await turn.replyOptions?.onPlanUpdate?.({
+          phase: "update",
+          steps: [{ step: "Researching", status: "in_progress" }],
+        });
+        await turn.replyOptions?.onQueuedFollowupSettled?.();
+      },
+      expectFailureNotice: true,
+      expectMinimalMarker: false,
+    },
+    {
+      outcome: "benign_skip",
+      run: async (turn: ScriptedTurn) => {
+        await turn.replyOptions?.onPlanUpdate?.({
+          phase: "update",
+          steps: [{ step: "Researching", status: "in_progress" }],
+        });
+        return {
+          admission: { kind: "dispatch" },
+          dispatched: true,
+          processedOutcome: { outcome: "skipped", reason: "duplicate" },
+          dispatchResult: { queuedFinal: false, counts: {} },
+        };
+      },
+      expectFailureNotice: false,
+      expectMinimalMarker: true,
+    },
+  ])(
+    "cleans up progress turns for outcome=$outcome",
+    async ({ outcome, run, expectFailureNotice, expectMinimalMarker }) => {
+      const client = makeCompleteTurnClient({ placeholderChatId: "chat-u1" });
+      const runtime = makeScriptedRuntime(run);
+
+      const action = dispatchCliqInbound({
+        runtime,
+        cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+        account: account({
+          thinking: { mode: "placeholder", text: "💭 …", animate: "off" },
+          refreshToken: "rt",
+          blockStreaming: true,
+          streaming: { mode: "progress", progress: {} },
+          streamingMinEditIntervalMs: 0,
+        }),
+        parsed: parseCliqWebhookPayload(dmPayload())!,
+        client,
+      });
+
+      if (outcome === "error") {
+        await expect(action).rejects.toThrow("fatal turn failure");
+      } else {
+        await action;
+      }
+
+      const visible = visibleNonDeletedEntries(client);
+      expect(visible).toHaveLength(1);
+      expect(visible[0].id).toBe("m1");
+      expect(visible[0].text).not.toContain("Researching");
+
+      if (expectFailureNotice) {
+        expect(visible[0].text).toBe("⚠️ Couldn't process that message.");
+      }
+      if (expectMinimalMarker) {
+        expect(visible[0].text).toBe(" ");
+      }
+    },
+  );
+
+  it("falls back cleanly to fresh send + delete when final edit fails", async () => {
+    const client = makeCompleteTurnClient({
+      placeholderChatId: "chat-u1",
+      failEdit: ({ text }) => text === "Final answer after fallback",
+    });
+
+    const runtime = makeScriptedRuntime(async (turn) => {
+      await turn.replyOptions?.onPlanUpdate?.({
+        phase: "update",
+        steps: [{ step: "Working", status: "in_progress" }],
+      });
+      await turn.delivery.deliver({ text: "Final answer after fallback" }, { final: true });
+    });
+
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "💭 …", animate: "off" },
+        refreshToken: "rt",
+        blockStreaming: true,
+        streaming: { mode: "progress", progress: {} },
+        streamingMinEditIntervalMs: 0,
+      }),
+      parsed: parseCliqWebhookPayload(dmPayload())!,
+      client,
+    });
+
+    expect(client.calls).toEqual([
+      { op: "send", messageId: "m1", to: "u1", text: "💭 …", isDm: true },
+      expect.objectContaining({ op: "edit", messageId: "m1", accepted: true }),
+      { op: "edit", messageId: "m1", chatId: "chat-u1", text: "Final answer after fallback", accepted: false },
+      { op: "delete", messageId: "m1", chatId: "chat-u1", accepted: true },
+      { op: "send", messageId: "m2", to: "u1", text: "Final answer after fallback", isDm: true },
+    ]);
+
+    expect(visibleNonDeletedEntries(client)).toEqual([
+      { id: "m2", text: "Final answer after fallback" },
+    ]);
+  });
+
+  it("reuses the draft for chunk one when the final overflows", async () => {
+    const client = makeCompleteTurnClient({ placeholderChatId: "chat-u1" });
+    const firstChunk = "A".repeat(5_000);
+    const secondChunk = "B".repeat(120);
+    const finalContent = `${firstChunk}${secondChunk}`;
+
+    const runtime = makeScriptedRuntime(async (turn) => {
+      await turn.replyOptions?.onPlanUpdate?.({
+        phase: "update",
+        steps: [{ step: "Collecting logs", status: "in_progress" }],
+      });
+      await turn.delivery.deliver({ text: finalContent }, { final: true });
+    });
+
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "💭 …", animate: "off" },
+        refreshToken: "rt",
+        blockStreaming: true,
+        streaming: { mode: "progress", progress: {} },
+        streamingMinEditIntervalMs: 0,
+      }),
+      parsed: parseCliqWebhookPayload(dmPayload())!,
+      client,
+    });
+
+    const nonDeleted = visibleNonDeletedEntries(client);
+    expect(nonDeleted).toHaveLength(2);
+    expect(nonDeleted[0].id).toBe("m1");
+    expect(nonDeleted[0].text).toBe(firstChunk);
+    expect(nonDeleted[1].id).toBe("m2");
+    expect(nonDeleted[1].text).toBe(secondChunk);
+    expect(nonDeleted.map((entry) => entry.text).join("")).toBe(finalContent);
+  });
+
+  it.each([
+    {
+      mode: "progress" as const,
+      driveTurn: async (turn: ScriptedTurn) => {
+        expect(turn.replyOptions?.onPartialReply).toBeUndefined();
+        await turn.replyOptions?.onPlanUpdate?.({
+          phase: "update",
+          steps: [{ step: "Inspecting", status: "in_progress" }],
+        });
+        await turn.delivery.deliver({ text: "Progress finished." }, { final: true });
+      },
+      expectVisible: "Progress finished.",
+      expectIntermediateEdit: true,
+    },
+    {
+      mode: "partial" as const,
+      driveTurn: async (turn: ScriptedTurn) => {
+        expect(typeof turn.replyOptions?.onPartialReply).toBe("function");
+        await turn.replyOptions?.onPartialReply?.({ text: "Partial draft preview" });
+        await turn.delivery.deliver(
+          { text: "Partial draft preview\n\nPartial finished." },
+          { final: true },
+        );
+      },
+      expectVisible: "Partial draft preview\n\nPartial finished.",
+      expectIntermediateEdit: true,
+    },
+    {
+      mode: "block" as const,
+      driveTurn: async (turn: ScriptedTurn) => {
+        expect(turn.replyOptions?.onPartialReply).toBeUndefined();
+        expect(turn.replyOptions?.onToolStart).toBeUndefined();
+        await turn.delivery.deliver({ text: "Block chunk 1" });
+        await turn.delivery.deliver({ text: "Block finished." }, { final: true });
+      },
+      expectVisible: "Block chunk 1\n\nBlock finished.",
+      expectIntermediateEdit: true,
+    },
+    {
+      mode: "off" as const,
+      driveTurn: async (turn: ScriptedTurn) => {
+        expect(turn.replyOptions?.onPartialReply).toBeUndefined();
+        expect(turn.replyOptions?.onToolStart).toBeUndefined();
+        await turn.delivery.deliver({ text: "Off finished." }, { final: true });
+      },
+      expectVisible: "Off finished.",
+      expectIntermediateEdit: false,
+    },
+  ])(
+    "preserves full-lifecycle semantics for mode=$mode",
+    async ({ mode, driveTurn, expectVisible, expectIntermediateEdit }) => {
+      const client = makeCompleteTurnClient({ placeholderChatId: "chat-u1" });
+      const runtime = makeScriptedRuntime(driveTurn);
+
+      await dispatchCliqInbound({
+        runtime,
+        cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+        account: account({
+          thinking: { mode: mode === "off" ? "off" : "placeholder", text: "💭 …", animate: "off" },
+          refreshToken: "rt",
+          blockStreaming: mode !== "off",
+          streaming: { mode, progress: {} },
+          streamingMinEditIntervalMs: 0,
+        }),
+        parsed: parseCliqWebhookPayload(dmPayload())!,
+        client,
+      });
+
+      const edits = client.calls.filter((c): c is Extract<ClientCall, { op: "edit" }> => c.op === "edit");
+      if (expectIntermediateEdit) {
+        expect(edits.length).toBeGreaterThanOrEqual(1);
+      } else {
+        expect(edits).toHaveLength(0);
+      }
+
+      const visible = visibleNonDeletedEntries(client);
+      expect(visible).toHaveLength(1);
+      expect(visible[0].text).toBe(expectVisible);
+    },
+  );
+
+  it.each([
+    {
+      preview: "on" as const,
+      expectedMode: "partial" as const,
+      expectPartialCallback: true,
+      deliverText: "Preview in flight\n\nResolved for on",
+    },
+    {
+      preview: "off" as const,
+      expectedMode: "off" as const,
+      expectPartialCallback: false,
+      deliverText: "Resolved for off",
+    },
+  ])(
+    "resolves legacy preview=$preview through a complete turn",
+    async ({ preview, expectedMode, expectPartialCallback, deliverText }) => {
+      const cfg = {
+        channels: {
+          cliq: {
+            clientId: "c",
+            clientSecret: "s",
+            botId: "b",
+            refreshToken: "rt",
+            streaming: { preview },
+          },
+        },
+      } as never;
+      const resolved = resolveCliqConfig(cfg);
+      expect(resolved.streaming.mode).toBe(expectedMode);
+
+      const client = makeCompleteTurnClient({ placeholderChatId: "chat-u1" });
+      const runtime = makeScriptedRuntime(async (turn) => {
+        if (expectPartialCallback) {
+          expect(typeof turn.replyOptions?.onPartialReply).toBe("function");
+          await turn.replyOptions?.onPartialReply?.({ text: "Preview in flight" });
+        } else {
+          expect(turn.replyOptions?.onPartialReply).toBeUndefined();
+        }
+        await turn.delivery.deliver({ text: deliverText }, { final: true });
+      });
+
+      await dispatchCliqInbound({
+        runtime,
+        cfg,
+        account: resolved,
+        parsed: parseCliqWebhookPayload(dmPayload())!,
+        client,
+      });
+
+      expect(visibleNonDeletedEntries(client)).toEqual([
+        { id: "m1", text: deliverText },
+      ]);
+    },
+  );
 });
