@@ -391,10 +391,16 @@ Add the `cliq` channel to your `openclaw.json` (or via `openclaw setup` / the se
          "acknowledged": true,
          "label": "Pay-Jet"
        },
+      "streaming": { "preview": "on" }, // default; set "off" for a single final reply
       "thinking": {
         "mode": "placeholder",
         "animate": "dots"
       }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "blockStreamingDefault": "on" // fleet/global Core default; Cliq preview-on also asks per turn
     }
   },
   "session": {
@@ -518,7 +524,48 @@ Every field except the required ones has a sensible default; `groups` / `thinkin
 
   **What you see on a default install.** `streaming.preview` defaults to `"on"` (including existing installs that never set the key). The thinking placeholder, when present, is the same message the final reply edits in place. A 2026-08-29 production DM (Mara, defaults, `refreshToken` present — issue [#195](https://github.com/sprintberlin/openclaw-cliq/issues/195)) posted a 4-character placeholder (`textLen=4`), sat through ~30s of model + tool work with no intermediate PUTs, then applied one final edit (`textLen=117`, HTTP 204). #175 and #185 never documented a live Cliq DM round-trip; that Mara miss is the first production evidence.
 
-  **`onPartialReply` is not guaranteed.** Growing edits *would* come from OpenClaw `onPartialReply` snapshots plus coalesced block `deliver()` calls. On OpenClaw `2026.8.1-beta.3`, openai-completions models with `thinking` often do **not** emit those snapshots (Core returns before `emitAssistantStreamData` when `openclawDelivery.textPhaseRequiresTerminal` is set — [openclaw/openclaw#132615](https://github.com/openclaw/openclaw/issues/132615)). Live DMs therefore usually stay on the placeholder until one final edit; do not expect reliable token-level growth until that upstream issue lands and a live Cliq round-trip proves it. Plugin unit tests that call `onPartialReply` themselves do not prove the runtime emits it. Coalesced block `deliver()` calls can still edit the same message when Core flushes a block.
+  **Two switches, not one.** OpenClaw block streaming, Cliq one-message live-edit, and thinking placeholder animation are different layers:
+
+  | Switch | Layer | What it does |
+  | --- | --- | --- |
+  | `agents.defaults.blockStreamingDefault` | OpenClaw block streaming | Fleet/global Core default. Affects channels or turns that do **not** set a per-turn override. |
+  | `channels.cliq.streaming.preview` | Cliq one-message live-edit | Enables the plugin live-edit path. When `"on"`, the inbound turn passes `disableBlockStreaming: false`, so Core treats **that Cliq turn** as block/partial delivery even if the global default is off. |
+  | `thinking.animate` | thinking placeholder animation | Cycles placeholder frames. Skipped while preview is on so frames cannot overwrite the live-edit draft; still runs when preview is `"off"`. |
+
+  Setting only `agents.defaults.blockStreamingDefault: "on"` is not enough to make a terminal-held model grow, and no config switch can invent text the provider/Core holds until the end of the turn.
+
+  **Working streaming configuration.** Verified live on Mara and Pay-Jet Franzi (plugin `7ab02f9` / 0.1.10, OpenClaw `2026.8.1-beta.3`, `refreshToken` present — issue [#205](https://github.com/sprintberlin/openclaw-cliq/issues/205)):
+
+  ```jsonc
+  {
+    "agents": {
+      "defaults": {
+        "blockStreamingDefault": "on"
+      }
+    },
+    "channels": {
+      "cliq": {
+        "refreshToken": "<user-context refresh token from §3c>",
+        "streaming": { "preview": "on" },
+        "thinking": {
+          "mode": "placeholder",
+          "animate": "off"
+        }
+      }
+    }
+  }
+  ```
+
+  **Guarantee.** Same message plus in-place final edit when message ids and `ZohoCliq.Messages.UPDATE` are available. Progressive intermediate growth only when the selected model/runtime emits intermediate text.
+
+  **Live model matrix** (same host Mara, same plugin, same OpenClaw, same 80-sentence prompt, both switches on, `thinking=medium`):
+
+  | Model | Shape |
+  | --- | --- |
+  | `sprintcx/tier-1` + `thinking=medium` | `send textLen=4` → (46 s, no intermediate PUT) → one `edit textLen=4097`. This path can stamp `openclawDelivery.textPhaseRequiresTerminal` and return before `emitAssistantStreamData` ([openclaw/openclaw#132615](https://github.com/openclaw/openclaw/issues/132615)). |
+  | `sprintcx/tier-2` + `thinking=medium` | monotonic growth `textLen=4` → `textLen=68` → `textLen=1269` → `textLen=2075` → `textLen=2878` → `textLen=3493` → `textLen=4187` → `textLen=4942`. Pay-Jet Franzi independently showed the same shape. |
+
+  OpenAI-completions + `thinking` is therefore **not** a universal snapshot block. Plugin unit tests that call `onPartialReply` themselves do not prove the runtime emits it. Coalesced block `deliver()` calls can still edit the same message when Core flushes a block.
 
   **Snapshots are not always emitted, and the first one can be tiny.** A 2026-08-30 Mara DM (issue [#203](https://github.com/sprintberlin/openclaw-cliq/issues/203)) showed two identical prompts taking different shapes on the same host and model: one jumped straight from the placeholder to the final answer, the other emitted snapshots starting at `textLen=1`. Snapshots that carry no more content than the placeholder text itself are ignored, so a 1-character draft never replaces the acknowledgement bubble.
 

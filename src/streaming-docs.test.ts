@@ -7,11 +7,13 @@ const readme = readFileSync(join(ROOT, "README.md"), "utf8");
 const changelog = readFileSync(join(ROOT, "CHANGELOG.md"), "utf8");
 
 describe("README streaming caveats (issues #195 and #203)", () => {
-  it("does not promise reliable token-level growth on the pinned runtime", () => {
-    expect(readme).toContain(
-      "Live DMs therefore usually stay on the placeholder until one final edit",
+  it("does not collapse live evidence into a universal Core claim", () => {
+    expect(readme).not.toMatch(
+      /openai-completions models with `thinking` do \*\*not\*\* emit those snapshots/,
     );
-    expect(readme).toContain("do not expect reliable token-level growth");
+    expect(readme).not.toContain(
+      "Live DMs therefore stay on the placeholder until one final edit",
+    );
   });
 
   it("documents that snapshots can arrive and guards a tiny first snapshot", () => {
@@ -20,15 +22,57 @@ describe("README streaming caveats (issues #195 and #203)", () => {
     expect(changelog).toContain("issue #203");
   });
 
-  it("links the Core partial-reply blocker", () => {
+  it("links the Core partial-reply blocker as a model-specific path, not a universal rule", () => {
     expect(readme).toContain("openclaw/openclaw#132615");
     expect(readme).toContain("openclawDelivery.textPhaseRequiresTerminal");
+    expect(readme).toContain("sprintcx/tier-1");
+    expect(readme).toContain("sprintcx/tier-2");
   });
 
   it("preserves the plugin-side capability without inventing events", () => {
     expect(readme).toContain(
       "Coalesced block `deliver()` calls can still edit the same message when Core flushes a block",
     );
+  });
+});
+
+describe("README streaming switches and live model matrix (issue #205)", () => {
+  it("shows a working streaming configuration with both switches", () => {
+    expect(readme).toContain("**Working streaming configuration.**");
+    expect(readme).toContain('"blockStreamingDefault": "on"');
+    expect(readme).toContain('"preview": "on"');
+    expect(readme).toContain('"mode": "placeholder"');
+    expect(readme).toContain('"animate": "off"');
+  });
+
+  it("separates Core block streaming, Cliq live-edit, and thinking animation", () => {
+    expect(readme).toContain("agents.defaults.blockStreamingDefault");
+    expect(readme).toContain("channels.cliq.streaming.preview");
+    expect(readme).toContain("thinking.animate");
+    expect(readme).toMatch(/OpenClaw block streaming/);
+    expect(readme).toMatch(/Cliq one-message live-edit/);
+    expect(readme).toMatch(/thinking placeholder animation/);
+  });
+
+  it("records the live tier-1 vs tier-2 matrix instead of a universal Core claim", () => {
+    expect(readme).toContain("textLen=4097");
+    expect(readme).toContain("textLen=68");
+    expect(readme).toContain("textLen=4942");
+    expect(readme).toContain("thinking=medium");
+  });
+
+  it("states the actual guarantee: same message plus in-place final, growth only when the model emits", () => {
+    expect(readme).toMatch(/same message/i);
+    expect(readme).toMatch(/progressive intermediate growth only when/i);
+  });
+
+  it("changelog and roadmap no longer claim Core never invokes the callback", () => {
+    expect(changelog).toContain("issue #205");
+    expect(changelog).not.toMatch(
+      /Core returns before `emitAssistantStreamData` for openai-completions streams with `thinking`/,
+    );
+    const roadmap = readFileSync(join(ROOT, "ROADMAP.md"), "utf8");
+    expect(roadmap).not.toContain("so Core never invokes the callback");
   });
 });
 
