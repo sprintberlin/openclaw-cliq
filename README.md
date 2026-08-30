@@ -556,11 +556,37 @@ Every field except the required ones has a sensible default; `groups` / `thinkin
   }
   ```
 
+  **What each mode actually means.** The four modes are different lanes, not four intensities of the same thing:
+
+  | Mode | What drives the visible draft | What it is not |
+  | --- | --- | --- |
+  | `"progress"` | Core **work events** (tool / item / plan / approval / command / patch / narration) update one draft while the turn runs. It never depends on answer snapshots, so a model that emits no intermediate text still shows visible work. | Not an answer preview — the answer arrives only as the final message. |
+  | `"partial"` | Core **answer previews** (`onPartialReply`) update the draft, and only when the model/runtime actually emits them. | Not a work log — a terminal-held model shows nothing until the final. |
+  | `"block"` | Core **block semantics**: each flushed reply block is folded into the same draft. | Not token streaming. |
+  | `"off"` | Nothing intermediate; the final reply is delivered normally. | Not a fallback for the modes above — it disables live-edit entirely. |
+
+  **Progress-mode configuration.** To show Core work events on a model that holds its answer text until the end:
+
+  ```jsonc
+  {
+    "channels": {
+      "cliq": {
+        "refreshToken": "<user-context refresh token from §3c>",
+        "streaming": { "mode": "progress" },
+        "thinking": {
+          "mode": "placeholder",
+          "animate": "off"
+        }
+      }
+    }
+  }
+  ```
+
   **Modes and legacy compatibility.** `"partial"` preserves the current answer-preview behavior; `"block"` selects Core's block preview shape; `"progress"` opts into the Core progress-draft compositor (`createChannelProgressDraftCompositor`) and its configuration surface (`streaming.progress.toolProgress`, `commentary`, `narration`, `commandText`, `label` / `labels`, `maxLines`, `maxLineChars`); `"off"` disables live-edit. In `"progress"` mode, Core `onToolStart` / `onItemEvent` / `onPlanUpdate` / `onApprovalEvent` / `onCommandOutput` / `onPatchSummary` / `onNarrationUpdate` callbacks drive one draft, and answer snapshots cannot overwrite that draft before final delivery. Reasoning progress is forwarded only when the existing OpenClaw `reasoningDefault` / session `reasoningLevel` is `"stream"`. The plugin reads these settings with OpenClaw's shared streaming helpers instead of maintaining a second parser or defaults. Legacy `streaming.preview: "on" | "off"` remains loadable and maps to `"partial" | "off"`; an explicit `streaming.mode` wins if both keys are present. Run `openclaw doctor --fix` to rewrite legacy root and per-account config safely.
 
   **What `progress` renders.** Core owns the status headline, plan checklist, sanitized rolling lines, line identity/order, and `maxLines` / `maxLineChars` truncation. Cliq converts that composed Markdown once with `markdownToCliq`, caps the visible draft at 5000 characters, and reuses a text thinking placeholder when present; otherwise it creates one editable text message after Core's start gate. Updates are throttled and coalesced by `streaming.minEditIntervalMs`, while Core's `flush` requests bypass the wait. A fitting final answer replaces the same message even when it is shorter; a long final uses that message for the first chunk and normal messages for overflow. If final replacement fails, the complete final is sent normally and stale-draft deletion is best-effort because Zoho may reject deletion of bot messages. Card-only replies retire an editable text draft with the existing placeholder fallback; no-reply errors replace it with failure text, and benign skips retire it to a minimal marker. Progress drafts stay off for v2 DMs, v3 channel posts, and `thinking.mode: "card"` because those surfaces cannot be converted into editable text in place. This requires a `refreshToken` with `ZohoCliq.Messages.UPDATE`.
 
-  **Guarantee.** Same message plus in-place final edit when message ids and `ZohoCliq.Messages.UPDATE` are available. Progressive intermediate growth only when the selected model/runtime emits intermediate text.
+  **Guarantee.** Same message plus in-place final edit when message ids and `ZohoCliq.Messages.UPDATE` are available. Progressive intermediate growth only when the selected model/runtime emits intermediate text — that caveat is about **answer** text, so it applies to `"partial"` and `"block"`. In `"progress"` mode the intermediate content is Core work events, so visible movement does not depend on the model emitting answer snapshots.
 
   **Live model matrix** (same host Mara, same plugin, same OpenClaw, same 80-sentence prompt, both switches on, `thinking=medium`):
 

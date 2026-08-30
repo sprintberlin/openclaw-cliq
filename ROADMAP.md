@@ -48,9 +48,13 @@
 
 ## Phase 3 — OpenClaw Core progress drafts
 
-- **Prove progress-draft delivery end to end (issue #210).** Add an integration harness for
-  progress event ordering, edit throttling, finalization, failure cleanup, and one-message
-  identity; document the operator config and complete the isolated Franzi acceptance run.
+- **Complete the controlled progress-mode live acceptance runs (issue #210).** Run one harmless
+  read-only turn on Mara (`sprintcx/tier-1`) and one on Franzi (`sprintcx/tier-2`) with
+  `streaming.mode: "progress"`, and capture redacted evidence that progress edits precede any
+  final answer text, that the lines come from Core work events rather than model commentary,
+  that one message id carries placeholder → progress → final with no stale draft, and whether
+  the Cliq client actually redraws each edit (separate from HTTP 204 acceptance). Mara must stay
+  on Tier-1 afterwards. Needs the live hosts, so it stays a human step.
 - **Keep preview-on turns visible during silent phases (issue #211).** Animate the thinking
   placeholder without racing or overwriting Core progress/answer edits, and stop animation on
   the first substantive progress or reply update.

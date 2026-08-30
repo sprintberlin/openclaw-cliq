@@ -126,6 +126,27 @@ describe("README streaming caveats (issue #194)", () => {
     );
   });
 
+  it("distinguishes the four streaming lanes for operators (issue #210)", () => {
+    expect(readme).toContain("**What each mode actually means.**");
+    expect(readme).toContain("Core **work events**");
+    expect(readme).toContain("Core **answer previews**");
+    expect(readme).toContain("Core **block semantics**");
+    expect(readme).toContain("Not token streaming.");
+    expect(readme).toContain("the final reply is delivered normally");
+  });
+
+  it("shows a progress-mode configuration example (issue #210)", () => {
+    expect(readme).toContain("**Progress-mode configuration.**");
+    expect(readme).toContain('"streaming": { "mode": "progress" }');
+  });
+
+  it("scopes the answer-growth caveat to the preview lanes (issue #210)", () => {
+    expect(readme).toContain(
+      "In `\"progress\"` mode the intermediate content is Core work events",
+    );
+    expect(changelog).toContain("issue #210");
+  });
+
   it("names the opt-out keys for a normal message", () => {
     const streaming = readme.slice(readme.indexOf("- **`streaming`**"));
     expect(streaming).toContain('streaming.mode: "off"');

@@ -2158,7 +2158,7 @@
         "replyToModeByChatType": { "label": "Per-chat-type reply-to mode override (direct / group / channel)" },
         "groupPolicy": { "label": "Group admission policy", "options": ["open", "allowlist", "disabled"] },
         "groups": { "label": "Per-group config (keyed by channel unique name)" },
-        "streaming": { "label": "Streaming preview mode (mode: off | partial | block | progress; unset or legacy preview:on resolves to partial; preview:off resolves to off; explicit mode wins over legacy preview)", "options": ["off", "partial", "block", "progress"] },
+        "streaming": { "label": "Live-edit mode (progress: one Core work-event draft, no answer-preview dependency; partial: answer previews only when the model emits them; block: Core block semantics, not token streaming; off: final-only delivery; explicit mode wins over legacy preview)", "options": ["off", "partial", "block", "progress"] },
         "reactions": { "label": "Agent reaction guidance", "options": ["minimal", "extensive", "off"] },
         "thinking": { "label": "Instant acknowledgement (default: animated dots placeholder; set mode or animate to \"off\" to disable)", "options": ["off", "placeholder", "card"] },
         "welcome": { "label": "Welcome message on subscribe (greeting DM on first contact)" },

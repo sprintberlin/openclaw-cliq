@@ -549,6 +549,23 @@ describe("cliq streaming manifest defaults (issue #181 and #207)", () => {
     expect(resolved.streaming.mode).toBe("progress");
     expect(resolved.blockStreaming).toBe(true);
   });
+
+  it("uiHints distinguish the four streaming lanes (issue #210)", () => {
+    const uiHints = (manifest as unknown as {
+      channelConfigs: {
+        cliq: {
+          uiHints?: Record<string, { label?: string; options?: string[] }>;
+        };
+      };
+    }).channelConfigs.cliq.uiHints;
+    const label = uiHints?.streaming?.label ?? "";
+    expect(uiHints?.streaming?.options).toEqual(["off", "partial", "block", "progress"]);
+    expect(label).toContain("Core work-event draft");
+    expect(label).toContain("no answer-preview dependency");
+    expect(label).toContain("answer previews only when the model emits them");
+    expect(label).toContain("not token streaming");
+    expect(label).toContain("final-only delivery");
+  });
 });
 
 describe("cliq thinking manifest defaults (issue #89)", () => {
