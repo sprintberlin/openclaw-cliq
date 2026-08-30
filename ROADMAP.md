@@ -145,14 +145,12 @@ blocker is resolved.
   **openclaw/openclaw#130773**. Once it lands, assert the real count in the gateway smoke and
   drop the workaround note from `openclaw cliq webhook-route` / README §2 /
   `docs/setup/public-webhook.md`.
-- **Live `onPartialReply` snapshots during openai-completions thinking turns.** The plugin
-  already forwards `replyOptions.onPartialReply` into the live-edit draft when
-  `streaming.preview` is on. OpenClaw `2026.8.1-beta.3` stamps
-  `openclawDelivery.textPhaseRequiresTerminal: true` on those streams and returns before
-  `emitAssistantStreamData`, so Core never invokes the callback. Live DMs stay on the
-  placeholder until one final edit. Tracked upstream: **openclaw/openclaw#132615**. Do not
-  claim token-level growth until that lands and a live Cliq DM proves monotonically
-  increasing `textLen` on one `messageId`.
+- **Live `onPartialReply` growth on additional models.** Confirm models other than
+  `sprintcx/tier-2` + `thinking=medium` before documenting them as growing.
+  `sprintcx/tier-1` + `thinking=medium` can still sit on the placeholder until one
+  final edit (`openclawDelivery.textPhaseRequiresTerminal` /
+  **openclaw/openclaw#132615**). No config switch invents intermediate text the
+  provider holds until terminal.
 - **Live Franzi `/new` identity acceptance after the issue #204 handler repair.** Confirm on
   Franzi that the live Message Handler now forwards `eventId`, that `/new` → `test` → `/new`
   reaches Core as two `evt:` turns, and that a replay of the same webhook event still
