@@ -115,6 +115,17 @@ describe("README streaming caveats (issue #194)", () => {
     expect(changelog).toContain("issue #208");
   });
 
+  it("documents progress-mode rendering and finalization (issue #209)", () => {
+    expect(readme).toContain("**What `progress` renders.**");
+    expect(readme).toContain("converts that composed Markdown once");
+    expect(readme).toContain("a long final uses that message for the first chunk");
+    expect(readme).toContain("v2 DMs, v3 channel posts, and `thinking.mode: \"card\"`");
+    expect(changelog).toContain("issue #209");
+    expect(changelog).not.toContain(
+      "Rendering and in-place finalization of that draft remain in issues #209–#210",
+    );
+  });
+
   it("names the opt-out keys for a normal message", () => {
     const streaming = readme.slice(readme.indexOf("- **`streaming`**"));
     expect(streaming).toContain('streaming.mode: "off"');

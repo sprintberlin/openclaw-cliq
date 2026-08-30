@@ -97,6 +97,7 @@ export interface LiveEditDeliverOptions {
    * it); it is resolved lazily via `resolveChannelChatId` on the first edit.
    */
   initialDraft?: { messageId: string; chatId?: string; text?: string };
+  initialDraftEditable?: boolean;
   /**
    * Minimum wall-clock distance between two preview edits of the same draft
    * (issue #175). Intermediate blocks that arrive inside the window are
@@ -123,6 +124,9 @@ export interface LiveEditDeliverInfo {
   /** The SDK's delivery kind (`"block"` / `"final"` / …), when available. */
   kind?: string;
   snapshot?: boolean;
+  progress?: boolean;
+  flush?: boolean;
+  rendered?: boolean;
 }
 
 export interface LiveEditDeliverStats {
@@ -218,20 +222,6 @@ export function createLiveEditDeliver(
    */
   let placeholderConsumed = !opts.initialDraft;
 
-  const attach = <
-    F extends (
-      payload: { text?: string; mediaUrl?: string; channelData?: unknown },
-      info?: LiveEditDeliverInfo,
-    ) => Promise<void>,
-  >(
-    fn: F,
-  ): F => {
-    (fn as unknown as { __stats: LiveEditDeliverStats }).__stats = stats;
-    (fn as unknown as { __placeholderConsumed: () => boolean }).__placeholderConsumed =
-      () => placeholderConsumed;
-    return fn;
-  };
-
   // Live-edit state (per dispatch turn). When `initialDraft` is supplied the
   // first edit targets the pre-posted placeholder instead of a fresh send.
   let draftMessageId: string | undefined = opts.initialDraft?.messageId;
@@ -258,6 +248,28 @@ export function createLiveEditDeliver(
   /** Newest rendered text waiting to be written after the in-flight PUT. */
   let pendingDraftText: string | undefined;
   let pendingDraftIsFinal = false;
+  let progressDraftActive = false;
+  let progressDraftStale = false;
+  let progressDraftDisabled = false;
+  let wakeThrottle: (() => void) | undefined;
+
+  const attach = <
+    F extends (
+      payload: { text?: string; mediaUrl?: string; channelData?: unknown },
+      info?: LiveEditDeliverInfo,
+    ) => Promise<void>,
+  >(
+    fn: F,
+  ): F => {
+    (fn as unknown as { __stats: LiveEditDeliverStats }).__stats = stats;
+    (fn as unknown as { __placeholderConsumed: () => boolean }).__placeholderConsumed =
+      () => placeholderConsumed;
+    (fn as unknown as { __clearProgress: () => Promise<void> }).__clearProgress =
+      clearProgressDraft;
+    (fn as unknown as { __progressActive: () => boolean }).__progressActive =
+      () => progressDraftActive || progressDraftStale;
+    return fn;
+  };
 
   /** Resolve the chat id for a group draft when missing (cached on the client). */
   const resolveDraftChatId = async (): Promise<string | undefined> => {
@@ -277,20 +289,61 @@ export function createLiveEditDeliver(
   };
 
   /** Best-effort delete the current draft (placeholder) so it does not linger. */
-  const safeDeleteDraft = async (): Promise<void> => {
-    if (!draftMessageId) return;
+  const safeDeleteDraft = async (): Promise<boolean> => {
+    if (!draftMessageId) return false;
     const chatId = await resolveDraftChatId();
-    if (!chatId) return;
+    if (!chatId) return false;
     try {
       await client.deleteMessage({ chatId, messageId: draftMessageId });
+      return true;
     } catch {
-      // Swallow: best-effort cleanup; the turn must not break.
+      return false;
     }
   };
 
+  const sealDraft = (): void => {
+    draftMessageId = undefined;
+    draftChatId = undefined;
+    accumulated = "";
+    latestSnapshot = "";
+    appliedDraftText = undefined;
+    pendingDraftText = undefined;
+    pendingDraftIsFinal = false;
+    progressDraftActive = false;
+    progressDraftStale = false;
+  };
+
+  const clipRenderedToLimit = (richText: string): string => {
+    const first = chunkMessage(richText, limit)[0] ?? "";
+    return /[\uD800-\uDBFF]$/.test(first) ? first.slice(0, -1) : first;
+  };
+
+  const clearProgressDraft = async (): Promise<void> => {
+    if (!progressDraftActive && !progressDraftStale) return;
+    placeholderConsumed = true;
+    const retired = await editDraft(CLIQ_CARD_PLACEHOLDER_FINAL, {
+      final: true,
+      allowShrink: true,
+    });
+    if (retired) {
+      accumulated = "";
+      latestSnapshot = "";
+      pendingDraftText = undefined;
+      pendingDraftIsFinal = false;
+      progressDraftActive = false;
+      progressDraftStale = false;
+      return;
+    }
+    await safeDeleteDraft();
+    sealDraft();
+  };
+
   /** Send a fresh message and make it the current draft. */
-  const sendNew = async (plainText: string): Promise<void> => {
-    const rich = markdownToCliq(plainText);
+  const sendNew = async (
+    text: string,
+    sendOpts: { rendered?: boolean } = {},
+  ): Promise<void> => {
+    const rich = sendOpts.rendered === true ? text : markdownToCliq(text);
     const chunks = chunkMessage(rich, limit);
     if (chunks.length === 1) {
       // Fits in one message → becomes the editable draft.
@@ -311,7 +364,7 @@ export function createLiveEditDeliver(
         draftChatId = undefined;
       }
       draftChatIdResolved = true;
-      accumulated = plainText;
+      accumulated = text;
       appliedDraftText = chunks[0];
       lastEditAt = now();
       return;
@@ -338,7 +391,7 @@ export function createLiveEditDeliver(
    */
   const editDraft = async (
     richText: string,
-    editOpts: { throttle?: boolean; final?: boolean } = {},
+    editOpts: { throttle?: boolean; final?: boolean; allowShrink?: boolean } = {},
   ): Promise<boolean> => {
     if (!draftMessageId || !draftChatId) return false;
     if (appliedDraftText === richText) {
@@ -346,6 +399,7 @@ export function createLiveEditDeliver(
       return true;
     }
     if (
+      editOpts.allowShrink !== true &&
       appliedDraftText !== undefined &&
       richText.length < appliedDraftText.length
     ) {
@@ -359,6 +413,7 @@ export function createLiveEditDeliver(
     // (or pending) must never overwrite it.
     const newestKnown = pendingDraftText ?? appliedDraftText;
     if (
+      editOpts.allowShrink !== true &&
       newestKnown !== undefined &&
       newestKnown.length > richText.length &&
       newestKnown.startsWith(richText)
@@ -372,6 +427,10 @@ export function createLiveEditDeliver(
       stats.coalesced++;
       pendingDraftText = richText;
       pendingDraftIsFinal = pendingDraftIsFinal || Boolean(editOpts.final);
+      if (editOpts.final) {
+        wakeThrottle?.();
+        wakeThrottle = undefined;
+      }
       return editInFlight;
     }
     const run = (async (): Promise<boolean> => {
@@ -381,7 +440,13 @@ export function createLiveEditDeliver(
         if (!isFinal && minEditIntervalMs > 0 && lastEditAt !== undefined) {
           const waitMs = lastEditAt + minEditIntervalMs - now();
           if (waitMs > 0) {
-            await sleep(waitMs);
+            await Promise.race([
+              sleep(waitMs),
+              new Promise<void>((resolve) => {
+                wakeThrottle = resolve;
+              }),
+            ]);
+            wakeThrottle = undefined;
             if (pendingDraftText !== undefined) {
               target = pendingDraftText;
               isFinal = pendingDraftIsFinal;
@@ -525,10 +590,10 @@ export function createLiveEditDeliver(
     // Reconcile the placeholder (if any): edit it to the card's body text or
     // a minimal marker so it doesn't linger as `💭 …` nor trigger the
     // stray-placeholder → failure-notice cleanup.
-    if (opts.initialDraft && draftMessageId) {
+    if ((opts.initialDraft || progressDraftActive || progressDraftStale) && draftMessageId) {
       placeholderConsumed = true;
       const chatId = await resolveDraftChatId();
-      if (chatId) {
+      if (chatId && opts.initialDraftEditable !== false) {
         const finalText = firstText ?? CLIQ_CARD_PLACEHOLDER_FINAL;
         try {
           await client.editMessage({
@@ -538,16 +603,12 @@ export function createLiveEditDeliver(
           });
           stats.edits++;
         } catch {
-          // Best-effort: the card is already delivered; a lingering
-          // placeholder here is preferable to a misleading failure notice
-          // (and consumed=true keeps the cleanup from firing it).
+          await safeDeleteDraft();
         }
+      } else if (chatId) {
+        await safeDeleteDraft();
       }
-      // Seal the draft — the card is a new message and can't be re-edited.
-      draftMessageId = undefined;
-      draftChatId = undefined;
-      accumulated = "";
-      appliedDraftText = undefined;
+      sealDraft();
     }
     return true;
   };
@@ -573,35 +634,26 @@ export function createLiveEditDeliver(
 
       if (opts.initialDraft && draftMessageId && !firstDeliverDone) {
         firstDeliverDone = true;
-        // Entering this branch resolves the placeholder one way or another
-        // (edit into the reply, or delete + fresh send on edit failure).
         placeholderConsumed = true;
-        const chatId = await resolveDraftChatId();
-        if (chatId) {
-          if (await editDraft(chunks[0])) {
-            // Send overflow chunks as fresh messages; the draft now holds
-            // the first chunk and is sealed (no further edits this turn).
-            for (let i = 1; i < chunks.length; i++) {
-              await client.sendMessage({ to, text: chunks[i], isDm });
-              stats.sends++;
+        if (opts.initialDraftEditable === false) {
+          await safeDeleteDraft();
+          sealDraft();
+        } else {
+          const chatId = await resolveDraftChatId();
+          if (chatId) {
+            if (await editDraft(chunks[0])) {
+              for (let i = 1; i < chunks.length; i++) {
+                await client.sendMessage({ to, text: chunks[i], isDm });
+                stats.sends++;
+              }
+              sealDraft();
+              return;
             }
-            // Mark the draft as consumed so a hypothetical second deliver
-            // sends fresh (does not try to re-edit the now-final message).
-            draftMessageId = undefined;
-            draftChatId = undefined;
-            accumulated = "";
-            appliedDraftText = undefined;
-            return;
           }
-          // Edit failed — fall through to delete + fresh send.
+          stats.editFailures++;
+          await safeDeleteDraft();
+          sealDraft();
         }
-        // Could not edit cleanly (no chatId, or edit rejected). Delete the
-        // stray placeholder and send the reply as fresh message(s).
-        stats.editFailures++;
-        await safeDeleteDraft();
-        draftMessageId = undefined;
-        draftChatId = undefined;
-        appliedDraftText = undefined;
       }
 
       for (const chunk of chunks) {
@@ -621,14 +673,75 @@ export function createLiveEditDeliver(
   ) => {
     const isFinalBlock = info?.final === true || info?.kind === "final";
     const isSnapshot = info?.snapshot === true;
-    // A card reply (channelData.cliqCard) bypasses the in-place text-edit
-    // loop — see `deliverCard`. Commands (/model, /models) emit a card with
-    // little/no top-level text; without this branch the empty-text guard
-    // below would drop it and the placeholder would become the failure
-    // notice.
+    const isProgress = info?.progress === true;
+    const hadProgressDraft = progressDraftActive || progressDraftStale;
+    const allowShrink = isProgress || hadProgressDraft;
     if (await deliverCard(payload)) return;
     const text = payload.text;
     if (!text) return;
+
+    if (!isProgress && opts.initialDraftEditable === false && draftMessageId) {
+      placeholderConsumed = true;
+      await safeDeleteDraft();
+      sealDraft();
+      await sendNew(text);
+      return;
+    }
+
+    if (isProgress) {
+      if (progressDraftDisabled) return;
+      const rich = info?.rendered === true ? text : markdownToCliq(text);
+      const clipped = clipRenderedToLimit(rich);
+      if (!clipped) return;
+      if (opts.initialDraft && opts.initialDraftEditable === false) {
+        progressDraftDisabled = true;
+        return;
+      }
+      if (!draftMessageId) {
+        if (!isDm) {
+          try {
+            draftChatId = (await client.resolveChannelChatId(to)) ?? undefined;
+          } catch {
+            draftChatId = undefined;
+          }
+          draftChatIdResolved = true;
+          if (!draftChatId) {
+            progressDraftDisabled = true;
+            return;
+          }
+        }
+        await sendNew(clipped, { rendered: true });
+        if (draftMessageId && draftChatId) {
+          progressDraftActive = true;
+          placeholderConsumed = true;
+        } else {
+          progressDraftDisabled = true;
+        }
+        return;
+      }
+      if (!draftChatId) {
+        const chatId = await resolveDraftChatId();
+        if (!chatId) {
+          stats.editFailures++;
+          progressDraftDisabled = true;
+          return;
+        }
+      }
+      if (await editDraft(clipped, {
+        throttle: info?.flush !== true,
+        final: info?.flush === true,
+        allowShrink: true,
+      })) {
+        progressDraftActive = true;
+        placeholderConsumed = true;
+        return;
+      }
+      stats.editFailures++;
+      progressDraftActive = false;
+      progressDraftStale = Boolean(draftMessageId);
+      progressDraftDisabled = true;
+      return;
+    }
 
     if (isSnapshot) {
       const placeholderLength = opts.initialDraft?.text?.trim().length ?? 0;
@@ -665,17 +778,19 @@ export function createLiveEditDeliver(
       return;
     }
 
-    const base = accumulated || latestSnapshot;
+    const base = hadProgressDraft ? "" : (accumulated || latestSnapshot);
     const candidate = isSnapshot
       ? text
-      : base && text.startsWith(base)
+      : hadProgressDraft
         ? text
-        : base && base.startsWith(text) && text.length < base.length
-          ? base
-          : base
-            ? `${base}\n\n${text}`
-            : text;
-    if (!isSnapshot && base && candidate === base && text.length < base.length) {
+        : base && text.startsWith(base)
+          ? text
+          : base && base.startsWith(text) && text.length < base.length
+            ? base
+            : base
+              ? `${base}\n\n${text}`
+              : text;
+    if (!isSnapshot && !hadProgressDraft && base && candidate === base && text.length < base.length) {
       stats.skippedUnchanged++;
       return;
     }
@@ -684,32 +799,27 @@ export function createLiveEditDeliver(
 
     if (richCandidate.length > limit) {
       // Accumulated text would overflow the current draft's cap.
-      if (opts.initialDraft && !accumulated) {
+      if ((opts.initialDraft && !accumulated) || hadProgressDraft) {
         // The placeholder is still the draft (nothing accumulated yet) and
         // the FIRST block alone overflows: edit the placeholder with the
         // first chunk and send the rest as fresh messages, then seal.
         placeholderConsumed = true;
         const chunks = chunkMessage(richCandidate, limit);
         const chatId = await resolveDraftChatId();
-        if (chatId && (await editDraft(chunks[0]))) {
+        if (chatId && (await editDraft(chunks[0], {
+          final: isFinalBlock || hadProgressDraft,
+          allowShrink: hadProgressDraft,
+        }))) {
           for (let i = 1; i < chunks.length; i++) {
             await client.sendMessage({ to, text: chunks[i], isDm });
             stats.sends++;
           }
-          // Seal: no further edits to this draft.
-          draftMessageId = undefined;
-          draftChatId = undefined;
-          accumulated = "";
-          appliedDraftText = undefined;
+          sealDraft();
           return;
         }
-        // Could not edit cleanly — delete the stray placeholder and send the
-        // block chunked as fresh message(s) (no draft retained).
         stats.editFailures++;
         await safeDeleteDraft();
-        draftMessageId = undefined;
-        draftChatId = undefined;
-        appliedDraftText = undefined;
+        sealDraft();
         for (const chunk of chunks) {
           await client.sendMessage({ to, text: chunk, isDm });
           stats.sends++;
@@ -750,24 +860,23 @@ export function createLiveEditDeliver(
     // this edit is still waiting for its throttle window.
     const hadPlaceholderPending = Boolean(opts.initialDraft) && !placeholderConsumed;
     if (!isSnapshot) accumulated = candidate;
-    if (await editDraft(richCandidate, { throttle: true, final: isFinalBlock })) {
-      // The placeholder (if any) is now the live draft showing the reply.
+    if (await editDraft(richCandidate, {
+      throttle: true,
+      final: isFinalBlock,
+      allowShrink,
+    })) {
       if (hadPlaceholderPending) placeholderConsumed = true;
+      progressDraftActive = false;
+      progressDraftStale = false;
       return;
     }
     if (!isSnapshot) accumulated = candidate;
-    // Edit failed (and recovery failed). Degrade to a new message carrying
-    // the accumulated text so no content is lost; that new message becomes
-    // the editable draft going forward. When an `initialDraft` was the
-    // target of the failed edit, delete it so it is not left stray.
     stats.editFailures++;
-    if (hadPlaceholderPending) {
+    if (hadPlaceholderPending || hadProgressDraft) {
       placeholderConsumed = true;
       await safeDeleteDraft();
     }
-    draftMessageId = undefined;
-    draftChatId = undefined;
-    appliedDraftText = undefined;
+    sealDraft();
     await sendNew(candidate);
   };
 
@@ -838,4 +947,19 @@ export function getLiveEditPlaceholderConsumed(
     (deliver as unknown as { __placeholderConsumed?: () => boolean }).__placeholderConsumed?.() ??
     true
   );
+}
+
+export function getLiveEditProgressDraftActive(
+  deliver: ReturnType<typeof createLiveEditDeliver>,
+): boolean {
+  return (
+    (deliver as unknown as { __progressActive?: () => boolean }).__progressActive?.() ??
+    false
+  );
+}
+
+export async function clearLiveEditProgressDraft(
+  deliver: ReturnType<typeof createLiveEditDeliver>,
+): Promise<void> {
+  await (deliver as unknown as { __clearProgress?: () => Promise<void> }).__clearProgress?.();
 }

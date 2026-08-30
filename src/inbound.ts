@@ -13,11 +13,19 @@ import {
   DEFAULT_CLIQ_CONFIRM_TEXT,
   DEFAULT_CLIQ_CANCELLED_TEXT,
   DEFAULT_CLIQ_STREAMING_MIN_EDIT_INTERVAL_MS,
+  resolveCliqApiVersion,
 } from "./client.js";
 import { stripCliqMentions } from "./mentions.js";
 import { resolveCliqClient } from "./runtime-api.js";
 import { rememberCliqChatId } from "./heartbeat.js";
-import { createLiveEditDeliver, getLiveEditPlaceholderConsumed, editStatusCardPhase } from "./live-edit.js";
+import {
+  clearLiveEditProgressDraft,
+  createLiveEditDeliver,
+  editStatusCardPhase,
+  getLiveEditPlaceholderConsumed,
+  getLiveEditProgressDraftActive,
+} from "./live-edit.js";
+import { renderCliqProgressDraftText } from "./progress-render.js";
 import { startThinkingAnimation, type ThinkingAnimation } from "./thinking-animate.js";
 import { createCliqProgressDraftController } from "./progress-draft.js";
 import { readInboundProcessedOutcome } from "./sdk-compat.js";
@@ -1326,6 +1334,8 @@ export async function dispatchCliqInbound(params: {
     isDm: !parsed.isGroup,
     enabled: account.blockStreaming,
     initialDraft,
+    initialDraftEditable:
+      account.streaming.mode !== "progress" || account.thinking?.mode !== "card",
     minEditIntervalMs:
       account.streamingMinEditIntervalMs ?? DEFAULT_CLIQ_STREAMING_MIN_EDIT_INTERVAL_MS,
   });
@@ -1360,18 +1370,36 @@ export async function dispatchCliqInbound(params: {
     mode: account.streaming.mode,
     entry: { streaming: account.streaming },
     seed: `${account.accountId ?? "default"}:${route.sessionKey}:${parsed.messageId}`,
-    active: Boolean(initialDraft),
+    active:
+      account.thinking?.mode !== "card" &&
+      (Boolean(initialDraft) ||
+        Boolean(
+          account.refreshToken &&
+          (parsed.isGroup
+            ? resolveCliqApiVersion(account.apiVersion, "channelPost") === "v2"
+            : resolveCliqApiVersion(account.apiVersion, "dmPost") === "v3"),
+        )),
     reasoningVisible: reasoningLevel === "stream",
-    update: async (text) => {
-      if (!text) return false;
+    update: async (text, options) => {
       thinkingAnimation?.stop();
       try {
-        await deliver({ text }, { snapshot: true });
-        return true;
+        if (!text) {
+          await clearLiveEditProgressDraft(deliver);
+          return true;
+        }
+        await deliver(
+          { text: renderCliqProgressDraftText(text, options?.lines) },
+          { progress: true, flush: options?.flush === true, rendered: true },
+        );
+        return getLiveEditProgressDraftActive(deliver);
       } catch (err) {
         handleOnError(err, { kind: "progress-draft" });
         return false;
       }
+    },
+    deleteCurrent: async () => {
+      thinkingAnimation?.stop();
+      await clearLiveEditProgressDraft(deliver);
     },
     onPartialReply: (payload) => {
       const text = payload?.text;
@@ -1402,9 +1430,14 @@ export async function dispatchCliqInbound(params: {
     // Stop the animation first so a late frame edit cannot clobber the
     // cleanup edit (or race with the reply deliver).
     thinkingAnimation?.stop();
-    if (!initialDraft) return;
-    if (getLiveEditPlaceholderConsumed(deliver)) return;
+    const progressDraftActive = getLiveEditProgressDraftActive(deliver);
+    if (!initialDraft && !progressDraftActive) return;
     if (turnResult?.skippedBenignly) {
+      if (progressDraftActive) {
+        await clearLiveEditProgressDraft(deliver);
+        return;
+      }
+      if (getLiveEditPlaceholderConsumed(deliver) || !initialDraft) return;
       try {
         await deleteStrayPlaceholder({
           client,
@@ -1418,6 +1451,7 @@ export async function dispatchCliqInbound(params: {
       }
       return;
     }
+    if (getLiveEditPlaceholderConsumed(deliver) && !getLiveEditProgressDraftActive(deliver)) return;
     const noticeText =
       account.thinking?.failureText ?? "⚠️ Couldn't process that message.";
     try {
