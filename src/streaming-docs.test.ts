@@ -101,11 +101,18 @@ describe("README streaming caveats (issue #194)", () => {
   it("documents Core-compatible modes and legacy migration (issue #207)", () => {
     expect(readme).toContain('`"partial"` preserves the current answer-preview behavior');
     expect(readme).toContain('`"block"` selects Core\'s block preview shape');
-    expect(readme).toContain('`"progress"` opts into the progress-draft configuration surface');
+    expect(readme).toContain('`"progress"` opts into the Core progress-draft compositor');
     expect(readme).toContain('Legacy `streaming.preview: "on" | "off"` remains loadable');
     expect(readme).toContain("an explicit `streaming.mode` wins");
     expect(readme).toContain("openclaw doctor --fix");
     expect(changelog).toContain("issue #207");
+  });
+
+  it("documents progress-mode compositor callback wiring (issue #208)", () => {
+    expect(readme).toContain("createChannelProgressDraftCompositor");
+    expect(readme).toContain("onPartialReply");
+    expect(readme).toContain("reasoningDefault");
+    expect(changelog).toContain("issue #208");
   });
 
   it("names the opt-out keys for a normal message", () => {

@@ -48,10 +48,11 @@
 
 ## Phase 3 — OpenClaw Core progress drafts
 
-- **Wire Core progress callbacks and the shared compositor (issues #208–#209).** Feed the
-  configured Cliq streaming entry into `createChannelProgressDraftCompositor`, route typed
-  progress/tool/commentary events into one editable draft, and finalize or clean it up through
-  the existing v2 live-edit transport without duplicate final messages.
+- **Render and finalize Core progress drafts through the existing v2 live-edit
+  transport (issue #209).** Consume compositor `update(text, { lines, flush })`
+  into one Cliq message, reuse the thinking placeholder when present, and
+  replace or clean that draft on final/error/skip/card-only paths without
+  duplicate final messages.
 - **Prove progress-draft delivery end to end (issue #210).** Add an integration harness for
   progress event ordering, edit throttling, finalization, failure cleanup, and one-message
   identity; document the operator config and complete the isolated Franzi acceptance run.
