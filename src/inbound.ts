@@ -6,6 +6,8 @@ import {
 } from "openclaw/plugin-sdk/channel-inbound";
 import type { IncomingMessage } from "node:http";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
+import { resolveAgentConfig } from "openclaw/plugin-sdk/agent-scope-runtime";
+import { getSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import type { CliqClient, ResolvedCliqAccount } from "./client.js";
 import {
   DEFAULT_CLIQ_CONFIRM_TEXT,
@@ -17,6 +19,7 @@ import { resolveCliqClient } from "./runtime-api.js";
 import { rememberCliqChatId } from "./heartbeat.js";
 import { createLiveEditDeliver, getLiveEditPlaceholderConsumed, editStatusCardPhase } from "./live-edit.js";
 import { startThinkingAnimation, type ThinkingAnimation } from "./thinking-animate.js";
+import { createCliqProgressDraftController } from "./progress-draft.js";
 import { readInboundProcessedOutcome } from "./sdk-compat.js";
 import { beginCliqContentTurn } from "./dedupe.js";
 import {
@@ -1332,6 +1335,54 @@ export async function dispatchCliqInbound(params: {
       // eslint-disable-next-line no-console
       console.error(`[cliq] ${info.kind} reply failed: ${String(err)}`);
     });
+  const reasoningLevel = (() => {
+    const configured =
+      resolveAgentConfig(cfg, route.agentId)?.reasoningDefault ??
+      cfg.agents?.defaults?.reasoningDefault;
+    const configDefault =
+      configured === "on" || configured === "stream" ? configured : "off";
+    try {
+      const sessionLevel = getSessionEntry({
+        agentId: route.agentId,
+        sessionKey: route.sessionKey,
+        storePath,
+      })?.reasoningLevel;
+      return sessionLevel === "on" ||
+        sessionLevel === "stream" ||
+        sessionLevel === "off"
+        ? sessionLevel
+        : configDefault;
+    } catch {
+      return configDefault;
+    }
+  })();
+  const progressController = createCliqProgressDraftController({
+    mode: account.streaming.mode,
+    entry: { streaming: account.streaming },
+    seed: `${account.accountId ?? "default"}:${route.sessionKey}:${parsed.messageId}`,
+    active: Boolean(initialDraft),
+    reasoningVisible: reasoningLevel === "stream",
+    update: async (text) => {
+      if (!text) return false;
+      thinkingAnimation?.stop();
+      try {
+        await deliver({ text }, { snapshot: true });
+        return true;
+      } catch (err) {
+        handleOnError(err, { kind: "progress-draft" });
+        return false;
+      }
+    },
+    onPartialReply: (payload) => {
+      const text = payload?.text;
+      if (!text) return;
+      thinkingAnimation?.stop();
+      return deliver({ text }, { snapshot: true }).catch((err) => {
+        handleOnError(err, { kind: "partial-preview" });
+      });
+    },
+  });
+  const progressReplyOptions = progressController.buildReplyOptions();
 
   // When a thinking placeholder was posted, clean it up if the agent turn
   // ended WITHOUT touching it (the dispatcher flushed no blocks — e.g. the
@@ -1406,19 +1457,9 @@ export async function dispatchCliqInbound(params: {
           dispatchReplyWithBufferedBlockDispatcher:
             runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher,
           replyOptions: {
-            disableBlockStreaming: !account.blockStreaming,
-            ...(account.blockStreaming
-              ? {
-                  onPartialReply: (payload: { text?: string }) => {
-                    const text = payload?.text;
-                    if (!text) return;
-                    thinkingAnimation?.stop();
-                    return deliver({ text }, { snapshot: true }).catch((err) => {
-                      handleOnError(err, { kind: "partial-preview" });
-                    });
-                  },
-                }
-              : {}),
+            disableBlockStreaming:
+              account.streaming.mode === "progress" || !account.blockStreaming,
+            ...progressReplyOptions,
           },
           delivery: {
             deliver: async (
@@ -1433,16 +1474,24 @@ export async function dispatchCliqInbound(params: {
               // live-edit deliver routes cards through `sendCard`. Stripping
               // it here (the pre-fix behavior) dropped command card replies
               // whenever the thinking placeholder was active (issue #90).
-              await deliver(
-                {
-                  text: replyPayload?.text,
-                  channelData: replyPayload?.channelData,
-                },
-                {
-                  kind: info?.kind,
-                  final: info?.final === true || info?.kind === "final",
-                },
-              );
+              const isFinal = info?.final === true || info?.kind === "final";
+              if (isFinal) progressController.markFinalReplyStarted();
+              try {
+                await deliver(
+                  {
+                    text: replyPayload?.text,
+                    channelData: replyPayload?.channelData,
+                  },
+                  {
+                    kind: info?.kind,
+                    final: isFinal,
+                  },
+                );
+                if (isFinal) progressController.markFinalReplyDelivered();
+              } catch (err) {
+                progressController.cancel();
+                throw err;
+              }
             },
             onError: handleOnError,
           },
@@ -1457,12 +1506,14 @@ export async function dispatchCliqInbound(params: {
         (await isBenignlySkippedTurn(runResult, parsed.messageId)),
     };
   } catch (err) {
+    progressController.cancel();
     if (isLikelyRedelivery && isCliqSessionConflictError(err)) {
       turnOutcome = { skippedBenignly: true };
       return;
     }
     throw err;
   } finally {
+    progressController.cancel();
     contentTurn?.finish();
     await cleanupStrayPlaceholder(turnOutcome);
   }

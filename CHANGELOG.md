@@ -11,6 +11,10 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Added
+
+- **Progress-mode turns now feed OpenClaw Core's compositor (issue #208).** `channels.cliq.streaming.mode: "progress"` instantiates `createChannelProgressDraftCompositor` and wires Core `onToolStart` / `onItemEvent` / `onPlanUpdate` / `onApprovalEvent` / `onCommandOutput` / `onPatchSummary` / `onNarrationUpdate` into one draft. `onPartialReply` stays on `"partial"` only, so answer snapshots cannot clobber progress before final delivery. Fast turns still honor Core's 1.5s start gate, default standalone tool-progress messages are suppressed while the draft owns them, and reasoning is forwarded only when the existing OpenClaw `reasoningDefault` / session `reasoningLevel` is `"stream"`. Rendering and in-place finalization of that draft remain in issues #209–#210.
+
 ### Fixed
 
 - **A tiny first streaming snapshot no longer clobbers the thinking placeholder (issue #203).** OpenClaw `onPartialReply` snapshots do fire on some live turns, and the first one can be a single character before meaningful text is formed. A live Mara DM showed the 4-character placeholder replaced by a `textLen=1` edit before growing to the answer. Snapshots are now ignored while the placeholder is still active until one carries more content than the placeholder text itself, so the acknowledgement bubble stays readable until real output arrives.
