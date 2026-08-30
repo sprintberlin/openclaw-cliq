@@ -489,6 +489,29 @@ describe("createLiveEditDeliver — enabled (live-edit)", () => {
     expect(fake.sends[0].text).toBe("12345");
   });
 
+  it("ignores tiny, empty, or whitespace-only snapshots that would clobber the placeholder (issue #203)", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1", text: "⏳ …" },
+      minEditIntervalMs: 0,
+    });
+    await deliver({ text: "" }, { snapshot: true });
+    await deliver({ text: " " }, { snapshot: true });
+    await deliver({ text: "A" }, { snapshot: true });
+    await deliver({ text: "Ab" }, { snapshot: true });
+    expect(fake.edits).toHaveLength(0);
+    expect(getLiveEditPlaceholderConsumed(deliver)).toBe(false);
+
+    await deliver({ text: "Hello from Mara, this is actual content." }, { snapshot: true });
+    expect(fake.edits).toHaveLength(1);
+    expect(fake.edits[0].text).toBe("Hello from Mara, this is actual content.");
+    expect(getLiveEditPlaceholderConsumed(deliver)).toBe(true);
+  });
+
   it("replaces the draft with growing onPartialReply snapshots (issue #185)", async () => {
     const fake = makeFakeClient({ dmChatId: "chat-u1" });
     const deliver = createLiveEditDeliver({

@@ -13,6 +13,8 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- **A tiny first streaming snapshot no longer clobbers the thinking placeholder (issue #203).** OpenClaw `onPartialReply` snapshots do fire on some live turns, and the first one can be a single character before meaningful text is formed. A live Mara DM showed the 4-character placeholder replaced by a `textLen=1` edit before growing to the answer. Snapshots are now ignored while the placeholder is still active until one carries more content than the placeholder text itself, so the acknowledgement bubble stays readable until real output arrives.
+
 - **Repeated identical commands no longer collapse to a `syn:` identity when the Deluge payload wraps `eventId` in `params` (issue #204).** The parser now keeps a wrapped `eventId` / `event_id` through the params unwrap, so a live `/new` → `test` → `/new` sequence reaches OpenClaw as distinct `evt:` turns. `openclaw cliq doctor` also fails a matching handler that still omits `payload.put("eventId")`. When OpenClaw Core reports a content-derived duplicate as a zero-count dispatched turn (it keeps `processedOutcome` off the plugin-visible `inbound.run` result on `2026.8.1-beta.3`), the thinking placeholder is deleted instead of rewritten to `⚠️ Couldn't process that message.`
 
 ### Changed
