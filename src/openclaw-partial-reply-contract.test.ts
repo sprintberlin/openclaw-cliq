@@ -53,3 +53,33 @@ describe("OpenClaw onPartialReply contract (issue #195)", () => {
     expect(body).toContain("params.onPartialReply(data)");
   });
 });
+
+describe("OpenClaw inbound processed-outcome contract (issue #204)", () => {
+  it("records skipped:duplicate on an ALS sink, not the plugin-visible run result", () => {
+    const executionRegion = worker.indexOf("//#region src/channels/turn/execution.ts");
+    expect(executionRegion).toBeGreaterThan(-1);
+    const nextRegion = worker.indexOf("//#region", executionRegion + 1);
+    const body = worker.slice(executionRegion, nextRegion === -1 ? undefined : nextRegion);
+    expect(body).toContain("({result: dispatchResult, processedOutcome} = await withDispatchProcessedOutcomeSink(() => params.runDispatch()));");
+    expect(body).toContain("maybeWarnZeroCountVisibleDispatch({");
+    expect(body).toContain("processedOutcome");
+    expect(body).toMatch(
+      /return \{\s*admission,\s*dispatched: true,\s*ctxPayload: params\.ctxPayload,\s*routeSessionKey: params\.routeSessionKey,\s*dispatchResult\s*\};/,
+    );
+    const finalReturn = body.match(
+      /return \{\s*admission,\s*dispatched: true,\s*ctxPayload: params\.ctxPayload,\s*routeSessionKey: params\.routeSessionKey,\s*dispatchResult\s*\};/,
+    );
+    expect(finalReturn?.[0]).not.toContain("processedOutcome");
+  });
+
+  it("classifies a content-derived MessageSid duplicate as skipped:duplicate", () => {
+    const prepareRegion = worker.indexOf(
+      "//#region src/auto-reply/reply/dispatch-from-config.prepare-context.ts",
+    );
+    expect(prepareRegion).toBeGreaterThan(-1);
+    const nextRegion = worker.indexOf("//#region", prepareRegion + 1);
+    const body = worker.slice(prepareRegion, nextRegion === -1 ? undefined : nextRegion);
+    expect(body).toContain('recordProcessed("skipped", { reason: "duplicate" });');
+    expect(body).toContain('inboundDedupeClaim.status === "duplicate"');
+  });
+});

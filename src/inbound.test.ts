@@ -220,6 +220,19 @@ describe("parseCliqWebhookPayload", () => {
     expect(parsed!.chatId).toBe("CT_p");
   });
 
+  it("retains a wrapped eventId as the runtime MessageSid (issue #204)", () => {
+    const parsed = parseCliqWebhookPayload({
+      handler: "message",
+      params: {
+        message: { text: "/new" },
+        eventId: "wrapped-delivery-1",
+        user: { id: "u3", name: "Carol" },
+        chat: { id: "CT_p" },
+      },
+    } as CliqWebhookPayload);
+    expect(parsed!.messageId).toBe("evt:wrapped-delivery-1");
+  });
+
   it("falls back to payload.text when message missing", () => {
     const parsed = parseCliqWebhookPayload({
       handler: "message",
@@ -693,17 +706,28 @@ describe("parseCliqWebhookPayload", () => {
       expect(parsed!.messageId).toBe("real-id-123");
     });
 
-    it("uses a Deluge eventId as MessageSid when message.id is absent (issue #196)", () => {
-      const parsed = parseCliqWebhookPayload({
-        handler: "message",
-        message: "/new",
-        eventId: "abc123def456",
-        user: { id: "u1", name: "Alice" },
-        chat: { id: "CT_dm" },
-      } as CliqWebhookPayload);
-      expect(parsed).not.toBeNull();
-      expect(parsed!.messageId).toBe("evt:abc123def456");
-    });
+  it("uses a Deluge eventId as MessageSid when message.id is absent (issue #196)", () => {
+    const parsed = parseCliqWebhookPayload({
+      handler: "message",
+      message: "/new",
+      eventId: "abc123def456",
+      user: { id: "u1", name: "Alice" },
+      chat: { id: "CT_dm" },
+    } as CliqWebhookPayload);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.messageId).toBe("evt:abc123def456");
+  });
+
+  it("uses a snake_case event_id as MessageSid (issue #204)", () => {
+    const parsed = parseCliqWebhookPayload({
+      handler: "message",
+      message: "/new",
+      event_id: "snake-delivery",
+      user: { id: "u1", name: "Alice" },
+      chat: { id: "CT_dm" },
+    } as CliqWebhookPayload);
+    expect(parsed!.messageId).toBe("evt:snake-delivery");
+  });
 
     it("keeps two identical commands independent when each has its own eventId (issue #196)", () => {
       const first = parseCliqWebhookPayload({
@@ -3352,6 +3376,24 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
     return runtime;
   }
 
+  function mockRuntimeSkippedCoreShape(): CliqRuntime {
+    const runtime = mockRuntimeNoReply();
+    runtime.channel.inbound.run = async (params) => {
+      const adapter = (params as unknown as {
+        adapter: { resolveTurn: (...args: unknown[]) => unknown };
+      }).adapter;
+      adapter.resolveTurn({}, {}, {});
+      return {
+        admission: { kind: "dispatch" },
+        dispatched: true,
+        ctxPayload: { MessageSid: "syn:218032c6811d5e22" },
+        routeSessionKey: "agent:main:cliq:direct:dm:20109326911",
+        dispatchResult: { queuedFinal: false, counts: { tool: 0, block: 0, final: 0 } },
+      };
+    };
+    return runtime;
+  }
+
   // A runtime that drives a single canned reply through `delivery.deliver`
   // (mirrors the buffered block dispatcher flushing one final block).
   function mockRuntimeWithReply(replyText: string): CliqRuntime {
@@ -3454,6 +3496,54 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
     };
     return client;
   }
+
+  it("deletes an active placeholder when Core returns a zero-count skip without processedOutcome (issue #204)", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    await dispatchCliqInbound({
+      runtime: mockRuntimeSkippedCoreShape(),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "⏳ …" },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    expect(client.sends).toHaveLength(1);
+    expect(client.edits).toHaveLength(0);
+    expect(client.deletes).toEqual([{ chatId: "chat-u1", messageId: "ph-1" }]);
+    expect(
+      client.edits.some((e) => e.text === "⚠️ Couldn't process that message."),
+    ).toBe(false);
+  });
+
+  it("still shows the failure notice for a genuine no-reply evt: turn (issue #204)", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload({
+      handler: "message",
+      message: "/new",
+      eventId: "evt-no-reply",
+      user: { id: "u1", name: "Alice" },
+      chat: { id: "CT_dm" },
+    } as CliqWebhookPayload);
+    await dispatchCliqInbound({
+      runtime: mockRuntimeSkippedCoreShape(),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "⏳ …" },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    expect(parsed!.messageId).toBe("evt:evt-no-reply");
+    expect(client.sends).toHaveLength(1);
+    expect(client.deletes).toHaveLength(0);
+    expect(client.edits[0].text).toBe("⚠️ Couldn't process that message.");
+  });
 
   it("deletes an active placeholder when the runtime skips a duplicate", async () => {
     const client = makeMockClient({ placeholderChatId: "chat-u1" });

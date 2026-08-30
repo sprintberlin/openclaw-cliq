@@ -13,8 +13,8 @@ import { formatCliqPreflightReport } from "./webhook-preflight.js";
 const HOOK_URL = "https://agent.example.com/cliq/webhook";
 const SECRET = "configured-secret-value";
 
-function script(secret = SECRET, url = HOOK_URL): string {
-  return `webhookUrl = "${url}";\nwebhookSecret = "${secret}";\npayload = Map();`;
+function script(secret = SECRET, url = HOOK_URL, extra = 'payload.put("eventId", eventId);'): string {
+  return `webhookUrl = "${url}";\nwebhookSecret = "${secret}";\n${extra}\npayload = Map();`;
 }
 
 function handlers(messageScript: string, mentionScript = messageScript) {
@@ -64,6 +64,18 @@ describe("checkCliqHandlerConsistency (issue #124)", () => {
     expect(result.detail).toMatch(/handlers do not agree with each other/i);
     expect(result.detail).toMatch(/message handler=sha256:/i);
     expect(result.detail).toMatch(/mention handler=sha256:/i);
+  });
+
+  it("fails when a matching handler still omits eventId (issue #204)", () => {
+    const result = checkCliqHandlerConsistency({
+      handlers: handlers(script(SECRET, HOOK_URL, "")),
+      configSecret: SECRET,
+      expectedWebhookUrl: HOOK_URL,
+    });
+
+    expect(result.status).toBe("fail");
+    expect(result.detail).toMatch(/eventId/i);
+    expect(result.detail).not.toContain(SECRET);
   });
 
   it("fails and names the handler when its webhook URL differs", () => {

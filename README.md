@@ -632,8 +632,11 @@ return response;
 > `eventId` (surfaced as `MessageSid` and given full 30-minute replay
 > protection), then — only for older handler scripts that forward no `eventId` —
 > a content-derived `syn:` hash whose dedupe identity expires after 60 seconds.
-> **Re-run `openclaw setup` after upgrading** so its read-only handler plan detects
-> missing `eventId` as a stale script and offers a confirmation-gated repair.
+> Some handler configurations wrap the execution payload in `params`; the plugin
+> still reads `eventId` from that wrapper. **Re-run `openclaw setup` after
+> upgrading** so its read-only handler plan detects a missing `eventId` as a
+> stale script and offers a confirmation-gated repair. `openclaw cliq doctor`
+> also fails a matching handler that still omits `payload.put("eventId")`.
 > Alternatively, re-paste both handler scripts manually to pick up the
 > `eventId` line.
 

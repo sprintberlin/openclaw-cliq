@@ -153,6 +153,10 @@ blocker is resolved.
   placeholder until one final edit. Tracked upstream: **openclaw/openclaw#132615**. Do not
   claim token-level growth until that lands and a live Cliq DM proves monotonically
   increasing `textLen` on one `messageId`.
+- **Live Franzi `/new` identity acceptance after the issue #204 handler repair.** Confirm on
+  Franzi that the live Message Handler now forwards `eventId`, that `/new` → `test` → `/new`
+  reaches Core as two `evt:` turns, and that a replay of the same webhook event still
+  produces only one agent turn. Needs the live host, so it stays a human step.
 
 ---
 

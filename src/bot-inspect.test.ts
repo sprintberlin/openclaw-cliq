@@ -36,10 +36,15 @@ function botRecord(overrides: Partial<CliqBotRecord> = {}): CliqBotRecord {
   };
 }
 
-function handlerScript(secret: string, url = "https://cliq.example.com/cliq/webhook"): string {
+function handlerScript(
+  secret: string,
+  url = "https://cliq.example.com/cliq/webhook",
+  extra = 'payload.put("eventId", eventId);',
+): string {
   return [
     'webhookUrl = "' + url + '";',
     'webhookSecret = "' + secret + '";',
+    extra,
     "response = invokeurl[url: webhookUrl type: POST];",
   ].join("\n");
 }
@@ -231,6 +236,21 @@ describe("inspectCliqBot — absent bot and handler conflicts", () => {
       }),
     });
     expect(result.exists).toEqual({ state: "known", value: false });
+    expect(toCliqDoctorBotInspection(result).status).toBe("fail");
+  });
+
+  it("fails when a matching handler still omits eventId (issue #204)", async () => {
+    const result = await inspectCliqBot({
+      account: account(),
+      publicWebhookUrl: "https://cliq.example.com/cliq/webhook",
+      reader: reader({
+        readHandlerScript: vi.fn(async () => ({
+          script: handlerScript(WEBHOOK_SECRET, "https://cliq.example.com/cliq/webhook", ""),
+        })),
+      }),
+    });
+    expect(result.handlerConsistency.status).toBe("fail");
+    expect(result.handlerConsistency.detail).toMatch(/eventId/i);
     expect(toCliqDoctorBotInspection(result).status).toBe("fail");
   });
 

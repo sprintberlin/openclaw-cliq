@@ -11,6 +11,10 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Fixed
+
+- **Repeated identical commands no longer collapse to a `syn:` identity when the Deluge payload wraps `eventId` in `params` (issue #204).** The parser now keeps a wrapped `eventId` / `event_id` through the params unwrap, so a live `/new` → `test` → `/new` sequence reaches OpenClaw as distinct `evt:` turns. `openclaw cliq doctor` also fails a matching handler that still omits `payload.put("eventId")`. When OpenClaw Core reports a content-derived duplicate as a zero-count dispatched turn (it keeps `processedOutcome` off the plugin-visible `inbound.run` result on `2026.8.1-beta.3`), the thinking placeholder is deleted instead of rewritten to `⚠️ Couldn't process that message.`
+
 ### Changed
 
 - **The generated Deluge handlers now forward a per-execution `eventId` (issue #196).** Cliq's bot Message Handler exposes no native message or event id, so the plugin previously fell back to a content hash (`syn:`) that made two deliberate identical commands indistinguishable from a redelivery. Inbound identity now resolves as `message.id` → forwarded `eventId` → legacy `syn:` hash, and an `eventId` is treated as a real event: it becomes `MessageSid` and keeps full 30-minute replay protection instead of the 60-second content TTL. Repeating `/new` twice is now two independent turns, while an exact webhook replay is still deduped. **Existing installs must rerun `openclaw setup` (or re-paste both handler scripts)** to pick up the new line; the setup planner detects a missing `eventId` and offers a confirmation-gated repair.
