@@ -1,5 +1,11 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import type { SecretInput } from "openclaw/plugin-sdk/secret-input-runtime";
+import {
+  resolveChannelPreviewStreamMode,
+  resolveChannelProgressDraftConfig,
+  type ChannelStreamingProgressConfig,
+  type StreamingMode,
+} from "openclaw/plugin-sdk/channel-outbound";
 import { classifyCliqSendResponse, CliqSendError, parseRetryAfterMs, withSendRetry, type RetryOptions } from "./send-retry.js";
 import {
   getCliqDefaultLogger,
@@ -28,6 +34,30 @@ const MESSAGE_CHAR_LIMIT = 5000;
  * 1s block-coalesce window the channel publishes to the SDK.
  */
 export const DEFAULT_CLIQ_STREAMING_MIN_EDIT_INTERVAL_MS = 1_000;
+
+/**
+ * OpenClaw Core's preview-streaming mode (issue #207). Mirrors Core's
+ * `StreamingMode` union: the SDK's `resolveChannelPreviewStreamMode` parses
+ * and returns exactly these four values, so the plugin does not re-implement
+ * the parser — it only supplies the Cliq default and legacy compatibility.
+ */
+export type CliqStreamingMode = StreamingMode;
+
+/**
+ * Core progress-draft settings consumed by the SDK's progress compositor.
+ * Read out of config with `resolveChannelProgressDraftConfig`; the plugin
+ * carries the object through unchanged rather than duplicating Core's
+ * defaults, which live in the SDK helpers that read this shape.
+ */
+export type CliqStreamingProgressConfig = ChannelStreamingProgressConfig;
+
+/**
+ * Effective Cliq default preview mode when neither `streaming.mode` nor the
+ * legacy `streaming.preview` is set. `"partial"` preserves today's
+ * answer-preview behavior; progress mode stays an explicit opt-in until the
+ * progress-draft work lands and is verified live.
+ */
+export const DEFAULT_CLIQ_STREAMING_MODE: CliqStreamingMode = "partial";
 
 
 /** REST API generation used for outbound calls that have a v3 equivalent. */
@@ -237,22 +267,27 @@ export interface CliqChannelConfig {
    */
   ackPolicy?: "after_dispatch" | "immediate";
   /**
-   * Streaming preview configuration. The SDK coalesces agent output into
-   * progressive "block" deliveries (separate messages) rather than waiting
-   * for the full reply, when block streaming is enabled. Plugin-channel
-   * live-edit-in-place (editing a single message as the draft grows) is not
-   * exposed by the SDK; block streaming is the available progressive-delivery
-   * mechanism.
-    * - `preview: "on"` (the default when `streaming` / `preview` is unset)
-    *   enables block streaming for this account through the inbound turn's
-    *   `replyOptions.disableBlockStreaming: false`.
-    * - `preview: "off"` is the explicit opt-out back to the
-    *   single-final-reply behavior.
-    * - `minEditIntervalMs` (optional) is the minimum wall-clock distance
-    *   between two in-place preview edits of the same draft. Intermediate
-    *   blocks inside the window are coalesced. Defaults to 1000 ms.
-    */
-  streaming?: { preview?: "on" | "off"; minEditIntervalMs?: number };
+   * Streaming preview configuration, Core-compatible (issue #207).
+   * - `mode` is the OpenClaw preview-streaming mode: `"off"`, `"partial"`,
+   *   `"block"`, or `"progress"`. An explicit `mode` wins over a legacy
+   *   `preview` value. When both are unset, the effective mode is
+   *   `"partial"` (today's answer-preview behavior — never a silent
+   *   upgrade to progress mode).
+   * - `preview` is the legacy Cliq-only boolean form: `"off"` resolves to
+   *   `mode: "off"`; `"on"` (or unset) resolves to `mode: "partial"`.
+   * - `progress` carries the Core progress-draft settings consumed by the
+   *   SDK's compositor (`toolProgress`, `commentary`, `narration`,
+   *   `commandText`, `label`, `labels`, `maxLines`, `maxLineChars`).
+   * - `minEditIntervalMs` (optional) is the minimum wall-clock distance
+   *   between two in-place preview edits of the same draft. Intermediate
+   *   blocks inside the window are coalesced. Defaults to 1000 ms.
+   */
+  streaming?: {
+    mode?: "off" | "partial" | "block" | "progress";
+    preview?: "on" | "off";
+    progress?: CliqStreamingProgressConfig;
+    minEditIntervalMs?: number;
+  };
   /**
    * Optional user-context OAuth **refresh token** obtained once via the
    * self-client `authorization_code` flow (see README §3). When set, the
@@ -502,6 +537,44 @@ export const MIN_CLIQ_THINKING_ANIMATE_INTERVAL_MS = 800;
 export const MAX_CLIQ_THINKING_ANIMATE_DURATION_MS = 60_000;
 
 /**
+ * Resolve raw streaming subconfig into the normalized Core-compatible shape.
+ *
+ * Precedence rules (issue #207):
+ *  1. An explicit `mode` (`"off"` | `"partial"` | `"block"` | `"progress"`) wins,
+ *     resolved via Core's `resolveChannelPreviewStreamMode`.
+ *  2. If `mode` is unset and the legacy `preview` is present:
+ *     - `preview: "off"` resolves to `mode: "off"`.
+ *     - `preview: "on"` resolves to `mode: "partial"`.
+ *  3. When neither is set, `DEFAULT_CLIQ_STREAMING_MODE` (`"partial"`) applies.
+ *  4. `progress` is parsed via Core's `resolveChannelProgressDraftConfig`.
+ *  5. `minEditIntervalMs` defaults to 1000 ms.
+ */
+export function resolveCliqStreamingConfig(raw: unknown): {
+  mode: CliqStreamingMode;
+  progress: CliqStreamingProgressConfig;
+  minEditIntervalMs: number;
+} {
+  const section = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : undefined;
+  const legacyPreview = typeof section?.preview === "string" ? section.preview.trim().toLowerCase() : undefined;
+  const legacyDefaultMode: CliqStreamingMode =
+    legacyPreview === "off" ? "off" : DEFAULT_CLIQ_STREAMING_MODE;
+
+  // Let Core's parser inspect `{ streaming: { mode: ... } }`.
+  const syntheticEntry = { streaming: section ?? {} };
+  const mode = resolveChannelPreviewStreamMode(syntheticEntry, legacyDefaultMode) as CliqStreamingMode;
+
+  const progress = resolveChannelProgressDraftConfig(syntheticEntry) as CliqStreamingProgressConfig;
+
+  const minEditRaw = section?.minEditIntervalMs;
+  const minEditIntervalMs =
+    typeof minEditRaw === "number" && Number.isFinite(minEditRaw) && minEditRaw >= 0
+      ? Math.floor(minEditRaw)
+      : DEFAULT_CLIQ_STREAMING_MIN_EDIT_INTERVAL_MS;
+
+  return { mode, progress, minEditIntervalMs };
+}
+
+/**
  * Welcome-message-on-subscribe config (under `channels.cliq.welcome`). The
  * Cliq bot **Welcome Handler** fires when a user subscribes (or re-subscribes)
  * to the bot; when the Deluge handler forwards that event to our webhook and
@@ -585,9 +658,20 @@ export interface ResolvedCliqAccount {
   selfSenderIds: string[];
   /**
    * Whether progressive (block-streaming) reply delivery is active for this
-   * account. Defaults to true; an explicit `streaming.preview: "off"` opts out.
+   * account. True for every effective mode except `"off"`.
    */
   blockStreaming: boolean;
+  /**
+   * Resolved Core-compatible streaming config (issue #207). `mode` is the
+   * effective preview-streaming mode after applying explicit-`mode`-wins
+   * precedence over the legacy `preview` key and the Cliq default
+   * ({@link DEFAULT_CLIQ_STREAMING_MODE}). `progress` carries the Core
+   * progress-draft settings verbatim for the SDK compositor.
+   */
+  streaming: {
+    mode: CliqStreamingMode;
+    progress: CliqStreamingProgressConfig;
+  };
   /**
    * Minimum wall-clock distance between two in-place preview edits of the
    * same draft when `blockStreaming` is on. Intermediate blocks inside the
@@ -687,14 +771,9 @@ export function resolveCliqConfig(
   const ackPolicyRaw = section?.ackPolicy;
   const ackPolicy: "after_dispatch" | "immediate" =
     ackPolicyRaw === "immediate" ? "immediate" : "after_dispatch";
-  const blockStreaming = section?.streaming?.preview !== "off";
-  const streamingMinEditIntervalMsRaw = section?.streaming?.minEditIntervalMs;
-  const streamingMinEditIntervalMs =
-    typeof streamingMinEditIntervalMsRaw === "number" &&
-    Number.isFinite(streamingMinEditIntervalMsRaw) &&
-    streamingMinEditIntervalMsRaw >= 0
-      ? Math.floor(streamingMinEditIntervalMsRaw)
-      : DEFAULT_CLIQ_STREAMING_MIN_EDIT_INTERVAL_MS;
+  const streamingResolved = resolveCliqStreamingConfig(section?.streaming);
+  const blockStreaming = streamingResolved.mode !== "off";
+  const streamingMinEditIntervalMs = streamingResolved.minEditIntervalMs;
   const webhookSecret = resolveCliqSecretString({
     cfg,
     value: section?.webhookSecret,
@@ -725,6 +804,10 @@ export function resolveCliqConfig(
      ackPolicy,
     selfSenderIds: section?.selfSenderIds ?? [],
     blockStreaming,
+    streaming: {
+      mode: streamingResolved.mode,
+      progress: streamingResolved.progress,
+    },
     streamingMinEditIntervalMs,
     refreshToken: refreshToken || undefined,
     apiBase: section?.apiBase || undefined,

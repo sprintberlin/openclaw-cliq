@@ -46,6 +46,19 @@
 
 ---
 
+## Phase 3 — OpenClaw Core progress drafts
+
+- **Wire Core progress callbacks and the shared compositor (issues #208–#209).** Feed the
+  configured Cliq streaming entry into `createChannelProgressDraftCompositor`, route typed
+  progress/tool/commentary events into one editable draft, and finalize or clean it up through
+  the existing v2 live-edit transport without duplicate final messages.
+- **Prove progress-draft delivery end to end (issue #210).** Add an integration harness for
+  progress event ordering, edit throttling, finalization, failure cleanup, and one-message
+  identity; document the operator config and complete the isolated Franzi acceptance run.
+- **Keep preview-on turns visible during silent phases (issue #211).** Animate the thinking
+  placeholder without racing or overwriting Core progress/answer edits, and stop animation on
+  the first substantive progress or reply update.
+
 ## Phase 4 — Programmatic Cliq via v3 CRUD
 
 v3 adds CRUD endpoints v2 never had (bots, slash commands, message actions, widgets, schedulers).

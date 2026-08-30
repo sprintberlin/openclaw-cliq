@@ -186,8 +186,8 @@ describe("promptCliqCredentials — fresh setup (no existing config)", () => {
       refreshToken: "RT",
     });
     const refreshTokenPrompt = calls.filter((call) => call.method === "text")[5];
-    expect(refreshTokenPrompt?.args.message).toMatch(/streaming preview defaults to on/i);
-    expect(refreshTokenPrompt?.args.message).toMatch(/streaming\.preview.*off/i);
+    expect(refreshTokenPrompt?.args.message).toMatch(/streaming\.mode defaults to partial/i);
+    expect(refreshTokenPrompt?.args.message).toMatch(/streaming\.mode.*off/i);
     // No "keep existing" confirms, since nothing is configured.
     const confirms = calls.filter((c) => c.method === "confirm");
     expect(confirms).toHaveLength(0);

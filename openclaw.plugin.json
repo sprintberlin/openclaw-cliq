@@ -337,7 +337,22 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "preview": { "type": "string", "enum": ["on", "off"], "default": "on" },
+          "mode": { "type": "string", "enum": ["off", "partial", "block", "progress"] },
+          "preview": { "type": "string", "enum": ["on", "off"] },
+          "progress": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "toolProgress": { "type": "boolean" },
+              "commentary": { "type": "boolean" },
+              "narration": { "type": "boolean" },
+              "commandText": { "type": "string", "enum": ["status", "raw"] },
+              "label": { "oneOf": [{ "type": "string" }, { "type": "boolean", "const": false }] },
+              "labels": { "type": "array", "items": { "type": "string" } },
+              "maxLines": { "type": "integer", "minimum": 1 },
+              "maxLineChars": { "type": "integer", "minimum": 1 }
+            }
+          },
           "minEditIntervalMs": { "type": "integer", "minimum": 0, "default": 1000 }
         }
       },
@@ -850,19 +865,23 @@
               "type": "object",
               "additionalProperties": false,
               "properties": {
-                "preview": {
-                  "type": "string",
-                  "enum": [
-                    "on",
-                    "off"
-                  ],
-                  "default": "on"
+                "mode": { "type": "string", "enum": ["off", "partial", "block", "progress"] },
+                "preview": { "type": "string", "enum": ["on", "off"] },
+                "progress": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "toolProgress": { "type": "boolean" },
+                    "commentary": { "type": "boolean" },
+                    "narration": { "type": "boolean" },
+                    "commandText": { "type": "string", "enum": ["status", "raw"] },
+                    "label": { "oneOf": [{ "type": "string" }, { "type": "boolean", "const": false }] },
+                    "labels": { "type": "array", "items": { "type": "string" } },
+                    "maxLines": { "type": "integer", "minimum": 1 },
+                    "maxLineChars": { "type": "integer", "minimum": 1 }
+                  }
                 },
-                "minEditIntervalMs": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "default": 1000
-                }
+                "minEditIntervalMs": { "type": "integer", "minimum": 0, "default": 1000 }
               }
             },
             "reactions": {
@@ -1387,7 +1406,22 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "preview": { "type": "string", "enum": ["on", "off"], "default": "on" },
+              "mode": { "type": "string", "enum": ["off", "partial", "block", "progress"] },
+              "preview": { "type": "string", "enum": ["on", "off"] },
+              "progress": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "toolProgress": { "type": "boolean" },
+                  "commentary": { "type": "boolean" },
+                  "narration": { "type": "boolean" },
+                  "commandText": { "type": "string", "enum": ["status", "raw"] },
+                  "label": { "oneOf": [{ "type": "string" }, { "type": "boolean", "const": false }] },
+                  "labels": { "type": "array", "items": { "type": "string" } },
+                  "maxLines": { "type": "integer", "minimum": 1 },
+                  "maxLineChars": { "type": "integer", "minimum": 1 }
+                }
+              },
               "minEditIntervalMs": { "type": "integer", "minimum": 0, "default": 1000 }
             }
           },
@@ -1900,19 +1934,23 @@
                   "type": "object",
                   "additionalProperties": false,
                   "properties": {
-                    "preview": {
-                      "type": "string",
-                      "enum": [
-                        "on",
-                        "off"
-                      ],
-                      "default": "on"
+                    "mode": { "type": "string", "enum": ["off", "partial", "block", "progress"] },
+                    "preview": { "type": "string", "enum": ["on", "off"] },
+                    "progress": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "toolProgress": { "type": "boolean" },
+                        "commentary": { "type": "boolean" },
+                        "narration": { "type": "boolean" },
+                        "commandText": { "type": "string", "enum": ["status", "raw"] },
+                        "label": { "oneOf": [{ "type": "string" }, { "type": "boolean", "const": false }] },
+                        "labels": { "type": "array", "items": { "type": "string" } },
+                        "maxLines": { "type": "integer", "minimum": 1 },
+                        "maxLineChars": { "type": "integer", "minimum": 1 }
+                      }
                     },
-                    "minEditIntervalMs": {
-                      "type": "integer",
-                      "minimum": 0,
-                      "default": 1000
-                    }
+                    "minEditIntervalMs": { "type": "integer", "minimum": 0, "default": 1000 }
                   }
                 },
                 "reactions": {
@@ -2120,7 +2158,7 @@
         "replyToModeByChatType": { "label": "Per-chat-type reply-to mode override (direct / group / channel)" },
         "groupPolicy": { "label": "Group admission policy", "options": ["open", "allowlist", "disabled"] },
         "groups": { "label": "Per-group config (keyed by channel unique name)" },
-        "streaming": { "label": "Streaming preview (default: on — block-by-block live-edit of one Cliq response; set preview to off for a single final reply)", "options": ["on", "off"] },
+        "streaming": { "label": "Streaming preview mode (mode: off | partial | block | progress; unset or legacy preview:on resolves to partial; preview:off resolves to off; explicit mode wins over legacy preview)", "options": ["off", "partial", "block", "progress"] },
         "reactions": { "label": "Agent reaction guidance", "options": ["minimal", "extensive", "off"] },
         "thinking": { "label": "Instant acknowledgement (default: animated dots placeholder; set mode or animate to \"off\" to disable)", "options": ["off", "placeholder", "card"] },
         "welcome": { "label": "Welcome message on subscribe (greeting DM on first contact)" },

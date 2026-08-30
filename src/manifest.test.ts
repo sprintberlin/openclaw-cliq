@@ -469,51 +469,85 @@ describe("cliq resolveCliqConfig reads thinking (issue #47)", () => {
   });
 });
 
-describe("cliq streaming manifest defaults (issue #181)", () => {
+describe("cliq streaming manifest defaults (issue #181 and #207)", () => {
   const channelSchema = manifest.channelConfigs.cliq.schema;
   const topLevelSchema = manifest.configSchema;
   const accountSchema = channelSchema.properties?.accounts?.additionalProperties as JsonSchema | undefined;
   const topLevelAccountSchema = topLevelSchema.properties?.accounts?.additionalProperties as JsonSchema | undefined;
 
-  it("declares streaming.preview default as 'on' in every schema copy", () => {
-    expect(channelSchema.properties?.streaming?.properties?.preview?.default).toBe("on");
-    expect(topLevelSchema.properties?.streaming?.properties?.preview?.default).toBe("on");
-    expect(accountSchema?.properties?.streaming?.properties?.preview?.default).toBe("on");
-    expect(topLevelAccountSchema?.properties?.streaming?.properties?.preview?.default).toBe("on");
+  it("declares streaming.mode in every schema copy with the 4 supported modes", () => {
+    const modes = ["off", "partial", "block", "progress"];
+    expect(channelSchema.properties?.streaming?.properties?.mode?.enum).toEqual(modes);
+    expect(topLevelSchema.properties?.streaming?.properties?.mode?.enum).toEqual(modes);
+    expect(accountSchema?.properties?.streaming?.properties?.mode?.enum).toEqual(modes);
+    expect(topLevelAccountSchema?.properties?.streaming?.properties?.mode?.enum).toEqual(modes);
   });
 
-  it("keeps streaming.minEditIntervalMs default at 1000 in every schema copy", () => {
+  it("declares streaming.progress in every schema copy accepting Core progress keys", () => {
+    expect(channelSchema.properties?.streaming?.properties?.progress?.type).toBe("object");
+    expect(topLevelSchema.properties?.streaming?.properties?.progress?.type).toBe("object");
+    expect(accountSchema?.properties?.streaming?.properties?.progress?.type).toBe("object");
+    expect(topLevelAccountSchema?.properties?.streaming?.properties?.progress?.type).toBe("object");
+  });
+
+  it("preserves legacy preview and minEditIntervalMs in schema", () => {
+    expect(channelSchema.properties?.streaming?.properties?.preview?.enum).toEqual(["on", "off"]);
     expect(channelSchema.properties?.streaming?.properties?.minEditIntervalMs?.default).toBe(1000);
-    expect(topLevelSchema.properties?.streaming?.properties?.minEditIntervalMs?.default).toBe(1000);
-    expect(accountSchema?.properties?.streaming?.properties?.minEditIntervalMs?.default).toBe(1000);
-    expect(topLevelAccountSchema?.properties?.streaming?.properties?.minEditIntervalMs?.default).toBe(1000);
   });
 
-  it("omitted streaming block resolves to blockStreaming=true through the full config-resolution path", () => {
+  it("omitted streaming block resolves to partial mode and blockStreaming=true", () => {
     const resolved = resolveCliqConfig(cfgWith({
       clientId: "id", clientSecret: "s", botId: "b",
     }));
+    expect(resolved.streaming.mode).toBe("partial");
     expect(resolved.blockStreaming).toBe(true);
     expect(resolved.streamingMinEditIntervalMs).toBe(1000);
   });
 
-  it("preserves an explicit streaming.preview opt-out", () => {
+  it("resolves explicit streaming.mode=progress with progress subconfig", () => {
+    const resolved = resolveCliqConfig(cfgWith({
+      clientId: "id", clientSecret: "s", botId: "b",
+      streaming: {
+        mode: "progress",
+        minEditIntervalMs: 1500,
+        progress: { toolProgress: true, commentary: true, label: "Working..." },
+      },
+    }));
+    expect(resolved.streaming.mode).toBe("progress");
+    expect(resolved.blockStreaming).toBe(true);
+    expect(resolved.streamingMinEditIntervalMs).toBe(1500);
+    expect(resolved.streaming.progress).toEqual({
+      toolProgress: true,
+      commentary: true,
+      label: "Working...",
+    });
+  });
+
+  it("resolves legacy preview: off to mode: off", () => {
     const resolved = resolveCliqConfig(cfgWith({
       clientId: "id", clientSecret: "s", botId: "b",
       streaming: { preview: "off" },
     }));
+    expect(resolved.streaming.mode).toBe("off");
     expect(resolved.blockStreaming).toBe(false);
   });
 
-  it("resolves streaming.preview=on together with thinking.animate=dots (issue #184)", () => {
+  it("resolves legacy preview: on to mode: partial", () => {
     const resolved = resolveCliqConfig(cfgWith({
       clientId: "id", clientSecret: "s", botId: "b",
       streaming: { preview: "on" },
-      thinking: { mode: "placeholder", animate: "dots" },
     }));
+    expect(resolved.streaming.mode).toBe("partial");
     expect(resolved.blockStreaming).toBe(true);
-    expect(resolved.thinking.mode).toBe("placeholder");
-    expect(resolved.thinking.animate).toBe("dots");
+  });
+
+  it("lets explicit streaming.mode win over legacy preview", () => {
+    const resolved = resolveCliqConfig(cfgWith({
+      clientId: "id", clientSecret: "s", botId: "b",
+      streaming: { preview: "off", mode: "progress" },
+    }));
+    expect(resolved.streaming.mode).toBe("progress");
+    expect(resolved.blockStreaming).toBe(true);
   });
 });
 

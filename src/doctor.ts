@@ -13,6 +13,7 @@ import {
   findCliqDataCenterByOauthBase,
 } from "./region.js";
 import { hasConfiguredSecretInput } from "openclaw/plugin-sdk/secret-input-runtime";
+import { resolveCliqStreamingConfig } from "./client.js";
 import { CLIQ_CAPABILITIES } from "./capabilities.js";
 import { CLIQ_ORGANIZATION_BOUNDARY_STATEMENT } from "./identity.js";
 
@@ -57,9 +58,9 @@ function isWildcardAllowFrom(allowFrom: string[]): boolean {
  *    user can drive the agent — call this out as a security note),
  *  - `dmPolicy: "allowlist"` with an empty `allowFrom` (no DM can be admitted
  *    until the operator adds at least one sender id),
- *  - `streaming.preview` defaulting to `"on"` without a `refreshToken`
+ *  - `streaming.mode` resolving to a non-`"off"` mode without a `refreshToken`
  *    (live-edit degrades to a single final reply; operators can set
- *    `streaming.preview: "off"` to opt out),
+ *    `streaming.mode: "off"` to opt out),
  *  - an `ackPolicy: "immediate"` opt-in (lost-message risk on crash — opt-in
  *    only when the Deluge `invokeUrl` timeout is tighter than the agent
  *    round-trip).
@@ -107,20 +108,34 @@ function collectCliqPreviewWarnings(params: {
       `- channels.cliq: dmPolicy is "allowlist" but allowFrom is empty. No DM will be admitted until at least one sender id is added (or dmPolicy is set to "open").`,
     );
   }
-  const streaming = section.streaming as { preview?: unknown } | undefined;
+  const streaming = section.streaming as
+    | { preview?: unknown; mode?: unknown }
+    | undefined;
   const hasCoreCredentials =
     Boolean(section.clientId) &&
     section.clientSecret !== undefined &&
     hasConfiguredSecretInput(section.clientSecret) &&
     Boolean(section.botId);
+  const streamingMode = resolveCliqStreamingConfig(streaming).mode;
   if (
     hasCoreCredentials &&
-    streaming?.preview !== "off" &&
+    streamingMode !== "off" &&
     !hasConfiguredSecretInput(section.refreshToken)
   ) {
     warnings.push(
-      `- channels.cliq: streaming.preview is "on" (the default) but no refreshToken is configured. Live-edit of one Cliq response needs ZohoCliq.Messages.UPDATE on a user-context refresh token; without it, preview edits fall back to a normal final response. Set streaming.preview to "off" to keep a single final reply deliberately.`,
+      `- channels.cliq: streaming.mode resolves to "${streamingMode}" but no refreshToken is configured. Live-edit of one Cliq response needs ZohoCliq.Messages.UPDATE on a user-context refresh token; without it, preview edits fall back to a normal final response. Set streaming.mode to "off" to keep a single final reply deliberately.`,
     );
+  }
+  // Both spellings present: the explicit `mode` wins, so a legacy `preview`
+  // that disagrees is silently inert. Name it rather than let an operator
+  // believe the ignored key is still in force.
+  if (typeof streaming?.mode === "string" && typeof streaming?.preview === "string") {
+    const legacyMode = streaming.preview === "off" ? "off" : "partial";
+    if (legacyMode !== streamingMode) {
+      warnings.push(
+        `- channels.cliq: streaming.mode ("${streamingMode}") and the legacy streaming.preview ("${streaming.preview}") disagree. The explicit mode wins and preview is ignored. Run \`${params.doctorFixCommand}\` to drop the legacy key.`,
+      );
+    }
   }
   if (section.ackPolicy === "immediate") {
     warnings.push(

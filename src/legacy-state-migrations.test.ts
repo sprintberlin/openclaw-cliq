@@ -108,13 +108,36 @@ describe("cliqLegacyConfigRules", () => {
     expect(issues.every((i) => i.message.includes("openclaw doctor --fix"))).toBe(true);
   });
 
-  it("does not fire when no snake_case keys are present", () => {
-    const cfg = cfgWith({ clientId: "id", clientSecret: "s", botId: "b" });
+  it("does not fire when no snake_case or legacy streaming keys are present", () => {
+    const cfg = cfgWith({
+      clientId: "id",
+      clientSecret: "s",
+      botId: "b",
+      streaming: { mode: "partial" },
+    });
     const issues = findLegacyConfigIssues(
       cfg as unknown as Record<string, unknown>,
       cliqLegacyConfigRules,
     );
     expect(issues).toEqual([]);
+  });
+
+  it("fires for root and per-account legacy streaming.preview keys", () => {
+    const cfg = cfgWith({
+      streaming: { preview: "on" },
+      accounts: { franzi: { streaming: { preview: "off" } } },
+    });
+    const issues = findLegacyConfigIssues(
+      cfg as unknown as Record<string, unknown>,
+      cliqLegacyConfigRules,
+    );
+    expect(issues.map((issue) => issue.path)).toEqual(
+      expect.arrayContaining([
+        "channels.cliq.streaming.preview",
+        "channels.cliq.accounts",
+      ]),
+    );
+    expect(issues.every((issue) => issue.message.includes("openclaw doctor --fix"))).toBe(true);
   });
 });
 
@@ -194,6 +217,45 @@ describe("normalizeCliqCompatibilityConfig", () => {
       dmPolicy: "open",
       ackPolicy: "immediate",
     });
+  });
+
+  it("migrates root and per-account streaming.preview idempotently", () => {
+    const cfg = cfgWith({
+      streaming: { preview: "on", minEditIntervalMs: 2500 },
+      accounts: {
+        franzi: { streaming: { preview: "off" } },
+        mara: { streaming: { preview: "off", mode: "progress" } },
+      },
+    });
+    const first = normalizeCliqCompatibilityConfig({ cfg });
+    const section = (first.config as unknown as {
+      channels: {
+        cliq: {
+          streaming: Record<string, unknown>;
+          accounts: Record<string, { streaming: Record<string, unknown> }>;
+        };
+      };
+    }).channels.cliq;
+    expect(section.streaming).toEqual({ mode: "partial", minEditIntervalMs: 2500 });
+    expect(section.accounts.franzi.streaming).toEqual({ mode: "off" });
+    expect(section.accounts.mara.streaming).toEqual({ mode: "progress" });
+    expect(first.changes).toEqual([
+      "Moved channels.cliq.streaming.preview → channels.cliq.streaming.mode (partial).",
+      "Moved channels.cliq.accounts.franzi.streaming.preview → channels.cliq.accounts.franzi.streaming.mode (off).",
+      "Removed channels.cliq.accounts.mara.streaming.preview (channels.cliq.accounts.mara.streaming.mode already set).",
+    ]);
+    const second = normalizeCliqCompatibilityConfig({ cfg: first.config });
+    expect(second.changes).toEqual([]);
+    expect(second.config).toBe(first.config);
+  });
+
+  it("does not mutate nested account streaming objects", () => {
+    const cfg = cfgWith({
+      accounts: { franzi: { streaming: { preview: "off" } } },
+    });
+    const snapshot = JSON.parse(JSON.stringify(cfg));
+    normalizeCliqCompatibilityConfig({ cfg });
+    expect(cfg).toEqual(snapshot);
   });
 
   it("is idempotent — a second pass produces no changes", () => {

@@ -372,9 +372,9 @@ export async function promptCliqCredentials(
   // ZohoCliq.Channels.UPDATE / ZohoCliq.Messages.UPDATE; a user-context
   // refresh token (obtained once via the self-client authorization_code
   // flow — see README §3) is required for the channel reply + live-edit
-  // paths. Streaming preview defaults to on, so a missing refresh token
+  // paths. Streaming mode defaults to `"partial"`, so a missing refresh token
   // degrades live-edit to a single final reply; operators can opt out
-  // with `streaming.preview: "off"`. DM-only setups can leave this blank.
+  // with `streaming.mode: "off"`. DM-only setups can leave this blank.
   let refreshToken: string | undefined;
   if (hasExistingRefreshToken) {
     if (
@@ -392,7 +392,7 @@ export async function promptCliqCredentials(
     } else {
       refreshToken = await prompter.text({
         message:
-          "User-context OAuth refresh token (required for channel posts / live-edit; streaming preview defaults to on — set streaming.preview to off to keep a single final reply; leave empty for DM-only)",
+          "User-context OAuth refresh token (required for channel posts / live-edit; streaming.mode defaults to partial — set streaming.mode to off to keep a single final reply; leave empty for DM-only)",
         placeholder: "1000.abcdef…",
         sensitive: true,
       });
@@ -406,7 +406,7 @@ export async function promptCliqCredentials(
   } else {
     refreshToken = await prompter.text({
       message:
-        "User-context OAuth refresh token (required for channel posts / live-edit; streaming preview defaults to on — set streaming.preview to off to keep a single final reply; leave empty for DM-only — see README §3)",
+        "User-context OAuth refresh token (required for channel posts / live-edit; streaming.mode defaults to partial — set streaming.mode to off to keep a single final reply; leave empty for DM-only — see README §3)",
       placeholder: "1000.abcdef…",
       sensitive: true,
     });

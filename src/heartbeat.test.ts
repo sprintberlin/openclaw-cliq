@@ -164,6 +164,7 @@ describe("cliq heartbeat adapter", () => {
         ackPolicy: "after_dispatch" as const,
         selfSenderIds: [],
         blockStreaming: false,
+        streaming: { mode: "off" as const, progress: {} },
         thinking: { mode: "off" as const, text: "thinking" },
         welcome: { enabled: false, text: "", textRejoin: "" },
         pairing: {

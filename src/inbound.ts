@@ -1313,7 +1313,7 @@ export async function dispatchCliqInbound(params: {
   // blocks. Instead of sending each block as a separate message, edit a
   // single draft message in place as the reply grows (overflowing to a new
   // message at the 5000-char cap). When block streaming is opted out
-  // (`streaming.preview: "off"`), the single final reply is chunked and sent
+  // (`streaming.mode: "off"`), the single final reply is chunked and sent
   // (the live-edit loop's disabled path). When `initialDraft` is set (thinking placeholder), the
   // first deliver EDITS that placeholder into the reply instead of sending
   // a new message. See `live-edit.ts` for chatId-resolution caveats.
