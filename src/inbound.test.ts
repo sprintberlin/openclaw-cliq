@@ -2771,6 +2771,368 @@ describe("dispatchCliqInbound — thinking placeholder (issue #47)", () => {
     expect(client.edits.at(-1)?.text).toBe("final answer");
   });
 
+  it("edits one placeholder into Core progress then the final answer (issue #209)", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    const runtime: CliqRuntime = {
+      channel: {
+        routing: {
+          resolveAgentRoute: () => ({
+            agentId: "agent-1",
+            sessionKey: "sess-1",
+            accountId: "default",
+          }),
+        },
+        session: {
+          resolveStorePath: () => "/tmp/store",
+          readSessionUpdatedAt: () => undefined,
+          recordInboundSession: () => undefined,
+        },
+        reply: {
+          resolveEnvelopeFormatOptions: () => ({}),
+          formatAgentEnvelope: (p: Record<string, unknown>) => String(p.body ?? ""),
+          finalizeInboundContext: (fields: Record<string, unknown>) => fields,
+          dispatchReplyWithBufferedBlockDispatcher: async () => undefined,
+        },
+        inbound: {
+          run: async (params) => {
+            const adapter = (params as unknown as {
+              adapter: { resolveTurn: (...args: unknown[]) => unknown };
+            }).adapter;
+            const turn = adapter.resolveTurn({}, {}, {}) as unknown as {
+              replyOptions?: {
+                onToolStart?: (payload: { name?: string }) => Promise<unknown>;
+                onItemEvent?: (payload: {
+                  kind?: string;
+                  progressText?: string;
+                }) => Promise<unknown>;
+              };
+              delivery: {
+                deliver: (
+                  payload: { text?: string },
+                  info?: { final?: boolean },
+                ) => Promise<void>;
+              };
+            };
+            await turn.replyOptions?.onToolStart?.({ name: "read" });
+            await turn.replyOptions?.onItemEvent?.({
+              kind: "preamble",
+              progressText: "Checking the docs",
+            });
+            await turn.delivery.deliver({ text: "OK" }, { final: true });
+          },
+        },
+        pairing: {
+          buildPairingReply: () => "",
+          upsertPairingRequest: async () => ({ code: "CODE", created: true }),
+        },
+      },
+    };
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "⏳ …", animate: "off" },
+        refreshToken: "rt",
+        blockStreaming: true,
+        streaming: { mode: "progress", progress: {} },
+        streamingMinEditIntervalMs: 0,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    expect(client.sends).toHaveLength(1);
+    expect(client.sends[0].text).toBe("⏳ …");
+    expect(client.edits.length).toBeGreaterThanOrEqual(1);
+    expect(client.edits.every((entry) => entry.messageId === "ph-1")).toBe(true);
+    expect(client.edits.at(-1)?.text).toBe("OK");
+    expect(client.deletes).toHaveLength(0);
+  });
+
+  it("creates a progress draft without a thinking placeholder and finalizes it", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    const runtime = mockRuntimeWithDeliver("unused");
+    runtime.channel.inbound.run = async (params) => {
+      const adapter = (params as unknown as {
+        adapter: { resolveTurn: (...args: unknown[]) => unknown };
+      }).adapter;
+      const turn = adapter.resolveTurn({}, {}, {}) as unknown as {
+        replyOptions?: {
+          onPlanUpdate?: (payload: {
+            phase: "update";
+            explanation?: string;
+            steps?: Array<{ step: string; status: "in_progress" }>;
+          }) => Promise<unknown>;
+        };
+        delivery: {
+          deliver: (payload: { text?: string }, info?: { final?: boolean }) => Promise<void>;
+        };
+      };
+      await turn.replyOptions?.onPlanUpdate?.({
+        phase: "update",
+        explanation: "Checking the docs",
+        steps: [{ step: "Read docs", status: "in_progress" }],
+      });
+      await turn.delivery.deliver({ text: "final answer" }, { final: true });
+    };
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        apiVersion: { dmPost: "v3", channelPost: "v2" },
+        refreshToken: "rt",
+        blockStreaming: true,
+        streaming: { mode: "progress", progress: {} },
+        streamingMinEditIntervalMs: 0,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    expect(client.sends).toHaveLength(1);
+    expect(client.sends[0].text).toContain("Checking the docs");
+    expect(client.edits.at(-1)).toMatchObject({
+      messageId: "ph-1",
+      text: "final answer",
+    });
+  });
+
+  it("keeps no-placeholder v2 DM progress final-only", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    let progressVisible: (() => boolean) | undefined;
+    const runtime = mockRuntimeWithDeliver("unused");
+    runtime.channel.inbound.run = async (params) => {
+      const adapter = (params as unknown as {
+        adapter: { resolveTurn: (...args: unknown[]) => unknown };
+      }).adapter;
+      const turn = adapter.resolveTurn({}, {}, {}) as unknown as {
+        replyOptions?: {
+          onPlanUpdate?: (payload: {
+            phase: "update";
+            steps?: Array<{ step: string; status: "in_progress" }>;
+          }) => Promise<unknown>;
+          isProgressDraftVisible?: () => boolean;
+        };
+        delivery: {
+          deliver: (payload: { text?: string }, info?: { final?: boolean }) => Promise<void>;
+        };
+      };
+      progressVisible = turn.replyOptions?.isProgressDraftVisible;
+      await turn.replyOptions?.onPlanUpdate?.({
+        phase: "update",
+        steps: [{ step: "Read docs", status: "in_progress" }],
+      });
+      await turn.delivery.deliver({ text: "final answer" }, { final: true });
+    };
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "off", text: "" },
+        refreshToken: "rt",
+        apiVersion: { dmPost: "v2" },
+        blockStreaming: true,
+        streaming: { mode: "progress", progress: {} },
+      }),
+      parsed: parsed!,
+      client,
+    });
+    expect(progressVisible?.()).toBe(false);
+    expect(client.sends.map((entry) => entry.text)).toEqual(["final answer"]);
+    expect(client.edits).toHaveLength(0);
+  });
+
+  it("keeps card-mode progress final-only instead of editing a Message Card", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    let progressOptions:
+      | {
+          suppressDefaultToolProgressMessages?: boolean;
+          onToolStart?: unknown;
+        }
+      | undefined;
+    const runtime = mockRuntimeWithDeliver("unused");
+    runtime.channel.inbound.run = async (params) => {
+      const adapter = (params as unknown as {
+        adapter: { resolveTurn: (...args: unknown[]) => unknown };
+      }).adapter;
+      const turn = adapter.resolveTurn({}, {}, {}) as unknown as {
+        replyOptions?: {
+          onPlanUpdate?: (payload: {
+            phase: "update";
+            steps?: Array<{ step: string; status: "in_progress" }>;
+          }) => Promise<unknown>;
+          suppressDefaultToolProgressMessages?: boolean;
+          onToolStart?: unknown;
+        };
+        delivery: {
+          deliver: (payload: { text?: string }, info?: { final?: boolean }) => Promise<void>;
+        };
+      };
+      progressOptions = turn.replyOptions;
+      await turn.replyOptions?.onPlanUpdate?.({
+        phase: "update",
+        steps: [{ step: "Read docs", status: "in_progress" }],
+      });
+      await turn.delivery.deliver({ text: "final answer" }, { final: true });
+    };
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "card", text: "Generating…" },
+        refreshToken: "rt",
+        apiVersion: { dmPost: "v3" },
+        blockStreaming: true,
+        streaming: { mode: "progress", progress: {} },
+      }),
+      parsed: parsed!,
+      client,
+    });
+    expect(client.cardSends).toHaveLength(1);
+    expect(progressOptions?.suppressDefaultToolProgressMessages).toBe(false);
+    expect(client.sends.map((entry) => entry.text)).toContain("final answer");
+    expect(client.edits.map((entry) => entry.text)).not.toContain("Working");
+  });
+
+  it("replaces visible progress with the no-reply notice", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    const runtime = mockRuntimeWithDeliver("unused");
+    runtime.channel.inbound.run = async (params) => {
+      const adapter = (params as unknown as {
+        adapter: { resolveTurn: (...args: unknown[]) => unknown };
+      }).adapter;
+      const turn = adapter.resolveTurn({}, {}, {}) as unknown as {
+        replyOptions?: {
+          onPlanUpdate?: (payload: {
+            phase: "update";
+            explanation?: string;
+            steps?: Array<{ step: string; status: "in_progress" }>;
+          }) => Promise<unknown>;
+        };
+      };
+      await turn.replyOptions?.onPlanUpdate?.({
+        phase: "update",
+        steps: [{ step: "Read docs", status: "in_progress" }],
+      });
+    };
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        apiVersion: { dmPost: "v3", channelPost: "v2" },
+        refreshToken: "rt",
+        blockStreaming: true,
+        streaming: { mode: "progress", progress: {} },
+        streamingMinEditIntervalMs: 0,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    expect(client.sends).toHaveLength(1);
+    expect(client.edits.at(-1)?.text).toBe("⚠️ Couldn't process that message.");
+    expect(client.deletes).toHaveLength(0);
+  });
+
+  it("retires visible progress on a benign skip without a failure notice", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    const runtime = mockRuntimeWithDeliver("unused");
+    runtime.channel.inbound.run = async (params) => {
+      const adapter = (params as unknown as {
+        adapter: { resolveTurn: (...args: unknown[]) => unknown };
+      }).adapter;
+      const turn = adapter.resolveTurn({}, {}, {}) as unknown as {
+        replyOptions?: {
+          onPlanUpdate?: (payload: {
+            phase: "update";
+            steps?: Array<{ step: string; status: "in_progress" }>;
+          }) => Promise<unknown>;
+        };
+      };
+      await turn.replyOptions?.onPlanUpdate?.({
+        phase: "update",
+        steps: [{ step: "Read docs", status: "in_progress" }],
+      });
+      return {
+        admission: { kind: "dispatch" },
+        dispatched: true,
+        processedOutcome: { outcome: "skipped", reason: "duplicate" },
+        dispatchResult: { queuedFinal: false, counts: {} },
+      };
+    };
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        apiVersion: { dmPost: "v3", channelPost: "v2" },
+        refreshToken: "rt",
+        blockStreaming: true,
+        streaming: { mode: "progress", progress: {} },
+        streamingMinEditIntervalMs: 0,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    expect(client.edits.at(-1)?.text).toBe(" ");
+    expect(
+      client.edits.some((entry) => entry.text === "⚠️ Couldn't process that message."),
+    ).toBe(false);
+  });
+
+  it("retires visible progress when the final reply is card-only", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    const runtime = mockRuntimeWithDeliver("unused");
+    runtime.channel.inbound.run = async (params) => {
+      const adapter = (params as unknown as {
+        adapter: { resolveTurn: (...args: unknown[]) => unknown };
+      }).adapter;
+      const turn = adapter.resolveTurn({}, {}, {}) as unknown as {
+        replyOptions?: {
+          onPlanUpdate?: (payload: {
+            phase: "update";
+            steps?: Array<{ step: string; status: "in_progress" }>;
+          }) => Promise<unknown>;
+        };
+        delivery: {
+          deliver: (
+            payload: { channelData?: unknown },
+            info?: { final?: boolean },
+          ) => Promise<void>;
+        };
+      };
+      await turn.replyOptions?.onPlanUpdate?.({
+        phase: "update",
+        steps: [{ step: "Choose model", status: "in_progress" }],
+      });
+      await turn.delivery.deliver({
+        channelData: {
+          cliqCard: {
+            buttons: [{ label: "Choose", action: { type: "invoke.function", data: {} } }],
+          },
+        },
+      }, { final: true });
+    };
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        apiVersion: { dmPost: "v3", channelPost: "v2" },
+        refreshToken: "rt",
+        blockStreaming: true,
+        streaming: { mode: "progress", progress: {} },
+        streamingMinEditIntervalMs: 0,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    expect(client.cardSends).toHaveLength(1);
+    expect(client.edits.at(-1)?.text).toBe(" ");
+  });
+
   it("card mode hands off to the streaming preview (one card, no duplicate reply)", async () => {
     const client = makeMockClient({ placeholderChatId: "chat-u1" });
     const parsed = parseCliqWebhookPayload(dmPayload());
@@ -2788,6 +3150,7 @@ describe("dispatchCliqInbound — thinking placeholder (issue #47)", () => {
     expect(client.cardSends).toHaveLength(1);
     expect(client.edits.at(-1)?.text).toBe("reply");
     expect(client.sends).toHaveLength(0);
+    expect(client.deletes).toHaveLength(0);
   });
 
   it("card mode is a no-op without a refreshToken (edits need a user-context token)", async () => {

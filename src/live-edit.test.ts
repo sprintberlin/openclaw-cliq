@@ -1,8 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
 import {
+  clearLiveEditProgressDraft,
   createLiveEditDeliver,
   getLiveEditDeliverStats,
   getLiveEditPlaceholderConsumed,
+  getLiveEditProgressDraftActive,
   editStatusCardPhase,
 } from "./live-edit.js";
 import type { CliqClient } from "./client.js";
@@ -867,6 +869,280 @@ describe("createLiveEditDeliver — initialDraft (thinking placeholder)", () => 
     expect(fake.deletes).toHaveLength(1);
     expect(fake.sends[0].text).toBe("first");
     expect(fake.sends.at(-1)?.text).toContain("second");
+  });
+
+  it("replaces one progress draft and finalizes the same message", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      minEditIntervalMs: 0,
+    });
+    await deliver({ text: "Working\n\n📖 Read: docs.md" }, { progress: true });
+    await deliver({ text: "Checking\n\n🔎 Search: Cliq" }, { progress: true });
+    await deliver({ text: "Done." }, { final: true });
+    expect(fake.sends).toHaveLength(1);
+    expect(fake.edits.map((entry) => entry.text)).toEqual([
+      "Checking\n\n🔎 Search: Cliq",
+      "Done.",
+    ]);
+    expect(fake.edits.every((entry) => entry.messageId === "m1")).toBe(true);
+  });
+
+  it("converts a rendered Core progress snapshot exactly once", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+    });
+    await deliver({ text: "*Working*" }, { progress: true, rendered: true });
+    expect(fake.edits[0].text).toBe("*Working*");
+  });
+
+  it("reuses the progress draft for a long final first chunk", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+      charLimit: 20,
+    });
+    await deliver({ text: "Working" }, { progress: true });
+    await deliver({ text: `final\n${"x".repeat(30)}` }, { final: true });
+    expect(fake.edits.at(-1)).toMatchObject({ messageId: "ph-1", text: "final" });
+    expect(fake.sends.map((entry) => entry.text).join("")).toBe("\n" + "x".repeat(30));
+  });
+
+  it("backs off and retries a rate-limited progress edit", async () => {
+    let now = 0;
+    const sleeps: number[] = [];
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    let calls = 0;
+    fake.editMessage = vi.fn(async (entry) => {
+      fake.edits.push(entry);
+      calls++;
+      if (calls === 1) {
+        const error = new Error("cliq: send failed [transient] status=429");
+        (error as { status?: number }).status = 429;
+        (error as { retryAfterMs?: number }).retryAfterMs = 250;
+        throw error;
+      }
+      return { messageId: entry.messageId, chatId: entry.chatId };
+    });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+      now: () => now,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        now += ms;
+      },
+    });
+    await deliver({ text: "Working" }, { progress: true, flush: true });
+    expect(sleeps).toEqual([250]);
+    expect(getLiveEditDeliverStats(deliver)?.rateLimitRetries).toBe(1);
+    expect(getLiveEditProgressDraftActive(deliver)).toBe(true);
+  });
+
+  it("recovers a group progress edit through the canonical message ref", async () => {
+    let calls = 0;
+    const fake = makeFakeClient({
+      channelChatId: "CT_dev_team",
+      recentMessages: [{ messageId: "ph-1", chatId: "CT_real_chat" }],
+    });
+    fake.editMessage = vi.fn(async (entry) => {
+      fake.edits.push(entry);
+      calls++;
+      if (calls === 1) throw new Error("wrong chat id");
+      return { messageId: entry.messageId, chatId: entry.chatId };
+    });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "dev-team",
+      isDm: false,
+      enabled: true,
+      initialDraft: { messageId: "ph-1" },
+    });
+    await deliver({ text: "Working" }, { progress: true });
+    expect(fake.edits.map((entry) => entry.chatId)).toEqual([
+      "CT_dev_team",
+      "CT_real_chat",
+    ]);
+    expect(getLiveEditProgressDraftActive(deliver)).toBe(true);
+  });
+
+  it("disables progress after an unrecoverable edit failure without message spam", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1", editFails: true });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+    });
+    await deliver({ text: "Working" }, { progress: true });
+    await deliver({ text: "Still working" }, { progress: true });
+    expect(fake.sends).toHaveLength(0);
+    expect(fake.edits).toHaveLength(1);
+    expect(getLiveEditProgressDraftActive(deliver)).toBe(true);
+    await deliver({ text: "OK" }, { final: true });
+    expect(fake.sends.map((entry) => entry.text)).toContain("OK");
+    expect(fake.deletes).toEqual([{ chatId: "chat-u1", messageId: "ph-1" }]);
+    expect(getLiveEditProgressDraftActive(deliver)).toBe(false);
+  });
+
+  it("does not reuse a card thinking placeholder as a text progress draft", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "card-1", chatId: "chat-u1", text: "Generating…" },
+      initialDraftEditable: false,
+    });
+    await deliver({ text: "Working" }, { progress: true });
+    await deliver({ text: "final answer" }, { final: true });
+    expect(fake.sends.map((entry) => entry.text)).toContain("final answer");
+    expect(fake.edits).toHaveLength(0);
+    expect(fake.deletes).toEqual([{ chatId: "chat-u1", messageId: "card-1" }]);
+  });
+
+  it("retires a retracted progress draft by editing the bot message", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1", deleteFails: true });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+    });
+    await deliver({ text: "Working" }, { progress: true });
+    await clearLiveEditProgressDraft(deliver);
+    expect(fake.edits.at(-1)).toMatchObject({ messageId: "ph-1", text: " " });
+    expect(fake.deletes).toHaveLength(0);
+    expect(getLiveEditProgressDraftActive(deliver)).toBe(false);
+  });
+
+  it("reuses a thinking placeholder for progress and a shorter final", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1", text: "💭 …" },
+      minEditIntervalMs: 0,
+    });
+    await deliver({ text: "Working\n\n📖 Read: a very long document path" }, { progress: true });
+    await deliver({ text: "OK" }, { final: true });
+    expect(fake.sends).toHaveLength(0);
+    expect(fake.edits.map((entry) => entry.text)).toEqual([
+      "Working\n\n📖 Read: a very long document path",
+      "OK",
+    ]);
+    expect(fake.edits.every((entry) => entry.messageId === "ph-1")).toBe(true);
+  });
+
+  it("forces a pending progress edit when Core requests flush", async () => {
+    let now = 0;
+    const sleeps: number[] = [];
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+      minEditIntervalMs: 1_000,
+      now: () => now,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        now += ms;
+      },
+    });
+    await deliver({ text: "Working\n\n📖 Read" }, { progress: true });
+    await deliver({ text: "Working\n\n🔎 Search" }, { progress: true, flush: true });
+    expect(sleeps).toEqual([]);
+    expect(fake.edits.map((entry) => entry.text)).toEqual([
+      "Working\n\n📖 Read",
+      "Working\n\n🔎 Search",
+    ]);
+  });
+
+  it("caps an over-limit progress draft to one editable message", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      charLimit: 30,
+    });
+    await deliver({ text: `Working\n\n${"x".repeat(80)}` }, { progress: true });
+    expect(fake.sends).toHaveLength(1);
+    expect(fake.sends[0].text.length).toBeLessThanOrEqual(30);
+  });
+
+  it("never loses the final when replacing a progress draft fails", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1", editFails: true });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+    });
+    await deliver({ text: "Working\n\n📖 Read" }, { progress: true });
+    await deliver({ text: "final answer" }, { final: true });
+    expect(fake.sends.map((entry) => entry.text)).toContain("final answer");
+    expect(fake.deletes).toEqual([{ chatId: "chat-u1", messageId: "m1" }]);
+  });
+
+  it("keeps final delivery even when stale-progress cleanup also fails", async () => {
+    const fake = makeFakeClient({
+      dmChatId: "chat-u1",
+      editFails: true,
+      deleteFails: true,
+    });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+    });
+    await deliver({ text: "Working" }, { progress: true });
+    await deliver({ text: "final answer" }, { final: true });
+    expect(fake.sends.map((entry) => entry.text)).toContain("final answer");
+  });
+
+  it("retires progress when a card-only final is delivered", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+    });
+    await deliver({ text: "Working\n\n📖 Read" }, { progress: true });
+    await deliver({
+      channelData: {
+        cliqCard: {
+          buttons: [{ label: "Choose", action: { type: "invoke.function", data: {} } }],
+        },
+      },
+    }, { final: true });
+    expect(fake.cardSends).toHaveLength(1);
+    expect(fake.edits.at(-1)).toMatchObject({ messageId: "m1", text: " " });
   });
 });
 

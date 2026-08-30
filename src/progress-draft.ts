@@ -25,6 +25,7 @@ export interface CliqProgressDraftControllerOptions {
   entry: NonNullable<CompositorParams["entry"]>;
   seed: string;
   update: CliqProgressDraftSink;
+  deleteCurrent?: CompositorParams["deleteCurrent"];
   active?: boolean;
   onPartialReply?: GetReplyOptions["onPartialReply"];
   reasoningVisible?: boolean;
@@ -99,6 +100,7 @@ export function createCliqProgressDraftController(
       if (!canPushProgress()) return false;
       return await options.update(text, updateOptions);
     },
+    deleteCurrent: options.deleteCurrent,
     setTimeoutFn: options.setTimeoutFn,
     clearTimeoutFn: options.clearTimeoutFn,
   });
