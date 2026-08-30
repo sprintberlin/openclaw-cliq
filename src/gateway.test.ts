@@ -15,6 +15,7 @@ function account(): ResolvedCliqAccount {
     ackPolicy: "after_dispatch",
     selfSenderIds: [],
     blockStreaming: false,
+    streaming: { mode: "off", progress: {} },
     thinking: { mode: "off", text: "thinking" },
     welcome: { enabled: false, text: "", textRejoin: "" },
     pairing: {

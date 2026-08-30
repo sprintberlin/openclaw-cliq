@@ -120,6 +120,64 @@ describe("collectCliqPreviewWarnings", () => {
     expect(warnings.some((w) => /not a signed tenant claim/.test(w))).toBe(true);
   });
 
+  it("warns precisely when explicit mode conflicts with legacy preview", () => {
+    const warnings = collectCliqPreviewWarnings({
+      cfg: cfgWith({
+        clientId: "id",
+        clientSecret: "secret",
+        botId: "bot",
+        refreshToken: "rt",
+        webhookSecret: "s",
+        dmPolicy: "open",
+        allowFrom: ["u1"],
+        streaming: { mode: "progress", preview: "off" },
+      }),
+      doctorFixCommand: DOCTOR_FIX,
+    });
+    expect(
+      warnings.some(
+        (warning) =>
+          /streaming\.mode \("progress"\)/.test(warning) &&
+          /streaming\.preview \("off"\)/.test(warning) &&
+          /explicit mode wins/.test(warning) &&
+          warning.includes(DOCTOR_FIX),
+      ),
+    ).toBe(true);
+  });
+
+  it("does not warn when explicit mode and legacy preview agree", () => {
+    const warnings = collectCliqPreviewWarnings({
+      cfg: cfgWith({
+        clientId: "id",
+        clientSecret: "secret",
+        botId: "bot",
+        refreshToken: "rt",
+        webhookSecret: "s",
+        dmPolicy: "open",
+        allowFrom: ["u1"],
+        streaming: { mode: "partial", preview: "on" },
+      }),
+      doctorFixCommand: DOCTOR_FIX,
+    });
+    expect(warnings.some((warning) => /disagree/.test(warning))).toBe(false);
+  });
+
+  it("does not warn about streaming when mode is explicitly off", () => {
+    const warnings = collectCliqPreviewWarnings({
+      cfg: cfgWith({
+        clientId: "id",
+        clientSecret: "secret",
+        botId: "bot",
+        webhookSecret: "s",
+        dmPolicy: "open",
+        allowFrom: ["u1"],
+        streaming: { mode: "off" },
+      }),
+      doctorFixCommand: DOCTOR_FIX,
+    });
+    expect(warnings.some((warning) => /streaming\.mode resolves/.test(warning))).toBe(false);
+  });
+
   it("notes that streaming.preview=on needs a refreshToken for live-edit", () => {
     const warnings = collectCliqPreviewWarnings({
       cfg: cfgWith({
@@ -134,7 +192,7 @@ describe("collectCliqPreviewWarnings", () => {
       doctorFixCommand: DOCTOR_FIX,
     });
     expect(
-      warnings.some((w) => /streaming\.preview/.test(w) && /refreshToken/.test(w)),
+      warnings.some((w) => /streaming\.mode/.test(w) && /refreshToken/.test(w)),
     ).toBe(true);
   });
 
@@ -151,7 +209,7 @@ describe("collectCliqPreviewWarnings", () => {
       doctorFixCommand: DOCTOR_FIX,
     });
     expect(
-      warnings.some((w) => /streaming\.preview/.test(w) && /refreshToken/.test(w)),
+      warnings.some((w) => /streaming\.mode/.test(w) && /refreshToken/.test(w)),
     ).toBe(true);
   });
 
@@ -168,7 +226,7 @@ describe("collectCliqPreviewWarnings", () => {
       }),
       doctorFixCommand: DOCTOR_FIX,
     });
-    expect(warnings.some((w) => /streaming\.preview/.test(w))).toBe(false);
+    expect(warnings.some((w) => /streaming\.(preview|mode)/.test(w))).toBe(false);
   });
 
   it("does not warn about the default-on streaming preview when a refreshToken is present", () => {
@@ -184,7 +242,7 @@ describe("collectCliqPreviewWarnings", () => {
       }),
       doctorFixCommand: DOCTOR_FIX,
     });
-    expect(warnings.some((w) => /streaming\.preview/.test(w))).toBe(false);
+    expect(warnings.some((w) => /streaming\.(preview|mode)/.test(w))).toBe(false);
   });
 
   it("does not warn about streaming.preview when a refreshToken is present", () => {
@@ -201,7 +259,7 @@ describe("collectCliqPreviewWarnings", () => {
       }),
       doctorFixCommand: DOCTOR_FIX,
     });
-    expect(warnings.some((w) => /streaming\.preview/.test(w))).toBe(false);
+    expect(warnings.some((w) => /streaming\.(preview|mode)/.test(w))).toBe(false);
   });
 
   it("does not warn about wildcard allowFrom under allowlist dmPolicy (covered by empty/open checks)", () => {

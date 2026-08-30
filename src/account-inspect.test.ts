@@ -156,6 +156,26 @@ describe("inspectCliqAccount", () => {
     expect(r.oauthBase).toBe("http://127.0.0.1:9998");
   });
 
+  it("reports explicit streamingMode=progress", () => {
+    const r = inspectCliqAccount({
+      cfg: cfgWith({
+        clientId: "id",
+        clientSecret: "secret",
+        botId: "bot",
+        streaming: { mode: "progress" },
+      }),
+    });
+    expect(r.config.streamingMode).toBe("progress");
+    expect(r.config.streamingPreview).toBe("on");
+  });
+
+  it("defaults streamingMode=partial when unset", () => {
+    const r = inspectCliqAccount({
+      cfg: cfgWith({ clientId: "id", clientSecret: "s", botId: "b" }),
+    });
+    expect(r.config.streamingMode).toBe("partial");
+  });
+
   it("reports streamingPreview=on when opted in", () => {
     const r = inspectCliqAccount({
       cfg: cfgWith({

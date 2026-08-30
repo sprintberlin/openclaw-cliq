@@ -326,7 +326,7 @@ export const cliqPlugin = createChatChannelPlugin<ResolvedCliqAccount, CliqStatu
       // block flushes (avoids tiny fragments), 1s idle coalesce window
       // (balances perceived responsiveness against API chatter). Streaming is
       // on by default; operators opt out via
-      // `channels.cliq.streaming.preview: "off"`.
+      // `channels.cliq.streaming.mode: "off"`.
       blockStreamingCoalesceDefaults: { minChars: 800, idleMs: 1_000 },
     },
     config: {

@@ -91,10 +91,9 @@ export interface InspectedCliqAccountConfig {
   };
   selfSenderIds: string[];
   ackPolicy: "after_dispatch" | "immediate";
-  /**
-   * Whether progressive (block-streaming) reply delivery is active. Defaults
-   * to `"on"`; an explicit `streaming.preview: "off"` reports `"off"`.
-   */
+  /** Effective Core-compatible streaming preview mode. */
+  streamingMode: ResolvedCliqAccount["streaming"]["mode"];
+  /** Backward-compatible on/off summary for older status consumers. */
   streamingPreview: "on" | "off";
   /** Minimum wall-clock distance between two in-place preview edits of one draft. */
   streamingMinEditIntervalMs?: number;
@@ -290,9 +289,12 @@ export function inspectCliqAccount(params: {
         : undefined,
       selfSenderIds: resolved?.selfSenderIds ?? section?.selfSenderIds ?? [],
       ackPolicy: resolved?.ackPolicy ?? "after_dispatch",
+      streamingMode: resolved?.streaming.mode ?? "partial",
       streamingPreview: resolved
         ? (resolved.blockStreaming ? "on" : "off")
-        : (section?.streaming?.preview === "off" ? "off" : "on"),
+        : (section?.streaming?.preview === "off" || section?.streaming?.mode === "off"
+          ? "off"
+          : "on"),
       streamingMinEditIntervalMs: resolved?.streamingMinEditIntervalMs,
       apiVersion: {
         dmPost: resolveCliqApiVersion(resolved?.apiVersion, "dmPost"),

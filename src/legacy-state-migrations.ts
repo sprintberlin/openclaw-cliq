@@ -73,11 +73,36 @@ function readCliqSection(
  * is present, regardless of whether the camelCase form is also set (the
  * canonical form wins on conflict in `normalizeCliqCompatibilityConfig`).
  */
-export const cliqLegacyConfigRules: ChannelDoctorLegacyConfigRule[] =
-  CLIQ_SNAKE_CASE_CONFIG_KEYS.map(({ snake, camel }) => ({
+export const cliqLegacyConfigRules: ChannelDoctorLegacyConfigRule[] = [
+  ...CLIQ_SNAKE_CASE_CONFIG_KEYS.map(({ snake, camel }) => ({
     path: ["channels", "cliq", snake],
     message: `channels.cliq.${snake} is the snake_case form copied from Zoho's API/Deluge docs; use the camelCase "${camel}" key. Run \`openclaw doctor --fix\` to migrate automatically.`,
-  }));
+  })),
+  {
+    path: ["channels", "cliq", "streaming", "preview"],
+    message:
+      "channels.cliq.streaming.preview is legacy; use streaming.mode (on → partial, off → off). An explicit mode wins when both are present. Run `openclaw doctor --fix` to migrate automatically.",
+  },
+  {
+    path: ["channels", "cliq", "accounts"],
+    match: (value) =>
+      Boolean(
+        value &&
+          typeof value === "object" &&
+          Object.values(value as Record<string, unknown>).some((entry) => {
+            if (!entry || typeof entry !== "object") return false;
+            const streaming = (entry as Record<string, unknown>).streaming;
+            return Boolean(
+              streaming &&
+                typeof streaming === "object" &&
+                (streaming as Record<string, unknown>).preview !== undefined,
+            );
+          }),
+      ),
+    message:
+      "a channels.cliq.accounts.<id>.streaming.preview key is legacy; use streaming.mode (on → partial, off → off). An explicit mode wins when both are present. Run `openclaw doctor --fix` to migrate automatically.",
+  },
+];
 
 /**
  * In-memory compatibility pass: rewrite snake_case Cliq channel keys to their
@@ -114,6 +139,47 @@ export function normalizeCliqCompatibilityConfig(params: {
     delete updated[snake];
     changed = true;
   }
+
+  const migrateStreamingPreview = (
+    owner: Record<string, unknown>,
+    path: string,
+  ): Record<string, unknown> | undefined => {
+    const rawStreaming = owner.streaming;
+    if (!rawStreaming || typeof rawStreaming !== "object") return undefined;
+    const streaming = rawStreaming as Record<string, unknown>;
+    if (streaming.preview !== "on" && streaming.preview !== "off") return undefined;
+    const next = { ...streaming };
+    if (next.mode === undefined) {
+      next.mode = streaming.preview === "off" ? "off" : "partial";
+      changes.push(`Moved ${path}.preview → ${path}.mode (${String(next.mode)}).`);
+    } else {
+      changes.push(`Removed ${path}.preview (${path}.mode already set).`);
+    }
+    delete next.preview;
+    changed = true;
+    return next;
+  };
+
+  const rootStreaming = migrateStreamingPreview(updated, "channels.cliq.streaming");
+  if (rootStreaming) updated.streaming = rootStreaming;
+
+  const rawAccounts = updated.accounts;
+  if (rawAccounts && typeof rawAccounts === "object" && !Array.isArray(rawAccounts)) {
+    let nextAccounts: Record<string, unknown> | undefined;
+    for (const [accountId, rawAccount] of Object.entries(rawAccounts)) {
+      if (!rawAccount || typeof rawAccount !== "object" || Array.isArray(rawAccount)) continue;
+      const account = rawAccount as Record<string, unknown>;
+      const accountStreaming = migrateStreamingPreview(
+        account,
+        `channels.cliq.accounts.${accountId}.streaming`,
+      );
+      if (!accountStreaming) continue;
+      nextAccounts ??= { ...(rawAccounts as Record<string, unknown>) };
+      nextAccounts[accountId] = { ...account, streaming: accountStreaming };
+    }
+    if (nextAccounts) updated.accounts = nextAccounts;
+  }
+
   if (!changed) return { config: cfg, changes: [] };
   return {
     config: {

@@ -40,14 +40,14 @@ describe("README streaming switches and live model matrix (issue #205)", () => {
   it("shows a working streaming configuration with both switches", () => {
     expect(readme).toContain("**Working streaming configuration.**");
     expect(readme).toContain('"blockStreamingDefault": "on"');
-    expect(readme).toContain('"preview": "on"');
+    expect(readme).toContain('"streaming": { "mode": "partial" }');
     expect(readme).toContain('"mode": "placeholder"');
     expect(readme).toContain('"animate": "off"');
   });
 
   it("separates Core block streaming, Cliq live-edit, and thinking animation", () => {
     expect(readme).toContain("agents.defaults.blockStreamingDefault");
-    expect(readme).toContain("channels.cliq.streaming.preview");
+    expect(readme).toContain("channels.cliq.streaming.mode");
     expect(readme).toContain("thinking.animate");
     expect(readme).toMatch(/OpenClaw block streaming/);
     expect(readme).toMatch(/Cliq one-message live-edit/);
@@ -98,9 +98,19 @@ describe("README streaming caveats (issue #194)", () => {
     expect(streaming).toContain("until the chat is reopened");
   });
 
+  it("documents Core-compatible modes and legacy migration (issue #207)", () => {
+    expect(readme).toContain('`"partial"` preserves the current answer-preview behavior');
+    expect(readme).toContain('`"block"` selects Core\'s block preview shape');
+    expect(readme).toContain('`"progress"` opts into the progress-draft configuration surface');
+    expect(readme).toContain('Legacy `streaming.preview: "on" | "off"` remains loadable');
+    expect(readme).toContain("an explicit `streaming.mode` wins");
+    expect(readme).toContain("openclaw doctor --fix");
+    expect(changelog).toContain("issue #207");
+  });
+
   it("names the opt-out keys for a normal message", () => {
     const streaming = readme.slice(readme.indexOf("- **`streaming`**"));
-    expect(streaming).toContain('streaming.preview: "off"');
+    expect(streaming).toContain('streaming.mode: "off"');
     expect(streaming).toContain('thinking.mode: "off"');
   });
 

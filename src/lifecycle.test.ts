@@ -47,6 +47,7 @@ function account(overrides: Partial<ResolvedCliqAccount> = {}): ResolvedCliqAcco
     ackPolicy: "after_dispatch",
     selfSenderIds: [],
     blockStreaming: false,
+    streaming: { mode: "off", progress: {} },
     thinking: { mode: "off", text: "💭 …" },
     welcome: { enabled: false, text: "", textRejoin: "" },
     pairing: { notifyOwnerTarget: null, approveLabel: "Approve", denyLabel: "Deny", approvalTitle: "🔐 Pairing request", approvedOwnerText: "✅ Approved.", deniedOwnerText: "🚫 Denied." },

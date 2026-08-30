@@ -2,7 +2,7 @@
  * Live-edit streaming delivery for the inbound dispatch path.
  *
  * When block streaming is enabled for an account (the default; opt out with
- * `channels.cliq.streaming.preview: "off"`),
+ * `channels.cliq.streaming.mode: "off"`),
  * the SDK's buffered block dispatcher delivers the agent's reply as a sequence of
  * coalesced "block" payloads (one `deliver` call per block). Without live-edit,
  * each block becomes a SEPARATE Cliq message — a long agent reply clutters the
