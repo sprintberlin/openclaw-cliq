@@ -11,6 +11,8 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-31
+
 ### Added
 
 - **Progress-draft delivery is now proven end to end by one complete-turn integration suite (issue #210).** A dispatch-level harness drives the real `dispatchCliqInbound` path — Core reply callbacks, the progress controller, the renderer, and the live-edit transport — against a stateful Cliq client that records one ordered call trace. It covers progress work plus final, absence of `onPartialReply` in progress mode, fast no-flash turns, plan/tool line replacement and truncation, approval wait and resume, no-reply / error / cancellation / benign-skip cleanup, edit-failure final fallback, long-final overflow, the `progress` / `partial` / `block` / `off` matrix, legacy `streaming.preview` resolution, and the absence of duplicate standalone tool-progress messages — asserting message identity, call order, final content, and that no stale progress draft survives. README and the config UI hints now distinguish the four lanes explicitly: `progress` renders Core work events without answer snapshots, `partial` shows answer previews only when the model emits them, `block` is Core block semantics rather than token streaming, and `off` delivers the final normally. Controlled live acceptance on Mara (Tier-1) and Franzi (Tier-2) is still outstanding.
@@ -1495,7 +1497,10 @@ publish workflow extracts the matching section as the release notes (see
   lookup, plugin doctor, interactive setup wizard, SecretRef-backed credentials,
   security audit collector, session binding, multi-account, lifecycle hooks.
 
-[Unreleased]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.10...v0.2.0
+[0.1.10]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.9...v0.1.10
+[0.1.9]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.5...v0.1.6
