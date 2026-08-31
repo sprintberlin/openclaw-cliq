@@ -56,7 +56,7 @@ jobs:
       version: ${{ steps.resolve.outputs.version }}
       dry_run: ${{ steps.resolve.outputs.dry_run }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Full history so we can prove the tagged commit is on main.
           fetch-depth: 0
@@ -149,7 +149,7 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7
         with:
