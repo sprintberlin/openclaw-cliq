@@ -39,7 +39,7 @@ function botRecord(overrides: Partial<CliqBotRecord> = {}): CliqBotRecord {
 function handlerScript(
   secret: string,
   url = "https://cliq.example.com/cliq/webhook",
-  extra = 'payload.put("eventId", eventId);',
+  extra = 'payload.put("eventId", eventId);\nresponse.put("eventId", eventId);',
 ): string {
   return [
     'webhookUrl = "' + url + '";',

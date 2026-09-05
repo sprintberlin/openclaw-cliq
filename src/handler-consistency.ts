@@ -194,6 +194,19 @@ export function checkCliqHandlerConsistency(
         `${label} does not forward a per-execution eventId, so repeated identical messages can be dropped by OpenClaw inbound dedupe`,
       );
     }
+
+    // Issue #231: a handler that does not echo its eventId leaves every Zoho
+    // execution row as `output: "{}"`, so a delivered message, a rejected
+    // webhook and a handler that returned before `invokeUrl` are
+    // indistinguishable in the only execution log Zoho exposes.
+    if (
+      handlerSecret !== null &&
+      !handler.script.includes('response.put("eventId"')
+    ) {
+      failures.push(
+        `${label} does not return its eventId, so its Zoho execution rows stay "{}" and a message that never became an agent turn cannot be correlated with gateway logs`,
+      );
+    }
   }
 
   // Two handlers that disagree with each other mean one of them is stale,

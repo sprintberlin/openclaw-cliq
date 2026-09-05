@@ -247,7 +247,7 @@ describe("runCliqWebhookPreflight (issue #96)", () => {
   });
 
   it("passes the Zoho-held secret stage when both handlers match", async () => {
-    const handler = `webhookUrl = "${URL_OK}";\nwebhookSecret = "${secret}";\npayload.put("eventId", eventId);`;
+    const handler = `webhookUrl = "${URL_OK}";\nwebhookSecret = "${secret}";\npayload.put("eventId", eventId);\nresponse.put("eventId", eventId);`;
     const report = await runCliqWebhookPreflight({
       url: URL_OK,
       secret,

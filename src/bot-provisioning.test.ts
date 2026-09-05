@@ -9,7 +9,11 @@ import {
 const URL_OK = "https://cliq.example.com/cliq/webhook";
 const SECRET = "config-secret";
 
-function script(secret = SECRET, url = URL_OK, extra = 'payload.put("eventId", eventId);'): string {
+function script(
+  secret = SECRET,
+  url = URL_OK,
+  extra = 'payload.put("eventId", eventId);\nresponse.put("eventId", eventId);',
+): string {
   return `webhookUrl = "${url}";\nwebhookSecret = "${secret}";\npayload = Map();\n${extra}`;
 }
 
@@ -51,6 +55,63 @@ describe("buildCliqHandlerScript", () => {
     const invokeUrl = body.indexOf("invokeUrl");
     expect(eventIdLine).toBeGreaterThan(-1);
     expect(invokeUrl).toBeGreaterThan(eventIdLine);
+  });
+
+  describe("correlated execution output (issue #231)", () => {
+    const handlerTypes = [
+      "message_handler",
+      "mention_handler",
+      "welcome_handler",
+    ] as const;
+
+    it.each(handlerTypes)("%s returns its eventId instead of a bare {}", (handlerType) => {
+      const body = buildCliqHandlerScript({
+        handlerType,
+        webhookUrl: URL_OK,
+        webhookSecret: SECRET,
+      });
+      // Without the echo every Zoho execution row reads `output: "{}"`, so a
+      // delivered message and a handler that returned before `invokeUrl` are
+      // indistinguishable in the only log Zoho exposes.
+      expect(body).toContain('response.put("eventId", eventId);');
+      const responseMap = body.indexOf("response = Map();");
+      const echo = body.indexOf('response.put("eventId"');
+      const ret = body.indexOf("return response;");
+      expect(responseMap).toBeGreaterThan(-1);
+      expect(echo).toBeGreaterThan(responseMap);
+      expect(ret).toBeGreaterThan(echo);
+    });
+
+    it.each(handlerTypes)(
+      "%s echoes only the eventId — never the secret, payload, or message",
+      (handlerType) => {
+        const body = buildCliqHandlerScript({
+          handlerType,
+          webhookUrl: URL_OK,
+          webhookSecret: SECRET,
+        });
+        const responseLines = body
+          .split("\n")
+          .filter((line) => line.startsWith("response.put("));
+        expect(responseLines).toEqual(['response.put("eventId", eventId);']);
+      },
+    );
+
+    it("introduces no new Deluge symbol beyond the already-used eventId", () => {
+      // `execution_handler_update_failed` is permanent and not safely
+      // retryable, so the echo must reuse a variable every handler already
+      // declares rather than capturing the invokeUrl result.
+      for (const handlerType of handlerTypes) {
+        const body = buildCliqHandlerScript({
+          handlerType,
+          webhookUrl: URL_OK,
+          webhookSecret: SECRET,
+        });
+        expect(body).toContain("eventId = zoho.currenttime");
+        expect(body).not.toMatch(/=\s*invokeUrl/);
+        expect(body).not.toContain("statusCode");
+      }
+    });
   });
 
   it("omits attachments from the mention handler, which Zoho does not provide", () => {
@@ -97,6 +158,27 @@ describe("planCliqHandlerProvisioning — read-only", () => {
     expect(result.status).toBe("in_sync");
     expect(result.botId).toBe("b-464329000000074001");
     expect(result.items.map((item) => item.action)).toEqual(["none", "none"]);
+  });
+
+  it("plans a confirmed repair for a handler that does not echo its eventId (issue #231)", async () => {
+    // A handler from before #231: it forwards the eventId but still returns a
+    // bare map, so its Zoho execution rows stay "{}".
+    const result = await plan({
+      reader: reader({
+        readHandlerScript: vi.fn(async () => ({
+          script: script(SECRET, URL_OK, 'payload.put("eventId", eventId);'),
+        })),
+      }),
+    });
+    expect(result.status).toBe("conflict");
+    for (const item of result.items) {
+      expect(item.action).toBe("repair");
+      expect(item.conflict).toBe("stale_script");
+      expect(item.requiresConfirmation).toBe(true);
+      expect(item.reason).toMatch(/does not return its eventId/i);
+    }
+    // The reason must stay free of secret material.
+    expect(JSON.stringify(result)).not.toContain(SECRET);
   });
 
   it("plans a confirmed repair for a legacy handler with no eventId (issue #196)", async () => {

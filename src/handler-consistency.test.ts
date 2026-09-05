@@ -13,7 +13,11 @@ import { formatCliqPreflightReport } from "./webhook-preflight.js";
 const HOOK_URL = "https://agent.example.com/cliq/webhook";
 const SECRET = "configured-secret-value";
 
-function script(secret = SECRET, url = HOOK_URL, extra = 'payload.put("eventId", eventId);'): string {
+function script(
+  secret = SECRET,
+  url = HOOK_URL,
+  extra = 'payload.put("eventId", eventId);\nresponse.put("eventId", eventId);',
+): string {
   return `webhookUrl = "${url}";\nwebhookSecret = "${secret}";\n${extra}\npayload = Map();`;
 }
 
@@ -75,6 +79,21 @@ describe("checkCliqHandlerConsistency (issue #124)", () => {
 
     expect(result.status).toBe("fail");
     expect(result.detail).toMatch(/eventId/i);
+    expect(result.detail).not.toContain(SECRET);
+  });
+
+  it("fails when a matching handler forwards eventId but still returns a bare map (issue #231)", () => {
+    // The pre-#231 generated script: it posts eventId, then returns a bare map.
+    const result = checkCliqHandlerConsistency({
+      handlers: handlers(
+        script(SECRET, HOOK_URL, 'payload.put("eventId", eventId);'),
+      ),
+      configSecret: SECRET,
+      expectedWebhookUrl: HOOK_URL,
+    });
+
+    expect(result.status).toBe("fail");
+    expect(result.detail).toMatch(/does not return its eventId/i);
     expect(result.detail).not.toContain(SECRET);
   });
 

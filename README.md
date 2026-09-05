@@ -679,7 +679,7 @@ headers.put("Content-Type", "application/json");
 headers.put("x-cliq-webhook-secret", webhookSecret);
 
 // POST to OpenClaw as raw JSON. Use `body:` (NOT `parameters:`) — see note below.
-invoke_response = invokeUrl
+invokeUrl
 [
     url    : webhookUrl
     type   : POST
@@ -687,9 +687,12 @@ invoke_response = invokeUrl
     headers: headers
 ];
 
-// The reply is delivered by the OpenClaw gateway via the Cliq bot API, so the
-// handler itself returns an empty response.
+// The reply is delivered by the OpenClaw gateway via the Cliq bot API. Echo
+// the eventId so the Zoho Bot execution log is correlatable with gateway
+// `evt:` identities instead of reading `output: "{}"` for every run
+// (issue #231). Do not return the payload, the message, or the secret.
 response = Map();
+response.put("eventId", eventId);
 return response;
 ```
 
@@ -715,7 +718,9 @@ return response;
 > still reads `eventId` from that wrapper. **Re-run `openclaw setup` after
 > upgrading** so its read-only handler plan detects a missing `eventId` as a
 > stale script and offers a confirmation-gated repair. `openclaw cliq doctor`
-> also fails a matching handler that still omits `payload.put("eventId")`.
+> also fails a matching handler that still omits `payload.put("eventId")`
+> or `response.put("eventId")` (issue #231 — without the echo every Zoho
+> execution row stays `output: "{}"`).
 > Alternatively, re-paste both handler scripts manually to pick up the
 > `eventId` line.
 
@@ -771,6 +776,8 @@ payload = Map();
 payload.put("handler", "welcome");
 payload.put("user", user);
 payload.put("newuser", newuser);
+eventId = zoho.currenttime.toString("yyyyMMddHHmmss") + "-" + randomNumber(100000,999999) + randomNumber(100000,999999);
+payload.put("eventId", eventId);
 
 headers = Map();
 headers.put("Content-Type", "application/json");
@@ -784,9 +791,10 @@ invokeUrl
     headers: headers
 ];
 
-// The greeting is delivered by the OpenClaw gateway via the Cliq bot API,
-// so the handler itself returns an empty response.
+// Echo the eventId so a replayed subscribe event is correlatable in the
+// Zoho Bot execution log instead of reading `output: "{}"` (issue #231).
 response = Map();
+response.put("eventId", eventId);
 return response;
 ```
 
