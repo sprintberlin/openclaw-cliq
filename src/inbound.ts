@@ -834,6 +834,11 @@ export function resolveCliqMentionDecision(
   });
 }
 
+import {
+  describeDelugeBodySyntax,
+  repairDelugeUnescapedMessageBody,
+} from "./inbound-deluge-repair.js";
+
 /**
  * Read the request body as JSON. Rejects payloads larger than `maxBytes`.
  *
@@ -851,11 +856,15 @@ export async function readJsonBody(
     headers?: IncomingMessage["headers"];
   },
   maxBytes = 1024 * 1024,
-): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> {
+): Promise<
+    { ok: true; value: unknown; repaired?: boolean } | { ok: false; error: string }
+  > {
   return await new Promise((resolve) => {
     let resolved = false;
     const done = (
-      result: { ok: true; value: unknown } | { ok: false; error: string },
+      result:
+        | { ok: true; value: unknown; repaired?: boolean }
+        | { ok: false; error: string },
     ) => {
       if (resolved) return;
       resolved = true;
@@ -887,10 +896,18 @@ export async function readJsonBody(
           done({ ok: true, value: normalized });
           return;
         }
+        // Issue #223/#227: Zoho's `payload.toString()` does not escape string
+        // values, so a message containing a quote or line break arrives as
+        // structurally-complete but unparseable JSON. The generated-handler
+        // grammar is known, so repair instead of dropping.
+        const repaired = repairDelugeUnescapedMessageBody(raw);
+        if (repaired !== undefined) {
+          done({ ok: true, value: repaired, repaired: true });
+          return;
+        }
         done({
           ok: false,
-          error:
-            "body is not valid JSON and could not be normalized as a Deluge form-urlencoded payload; use `body: payload.toString()` with a `Content-Type: application/json` header in the Deluge handler",
+          error: `body is not valid JSON and could not be normalized as a Deluge form-urlencoded payload; use \`body: payload.toString()\` with a \`Content-Type: application/json\` header in the Deluge handler; shape: ${describeDelugeBodySyntax(raw)}`,
         });
       }
     });

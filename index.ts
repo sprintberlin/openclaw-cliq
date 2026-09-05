@@ -302,6 +302,15 @@ export default defineChannelPluginEntry({
           return true;
         }
 
+        if (body.repaired) {
+          // Issue #223/#227: the body was structurally valid but its message
+          // value was not JSON-escaped by Deluge's `toString()`. Repair is
+          // value-free bookkeeping — dispatch proceeds normally below.
+          api.logger.debug?.(
+            "[cliq] inbound body repaired (unescaped Deluge message value)",
+          );
+        }
+
         const probe = parseCliqProbePayload(body.value);
         if (probe) {
           // Dedicated public-preflight protocol (issue #96). This branch must

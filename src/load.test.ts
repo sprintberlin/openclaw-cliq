@@ -1515,3 +1515,75 @@ describe("default-visible inbound skip logging (issue #232)", () => {
     expect(skipLines(warns)).toHaveLength(0);
   });
 });
+
+describe("Deluge unescaped-message repair over the webhook (#223/#227)", () => {
+  beforeEach(() => {
+    resetCliqDedupeForTest();
+  });
+
+  function registrationWithLogs(opts: {
+    inboundRun?: () => Promise<unknown>;
+    extra?: Record<string, unknown>;
+  } = {}) {
+    const warns: string[] = [];
+    let dispatches = 0;
+    const { webhook, api } = registerCliqPluginForTest({
+      logger: { warn: (m: string) => warns.push(m) },
+    });
+    api.config = createCliqTestConfig({
+      clientId: "id",
+      clientSecret: "***",
+      botId: "bot",
+      botName: "openclaw-bot",
+      webhookSecret: "s3cr3t",
+      ...opts.extra,
+    });
+    api.runtime = createTestRuntimeChannel(async () => {
+      dispatches += 1;
+    });
+    return { webhook, warns, dispatches: () => dispatches };
+  }
+
+  async function postRaw(
+    webhook: ReturnType<typeof registerCliqPluginForTest>["webhook"],
+    raw: string,
+  ) {
+    const res = createMockServerResponse();
+    await webhook.handler(
+      createMockIncomingRequest("POST", raw, { "x-cliq-webhook-secret": "s3cr3t" }),
+      res as unknown as any,
+    );
+    return res;
+  }
+
+  it("dispatches a body whose message value contains unescaped quotes and newlines", async () => {
+    const { webhook, warns, dispatches } = registrationWithLogs({
+      extra: { dmPolicy: "open" },
+    });
+    // Exactly the corruption Zoho's payload.toString() produces live: the
+    // message text contains raw double quotes and line breaks, so JSON.parse
+    // fails — the 2026-09-05 forward died at this exact boundary.
+    const corrupt =
+      '{"handler":"message","message":"Eintrag aus dem "others"\nist nicht ersichtlich","user":{"id":"user-123","name":"Alice"},"chat":{"id":"chat-1-B","type":"single"},"eventId":"evt-repair-1"}';
+    const res = await postRaw(webhook, corrupt);
+    expect(res.statusCode).toBe(200);
+    expect(dispatches()).toBe(1);
+    expect(warns.filter((l) => l.startsWith("[cliq] inbound skipped:"))).toHaveLength(0);
+  });
+
+  it("still rejects (with the shape fingerprint) what the repair cannot fix", async () => {
+    const { webhook, warns } = registrationWithLogs();
+    // Distinctive marker word so the assertion proves the *fingerprint*
+    // masks content (the fixed part of the error text always contains
+    // the word JSON by design — that is not a leak).
+    const res = await postRaw(webhook, "GEHEIMWORT123 !! ..");
+    expect(res.statusCode).toBe(400);
+    const lines = warns.filter((l) => l.startsWith("[cliq] inbound skipped: empty_body"));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("shape:");
+    expect(lines[0]).not.toContain("GEHEIMWORT123");
+    // The fingerprint of `GEHEIMWORT123 !! ..` — words collapse to x*, the
+    // punctuation skeleton stays.
+    expect(lines[0]).toContain("x* !! ..");
+  });
+});
