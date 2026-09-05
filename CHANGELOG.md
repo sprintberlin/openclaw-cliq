@@ -11,6 +11,14 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Added
+
+- **Forwarded messages now reach the agent (issue #223).** A forward's original content is not part of the plain `message` string the bot Message handler delivers, so a caption-less forward was rejected as `invalid payload` and disappeared without a trace — the originating incident saw a business instruction forwarded three times never arrive. The parser now recognizes `forwarded_message` / `forwarded` / `forward` / `original_message` (and camelCase / `forwarded_content` variants, at the payload root, under `message`, and through the `params` wrapper) plus `is_forwarded` markers, promotes the original text to the turn body when there is no caption, renders a `⤷ Forwarded message from <author>` attribution block distinct from the reply quote block, and still dispatches a marker-only `<forwarded message>` turn instead of dropping it. See the new `src/inbound-forward.ts` and learning 146.
+
+### Fixed
+
+- **Parser rejects are no longer silent (issue #224).** `POST /cliq/webhook` logged nothing when `parseCliqWebhookPayload` returned `null`, making an unsupported message shape indistinguishable from "Zoho never called us". The reject path now logs `[cliq] inbound rejected: <reason>; top-level keys: <names>` — reason (missing `user.id` vs. no usable body vs. textless forward) and key names only; never values, never secrets.
+
 ## [0.2.0] - 2026-08-31
 
 ### Added

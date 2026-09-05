@@ -12,6 +12,7 @@ import {
   dispatchCliqInbound,
   isCliqSessionConflictError,
   parseCliqWebhookPayload,
+  describeCliqPayloadRejection,
   readJsonBody,
   resolveCliqMentionDecision,
   type CliqRuntime,
@@ -354,6 +355,12 @@ export default defineChannelPluginEntry({
 
         const parsed = parseCliqWebhookPayload(body.value);
         if (!parsed) {
+          // Issue #224: a rejected payload used to leave no trace, so a
+          // dropped forward looked identical to "Zoho never called us".
+          // Log key names only — never values, never secrets.
+          api.logger.warn?.(
+            `[cliq] inbound rejected: ${describeCliqPayloadRejection(body.value)}`,
+          );
           res.statusCode = 400;
           res.end("invalid payload");
           return true;

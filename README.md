@@ -920,6 +920,28 @@ A reply to the bot in a group is also admitted as an implicit mention (the `repl
 
 > Forwarding the parent object is **optional**. Without it the plugin still carries the parent message id; it only cannot show the quoted text unless a `refreshToken` is configured (so the plugin can fetch it). If your Deluge handler can resolve the parent message (e.g. via the Cliq REST `GET /chats/{CHAT_ID}/messages/{MESSAGE_ID}` endpoint), add it under `parent` (or `quoted`) so the agent sees the quote even in DM-only setups with no `refreshToken`.
 
+##### Inbound forwarded messages
+
+When a user forwards a message into the chat, the forwarded content is **not** part of the plain `message` string the bot Message handler receives (the handler delivers `message` as a string — see [learning 103](docs/learnings/103-cliq-bot-message-handler-delivers-attachments-as.md)). The parser therefore recognizes the original under any of these keys, at the payload root **and** under `message` (also through the `params` wrapper):
+
+- `forwarded_message` / `forwardedMessage` / `forwarded` / `forward` / `forwarded_content` / `original_message` / `originalMessage` (the original body as a string or as an object with `text` / `content.text` / `content.comment`, `sender.{id,name,first_name,last_name}`, `time`, `id`, `chat.title`)
+- `is_forwarded: true` / `isForwarded: true` (boolean marker)
+
+Behavior:
+
+- A forward **with no caption of its own** promotes the original text to the turn body, so the agent has something to act on.
+- The dispatch path prepends an attribution block so the agent can tell a forward apart from the user's own words:
+
+```
+⤷ Forwarded message from <senderName> (<time>):
+> <original text>
+
+<the user's caption, if any>
+```
+
+- A recognized forward that carried **no readable text at all** (marker present, nothing usable) still dispatches as `<forwarded message>` instead of being dropped.
+- A payload the parser cannot use at all is **logged before the 400**: `[cliq] inbound rejected: <reason>; top-level keys: <names>` — key names only, never values. If Zoho changes or adds a forward shape, the log names the exact keys to support next.
+
 ### Stop / abort the running turn
 
 A user can interrupt a running agent turn by sending a **stop intent** — `stop`, `/stop`, `esc`, or a common localized equivalent (`halt`, `arrête`, `停止`, `стоп`, …). When the plugin recognizes the intent it marks the turn as an authorized command, and the OpenClaw runtime's fast-abort path cancels the in-flight run for that session (`cancelSession` + run-target abort), clears any queued follow-ups, stops spawned sub-agents, and replies with the canonical acknowledgement (`⚙️ Agent was aborted.`) in the same chat — instead of queueing another agent turn behind the one still running. No extra config, scope, or Deluge wiring is required; the trigger set is the shared one every OpenClaw channel uses.
