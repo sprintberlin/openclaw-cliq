@@ -84,6 +84,35 @@ export interface CliqProvisioningReader {
  * transient error. The payload is posted with `body:` (raw JSON) rather than
  * `parameters:`, which would form-encode it and break the webhook.
  */
+/**
+ * Build the Deluge body for one provisioned bot handler.
+ *
+ * ## Why the handler returns its `eventId` (issue #231)
+ *
+ * The script used to end with a bare `response = Map(); return response;`, so
+ * **every** execution row in the Zoho Bot execution log read `output: "{}"`.
+ * A successful post, a rejected webhook, a transport failure and a handler
+ * that returned before `invokeUrl` were therefore indistinguishable in the
+ * only log Zoho exposes. The 2026-09-05 forward incident had four executions,
+ * two agent turns and two missing turns, and `{}` could not explain the
+ * difference (issue #227).
+ *
+ * Echoing the generated `eventId` makes each Zoho execution row correlatable
+ * with the gateway's own `evt:` identity, which turns "did this execution
+ * become a turn?" into a lookup instead of a guess.
+ *
+ * Deliberately NOT captured here: the `invokeUrl` HTTP status. Assigning the
+ * invoke result would introduce a new Deluge construct into both handlers,
+ * and an invalid symbol fails validation with `execution_handler_update_failed`
+ * — which is permanent and not safely retryable (see
+ * {@link CLIQ_SCRIPT_VALIDITY_FAILURE}; the Mention Handler already proved
+ * this with `attachments`). `eventId` is already declared and used in every
+ * variant, so echoing it adds no new symbol and cannot fail validation.
+ * Richer status reporting is left to the verified schema rollout (#228).
+ *
+ * The payload and the response never carry the message text, the webhook
+ * secret or any token.
+ */
 export function buildCliqHandlerScript(params: {
   handlerType: CliqProvisionedHandlerType;
   webhookUrl: string;
@@ -119,6 +148,7 @@ export function buildCliqHandlerScript(params: {
       "];",
       "",
       "response = Map();",
+      'response.put("eventId", eventId);',
       "return response;",
       "",
     ].join("\n");
@@ -152,6 +182,7 @@ export function buildCliqHandlerScript(params: {
     "];",
     "",
     "response = Map();",
+    'response.put("eventId", eventId);',
     "return response;",
     "",
   ].join("\n");
@@ -309,6 +340,18 @@ function classifyHandler(params: {
       action: "repair",
       conflict: "stale_script",
       reason: `${name} does not forward a per-execution eventId, so repeated identical messages can be dropped by OpenClaw inbound dedupe`,
+      requiresConfirmation: true,
+    };
+  }
+  if (!read.script.includes('response.put("eventId"')) {
+    // Issue #231: without the echo every Zoho execution row reads
+    // `output: "{}"`, so a delivered message and a handler that returned
+    // before `invokeUrl` look identical in the only log Zoho exposes.
+    return {
+      type: params.type,
+      action: "repair",
+      conflict: "stale_script",
+      reason: `${name} does not return its eventId, so its Zoho execution rows stay "{}" and cannot be correlated with gateway logs when a message does not become a turn`,
       requiresConfirmation: true,
     };
   }

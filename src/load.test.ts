@@ -1376,3 +1376,214 @@ describe("build configuration (issue #7: npm run build)", () => {  it("package.j
     expect(pkg.exports?.["./setup-entry"]?.default).toBe("./dist/setup-entry.js");
   });
 });
+
+describe("default-visible inbound skip logging (issue #232)", () => {
+  beforeEach(() => {
+    resetCliqDedupeForTest();
+  });
+
+  /**
+   * Register the plugin with a logger that records every `warn` line, so a
+   * test can assert what an operator sees at the DEFAULT log level. `debug`
+   * is deliberately captured separately: the whole point of #232 is that
+   * these outcomes must NOT be debug-only.
+   */
+  function registrationWithLogs(opts: {
+    inboundRun?: () => Promise<unknown>;
+    extra?: Record<string, unknown>;
+  } = {}) {
+    const warns: string[] = [];
+    const debugs: string[] = [];
+    const { webhook, api } = registerCliqPluginForTest({
+      logger: {
+        warn: (m: string) => warns.push(m),
+        debug: (m: string) => debugs.push(m),
+      },
+    });
+    api.config = createCliqTestConfig({
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+      botName: "openclaw-bot",
+      webhookSecret: "s3cr3t",
+      ...opts.extra,
+    });
+    api.runtime = createTestRuntimeChannel(opts.inboundRun ?? (async () => undefined));
+    return { webhook, warns, debugs };
+  }
+
+  async function post(
+    webhook: ReturnType<typeof registerCliqPluginForTest>["webhook"],
+    payload: unknown,
+    headers: Record<string, string> = { "x-cliq-webhook-secret": "s3cr3t" },
+  ) {
+    const res = createMockServerResponse();
+    await webhook.handler(
+      createMockIncomingRequest("POST", payload as Record<string, unknown>, headers),
+      res as unknown as any,
+    );
+    return res;
+  }
+
+  function skipLines(warns: string[]): string[] {
+    return warns.filter((line) => line.startsWith("[cliq] inbound skipped:"));
+  }
+
+  it("logs a self-message skip at warn without leaking the matched value", async () => {
+    // Self-protection runs before admission, so the default policy is fine.
+    const { webhook, warns } = registrationWithLogs();
+    const res = await post(
+      webhook,
+      createDmDelugePayload({ user: { id: "bot", name: "openclaw-bot" } }),
+    );
+    expect(res.statusCode).toBe(200);
+    const lines = skipLines(warns);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("self");
+    expect(lines[0]).toContain("matched_field=");
+    // The matched VALUE is user-controlled (display name / email) and must
+    // never reach a default-level log line.
+    expect(lines[0]).not.toContain("openclaw-bot");
+  });
+
+  it("logs a dedupe skip at warn on redelivery", async () => {
+    // `dmPolicy: "open"` so the message reaches the dedupe gate; the default
+    // policy would stop it earlier at admission.
+    const { webhook, warns } = registrationWithLogs({
+      extra: { dmPolicy: "open" },
+    });
+    const payload = createDmDelugePayload();
+    const first = await post(webhook, payload);
+    expect(first.statusCode).toBe(200);
+    // Same message id → the second delivery is a dedupe hit, which is exactly
+    // what a lost message looks like from the Zoho execution log.
+    const second = await post(webhook, payload);
+    expect(second.statusCode).toBe(200);
+    const lines = skipLines(warns);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/duplicate|inflight/);
+    expect(lines[0]).toContain("message=");
+  });
+
+  it("logs a denied sender as not_admitted", async () => {
+    const { webhook, warns } = registrationWithLogs({
+      extra: { dmPolicy: "allowlist", allowFrom: ["someone-else"] },
+    });
+    const res = await post(webhook, createDmDelugePayload());
+    expect(res.statusCode).toBe(200);
+    const lines = skipLines(warns);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("not_admitted");
+    expect(lines[0]).toContain("sender=user-123");
+  });
+
+  it("logs an unmentioned group message as not_mentioned", async () => {
+    const { webhook, warns } = registrationWithLogs();
+    const res = await post(
+      webhook,
+      createMentionDelugePayload({
+        message: { text: "no mention here", id: "m-nm", time: "2026-07-04T10:00:00Z" },
+        mentions: [],
+        handler: "message",
+      }),
+    );
+    expect(res.statusCode).toBe(200);
+    const lines = skipLines(warns);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("not_mentioned");
+    // The message body must not appear in the operator log.
+    expect(lines[0]).not.toContain("no mention here");
+  });
+
+  it("logs an unparseable payload as parser_rejected", async () => {
+    const { webhook, warns } = registrationWithLogs();
+    const res = await post(webhook, { user: { id: "u1" }, chat: { id: "c1" } });
+    expect(res.statusCode).toBe(400);
+    const lines = skipLines(warns);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("parser_rejected");
+  });
+
+  it("emits exactly one skip line and none for an accepted message", async () => {
+    const { webhook, warns } = registrationWithLogs({
+      extra: { dmPolicy: "open" },
+    });
+    const res = await post(webhook, createDmDelugePayload({ message: { text: "hi", id: "ok-1" } }));
+    expect(res.statusCode).toBe(200);
+    // A dispatched message is not a skip: the vocabulary must stay a reliable
+    // signal that NO agent turn happened.
+    expect(skipLines(warns)).toHaveLength(0);
+  });
+});
+
+describe("Deluge unescaped-message repair over the webhook (#223/#227)", () => {
+  beforeEach(() => {
+    resetCliqDedupeForTest();
+  });
+
+  function registrationWithLogs(opts: {
+    inboundRun?: () => Promise<unknown>;
+    extra?: Record<string, unknown>;
+  } = {}) {
+    const warns: string[] = [];
+    let dispatches = 0;
+    const { webhook, api } = registerCliqPluginForTest({
+      logger: { warn: (m: string) => warns.push(m) },
+    });
+    api.config = createCliqTestConfig({
+      clientId: "id",
+      clientSecret: "***",
+      botId: "bot",
+      botName: "openclaw-bot",
+      webhookSecret: "s3cr3t",
+      ...opts.extra,
+    });
+    api.runtime = createTestRuntimeChannel(async () => {
+      dispatches += 1;
+    });
+    return { webhook, warns, dispatches: () => dispatches };
+  }
+
+  async function postRaw(
+    webhook: ReturnType<typeof registerCliqPluginForTest>["webhook"],
+    raw: string,
+  ) {
+    const res = createMockServerResponse();
+    await webhook.handler(
+      createMockIncomingRequest("POST", raw, { "x-cliq-webhook-secret": "s3cr3t" }),
+      res as unknown as any,
+    );
+    return res;
+  }
+
+  it("dispatches a body whose message value contains unescaped quotes and newlines", async () => {
+    const { webhook, warns, dispatches } = registrationWithLogs({
+      extra: { dmPolicy: "open" },
+    });
+    // Exactly the corruption Zoho's payload.toString() produces live: the
+    // message text contains raw double quotes and line breaks, so JSON.parse
+    // fails — the 2026-09-05 forward died at this exact boundary.
+    const corrupt =
+      '{"handler":"message","message":"Eintrag aus dem "others"\nist nicht ersichtlich","user":{"id":"user-123","name":"Alice"},"chat":{"id":"chat-1-B","type":"single"},"eventId":"evt-repair-1"}';
+    const res = await postRaw(webhook, corrupt);
+    expect(res.statusCode).toBe(200);
+    expect(dispatches()).toBe(1);
+    expect(warns.filter((l) => l.startsWith("[cliq] inbound skipped:"))).toHaveLength(0);
+  });
+
+  it("still rejects (with the shape fingerprint) what the repair cannot fix", async () => {
+    const { webhook, warns } = registrationWithLogs();
+    // Distinctive marker word so the assertion proves the *fingerprint*
+    // masks content (the fixed part of the error text always contains
+    // the word JSON by design — that is not a leak).
+    const res = await postRaw(webhook, "GEHEIMWORT123 !! ..");
+    expect(res.statusCode).toBe(400);
+    const lines = warns.filter((l) => l.startsWith("[cliq] inbound skipped: empty_body"));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("shape:");
+    expect(lines[0]).not.toContain("GEHEIMWORT123");
+    // The fingerprint of `GEHEIMWORT123 !! ..` — words collapse to x*, the
+    // punctuation skeleton stays.
+    expect(lines[0]).toContain("x* !! ..");
+  });
+});

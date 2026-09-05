@@ -685,7 +685,7 @@ describe("cliq doctor — adopt a verified handler URL (issue #172)", () => {
   const HANDLER_URL = "https://agent.example.com/cliq/webhook";
 
   function handlerScript(url = HANDLER_URL, secret = WEBHOOK_SECRET): string {
-    return `webhookUrl = "${url}";\nwebhookSecret = "${secret}";\npayload.put("eventId", eventId);\npayload = Map();`;
+    return `webhookUrl = "${url}";\nwebhookSecret = "${secret}";\npayload.put("eventId", eventId);\nresponse.put("eventId", eventId);\npayload = Map();`;
   }
 
   function handlerClient(scriptBody: string = handlerScript()): CliqDoctorClient {

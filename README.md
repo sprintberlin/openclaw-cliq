@@ -679,7 +679,7 @@ headers.put("Content-Type", "application/json");
 headers.put("x-cliq-webhook-secret", webhookSecret);
 
 // POST to OpenClaw as raw JSON. Use `body:` (NOT `parameters:`) — see note below.
-invoke_response = invokeUrl
+invokeUrl
 [
     url    : webhookUrl
     type   : POST
@@ -687,9 +687,12 @@ invoke_response = invokeUrl
     headers: headers
 ];
 
-// The reply is delivered by the OpenClaw gateway via the Cliq bot API, so the
-// handler itself returns an empty response.
+// The reply is delivered by the OpenClaw gateway via the Cliq bot API. Echo
+// the eventId so the Zoho Bot execution log is correlatable with gateway
+// `evt:` identities instead of reading `output: "{}"` for every run
+// (issue #231). Do not return the payload, the message, or the secret.
 response = Map();
+response.put("eventId", eventId);
 return response;
 ```
 
@@ -715,7 +718,9 @@ return response;
 > still reads `eventId` from that wrapper. **Re-run `openclaw setup` after
 > upgrading** so its read-only handler plan detects a missing `eventId` as a
 > stale script and offers a confirmation-gated repair. `openclaw cliq doctor`
-> also fails a matching handler that still omits `payload.put("eventId")`.
+> also fails a matching handler that still omits `payload.put("eventId")`
+> or `response.put("eventId")` (issue #231 — without the echo every Zoho
+> execution row stays `output: "{}"`).
 > Alternatively, re-paste both handler scripts manually to pick up the
 > `eventId` line.
 
@@ -771,6 +776,8 @@ payload = Map();
 payload.put("handler", "welcome");
 payload.put("user", user);
 payload.put("newuser", newuser);
+eventId = zoho.currenttime.toString("yyyyMMddHHmmss") + "-" + randomNumber(100000,999999) + randomNumber(100000,999999);
+payload.put("eventId", eventId);
 
 headers = Map();
 headers.put("Content-Type", "application/json");
@@ -784,9 +791,10 @@ invokeUrl
     headers: headers
 ];
 
-// The greeting is delivered by the OpenClaw gateway via the Cliq bot API,
-// so the handler itself returns an empty response.
+// Echo the eventId so a replayed subscribe event is correlatable in the
+// Zoho Bot execution log instead of reading `output: "{}"` (issue #231).
 response = Map();
+response.put("eventId", eventId);
 return response;
 ```
 
@@ -919,6 +927,28 @@ A failed or empty fetch degrades to "no quote text" and never breaks the turn.
 A reply to the bot in a group is also admitted as an implicit mention (the `reply_to_bot` / `quoted_bot` gating kinds) — the user does not need to re-@mention the bot when replying to one of its messages.
 
 > Forwarding the parent object is **optional**. Without it the plugin still carries the parent message id; it only cannot show the quoted text unless a `refreshToken` is configured (so the plugin can fetch it). If your Deluge handler can resolve the parent message (e.g. via the Cliq REST `GET /chats/{CHAT_ID}/messages/{MESSAGE_ID}` endpoint), add it under `parent` (or `quoted`) so the agent sees the quote even in DM-only setups with no `refreshToken`.
+
+##### Inbound forwarded messages
+
+When a user forwards a message into the chat, the forwarded content is **not** part of the plain `message` string the bot Message handler receives (the handler delivers `message` as a string — see [learning 103](docs/learnings/103-cliq-bot-message-handler-delivers-attachments-as.md)). The parser therefore recognizes the original under any of these keys, at the payload root **and** under `message` (also through the `params` wrapper):
+
+- `forwarded_message` / `forwardedMessage` / `forwarded` / `forward` / `forwarded_content` / `original_message` / `originalMessage` (the original body as a string or as an object with `text` / `content.text` / `content.comment`, `sender.{id,name,first_name,last_name}`, `time`, `id`, `chat.title`)
+- `is_forwarded: true` / `isForwarded: true` (boolean marker)
+
+Behavior:
+
+- A forward **with no caption of its own** promotes the original text to the turn body, so the agent has something to act on.
+- The dispatch path prepends an attribution block so the agent can tell a forward apart from the user's own words:
+
+```
+⤷ Forwarded message from <senderName> (<time>):
+> <original text>
+
+<the user's caption, if any>
+```
+
+- A recognized forward that carried **no readable text at all** (marker present, nothing usable) still dispatches as `<forwarded message>` instead of being dropped.
+- A payload the parser cannot use at all is **logged before the 400**: `[cliq] inbound rejected: <reason>; top-level keys: <names>` — key names only, never values. If Zoho changes or adds a forward shape, the log names the exact keys to support next.
 
 ### Stop / abort the running turn
 

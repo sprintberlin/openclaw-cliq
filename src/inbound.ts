@@ -53,6 +53,12 @@ import {
   type CliqReplyToContext,
 } from "./inbound-quote.js";
 import {
+  hasCliqForwardMarker,
+  parseCliqForwardContext,
+  formatCliqForwardBlock,
+  type CliqForwardContext,
+} from "./inbound-forward.js";
+import {
   isCliqFormPayload,
   parseCliqFormSubmission,
   type CliqFormSubmission,
@@ -261,6 +267,21 @@ export interface CliqWebhookPayload {
   quoted?: Record<string, unknown>;
   quoted_message?: Record<string, unknown>;
   reply_to_message?: Record<string, unknown>;
+  /**
+   * Forwarded-message context (issue #223). A forward carries its original
+   * body outside the plain `message` string the bot Message handler receives,
+   * so without one of these keys the forwarded content never reaches the
+   * agent. See {@link parseCliqForwardContext} for the tolerated variants.
+   */
+  forwarded_message?: unknown;
+  forwardedMessage?: unknown;
+  forwarded?: unknown;
+  forward?: unknown;
+  forwarded_content?: unknown;
+  original_message?: unknown;
+  originalMessage?: unknown;
+  is_forwarded?: boolean;
+  isForwarded?: boolean;
 }
 
 /** Normalized inbound message extracted from a raw Cliq webhook payload. */
@@ -326,6 +347,13 @@ export interface ParsedCliqInbound {
    */
   formName?: string;
   formValues?: Record<string, unknown>;
+  /**
+   * Forwarded-message context (issue #223): when the user forwarded a message
+   * into the chat and the Deluge handler carried the original along, this
+   * holds the original author + text so the dispatch path can render it into
+   * the agent envelope. `undefined` for an ordinary message.
+   */
+  forward?: CliqForwardContext;
   handler: string;
 }
 
@@ -504,6 +532,12 @@ export function parseCliqWebhookPayload(
 
   const { text, messageId, time } = extractMessageText(payload);
   const attachments = extractMessageAttachments(payload);
+  // Forwarded-message context (issue #223). A forward carries its original
+  // body outside the plain `message` string the bot Message handler receives,
+  // so a caption-less forward used to hit the `!bodyText` reject below and
+  // disappear without a trace. Parse it before the body is decided so the
+  // original text can stand in as the turn body.
+  const forward = parseCliqForwardContext(payload);
   const user = payload.user;
   if (!user?.id) return null;
   // Cliq platform Form submission (Phase 3): when the payload is a Form
@@ -531,6 +565,12 @@ export function parseCliqWebhookPayload(
     bodyText = formResponse.body;
   } else if (!bodyText && formSubmission) {
     bodyText = formSubmission.body;
+  }
+  // A forward with no caption of its own: the original text becomes the turn
+  // body so the agent has something to act on. The dispatch path still
+  // prepends the attribution block, so the agent sees who wrote it and when.
+  if (!bodyText && forward?.text) {
+    bodyText = forward.text;
   }
   if (!bodyText && attachments.length > 0) {
     const first = attachments[0];
@@ -561,6 +601,14 @@ export function parseCliqWebhookPayload(
     if (name) {
       bodyText = `<file: ${name}>\n${bodyText}`;
     }
+  }
+  // A recognized forward that carried no readable text still deserves a turn:
+  // the agent can say what it received instead of the message dying silently
+  // (issue #223 / #224).
+  if (!bodyText && (forward || hasCliqForwardMarker(payload))) {
+    bodyText = forward?.senderName
+      ? `<forwarded message from ${forward.senderName}>`
+      : "<forwarded message>";
   }
   if (!bodyText) return null;
 
@@ -661,8 +709,39 @@ export function parseCliqWebhookPayload(
       (formResponse.matched && Object.keys(formResponse.formValues).length > 0
         ? formResponse.formValues
         : undefined),
+    forward,
     handler,
   };
+}
+
+/**
+ * Explain why {@link parseCliqWebhookPayload} rejected a payload (issue #224).
+ *
+ * A rejected payload used to leave no trace at all: the webhook answered
+ * `400 invalid payload` and logged nothing, so an unsupported message shape
+ * (a forward, issue #223) was indistinguishable from "Zoho never called us".
+ * That ambiguity cost days of misdiagnosis on a live incident.
+ *
+ * Returns a short, log-safe reason plus the payload's **top-level key names**
+ * — never any value, so no message text, user data, or secret can reach the
+ * log through this path. Key names alone are what identify an unknown shape.
+ */
+export function describeCliqPayloadRejection(raw: unknown): string {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return `payload is not a JSON object (received ${raw === null ? "null" : typeof raw})`;
+  }
+  const payload = raw as CliqWebhookPayload & Record<string, unknown>;
+  const source =
+    payload.params && typeof payload.params === "object" && !Array.isArray(payload.params)
+      ? { ...(payload as Record<string, unknown>), ...(payload.params as Record<string, unknown>) }
+      : (payload as Record<string, unknown>);
+  const keys = Object.keys(source).sort().join(",") || "<none>";
+  const reason = !(source.user as { id?: string } | undefined)?.id
+    ? "no user.id"
+    : hasCliqForwardMarker(raw)
+      ? "a forwarded message carried no readable text"
+      : "no usable message text, attachment, or form values";
+  return `${reason}; top-level keys: ${keys}`;
 }
 
 /**
@@ -755,6 +834,11 @@ export function resolveCliqMentionDecision(
   });
 }
 
+import {
+  describeDelugeBodySyntax,
+  repairDelugeUnescapedMessageBody,
+} from "./inbound-deluge-repair.js";
+
 /**
  * Read the request body as JSON. Rejects payloads larger than `maxBytes`.
  *
@@ -772,11 +856,15 @@ export async function readJsonBody(
     headers?: IncomingMessage["headers"];
   },
   maxBytes = 1024 * 1024,
-): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> {
+): Promise<
+    { ok: true; value: unknown; repaired?: boolean } | { ok: false; error: string }
+  > {
   return await new Promise((resolve) => {
     let resolved = false;
     const done = (
-      result: { ok: true; value: unknown } | { ok: false; error: string },
+      result:
+        | { ok: true; value: unknown; repaired?: boolean }
+        | { ok: false; error: string },
     ) => {
       if (resolved) return;
       resolved = true;
@@ -808,10 +896,18 @@ export async function readJsonBody(
           done({ ok: true, value: normalized });
           return;
         }
+        // Issue #223/#227: Zoho's `payload.toString()` does not escape string
+        // values, so a message containing a quote or line break arrives as
+        // structurally-complete but unparseable JSON. The generated-handler
+        // grammar is known, so repair instead of dropping.
+        const repaired = repairDelugeUnescapedMessageBody(raw);
+        if (repaired !== undefined) {
+          done({ ok: true, value: repaired, repaired: true });
+          return;
+        }
         done({
           ok: false,
-          error:
-            "body is not valid JSON and could not be normalized as a Deluge form-urlencoded payload; use `body: payload.toString()` with a `Content-Type: application/json` header in the Deluge handler",
+          error: `body is not valid JSON and could not be normalized as a Deluge form-urlencoded payload; use \`body: payload.toString()\` with a \`Content-Type: application/json\` header in the Deluge handler; shape: ${describeDelugeBodySyntax(raw)}`,
         });
       }
     });
@@ -1078,7 +1174,23 @@ export async function dispatchCliqInbound(params: {
     replyTo && (replyTo.text || replyTo.senderName)
       ? formatCliqReplyToBlock(replyTo)
       : "";
-  const bodyText = quoteBlock ? `${quoteBlock}\n\n${cleanText}` : cleanText;
+  // Forwarded message (issue #223): prepend the attribution block so the agent
+  // sees who wrote the original and when, and can tell a forward apart from
+  // the user's own words. When the forward carried no caption the parser
+  // already promoted the original text to the body, so guard against
+  // rendering it twice.
+  const forward = parsed.forward;
+  const forwardBlock =
+    forward && (forward.text || forward.senderName)
+      ? formatCliqForwardBlock(
+          forward.text && forward.text.trim() === cleanText.trim()
+            ? { ...forward, text: undefined }
+            : forward,
+        )
+      : "";
+  const bodyText = [quoteBlock, forwardBlock, cleanText]
+    .filter((part) => part.trim().length > 0)
+    .join("\n\n");
   const body = runtime.channel.reply.formatAgentEnvelope({
     channel: "Cliq",
     from: fromLabel,

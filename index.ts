@@ -12,6 +12,7 @@ import {
   dispatchCliqInbound,
   isCliqSessionConflictError,
   parseCliqWebhookPayload,
+  describeCliqPayloadRejection,
   readJsonBody,
   resolveCliqMentionDecision,
   type CliqRuntime,
@@ -23,6 +24,10 @@ import {
   type FailedAuthRateLimiter,
 } from "./src/webhook-security.js";
 import { claimCliqMessage, commitCliqMessage, releaseCliqMessage } from "./src/dedupe.js";
+import {
+  cliqDedupeSkipReason,
+  formatCliqInboundSkip,
+} from "./src/inbound-outcome.js";
 import { isCliqSelfMessage } from "./src/self-message.js";
 import { cliqSecurityAuditCollector } from "./src/security-audit.js";
 import {
@@ -278,9 +283,32 @@ export default defineChannelPluginEntry({
 
         const body = await readJsonBody(req);
         if (!body.ok) {
+          // Issue #224: this branch used to be the last silent drop on the
+          // inbound path. An authenticated POST whose body is empty or
+          // unparseable left NO trace at all, so "Zoho posted something we
+          // could not read" was indistinguishable from "Zoho never called
+          // us" — the exact ambiguity that cost days on a live incident.
+          // Log the reason and the byte length only; never the body.
+          api.logger.warn?.(
+            formatCliqInboundSkip({
+              reason: "empty_body",
+              detail: `${body.error ?? "invalid payload"}; content-length=${
+                req.headers?.["content-length"] ?? "<unset>"
+              }`,
+            }),
+          );
           res.statusCode = body.error === "payload too large" ? 413 : 400;
           res.end(body.error ?? "invalid payload");
           return true;
+        }
+
+        if (body.repaired) {
+          // Issue #223/#227: the body was structurally valid but its message
+          // value was not JSON-escaped by Deluge's `toString()`. Repair is
+          // value-free bookkeeping — dispatch proceeds normally below.
+          api.logger.debug?.(
+            "[cliq] inbound body repaired (unescaped Deluge message value)",
+          );
         }
 
         const probe = parseCliqProbePayload(body.value);
@@ -322,8 +350,14 @@ export default defineChannelPluginEntry({
             account,
           );
           if (claim && claim.kind !== "claimed") {
-            api.logger.debug?.(
-              `[cliq] welcome for ${welcome.senderId} skipped as ${claim.kind}`,
+            // Issue #232: a replayed subscribe event used to be debug-only, so
+            // "already greeted" looked identical to "nothing arrived".
+            api.logger.warn?.(
+              formatCliqInboundSkip({
+                reason: "welcome_skipped",
+                senderId: welcome.senderId,
+                detail: claim.kind,
+              }),
             );
             res.statusCode = 200;
             res.end("ok");
@@ -354,6 +388,15 @@ export default defineChannelPluginEntry({
 
         const parsed = parseCliqWebhookPayload(body.value);
         if (!parsed) {
+          // Issue #224: a rejected payload used to leave no trace, so a
+          // dropped forward looked identical to "Zoho never called us".
+          // Log key names only — never values, never secrets.
+          api.logger.warn?.(
+            formatCliqInboundSkip({
+              reason: "parser_rejected",
+              detail: describeCliqPayloadRejection(body.value),
+            }),
+          );
           res.statusCode = 400;
           res.end("invalid payload");
           return true;
@@ -369,8 +412,16 @@ export default defineChannelPluginEntry({
         // that must not trigger this agent.
         const selfMatch = isCliqSelfMessage(parsed, account);
         if (selfMatch.self) {
-          api.logger.debug?.(
-            `[cliq] inbound ${parsed.messageId} dropped as self-message (matched ${selfMatch.matchedField}="${selfMatch.matchedValue}")`,
+          // Issue #232: promoted from debug. The matched *field name* is a
+          // stable qualifier; the matched value is user-controlled content
+          // (a display name or email) and must not reach a default-level log.
+          api.logger.warn?.(
+            formatCliqInboundSkip({
+              reason: "self",
+              messageId: parsed.messageId,
+              senderId: parsed.senderId,
+              detail: `matched_field=${selfMatch.matchedField}`,
+            }),
           );
           res.statusCode = 200;
           res.end("ok");
@@ -419,6 +470,16 @@ export default defineChannelPluginEntry({
               `[cliq] pairing ${parsed.pairingAction.kind} from ${parsed.senderId} rejected: no pairing.notifyOwnerTarget configured`,
             );
           }
+          // Issue #232: a card click is a control message, never an agent
+          // turn. Without this line the 200 looked like a lost message.
+          api.logger.warn?.(
+            formatCliqInboundSkip({
+              reason: "pairing_action",
+              messageId: parsed.messageId,
+              senderId: parsed.senderId,
+              detail: parsed.pairingAction.kind,
+            }),
+          );
           res.statusCode = 200;
           res.end("ok");
           return true;
@@ -429,6 +490,15 @@ export default defineChannelPluginEntry({
           allowTextCommands: false,
         });
         if (decision.shouldSkip) {
+          // Issue #232: group messages that do not address the bot were the
+          // largest silent 200 path — no log at any level.
+          api.logger.warn?.(
+            formatCliqInboundSkip({
+              reason: "not_mentioned",
+              messageId: parsed.messageId,
+              senderId: parsed.senderId,
+            }),
+          );
           res.statusCode = 200;
           res.end("ok");
           return true;
@@ -458,8 +528,15 @@ export default defineChannelPluginEntry({
                sdkAllowFrom,
              });
         if (admission.decision === "deny") {
+          // Issue #232: already default-visible, but reworded onto the shared
+          // vocabulary so operators and doctor match one stable shape.
           api.logger.warn?.(
-            `[cliq] inbound from ${parsed.senderId} denied: ${admission.reason}`,
+            formatCliqInboundSkip({
+              reason: "not_admitted",
+              messageId: parsed.messageId,
+              senderId: parsed.senderId,
+              detail: admission.reason,
+            }),
           );
           res.statusCode = 200;
           res.end("ok");
@@ -488,6 +565,14 @@ export default defineChannelPluginEntry({
               `[cliq] pairing challenge for ${parsed.senderId} failed: ${String(err)}`,
             );
           });
+          api.logger.warn?.(
+            formatCliqInboundSkip({
+              reason: "pairing",
+              messageId: parsed.messageId,
+              senderId: parsed.senderId,
+              detail: admission.reason,
+            }),
+          );
           res.statusCode = 200;
           res.end("ok");
           return true;
@@ -500,8 +585,14 @@ export default defineChannelPluginEntry({
         // retryable failure we `release` so the next redelivery can retry.
         const claim = await claimCliqMessage(parsed, account);
         if (claim && claim.kind !== "claimed") {
-          api.logger.debug?.(
-            `[cliq] inbound ${parsed.messageId} skipped as ${claim.kind}`,
+          // Issue #232: a dedupe hit is the single most confusing silent 200 —
+          // it is exactly what a lost message looks like from the Zoho side.
+          api.logger.warn?.(
+            formatCliqInboundSkip({
+              reason: cliqDedupeSkipReason(claim.kind) ?? "duplicate",
+              messageId: parsed.messageId,
+              senderId: parsed.senderId,
+            }),
           );
           res.statusCode = 200;
           res.end("ok");

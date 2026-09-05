@@ -23,6 +23,7 @@ import type { IncomingMessage } from "node:http";
 import type { GetReplyOptions } from "openclaw/plugin-sdk/reply-runtime";
 import {
   parseCliqWebhookPayload,
+  describeCliqPayloadRejection,
   readJsonBody,
   resolveCliqMentionDecision,
   resolveCliqMentionFacts,
@@ -259,6 +260,78 @@ describe("parseCliqWebhookPayload", () => {
     expect(parseCliqWebhookPayload("nope")).toBeNull();
     expect(parseCliqWebhookPayload(null)).toBeNull();
     expect(parseCliqWebhookPayload([1, 2])).toBeNull();
+  });
+
+  it("promotes a forwarded_message body to the turn text (issue #223)", () => {
+    const parsed = parseCliqWebhookPayload({
+      handler: "message",
+      message: "",
+      user: { id: "u-gregor", name: "Gregor" },
+      chat: { id: "CT_dm" },
+      forwarded_message: {
+        text: "Hi Gregor\nHier nochmal etwas für die Wand",
+        sender: { id: "u-seb", name: "Sebastian" },
+        time: "22 Juli 2026, 10:58 AM",
+      },
+    } as CliqWebhookPayload);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.text).toBe("Hi Gregor\nHier nochmal etwas für die Wand");
+    expect(parsed!.forward).toEqual({
+      text: "Hi Gregor\nHier nochmal etwas für die Wand",
+      senderName: "Sebastian",
+      senderId: "u-seb",
+      time: "22 Juli 2026, 10:58 AM",
+      messageId: undefined,
+      sourceTitle: undefined,
+    });
+  });
+
+  it("keeps a caption and still surfaces the forwarded original (issue #223)", () => {
+    const parsed = parseCliqWebhookPayload({
+      handler: "message",
+      message: "kannst du den Inhalt sehen?",
+      user: { id: "u-gregor" },
+      chat: { id: "CT_dm" },
+      forwarded: { text: "original body", sender: { name: "Ada" } },
+    } as CliqWebhookPayload);
+    expect(parsed!.text).toBe("kannst du den Inhalt sehen?");
+    expect(parsed!.forward?.text).toBe("original body");
+    expect(parsed!.forward?.senderName).toBe("Ada");
+  });
+
+  it("does not reject a recognized forward that carried no readable text (issue #223)", () => {
+    const parsed = parseCliqWebhookPayload({
+      handler: "message",
+      message: "",
+      user: { id: "u1" },
+      chat: { id: "CT_dm" },
+      is_forwarded: true,
+    } as CliqWebhookPayload);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.text).toBe("<forwarded message>");
+  });
+
+  describe("describeCliqPayloadRejection (issue #224)", () => {
+    it("names missing user.id without leaking values", () => {
+      const reason = describeCliqPayloadRejection({
+        message: "secret body",
+        user: {},
+      });
+      expect(reason).toMatch(/no user\.id/);
+      expect(reason).toMatch(/top-level keys: message,user/);
+      expect(reason).not.toContain("secret body");
+    });
+
+    it("names a textless payload without leaking values", () => {
+      const reason = describeCliqPayloadRejection({ user: { id: "u1" } });
+      expect(reason).toMatch(/no usable message text/);
+      expect(reason).not.toContain("u1");
+    });
+
+    it("names a non-object payload", () => {
+      expect(describeCliqPayloadRejection(null)).toMatch(/not a JSON object/);
+      expect(describeCliqPayloadRejection("x")).toMatch(/string/);
+    });
   });
 
   describe("Cliq Form submissions (Phase 3)", () => {
