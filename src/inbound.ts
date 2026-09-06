@@ -160,6 +160,12 @@ export interface CliqWebhookPayload {
         text?: string;
         id?: string;
         time?: string;
+        reply_to?: string | Record<string, unknown>;
+        parent?: Record<string, unknown>;
+        parent_message?: Record<string, unknown>;
+        quoted?: Record<string, unknown>;
+        quoted_message?: Record<string, unknown>;
+        reply_to_message?: Record<string, unknown>;
       };
   text?: string;
   user?: {
@@ -239,7 +245,17 @@ export interface CliqWebhookPayload {
   formvalues?: Record<string, unknown>;
   form_name?: string;
   params?: {
-    message?: { text?: string; id?: string };
+    message?: {
+      text?: string;
+      id?: string;
+      time?: string;
+      reply_to?: string | Record<string, unknown>;
+      parent?: Record<string, unknown>;
+      parent_message?: Record<string, unknown>;
+      quoted?: Record<string, unknown>;
+      quoted_message?: Record<string, unknown>;
+      reply_to_message?: Record<string, unknown>;
+    };
     user?: { id?: string; name?: string };
     channel?: { id?: string; name?: string; unique_name?: string };
     chat?: {
@@ -254,12 +270,14 @@ export interface CliqWebhookPayload {
     event_id?: string;
   };
   /**
-   * Quote / reply context (issue #49). A reply's parent message id may be
-   * carried on `message.reply_to` (the documented Cliq shape) or as a
+   * Quote / reply context (issue #49 / #230). A reply's parent message id may
+   * be carried on `message.reply_to` (the documented Cliq API shape) or as a
    * sibling parent-message object under `reply_to` / `parent` / `quoted` /
-   * `parent_message` / `quoted_message` / `reply_to_message` when the Deluge
-   * handler enriches the payload. See {@link parseCliqReplyToContext} for the
-   * tolerated variants.
+   * `parent_message` / `quoted_message` / `reply_to_message`, either at the
+   * payload root or under `message`. The stock generated Deluge handler is
+   * deliberately not assumed to expose any of these symbols: it currently
+   * forwards a plain `message` string only. See
+   * {@link parseCliqReplyToContext} for the tolerated payload forms.
    */
   reply_to?: string | Record<string, unknown>;
   parent?: Record<string, unknown>;

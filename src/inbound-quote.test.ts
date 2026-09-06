@@ -57,6 +57,17 @@ describe("parseCliqReplyToContext", () => {
     ).toEqual({ messageId: "q1", text: "quote", senderId: "s1" });
   });
 
+  it("parses parent / quoted variants nested under message (issue #230)", () => {
+    expect(
+      parseCliqReplyToContext({
+        message: {
+          text: "yes",
+          parent_message: { id: "pm1", text: "nested parent msg" },
+        },
+      }),
+    ).toEqual({ messageId: "pm1", text: "nested parent msg" });
+  });
+
   it("prefers message.reply_to over root variants", () => {
     expect(
       parseCliqReplyToContext({

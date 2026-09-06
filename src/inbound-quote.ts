@@ -54,6 +54,15 @@ interface RawParentMessage {
   };
 }
 
+const RAW_PARENT_KEYS = [
+  "reply_to",
+  "parent",
+  "parent_message",
+  "quoted",
+  "quoted_message",
+  "reply_to_message",
+] as const;
+
 /**
  * Parse the quote / reply-to context from a raw Cliq webhook payload.
  * Tolerates the field-name variants observed across Cliq API versions and
@@ -63,8 +72,8 @@ interface RawParentMessage {
  *  - `message.reply_to` (object) — a handler that enriches the message with
  *    the full parent object.
  *  - `reply_to` / `parent` / `parent_message` / `quoted` / `quoted_message`
- *    / `reply_to_message` at the payload root — a handler that forwards the
- *    parent as a sibling field.
+ *    / `reply_to_message` at the payload root or nested under `message` — a
+ *    handler that forwards the parent as a sibling field.
  *
  * The common case is `message.reply_to` carrying only the parent message id
  * while a Deluge handler forwards the full parent object (text + sender)
@@ -103,27 +112,21 @@ export function parseCliqReplyToContext(
     };
   };
 
-  // 1. `message.reply_to` — string id OR a parent object.
+  // 1. `message.*` variants — string id OR a parent object.
   const message = payload.message;
   if (message && typeof message === "object" && !Array.isArray(message)) {
     const msg = message as Record<string, unknown>;
-    merge(parseRawParent(msg.reply_to) ?? parseStringId(msg.reply_to));
-    // Also tolerate `message.parent` / `message.quoted`.
-    merge(parseRawParent(msg.parent));
-    merge(parseRawParent(msg.quoted));
+    for (const key of RAW_PARENT_KEYS) {
+      const v = msg[key];
+      if (v === undefined) continue;
+      merge(parseRawParent(v) ?? parseStringId(v));
+    }
   }
 
   // 2. Root-level variants — a Deluge handler forwarding the parent as a
   //    sibling. These carry the text/sender when `message.reply_to` only
   //    had the id, so they fill the gaps in the merge.
-  for (const key of [
-    "reply_to",
-    "parent",
-    "parent_message",
-    "quoted",
-    "quoted_message",
-    "reply_to_message",
-  ]) {
+  for (const key of RAW_PARENT_KEYS) {
     const v = payload[key];
     if (v === undefined) continue;
     merge(parseRawParent(v) ?? parseStringId(v));
