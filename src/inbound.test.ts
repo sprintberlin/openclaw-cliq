@@ -5290,3 +5290,81 @@ describe("dispatchCliqInbound — complete streaming turns (issue #210)", () => 
     },
   );
 });
+
+describe("rich, edited and unknown non-text messages (#233)", () => {
+  const base = {
+    handler: "message",
+    user: { id: "u-1", name: "Alice" },
+    chat: { id: "chat-1", type: "single" },
+  };
+
+  it("reads the body from content.text when the message carries no plain text", () => {
+    const parsed = parseCliqWebhookPayload({
+      ...base,
+      message: { id: "m-1", type: "text", content: { text: "aus content.text" } },
+    } as never);
+    expect(parsed?.text).toBe("aus content.text");
+  });
+
+  it("falls back to a bare description body", () => {
+    const parsed = parseCliqWebhookPayload({
+      ...base,
+      description: "beschreibungstext",
+    } as never);
+    expect(parsed?.text).toBe("beschreibungstext");
+  });
+
+  it("dispatches an unknown non-text type as a deterministic placeholder instead of dropping it", () => {
+    const parsed = parseCliqWebhookPayload({
+      ...base,
+      message: { id: "m-2", type: "location" },
+    } as never);
+    // The old parser returned null here, so the message vanished with no turn.
+    expect(parsed).not.toBeNull();
+    expect(parsed?.text).toBe("<cliq location message>");
+    expect(parsed?.messageType).toBe("location");
+  });
+
+  it("keeps a known text/file type free of a placeholder and still returns null without any content", () => {
+    expect(parseCliqWebhookPayload({ ...base, message: { id: "m-3", type: "text" } } as never)).toBeNull();
+  });
+
+  it("surfaces rich-text, revision and edit markers as safe labels only", () => {
+    const parsed = parseCliqWebhookPayload({
+      ...base,
+      message: {
+        id: "m-4",
+        text: "bearbeitet",
+        rte: [{ some: "markup" }],
+        revision: 3,
+        is_edited: true,
+      },
+    } as never);
+    expect(parsed?.richText).toBe(true);
+    expect(parsed?.revision).toBe("3");
+    expect(parsed?.isEdited).toBe(true);
+  });
+
+  it("rejects an implausible type label rather than echoing untrusted text", () => {
+    const parsed = parseCliqWebhookPayload({
+      ...base,
+      message: { id: "m-5", type: "a type with spaces", text: "hallo" },
+    } as never);
+    expect(parsed?.messageType).toBeUndefined();
+    expect(parsed?.text).toBe("hallo");
+  });
+
+  it("parses an attachment nested under message.content", () => {
+    const parsed = parseCliqWebhookPayload({
+      ...base,
+      message: {
+        id: "m-6",
+        type: "file",
+        content: { file: { id: "f-1", name: "report.pdf", type: "pdf" }, comment: "hier" },
+      },
+    } as never);
+    expect(parsed?.attachments).toHaveLength(1);
+    expect(parsed?.attachments[0]?.fileId).toBe("f-1");
+    expect(parsed?.text).toBe("hier");
+  });
+});
