@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 import type { ResolvedCliqAccount } from "./client.js";
 import { createCliqBotIdResolver, type CliqBotIdLister } from "./bot-id.js";
+import {
+  CLIQ_HANDLER_SCHEMA_FIELD,
+  CLIQ_HANDLER_SCHEMA_VERSION,
+  extractDelugePayloadPutStringLiteral,
+} from "./handler-schema.js";
 
 /**
  * Zoho-side handler consistency check (issue #124).
@@ -321,6 +326,29 @@ export function checkCliqHandlerConsistency(
       } else if (!sameWebhookUrl(handlerUrl, options.expectedWebhookUrl)) {
         failures.push(
           `${label} posts to ${handlerUrl} but this install's public webhook URL is ${options.expectedWebhookUrl} — Zoho is delivering somewhere else`,
+        );
+      }
+    }
+
+    if (handlerSecret !== null) {
+      // A generated handler lives in Zoho independently from the plugin
+      // artifact. URL/secret equality alone cannot prove that its payload has
+      // the contract this runtime parses. Keep the literal marker check
+      // beside the existing targeted eventId diagnostics: `v2` proves a
+      // complete generated contract, while the targeted messages remain
+      // useful for a known legacy script operators need to recognize. A
+      // hand-written handler (no recognisable secret literal) stays on its
+      // existing skip path and is never reported as a schema casualty.
+      const handlerSchema = extractDelugePayloadPutStringLiteral(
+        handler.script,
+        CLIQ_HANDLER_SCHEMA_FIELD,
+      );
+      if (handlerSchema !== CLIQ_HANDLER_SCHEMA_VERSION) {
+        const observed = handlerSchema === null
+          ? "no recognisable handlerSchema literal"
+          : `handlerSchema "${handlerSchema}"`;
+        failures.push(
+          `${label} carries ${observed}; expected handlerSchema "${CLIQ_HANDLER_SCHEMA_VERSION}". The Zoho-held script is stale even if the plugin was upgraded or the gateway restarted; run openclaw setup or the confirmation-gated handler repair to update it`,
         );
       }
     }

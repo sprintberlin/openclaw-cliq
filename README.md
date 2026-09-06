@@ -656,6 +656,9 @@ webhookSecret = "<the same secret you set as webhookSecret in openclaw.json>";
 // argument is absent for text-only messages (Deluge passes null), so guard it.
 payload = Map();
 payload.put("handler", "message");   // <-- use "mention" in the Mention Handler
+// Generated-handler payload contract marker (issue #228). Keep this literal:
+// `openclaw cliq doctor` reads it back to identify a stale Zoho-held script.
+payload.put("handlerSchema", "v2");
 payload.put("message", message);
 payload.put("user", user);
 payload.put("chat", chat);

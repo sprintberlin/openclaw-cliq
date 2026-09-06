@@ -4,6 +4,10 @@ import {
   isRetryableCliqProvisioningFailure,
   type CliqProvisioningWriter,
 } from "./bot-provisioning.js";
+import {
+  CLIQ_HANDLER_SCHEMA_FIELD,
+  CLIQ_HANDLER_SCHEMA_VERSION,
+} from "./handler-schema.js";
 
 const URL_OK = "https://cliq.example.com/cliq/webhook";
 const SECRET = "config-secret";
@@ -14,7 +18,7 @@ function writer(overrides: Partial<CliqProvisioningWriter> = {}): CliqProvisioni
     createHandler: vi.fn(async () => ({ ok: true as const })),
     updateHandler: vi.fn(async () => ({ ok: true as const })),
     readHandlerScript: vi.fn(async () => ({
-      script: `webhookUrl = "${URL_OK}";\nwebhookSecret = "${SECRET}";`,
+      script: `webhookUrl = "${URL_OK}";\nwebhookSecret = "${SECRET}";\npayload.put("${CLIQ_HANDLER_SCHEMA_FIELD}", "${CLIQ_HANDLER_SCHEMA_VERSION}");`,
     })),
     ...overrides,
   };

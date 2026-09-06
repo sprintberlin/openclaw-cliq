@@ -64,6 +64,10 @@ import {
   type CliqFormSubmission,
 } from "./forms.js";
 import { parseCliqFormResponse } from "./forms-render.js";
+import {
+  type CliqHandlerSchemaCompatibility,
+  classifyCliqHandlerSchema,
+} from "./handler-schema.js";
 
 /**
  * Minimal slice of `api.runtime` that the inbound dispatch path needs. Kept
@@ -152,6 +156,12 @@ export interface CliqRuntime {
  */
 export interface CliqWebhookPayload {
   handler?: string;
+  /**
+   * Static contract marker posted by generated Deluge handlers (issue #228).
+   * Legacy / hand-written handlers omit it; the parser accepts those payloads
+   * for compatibility and the route emits a bounded upgrade warning.
+   */
+  handlerSchema?: string;
   eventId?: string;
   event_id?: string;
   message?:
@@ -268,6 +278,7 @@ export interface CliqWebhookPayload {
     };
     eventId?: string;
     event_id?: string;
+    handlerSchema?: string;
   };
   /**
    * Quote / reply context (issue #49 / #230). A reply's parent message id may
@@ -372,6 +383,10 @@ export interface ParsedCliqInbound {
    * the agent envelope. `undefined` for an ordinary message.
    */
   forward?: CliqForwardContext;
+  /** Generated-handler schema state; never controls admission or parsing. */
+  handlerSchema?: CliqHandlerSchemaCompatibility;
+  /** Raw marker retained only for the value-safe once-per-version route warning. */
+  handlerSchemaVersion?: string;
   handler: string;
 }
 
@@ -545,6 +560,7 @@ export function parseCliqWebhookPayload(
       chat: payload.params.chat ?? payload.chat,
       eventId: payload.params.eventId ?? payload.eventId,
       event_id: payload.params.event_id ?? payload.event_id,
+      handlerSchema: payload.params.handlerSchema ?? payload.handlerSchema,
     };
   }
 
@@ -728,6 +744,8 @@ export function parseCliqWebhookPayload(
         ? formResponse.formValues
         : undefined),
     forward,
+    handlerSchema: classifyCliqHandlerSchema(payload.handlerSchema),
+    handlerSchemaVersion: payload.handlerSchema,
     handler,
   };
 }

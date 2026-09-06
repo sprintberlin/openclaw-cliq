@@ -51,6 +51,7 @@ import {
   CLIQ_ROUTE_HEADER,
   CLIQ_ROUTE_HEADER_VALUE,
 } from "./src/webhook-route-check.js";
+import { warnCliqHandlerSchemaCompatibility } from "./src/handler-schema.js";
 
 function readConfiguredCliqWebhookUrl(config: OpenClawConfig): string | undefined {
   const channels = (config as unknown as { channels?: Record<string, unknown> }).channels;
@@ -401,6 +402,15 @@ export default defineChannelPluginEntry({
           res.end("invalid payload");
           return true;
         }
+
+        // A Zoho handler is separately stored code: an older handler must
+        // remain able to deliver its ordinary text, but its contract lag must
+        // be visible without logging any script or payload values. The helper
+        // emits at most once per observed schema version for this process.
+        warnCliqHandlerSchemaCompatibility(
+          parsed.handlerSchemaVersion,
+          api.logger.warn,
+        );
 
         // Self-message / bot-loop protection: the bot must never answer its
         // own messages (or those of another Cliq bot the operator marked as

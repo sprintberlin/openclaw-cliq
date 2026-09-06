@@ -5,6 +5,11 @@ import {
   fingerprintCliqSecret,
   type CliqInboundHandlerType,
 } from "./handler-consistency.js";
+import {
+  CLIQ_HANDLER_SCHEMA_FIELD,
+  CLIQ_HANDLER_SCHEMA_VERSION,
+  extractDelugePayloadPutStringLiteral,
+} from "./handler-schema.js";
 
 /**
  * Idempotent bot/handler provisioning (issue #94).
@@ -108,7 +113,18 @@ export interface CliqProvisioningReader {
  * {@link CLIQ_SCRIPT_VALIDITY_FAILURE}; the Mention Handler already proved
  * this with `attachments`). `eventId` is already declared and used in every
  * variant, so echoing it adds no new symbol and cannot fail validation.
- * Richer status reporting is left to the verified schema rollout (#228).
+ *
+ * ## Versioned payload contract (issue #228)
+ *
+ * A handler is separately stored in Zoho, so a plugin upgrade cannot change
+ * the script that actually executes. Each generated variant therefore posts
+ * the literal `handlerSchema: "v2"`. It is a static `payload.put` literal,
+ * not a new Deluge variable or a read of undocumented Message-handler fields:
+ * that gives read-back diagnostics a reliable contract marker without widening
+ * the validation surface that can yield permanent, non-retryable
+ * `execution_handler_update_failed`. The currently verified Message and
+ * Mention contract remains the existing `message` string plus `user`, `chat`,
+ * `eventId`, and Message-only `attachments`.
  *
  * The payload and the response never carry the message text, the webhook
  * secret or any token.
@@ -130,6 +146,7 @@ export function buildCliqHandlerScript(params: {
       "",
       "payload = Map();",
       'payload.put("handler", "welcome");',
+      `payload.put("${CLIQ_HANDLER_SCHEMA_FIELD}", "${CLIQ_HANDLER_SCHEMA_VERSION}");`,
       'payload.put("user", user);',
       'payload.put("newuser", newuser);',
       'eventId = zoho.currenttime.toString("yyyyMMddHHmmss") + "-" + randomNumber(100000,999999) + randomNumber(100000,999999);',
@@ -163,6 +180,7 @@ export function buildCliqHandlerScript(params: {
     "",
     "payload = Map();",
     `payload.put("handler", "${discriminator}");`,
+    `payload.put("${CLIQ_HANDLER_SCHEMA_FIELD}", "${CLIQ_HANDLER_SCHEMA_VERSION}");`,
     'payload.put("message", message);',
     'payload.put("user", user);',
     'payload.put("chat", chat);',
@@ -355,6 +373,20 @@ function classifyHandler(params: {
       requiresConfirmation: true,
     };
   }
+  const handlerSchema = extractDelugePayloadPutStringLiteral(
+    read.script,
+    CLIQ_HANDLER_SCHEMA_FIELD,
+  );
+  if (handlerSchema !== CLIQ_HANDLER_SCHEMA_VERSION) {
+    const observed = handlerSchema === null ? "no handlerSchema marker" : `handlerSchema ${handlerSchema}`;
+    return {
+      type: params.type,
+      action: "repair",
+      conflict: "stale_script",
+      reason: `${name} carries ${observed}; it must post handlerSchema ${CLIQ_HANDLER_SCHEMA_VERSION} so the gateway can identify the Zoho-held payload contract. Run the confirmation-gated handler repair; a plugin upgrade or gateway restart does not update Zoho's stored script`,
+      requiresConfirmation: true,
+    };
+  }
   return {
     type: params.type,
     action: "none",
@@ -540,17 +572,21 @@ export async function applyCliqHandlerProvisioning(params: {
     const storedSecret = readBack.script
       ? extractDelugeStringAssignment(readBack.script, "webhookSecret")
       : null;
+    const storedSchema = readBack.script
+      ? extractDelugePayloadPutStringLiteral(readBack.script, CLIQ_HANDLER_SCHEMA_FIELD)
+      : null;
     const verified =
       storedUrl !== null &&
       storedSecret !== null &&
       sameWebhookUrl(storedUrl, url) &&
-      storedSecret === secret;
+      storedSecret === secret &&
+      storedSchema === CLIQ_HANDLER_SCHEMA_VERSION;
     results.push({
       type: item.type,
       outcome,
       detail: verified
-        ? `${label(item.type)} was ${outcome === "created_via_patch_fallback" ? "created through the minimal-create-then-PATCH fallback" : outcome} and read back with the configured URL and secret`
-        : `${label(item.type)} was written but the read-back did not match the configured URL and secret`,
+        ? `${label(item.type)} was ${outcome === "created_via_patch_fallback" ? "created through the minimal-create-then-PATCH fallback" : outcome} and read back with the configured URL, secret, and handler schema ${CLIQ_HANDLER_SCHEMA_VERSION}`
+        : `${label(item.type)} was written but the read-back did not match the configured URL, secret, and handler schema ${CLIQ_HANDLER_SCHEMA_VERSION}`,
       verified,
     });
   }

@@ -4,6 +4,10 @@ import {
   planCliqHandlerProvisioning,
   type CliqProvisioningReader,
 } from "./bot-provisioning.js";
+import {
+  CLIQ_HANDLER_SCHEMA_FIELD,
+  CLIQ_HANDLER_SCHEMA_VERSION,
+} from "./handler-schema.js";
 
 
 const URL_OK = "https://cliq.example.com/cliq/webhook";
@@ -12,7 +16,7 @@ const SECRET = "config-secret";
 function script(
   secret = SECRET,
   url = URL_OK,
-  extra = 'payload.put("eventId", eventId);\nresponse.put("eventId", eventId);',
+  extra = `payload.put("${CLIQ_HANDLER_SCHEMA_FIELD}", "${CLIQ_HANDLER_SCHEMA_VERSION}");\npayload.put("eventId", eventId);\nresponse.put("eventId", eventId);`,
 ): string {
   return `webhookUrl = "${url}";\nwebhookSecret = "${secret}";\npayload = Map();\n${extra}`;
 }
@@ -45,6 +49,7 @@ describe("buildCliqHandlerScript", () => {
       webhookSecret: SECRET,
     });
     expect(body).toContain('payload.put("handler", "message")');
+    expect(body).toContain(`payload.put("${CLIQ_HANDLER_SCHEMA_FIELD}", "${CLIQ_HANDLER_SCHEMA_VERSION}");`);
     expect(body).toContain("attachments");
     expect(body).toContain("body   : payload.toString()");
     expect(body).toContain('headers.put("Content-Type", "application/json")');
@@ -114,6 +119,18 @@ describe("buildCliqHandlerScript", () => {
     });
   });
 
+  it("puts the static v2 schema marker in every generated handler without a new Deluge variable (#228)", () => {
+    for (const handlerType of ["message_handler", "mention_handler", "welcome_handler"] as const) {
+      const body = buildCliqHandlerScript({
+        handlerType,
+        webhookUrl: URL_OK,
+        webhookSecret: SECRET,
+      });
+      expect(body).toContain(`payload.put("${CLIQ_HANDLER_SCHEMA_FIELD}", "${CLIQ_HANDLER_SCHEMA_VERSION}");`);
+      expect(body).not.toMatch(/handlerSchema\s*=/);
+    }
+  });
+
   it("omits attachments from the mention handler, which Zoho does not provide", () => {
     const body = buildCliqHandlerScript({
       handlerType: "mention_handler",
@@ -179,6 +196,45 @@ describe("planCliqHandlerProvisioning — read-only", () => {
     }
     // The reason must stay free of secret material.
     expect(JSON.stringify(result)).not.toContain(SECRET);
+  });
+
+  it("plans a confirmed repair for an otherwise-current handler that lacks the schema marker (#228)", async () => {
+    const result = await plan({
+      reader: reader({
+        readHandlerScript: vi.fn(async () => ({
+          script: script(
+            SECRET,
+            URL_OK,
+            'payload.put("eventId", eventId);\nresponse.put("eventId", eventId);',
+          ),
+        })),
+      }),
+    });
+    expect(result.status).toBe("conflict");
+    for (const item of result.items) {
+      expect(item.action).toBe("repair");
+      expect(item.conflict).toBe("stale_script");
+      expect(item.requiresConfirmation).toBe(true);
+      expect(item.reason).toMatch(/handlerSchema v2/i);
+      expect(item.reason).toMatch(/restart does not update/i);
+    }
+  });
+
+  it("plans a confirmed repair for an unsupported schema version (#228)", async () => {
+    const result = await plan({
+      reader: reader({
+        readHandlerScript: vi.fn(async () => ({
+          script: script(
+            SECRET,
+            URL_OK,
+            'payload.put("handlerSchema", "v999");\npayload.put("eventId", eventId);\nresponse.put("eventId", eventId);',
+          ),
+        })),
+      }),
+    });
+    expect(result.status).toBe("conflict");
+    expect(result.items[0]?.conflict).toBe("stale_script");
+    expect(result.items[0]?.reason).toContain("handlerSchema v999");
   });
 
   it("plans a confirmed repair for a legacy handler with no eventId (issue #196)", async () => {

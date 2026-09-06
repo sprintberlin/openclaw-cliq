@@ -9,6 +9,11 @@ import {
   inspectCliqHandlerContentShapeCoverage,
   proposeCliqHandlerUrlAdoption,
 } from "./handler-consistency.js";
+import {
+  CLIQ_HANDLER_SCHEMA_FIELD,
+  CLIQ_HANDLER_SCHEMA_VERSION,
+  extractDelugePayloadPutStringLiteral,
+} from "./handler-schema.js";
 import { formatCliqPreflightReport } from "./webhook-preflight.js";
 
 const HOOK_URL = "https://agent.example.com/cliq/webhook";
@@ -17,7 +22,7 @@ const SECRET = "configured-secret-value";
 function script(
   secret = SECRET,
   url = HOOK_URL,
-  extra = 'payload.put("eventId", eventId);\nresponse.put("eventId", eventId);',
+  extra = `payload.put("${CLIQ_HANDLER_SCHEMA_FIELD}", "${CLIQ_HANDLER_SCHEMA_VERSION}");\npayload.put("eventId", eventId);\nresponse.put("eventId", eventId);`,
 ): string {
   return `webhookUrl = "${url}";\nwebhookSecret = "${secret}";\n${extra}\npayload = Map();`;
 }
@@ -122,6 +127,33 @@ describe("checkCliqHandlerConsistency (issue #124)", () => {
 
     expect(result.status).toBe("fail");
     expect(result.detail).toMatch(/eventId/i);
+    expect(result.detail).not.toContain(SECRET);
+  });
+
+  it("fails when an otherwise-current handler omits the schema marker and names the repair (#228)", () => {
+    const result = checkCliqHandlerConsistency({
+      handlers: handlers(script(SECRET, HOOK_URL, 'payload.put("eventId", eventId);\nresponse.put("eventId", eventId);')),
+      configSecret: SECRET,
+      expectedWebhookUrl: HOOK_URL,
+    });
+
+    expect(result.status).toBe("fail");
+    expect(result.detail).toMatch(/no recognisable handlerSchema literal/i);
+    expect(result.detail).toMatch(/expected handlerSchema "v2"/i);
+    expect(result.detail).toMatch(/openclaw setup|confirmation-gated handler repair/i);
+    expect(result.detail).not.toContain(SECRET);
+  });
+
+  it("fails an unsupported schema marker without exposing secrets (#228)", () => {
+    const result = checkCliqHandlerConsistency({
+      handlers: handlers(script(SECRET, HOOK_URL, 'payload.put("handlerSchema", "v999");\npayload.put("eventId", eventId);\nresponse.put("eventId", eventId);')),
+      configSecret: SECRET,
+      expectedWebhookUrl: HOOK_URL,
+    });
+
+    expect(result.status).toBe("fail");
+    expect(result.detail).toContain('handlerSchema "v999"');
+    expect(result.detail).toContain('handlerSchema "v2"');
     expect(result.detail).not.toContain(SECRET);
   });
 
@@ -295,6 +327,9 @@ describe("checkCliqHandlerConsistency (issue #124)", () => {
       extractDelugeStringAssignment(`// webhookSecret = "fake";\nvalue = "x";`, "webhookSecret"),
     ).toBeNull();
     expect(extractDelugeStringAssignment("webhookSecret = zoho.vault.get();", "webhookSecret")).toBeNull();
+    expect(extractDelugePayloadPutStringLiteral(script(), CLIQ_HANDLER_SCHEMA_FIELD)).toBe(CLIQ_HANDLER_SCHEMA_VERSION);
+    expect(extractDelugePayloadPutStringLiteral('// payload.put("handlerSchema", "v999");', CLIQ_HANDLER_SCHEMA_FIELD)).toBeNull();
+    expect(extractDelugePayloadPutStringLiteral('payload.put("handlerSchema", schema);', CLIQ_HANDLER_SCHEMA_FIELD)).toBeNull();
   });
 
   it("reads Message and Mention handlers without leaking thrown error text", async () => {

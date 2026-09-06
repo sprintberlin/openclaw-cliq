@@ -33,6 +33,9 @@ import {
   type ParsedCliqInbound,
   type CliqRuntime,
 } from "./inbound.js";
+import {
+  CLIQ_HANDLER_SCHEMA_VERSION,
+} from "./handler-schema.js";
 import { verifyWebhookSecret } from "./webhook-security.js";
 import { lookupCliqChatId, resetCliqTypingState } from "./heartbeat.js";
 import { resolveCliqConfig, type ResolvedCliqAccount } from "./client.js";
@@ -791,6 +794,49 @@ describe("parseCliqWebhookPayload", () => {
     } as CliqWebhookPayload);
     expect(parsed).not.toBeNull();
     expect(parsed!.messageId).toBe("evt:abc123def456");
+  });
+
+  it("accepts a current versioned handler payload and retains its schema state (#228)", () => {
+    const parsed = parseCliqWebhookPayload({
+      handler: "message",
+      handlerSchema: CLIQ_HANDLER_SCHEMA_VERSION,
+      message: "still plain text",
+      eventId: "schema-current",
+      user: { id: "u1", name: "Alice" },
+      chat: { id: "CT_dm" },
+    } as CliqWebhookPayload);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.text).toBe("still plain text");
+    expect(parsed!.handlerSchema).toBe("current");
+    expect(parsed!.handlerSchemaVersion).toBe(CLIQ_HANDLER_SCHEMA_VERSION);
+  });
+
+  it("keeps legacy ordinary text compatible while marking its schema as missing (#228)", () => {
+    const parsed = parseCliqWebhookPayload({
+      handler: "message",
+      message: "legacy ordinary text",
+      eventId: "schema-legacy",
+      user: { id: "u1", name: "Alice" },
+      chat: { id: "CT_dm" },
+    } as CliqWebhookPayload);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.text).toBe("legacy ordinary text");
+    expect(parsed!.messageId).toBe("evt:schema-legacy");
+    expect(parsed!.handlerSchema).toBe("missing");
+  });
+
+  it("keeps an unknown future marker compatible while making it observable (#228)", () => {
+    const parsed = parseCliqWebhookPayload({
+      handler: "message",
+      handlerSchema: "v999",
+      message: "future handler text",
+      user: { id: "u1", name: "Alice" },
+      chat: { id: "CT_dm" },
+    } as CliqWebhookPayload);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.text).toBe("future handler text");
+    expect(parsed!.handlerSchema).toBe("unsupported");
+    expect(parsed!.handlerSchemaVersion).toBe("v999");
   });
 
   it("uses a snake_case event_id as MessageSid (issue #204)", () => {

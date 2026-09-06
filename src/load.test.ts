@@ -9,6 +9,7 @@ import { resetCliqDedupeForTest } from "./dedupe.js";
 import { setCliqDetachedWebhookWorkForTest } from "./detached-dispatch.js";
 import { resetCliqPairingStoreCacheForTests } from "./pairing-store.js";
 import { setCliqClientRegistry } from "./runtime-api.js";
+import { resetCliqHandlerSchemaWarningsForTest } from "./handler-schema.js";
 import {
   createCliqTestConfig,
   createMockIncomingRequest,
@@ -22,6 +23,7 @@ import {
 describe("plugin entry load + /cliq/webhook smoke", () => {
   beforeEach(() => {
     resetCliqDedupeForTest();
+    resetCliqHandlerSchemaWarningsForTest();
   });
 
   it("exports a DefinedChannelPluginEntry for channel id 'cliq'", () => {
@@ -1380,6 +1382,7 @@ describe("build configuration (issue #7: npm run build)", () => {  it("package.j
 describe("default-visible inbound skip logging (issue #232)", () => {
   beforeEach(() => {
     resetCliqDedupeForTest();
+    resetCliqHandlerSchemaWarningsForTest();
   });
 
   /**
@@ -1513,6 +1516,44 @@ describe("default-visible inbound skip logging (issue #232)", () => {
     // A dispatched message is not a skip: the vocabulary must stay a reliable
     // signal that NO agent turn happened.
     expect(skipLines(warns)).toHaveLength(0);
+  });
+
+  it("accepts legacy text but warns once per stale handler schema version (#228)", async () => {
+    const { webhook, warns } = registrationWithLogs({
+      extra: { dmPolicy: "open" },
+    });
+    const first = await post(
+      webhook,
+      createDmDelugePayload({ message: { text: "first legacy", id: "legacy-1" } }),
+    );
+    const second = await post(
+      webhook,
+      createDmDelugePayload({ message: { text: "second legacy", id: "legacy-2" } }),
+    );
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    const schemaWarnings = warns.filter((line) => line.startsWith("[cliq] inbound handler schema"));
+    expect(schemaWarnings).toEqual([
+      expect.stringContaining("schema unversioned is stale; expected v2"),
+    ]);
+    expect(schemaWarnings[0]).toMatch(/openclaw setup|confirmation-gated handler repair/i);
+    expect(schemaWarnings[0]).not.toContain("first legacy");
+    expect(schemaWarnings[0]).not.toContain("second legacy");
+  });
+
+  it("does not warn for a current generated schema marker (#228)", async () => {
+    const { webhook, warns } = registrationWithLogs({
+      extra: { dmPolicy: "open" },
+    });
+    const res = await post(
+      webhook,
+      createDmDelugePayload({
+        handlerSchema: "v2",
+        message: { text: "current", id: "current-schema" },
+      }),
+    );
+    expect(res.statusCode).toBe(200);
+    expect(warns.filter((line) => line.startsWith("[cliq] inbound handler schema"))).toHaveLength(0);
   });
 });
 
