@@ -1,6 +1,8 @@
 import {
   checkCliqHandlerConsistency,
+  inspectCliqHandlerContentShapeCoverage,
   CLIQ_INBOUND_HANDLER_TYPES,
+  type CliqHandlerContentShapeCoverage,
   type CliqHandlerConsistencyResult,
   type CliqHandlerScriptRecord,
 } from "./handler-consistency.js";
@@ -44,6 +46,8 @@ export interface CliqBotInspection {
   subscriberCount: CliqKnown<number>;
   subscribers: CliqKnown<CliqBotSubscriberSnapshot>;
   handlerConsistency: CliqHandlerConsistencyResult;
+  /** Static-only coverage for native reply/quote and forward payload blocks. */
+  handlerContentShapes: CliqHandlerContentShapeCoverage;
 }
 
 export interface CliqBotReader {
@@ -94,6 +98,7 @@ function emptyInspection(uniqueName: string, reason: string): CliqBotInspection 
     subscriberCount: unknown(reason),
     subscribers: unknown(reason),
     handlerConsistency: { status: "skipped", detail: reason },
+    handlerContentShapes: { status: "unknown", detail: reason },
   };
 }
 
@@ -186,6 +191,7 @@ export async function inspectCliqBot(params: {
     configSecret: params.account.webhookSecret,
     expectedWebhookUrl: params.publicWebhookUrl,
   });
+  const handlerContentShapes = inspectCliqHandlerContentShapeCoverage(handlers);
   const handlerTypes = Array.isArray(record.handlers)
     ? known(
         record.handlers
@@ -212,6 +218,7 @@ export async function inspectCliqBot(params: {
         : unknown("unknown because Zoho returned no subscriber count"),
     subscribers,
     handlerConsistency,
+    handlerContentShapes,
   };
 }
 
@@ -245,6 +252,7 @@ export function describeCliqBotInspection(inspection: CliqBotInspection): string
         : inspection.subscribers.reason
     }`,
     `handler consistency: ${inspection.handlerConsistency.detail}`,
+    `handler content-shape coverage: ${inspection.handlerContentShapes.detail}`,
   ];
 }
 
@@ -274,12 +282,22 @@ export function toCliqDoctorBotInspection(
   ].some((value) => value.state === "unknown");
   const narrowerScope =
     inspection.visibility.state === "known" && inspection.visibility.value !== "organization";
-  if (unknownFacet || narrowerScope || inspection.handlerConsistency.status === "skipped") {
+  // The normal bot send API cannot create a native reply/quote or forward,
+  // so even a static declaration is not live proof. Keep the stage visibly
+  // degraded rather than letting a secret/URL check imply shape coverage.
+  if (
+    unknownFacet ||
+    narrowerScope ||
+    inspection.handlerConsistency.status === "skipped" ||
+    inspection.handlerContentShapes.status === "unknown" ||
+    inspection.handlerContentShapes.status === "uncovered" ||
+    inspection.handlerContentShapes.status === "declared_unexercised"
+  ) {
     return {
       status: "warn",
       evidence,
       remediation: [
-        "Grant and re-consent ZohoCliq.Bots.READ; subscriber details additionally require the bot creator or an organization administrator.",
+        "Grant and re-consent ZohoCliq.Bots.READ; subscriber details additionally require the bot creator or an organization administrator. Use a real Cliq client to send one native reply/quote and one forwarded message: the bot send API cannot synthesize either relationship, and static field declarations are not live delivery proof.",
       ],
     };
   }

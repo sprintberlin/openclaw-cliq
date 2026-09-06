@@ -4,6 +4,7 @@ import { CLIQ_CAPABILITIES } from "./capabilities.js";
 import {
   CLIQ_DOCTOR_EXIT,
   CLIQ_DOCTOR_SCHEMA_VERSION,
+  buildCliqDoctorRoundtripRequestText,
   formatCliqDoctorReport,
   redactCliqDoctorText,
   runCliqDoctor,
@@ -19,6 +20,7 @@ const WEBHOOK_URL = "https://cliq.example.com/cliq/webhook";
 const CLIENT_SECRET = "client-secret-value";
 const WEBHOOK_SECRET = "webhook-secret-value";
 const REFRESH_TOKEN = "refresh-token-value";
+const ROUNDTRIP_REQUEST_TEXT = buildCliqDoctorRoundtripRequestText("nonce-1234");
 
 function cfgWith(section: Record<string, unknown> = {}, extra: Record<string, unknown> = {}): OpenClawConfig {
   return {
@@ -94,6 +96,21 @@ function createDeps(overrides: Partial<CliqDoctorDeps> = {}): Partial<CliqDoctor
     pollIntervalMs: 1,
     ...overrides,
   };
+}
+
+function observedRoundtripMessages(chatId = "CT_1") {
+  return [
+    { messageId: "m-2", chatId, text: ROUNDTRIP_REQUEST_TEXT },
+    { messageId: "m-3", chatId, text: "OPENCLAW_CLIQ_ROUNDTRIP_REPLY nonce-1234" },
+  ];
+}
+
+function groupObservedRoundtripMessages() {
+  const [first, ...rest] = ROUNDTRIP_REQUEST_TEXT.split("\n");
+  return [
+    { messageId: "m-2", chatId: "CT_group", text: `@OpenClaw ${first}\n${rest.join("\n")}` },
+    { messageId: "m-3", chatId: "CT_group", text: "OPENCLAW_CLIQ_ROUNDTRIP_REPLY nonce-1234" },
+  ];
 }
 
 function stageOf(report: CliqDoctorReport, id: CliqDoctorStageId) {
@@ -972,10 +989,7 @@ describe("cliq doctor — a failed directory read does not block an explicit tar
 
   it("still completes the consented roundtrip against the explicit target", async () => {
     const client = brokenDirectoryClient({
-      listChatMessages: vi.fn(async () => [
-        { messageId: "m-2", chatId: "CT_1", text: "OPENCLAW_CLIQ_ROUNDTRIP_REQUEST nonce-1234" },
-        { messageId: "m-3", chatId: "CT_1", text: "OPENCLAW_CLIQ_ROUNDTRIP_REPLY nonce-1234" },
-      ]),
+      listChatMessages: vi.fn(async () => observedRoundtripMessages()),
     });
     const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), {
       roundtrip: true,
@@ -1078,10 +1092,7 @@ describe("cliq doctor — stage 9 nonce-correlated roundtrip", () => {
 
   it("passes when the nonce request and the exact nonce reply are both observed", async () => {
     const client = createClient({
-      listChatMessages: vi.fn(async () => [
-        { messageId: "m-2", chatId: "CT_1", text: "OPENCLAW_CLIQ_ROUNDTRIP_REQUEST nonce-1234" },
-        { messageId: "m-3", chatId: "CT_1", text: "OPENCLAW_CLIQ_ROUNDTRIP_REPLY nonce-1234" },
-      ]),
+      listChatMessages: vi.fn(async () => observedRoundtripMessages()),
     });
     const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), roundtripOptions);
     const roundtrip = stageOf(report, "roundtrip");
@@ -1125,19 +1136,17 @@ describe("cliq doctor — stage 9 nonce-correlated roundtrip", () => {
     expect(nowMs).toBe(5_000);
   });
 
-  it("puts the reply instruction inside the copied challenge so the agent turn receives it", async () => {
+  it("puts multiline entity-like text and the reply instruction inside the copied challenge", async () => {
     const client = createClient({
-      listChatMessages: vi.fn(async () => [
-        { messageId: "m-2", chatId: "CT_1", text: "OPENCLAW_CLIQ_ROUNDTRIP_REQUEST nonce-1234" },
-        { messageId: "m-3", chatId: "CT_1", text: "OPENCLAW_CLIQ_ROUNDTRIP_REPLY nonce-1234" },
-      ]),
+      listChatMessages: vi.fn(async () => observedRoundtripMessages()),
     });
     await runDefault(cfgWith(), createDeps({ getClient: () => client }), roundtripOptions);
     const sentText = (client.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][0].text as string;
-    const instructionLine = sentText
-      .split("\n")
-      .find((line) => line.includes("OPENCLAW_CLIQ_ROUNDTRIP_REQUEST nonce-1234"));
-    expect(instructionLine).toContain("OPENCLAW_CLIQ_ROUNDTRIP_REPLY nonce-1234");
+    expect(sentText).toContain(ROUNDTRIP_REQUEST_TEXT);
+    expect(sentText).toContain("cliq-doctor-nonce-1234@example.invalid");
+    expect(sentText).toContain("+1 202-555-0100");
+    expect(sentText).toContain('Quoted text: "doctor-safe"');
+    expect(sentText).toContain("OPENCLAW_CLIQ_ROUNDTRIP_REPLY nonce-1234");
   });
 
   it("does not accept the copied challenge itself as the agent reply", async () => {
@@ -1153,7 +1162,24 @@ describe("cliq doctor — stage 9 nonce-correlated roundtrip", () => {
     const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), roundtripOptions);
     const roundtrip = stageOf(report, "roundtrip");
     expect(roundtrip.status).toBe("fail");
-    expect(roundtrip.boundary).toBe("agent_policy_or_outbound_reply");
+    expect(roundtrip.boundary).toBe("zoho_handler_or_inbound_webhook");
+  });
+
+  it("does not accept a truncated or single-line copy of the multi-line request as delivery evidence", async () => {
+    // A human sending only the first line would previously satisfy the
+    // substring match without ever exercising the newline/entity-bearing
+    // shape the roundtrip exists to cover (issue #225).
+    const client = createClient({
+      listChatMessages: vi.fn(async () => [
+        { messageId: "m-2", chatId: "CT_1", text: "OPENCLAW_CLIQ_ROUNDTRIP_REQUEST nonce-1234" },
+        { messageId: "m-3", chatId: "CT_1", text: "OPENCLAW_CLIQ_ROUNDTRIP_REPLY nonce-1234" },
+      ]),
+    });
+    const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), roundtripOptions);
+    const roundtrip = stageOf(report, "roundtrip");
+    expect(roundtrip.status).toBe("fail");
+    expect(report.correlation?.requestObserved).toBe(false);
+    expect(roundtrip.evidence.join(" ")).toMatch(/complete multi-line user request did not appear/i);
   });
 
   it("stops at the deadline when a correlation read hangs", async () => {
@@ -1180,7 +1206,7 @@ describe("cliq doctor — stage 9 nonce-correlated roundtrip", () => {
   it("blames the agent or outbound reply boundary when only the request is seen", async () => {
     const client = createClient({
       listChatMessages: vi.fn(async () => [
-        { messageId: "m-2", chatId: "CT_1", text: "OPENCLAW_CLIQ_ROUNDTRIP_REQUEST nonce-1234" },
+        { messageId: "m-2", chatId: "CT_1", text: ROUNDTRIP_REQUEST_TEXT },
       ]),
     });
     const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), roundtripOptions);
@@ -1239,10 +1265,7 @@ describe("cliq doctor — stage 9 nonce-correlated roundtrip", () => {
   it("resolves a group chat id for a group-mention roundtrip", async () => {
     const client = createClient({
       sendMessage: vi.fn(async () => ({ messageId: "m-1" })),
-      listChatMessages: vi.fn(async () => [
-        { messageId: "m-2", chatId: "CT_group", text: "@OpenClaw OPENCLAW_CLIQ_ROUNDTRIP_REQUEST nonce-1234" },
-        { messageId: "m-3", chatId: "CT_group", text: "OPENCLAW_CLIQ_ROUNDTRIP_REPLY nonce-1234" },
-      ]),
+      listChatMessages: vi.fn(async () => groupObservedRoundtripMessages()),
     });
     const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), {
       ...roundtripOptions,

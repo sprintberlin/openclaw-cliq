@@ -17,6 +17,10 @@ function inspection(overrides: Partial<CliqBotInspection> = {}): CliqBotInspecti
     subscriberCount: { state: "known", value: 1 },
     subscribers: { state: "known", value: { userIds: ["user-1"], complete: true } },
     handlerConsistency: { status: "pass", detail: "both handlers match" },
+    handlerContentShapes: {
+      status: "declared_unexercised",
+      detail: "handler declarations are static only; native reply/quote and forward delivery remain unexercised",
+    },
     ...overrides,
   };
 }

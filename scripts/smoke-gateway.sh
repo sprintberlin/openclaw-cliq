@@ -287,12 +287,15 @@ node -e '
 ' "$SMOKE_HOME/inspect-configured.json"
 
 ROUTE_JSON="$SMOKE_HOME/route-check.json"
-# `2>&1` makes the capture version-proof: plugin-command output lands on
-# stderr on 2026.7.x (the host CLI rebinds console) and on stdout once the
-# command writes to process.stdout directly; either way the JSON is captured.
-if ! run_oc cliq webhook-route --port "$PORT" --json > "$ROUTE_JSON" 2>&1; then
+# Capture stdout only: the host can emit unrelated operational warnings (for
+# example a slow SQLite transaction) on stderr, but a CLI `--json` contract is
+# machine-readable on stdout. Mixing the streams makes a healthy route check
+# intermittently unparsable.
+ROUTE_ERR="$SMOKE_HOME/route-check.err"
+if ! run_oc cliq webhook-route --port "$PORT" --json > "$ROUTE_JSON" 2> "$ROUTE_ERR"; then
   echo "FAIL: cliq webhook-route exited non-zero for a live route" >&2
   cat "$ROUTE_JSON" >&2
+  cat "$ROUTE_ERR" >&2
   exit 1
 fi
 node -e '
@@ -312,13 +315,15 @@ node -e '
 # otherwise it would be as untrustworthy as the field it replaces.
 FREE_PORT="$(node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')"
 ABSENT_JSON="$SMOKE_HOME/route-check-absent.json"
+ABSENT_ERR="$SMOKE_HOME/route-check-absent.err"
 set +e
-run_oc cliq webhook-route --port "$FREE_PORT" --json > "$ABSENT_JSON" 2>&1
+run_oc cliq webhook-route --port "$FREE_PORT" --json > "$ABSENT_JSON" 2> "$ABSENT_ERR"
 absent_code=$?
 set -e
 if [ "$absent_code" -eq 0 ]; then
   echo "FAIL: cliq webhook-route exited 0 for a port with no gateway" >&2
   cat "$ABSENT_JSON" >&2
+  cat "$ABSENT_ERR" >&2
   exit 1
 fi
 node -e '

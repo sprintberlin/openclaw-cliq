@@ -85,7 +85,11 @@ describe("inspectCliqBot — organization-visible, active, subscribed", () => {
       state: "known",
       value: "subscribed",
     });
-    expect(toCliqDoctorBotInspection(result).status).toBe("pass");
+    // A readable handler can prove its URL/secret shape, but the API-driven
+    // doctor cannot synthesize a native forward or reply relationship.
+    expect(toCliqDoctorBotInspection(result).status).toBe("warn");
+    expect(describeCliqBotInspection(result).join(" ")).toMatch(/content-shape coverage/i);
+    expect(describeCliqBotInspection(result).join(" ")).toMatch(/forwarded-message fields \[none\]/i);
   });
 
   it("resolves the internal bot id from the configured unique name before reading the bot", async () => {

@@ -6,6 +6,7 @@ import {
   createCliqHandlerScriptReader,
   extractDelugeStringAssignment,
   fingerprintCliqSecret,
+  inspectCliqHandlerContentShapeCoverage,
   proposeCliqHandlerUrlAdoption,
 } from "./handler-consistency.js";
 import { formatCliqPreflightReport } from "./webhook-preflight.js";
@@ -27,6 +28,48 @@ function handlers(messageScript: string, mentionScript = messageScript) {
     { type: "mention_handler", script: mentionScript },
   ];
 }
+
+describe("inspectCliqHandlerContentShapeCoverage (issue #225)", () => {
+  it("reports reply/quote and forwarded-message fields as uncovered when the generated-shape handler omits them", () => {
+    const result = inspectCliqHandlerContentShapeCoverage(handlers(script()));
+
+    expect(result.status).toBe("uncovered");
+    // The fixture only declares eventId, which proves the extractor reports
+    // only literal `payload.put` keys rather than inferring a full handler.
+    expect(result.detail).toContain("base fields [eventId]");
+    expect(result.detail).toContain("reply/quote fields [none]");
+    expect(result.detail).toContain("forwarded-message fields [none]");
+    expect(result.detail).toMatch(/cannot synthesize native Cliq reply\/quote or forward metadata/i);
+    expect(result.detail).not.toContain(SECRET);
+  });
+
+  it("names static declarations without upgrading them to live coverage", () => {
+    const contentFields = [
+      'payload.put("reply_to", reply_to);',
+      'payload.put("forwarded_message", forwarded_message);',
+    ].join("\n");
+    const result = inspectCliqHandlerContentShapeCoverage(
+      handlers(script(SECRET, HOOK_URL, `${contentFields}\npayload.put("eventId", eventId);\nresponse.put("eventId", eventId);`)),
+    );
+
+    expect(result.status).toBe("declared_unexercised");
+    expect(result.detail).toContain("reply/quote fields [reply_to]");
+    expect(result.detail).toContain("forwarded-message fields [forwarded_message]");
+    expect(result.detail).toMatch(/static only/i);
+    expect(result.detail).toMatch(/does not claim native reply\/quote or forward delivery/i);
+  });
+
+  it("keeps content-shape coverage unknown when a handler cannot be read", () => {
+    const result = inspectCliqHandlerContentShapeCoverage([
+      { type: "message_handler", script: script() },
+      { type: "mention_handler", error: "HTTP 403" },
+    ]);
+
+    expect(result.status).toBe("unknown");
+    expect(result.detail).toMatch(/mention handler could not be read/i);
+    expect(result.detail).not.toContain(SECRET);
+  });
+});
 
 describe("checkCliqHandlerConsistency (issue #124)", () => {
   it("passes when both handler secrets and URLs match config", () => {

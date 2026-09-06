@@ -937,6 +937,45 @@ function roundtripPolicyEvidence(cfg: OpenClawConfig, target: string): string {
     : "no target-specific group tool policy was found; the normal agent policy remains active";
 }
 
+/**
+ * Build the content the human copies through the real Cliq client for a
+ * consented Doctor roundtrip. The deliberately-reserved email and fictional
+ * NANP number exercise the multiline/entity-like shape without asking an
+ * operator to paste personal data. This text must stay out of diagnostic
+ * reports and logs; it is only compared in-memory while polling Cliq.
+ */
+export function buildCliqDoctorRoundtripRequestText(nonce: string): string {
+  const requestMarker = `OPENCLAW_CLIQ_ROUNDTRIP_REQUEST ${nonce}`;
+  const replyMarker = `OPENCLAW_CLIQ_ROUNDTRIP_REPLY ${nonce}`;
+  return [
+    requestMarker,
+    `Contact email: cliq-doctor-${nonce}@example.invalid`,
+    "Telephone: +1 202-555-0100",
+    'Quoted text: "doctor-safe"',
+    `Reply with exactly this line and nothing else: ${replyMarker}`,
+  ].join("\n");
+}
+
+/**
+ * Correlate only the full synthetic request. A group sender may put the Cliq
+ * @mention in front of the first line; that prefix is accepted, but every
+ * subsequent line must still exactly match. This prevents a one-line nonce
+ * copy from proving a multiline/entity-like roundtrip it did not exercise.
+ */
+function isCliqDoctorRoundtripRequest(text: string | undefined, expected: string): boolean {
+  const normalized = text?.trim().replace(/\r\n/g, "\n");
+  const expectedNormalized = expected.trim();
+  if (normalized === expectedNormalized) return true;
+  if (!normalized) return false;
+  const [expectedFirst, ...expectedRest] = expectedNormalized.split("\n");
+  const [actualFirst, ...actualRest] = normalized.split("\n");
+  if (!expectedFirst || actualRest.join("\n") !== expectedRest.join("\n")) return false;
+  if (!actualFirst.endsWith(expectedFirst)) return false;
+  // The only accepted prefix is a native-looking Cliq @mention. Do not let
+  // an arbitrary leading sentence hide a partial/altered copied challenge.
+  return actualFirst.slice(0, -expectedFirst.length).trim().startsWith("@");
+}
+
 async function buildOutboundStage(
   cfg: OpenClawConfig,
   options: CliqDoctorOptions,
@@ -951,6 +990,7 @@ async function buildOutboundStage(
   chatId?: string;
   kickoffMessageId?: string;
   requestMarker?: string;
+  requestText?: string;
   replyMarker?: string;
 }> {
   if (!options.outboundTest && !options.roundtrip) {
@@ -1008,9 +1048,13 @@ async function buildOutboundStage(
   const nonce = deps.randomUUID();
   const requestMarker = `OPENCLAW_CLIQ_ROUNDTRIP_REQUEST ${nonce}`;
   const replyMarker = `OPENCLAW_CLIQ_ROUNDTRIP_REPLY ${nonce}`;
-  const challengeLine = `${requestMarker} — reply with exactly this line and nothing else: ${replyMarker}`;
+  // This is intentionally synthetic, reserved data. It proves that the
+  // webhook path preserves newlines, a quoted string, and common Cliq entity
+  // candidates without sending a real person's contact details. Keep it out
+  // of doctor evidence and normal logs; CliqClient logs only the text length.
+  const requestText = buildCliqDoctorRoundtripRequestText(nonce);
   const text = options.roundtrip
-    ? `[OpenClaw Cliq doctor roundtrip ${nonce}]\n${options.targetKind === "group" ? "Mention the bot and send exactly" : "Send exactly"}:\n${challengeLine}`
+    ? `[OpenClaw Cliq doctor roundtrip ${nonce}]\n${options.targetKind === "group" ? "Mention the bot and send" : "Send"} the following multi-line text exactly:\n${requestText}`
     : `[OpenClaw Cliq doctor outbound test ${nonce}] No reply is required.`;
   try {
     const sent = await client.sendMessage({
@@ -1032,6 +1076,7 @@ async function buildOutboundStage(
       chatId,
       kickoffMessageId: sent.messageId,
       requestMarker,
+      requestText,
       replyMarker,
     };
   } catch (err) {
@@ -1062,6 +1107,7 @@ async function buildRoundtripStage(
     !client ||
     !outbound.nonce ||
     !outbound.requestMarker ||
+    !outbound.requestText ||
     !outbound.replyMarker
   ) {
     return {
@@ -1097,9 +1143,10 @@ async function buildRoundtripStage(
     };
   }
   const roundtripEvidence = [
-    "the nonce request was observed in Cliq, so the Zoho handler delivered it to the inbound webhook",
+    "the complete multi-line nonce request was observed in Cliq, exercising a reserved example.invalid email, fictional phone number, and quoted text without recording their values in the report",
     "a later message whose entire body is the nonce reply was observed in Cliq, so the agent turn, configured policy, and outbound reply all completed",
     "chat text is the only correlation signal available to a read-only diagnostic; inspect gateway logs for the same nonce to attribute an individual hop",
+    "native Cliq reply/quote and forwarded-message relationships are not synthesized by this API-driven test; the bot/handler stage reports their static field declarations and a real-client manual check remains required",
   ];
   const timeoutMs = options.timeoutMs ?? 120_000;
   const deadline = deps.nowMs() + timeoutMs;
@@ -1114,12 +1161,14 @@ async function buildRoundtripStage(
         budget,
       );
       const relevant = messages.filter((message) => message.messageId !== outbound.kickoffMessageId);
-      requestObserved ||= relevant.some((message) => message.text?.includes(outbound.requestMarker!));
+      requestObserved ||= relevant.some(
+        (message) => isCliqDoctorRoundtripRequest(message.text, outbound.requestText!),
+      );
       const replyObserved = relevant.some((message) => {
         const text = message.text?.trim();
         return text === outbound.replyMarker;
       });
-      if (replyObserved) {
+      if (requestObserved && replyObserved) {
         return {
           result: stage(
             "roundtrip",
@@ -1172,7 +1221,7 @@ async function buildRoundtripStage(
             ...timeoutEvidence,
           ]
         : [
-            "the nonce-bearing user request did not appear in Cliq before timeout",
+            "the complete multi-line user request did not appear in Cliq before timeout",
             ...timeoutEvidence,
           ],
       requestObserved

@@ -54,6 +54,145 @@ export interface CliqHandlerConsistencyResult {
   detail: string;
 }
 
+/**
+ * Static declaration coverage for inbound content shapes that the normal
+ * diagnostic send API cannot create. `declared_unexercised` intentionally
+ * does not mean a live Cliq reply or forward was delivered: it says only that
+ * the read-back Deluge script names the payload fields the inbound parser can
+ * consume. A real client must create those native relationships.
+ */
+export type CliqHandlerContentShapeCoverageStatus =
+  | "declared_unexercised"
+  | "uncovered"
+  | "unknown";
+
+export interface CliqHandlerContentShapeCoverage {
+  status: CliqHandlerContentShapeCoverageStatus;
+  /** Field names and coverage state only. Never contains a handler body or values. */
+  detail: string;
+}
+
+const CLIQ_REPLY_CONTEXT_PAYLOAD_FIELDS = [
+  "reply_to",
+  "parent",
+  "parent_message",
+  "quoted",
+  "quoted_message",
+  "reply_to_message",
+] as const;
+
+const CLIQ_FORWARD_CONTEXT_PAYLOAD_FIELDS = [
+  "forwarded_message",
+  "forwardedMessage",
+  "forwarded",
+  "forward",
+  "forwarded_content",
+  "original_message",
+  "originalMessage",
+] as const;
+
+const CLIQ_BASE_INBOUND_PAYLOAD_FIELDS = [
+  "handler",
+  "message",
+  "user",
+  "chat",
+  "eventId",
+] as const;
+
+/**
+ * Read the literal keys a Deluge handler puts into the outbound webhook map.
+ * This is deliberately a narrow template check: dynamically-computed keys or
+ * unknown Deluge constructs are not treated as coverage. A false positive
+ * would turn absent evidence into an undeserved green diagnostic.
+ */
+function extractDelugePayloadPutKeys(script: string): Set<string> {
+  const keys = new Set<string>();
+  const pattern = /^[ \t]*payload\.put\(\s*"([^"\n]+)"\s*,/gm;
+  for (const match of script.matchAll(pattern)) {
+    if (match[1]) keys.add(match[1]);
+  }
+  return keys;
+}
+
+function describeDeclaredFields(keys: Set<string>, fields: readonly string[]): string {
+  const declared = fields.filter((field) => keys.has(field));
+  return declared.length > 0 ? declared.join(", ") : "none";
+}
+
+/**
+ * Report which inbound content shapes a Zoho-held script *declares* it will
+ * forward. The doctor can automatically roundtrip ordinary multiline text,
+ * but posting a bot message cannot synthesize a native Cliq reply/quote or a
+ * forward. Keep those paths visibly unexercised instead of inferring coverage
+ * from secret/URL equality or from a plain-text roundtrip.
+ */
+export function inspectCliqHandlerContentShapeCoverage(
+  handlers: readonly CliqHandlerScriptRecord[],
+): CliqHandlerContentShapeCoverage {
+  if (handlers.length === 0) {
+    return {
+      status: "unknown",
+      detail: "no inbound handler scripts were read, so reply/quote and forwarded-message field declarations are unknown",
+    };
+  }
+
+  const unreadable: string[] = [];
+  const declarations: Array<{
+    label: string;
+    base: string;
+    reply: string;
+    forward: string;
+    hasReply: boolean;
+    hasForward: boolean;
+  }> = [];
+
+  for (const handler of handlers) {
+    const label = describeHandler(handler.type);
+    if (handler.error || typeof handler.script !== "string" || handler.script.length === 0) {
+      unreadable.push(label);
+      continue;
+    }
+    const keys = extractDelugePayloadPutKeys(handler.script);
+    const reply = describeDeclaredFields(keys, CLIQ_REPLY_CONTEXT_PAYLOAD_FIELDS);
+    const forward = describeDeclaredFields(keys, CLIQ_FORWARD_CONTEXT_PAYLOAD_FIELDS);
+    declarations.push({
+      label,
+      base: describeDeclaredFields(keys, CLIQ_BASE_INBOUND_PAYLOAD_FIELDS),
+      reply,
+      forward,
+      hasReply: reply !== "none",
+      hasForward: forward !== "none",
+    });
+  }
+
+  if (unreadable.length > 0) {
+    return {
+      status: "unknown",
+      detail: `reply/quote and forwarded-message field declarations are unknown because ${unreadable.join(" and ")} could not be read`,
+    };
+  }
+
+  const detail = declarations
+    .map(
+      (item) =>
+        `${item.label} declares base fields [${item.base}], reply/quote fields [${item.reply}], and forwarded-message fields [${item.forward}]`,
+    )
+    .join("; ");
+  const everyShapeDeclared = declarations.length > 0 && declarations.every(
+    (item) => item.hasReply && item.hasForward,
+  );
+  if (everyShapeDeclared) {
+    return {
+      status: "declared_unexercised",
+      detail: `${detail}. Those declarations are static only: the doctor does not claim native reply/quote or forward delivery without a real-client check`,
+    };
+  }
+  return {
+    status: "uncovered",
+    detail: `${detail}. Missing fields are an explicit coverage gap: the normal bot send API cannot synthesize native Cliq reply/quote or forward metadata`,
+  };
+}
+
 export interface CheckCliqHandlerConsistencyOptions {
   /** Handlers read back from Zoho. */
   handlers: readonly CliqHandlerScriptRecord[];
