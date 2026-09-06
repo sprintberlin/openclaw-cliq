@@ -110,3 +110,32 @@ describe("describeDelugeBodySyntax (issue #227 evidence)", () => {
     expect(fp.length).toBeLessThanOrEqual(96);
   });
 });
+
+describe("repair survives added flat handler fields (#228 regression)", () => {
+  // The handlerSchema marker landed between `handler` and `message`, which
+  // silently disabled the repair and made a live corrupt forward 400 again.
+  it("repairs a body carrying handlerSchema before the message value", () => {
+    const raw =
+      '{"handler":"message","handlerSchema":"v2","message":"Eintrag aus dem "others"\nist nicht ersichtlich","user":{"id":"u-1","name":"Alice"},"chat":{"id":"c-1","type":"single"},"eventId":"evt-1"}';
+    const repaired = repairDelugeUnescapedMessageBody(raw) as Record<string, unknown>;
+    expect(repaired).toBeDefined();
+    expect(repaired.handlerSchema).toBe("v2");
+    expect(repaired.message).toBe('Eintrag aus dem "others"\nist nicht ersichtlich');
+    expect((repaired.user as Record<string, unknown>).id).toBe("u-1");
+  });
+
+  it("repairs a mention body with several added flat markers", () => {
+    const raw =
+      '{"handler":"mention","handlerSchema":"v2","locale":"de","message":"sagt "hallo"","user":{"id":"u-2"},"chat":{"id":"c-2"},"eventId":"evt-2"}';
+    const repaired = repairDelugeUnescapedMessageBody(raw) as Record<string, unknown>;
+    expect(repaired?.message).toBe('sagt "hallo"');
+  });
+
+  it("does not treat a corrupted marker value as a skippable field", () => {
+    // A marker whose own value is corrupted is not machine-generated shape;
+    // the repair must decline rather than guess a boundary.
+    const raw =
+      '{"handler":"message","handlerSchema":"v"2","message":"hi","user":{"id":"u-3"},"chat":{"id":"c-3"},"eventId":"evt-3"}';
+    expect(repairDelugeUnescapedMessageBody(raw)).toBeUndefined();
+  });
+});

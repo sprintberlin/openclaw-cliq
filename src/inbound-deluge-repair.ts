@@ -35,7 +35,16 @@
  * through to the existing reject path with its skip logging (issue #232).
  */
 
-const VALUE_START = /^\{\s*"handler"\s*:\s*"(?:message|mention|dm)"\s*,\s*"message"\s*:\s*"/;
+/**
+ * The generated handler may emit further flat string fields between
+ * `handler` and `message` — `handlerSchema` (issue #228) is the first, and a
+ * future contract marker must not silently disable this repair again. Only
+ * well-formed `"key":"value"` pairs whose value contains no quote, backslash
+ * or line break are skipped: those are machine-generated literals, so
+ * tolerating them cannot swallow corrupted free text.
+ */
+const VALUE_START =
+  /^\{\s*"handler"\s*:\s*"(?:message|mention|dm)"\s*,\s*(?:"[A-Za-z0-9_]+"\s*:\s*"[^"\\\n]*"\s*,\s*)*"message"\s*:\s*"/;
 
 const TAIL_BOUNDARY = '","user":';
 
