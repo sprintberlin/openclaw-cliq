@@ -1125,6 +1125,9 @@ export async function dispatchCliqInbound(params: {
     : undefined;
 
   const client = params.client ?? resolveCliqClient(account);
+  // Catch-up is handled by the top-level webhook flow after the live turn.
+  // Recovered records re-enter this function with handler="catchup", but never
+  // inspect history themselves, so recovery cannot turn into a polling loop.
   const deliverTo = parsed.isGroup
     ? (parsed.channelUniqueName ?? parsed.chatId)
     : parsed.senderId;
@@ -1309,6 +1312,10 @@ export async function dispatchCliqInbound(params: {
     WasMentioned: parsed.isGroup ? parsed.isMention : undefined,
     Provider: "cliq",
     Surface: "cliq",
+    // Recovery uses this same inbound model but marks the context so agents
+    // and observability can distinguish a bounded history catch-up from a
+    // live webhook turn. It never carries chat history in a log.
+    ...(parsed.handler === "catchup" ? { InboundRecovered: true } : {}),
     MessageSid: parsed.messageId,
     MessageSidFull: parsed.messageId,
     ReplyToId: replyTo?.messageId ?? parsed.threadId,

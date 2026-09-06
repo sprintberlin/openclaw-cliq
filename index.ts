@@ -25,6 +25,15 @@ import {
 } from "./src/webhook-security.js";
 import { claimCliqMessage, commitCliqMessage, releaseCliqMessage } from "./src/dedupe.js";
 import {
+  inspectCliqInboundCatchup,
+  parseCliqHistoryMessage,
+} from "./src/inbound-catchup.js";
+import {
+  readCliqInboundCatchupCursor,
+  recordCliqInboundCatchupCursor,
+  withCliqInboundCatchupConversationLock,
+} from "./src/inbound-catchup-store.js";
+import {
   cliqDedupeSkipReason,
   formatCliqInboundSkip,
 } from "./src/inbound-outcome.js";
@@ -637,15 +646,16 @@ export default defineChannelPluginEntry({
             : null;
 
         let dispatchPromise: Promise<void> | undefined;
+        const onInboundError = (err: unknown, info: { kind: string }) => {
+          api.logger.error?.(`[cliq] ${info.kind} failed: ${String(err)}`);
+        };
         const dispatch = (): Promise<void> => {
           dispatchPromise ??= dispatchCliqInbound({
             runtime,
             cfg,
             account,
             parsed,
-            onError: (err, info) => {
-              api.logger.error?.(`[cliq] ${info.kind} failed: ${String(err)}`);
-            },
+            onError: onInboundError,
           }).then((result) => {
             void commitCliqMessage(claim?.key ?? null);
             return result;
@@ -654,6 +664,99 @@ export default defineChannelPluginEntry({
             throw err;
           });
           return dispatchPromise;
+        };
+
+        // A bounded safety net for messages that existed in Cliq but never
+        // became webhook turns. It is deliberately event-triggered by this
+        // already-admitted live inbound (never a timer/polling loop), direct-DM
+        // only, and opt-in. Existing native-id dedupe claims are acquired
+        // before each recovered dispatch, so live and recovered paths cannot
+        // double-run a tool turn. A history read failure only logs and leaves
+        // this live webhook turn unchanged.
+        const catchUpAfterLiveDispatch = async (): Promise<void> => {
+          if (
+            parsed.handler === "catchup" ||
+            parsed.isGroup ||
+            !parsed.chatId ||
+            !account.inboundCatchup?.enabled
+          ) return;
+          await withCliqInboundCatchupConversationLock({
+            accountId: account.accountId,
+            chatId: parsed.chatId,
+            run: async () => {
+          const client = resolveCliqClient(account);
+          let cursor: string | undefined;
+          try {
+            cursor = readCliqInboundCatchupCursor({
+              accountId: account.accountId,
+              chatId: parsed.chatId,
+            });
+          } catch (err) {
+            // No durable lower bound means no replay: the next live message can
+            // retry after the operator repairs state storage. Never guess.
+            onInboundError(err, { kind: "inbound-catchup-cursor-read" });
+            return;
+          }
+          const inspected = await inspectCliqInboundCatchup({
+            account,
+            live: parsed,
+            cursor,
+            listChatMessages: (chatId, opts) => client.listChatMessages(chatId, opts),
+            onError: onInboundError,
+          });
+          if (!inspected.attempted) return;
+          if (inspected.reason === "history_fetch_failed") {
+            api.logger.warn?.("[cliq] inbound catch-up unavailable: recent-history read failed; live inbound continued");
+            return;
+          }
+          if (inspected.reason === "unanchored_live") {
+            api.logger.warn?.("[cliq] inbound catch-up unavailable: live message was not safely anchored in the bounded history window");
+            return;
+          }
+          let recovered = 0;
+          for (const record of inspected.candidates) {
+            const recoveredParsed = parseCliqHistoryMessage(record, parsed);
+            if (!recoveredParsed) continue;
+            const recoveredClaim = await claimCliqMessage(recoveredParsed, account);
+            if (!recoveredClaim || recoveredClaim.kind !== "claimed") continue;
+            try {
+              await dispatchCliqInbound({
+                runtime,
+                cfg,
+                account,
+                parsed: recoveredParsed,
+                onError: onInboundError,
+                client,
+              });
+              await commitCliqMessage(recoveredClaim.key);
+              recovered++;
+            } catch (err) {
+              releaseCliqMessage(recoveredClaim.key, err);
+              onInboundError(err, { kind: "inbound-catchup-dispatch" });
+              return;
+            }
+          }
+          if (inspected.advanceCursorTo) {
+            try {
+              recordCliqInboundCatchupCursor({
+                accountId: account.accountId,
+                chatId: parsed.chatId,
+                cursor: inspected.advanceCursorTo,
+              });
+            } catch (err) {
+              // A success without a durable cursor would be replayed next time;
+              // log it, but never hide the already-completed live turn.
+              onInboundError(err, { kind: "inbound-catchup-cursor-write" });
+              return;
+            }
+          }
+          if (recovered > 0) {
+            // Content-free operational signal: message text, history records,
+            // sender names/emails, and OAuth values never reach the log.
+            api.logger.warn?.(`[cliq] inbound catch-up recovered ${recovered} bounded turn(s)`);
+          }
+            },
+          });
         };
 
         if (account.ackPolicy === "immediate") {
@@ -665,14 +768,19 @@ export default defineChannelPluginEntry({
           // reintroduce the ~40 s Deluge timeout this policy exists to avoid.
           let detached: Promise<unknown>;
           try {
-            detached = runDetached ? runDetached(dispatch) : dispatch();
+            detached = runDetached
+              ? runDetached(async () => {
+                  await dispatch();
+                  await catchUpAfterLiveDispatch();
+                })
+              : dispatch().then(catchUpAfterLiveDispatch);
           } catch (err) {
             // A failing helper must never cost Cliq its acknowledgement: fall
             // back to the inherited chain (the pre-beta.3 behaviour).
             api.logger.warn?.(
               `[cliq] detached webhook work unavailable, dispatching on the inherited admission: ${String(err)}`,
             );
-            detached = dispatch();
+            detached = dispatch().then(catchUpAfterLiveDispatch);
           }
           detached.catch((err) => {
             // A "reply session initialization conflicted" error is transient
@@ -697,6 +805,7 @@ export default defineChannelPluginEntry({
 
         try {
           await dispatch();
+          await catchUpAfterLiveDispatch();
           res.statusCode = 200;
           res.setHeader("Content-Type", "application/json");
           res.end(JSON.stringify({ status: "received" }));

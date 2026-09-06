@@ -207,6 +207,19 @@ function collectCliqCapabilityWarnings(params: {
 
   // Warn about missing refreshToken — this blocks channel send, message
   // edit, and all optional refresh-token features.
+  if (section.inboundCatchup !== undefined) {
+    const catchup = section.inboundCatchup;
+    const enabled = Boolean(
+      catchup && typeof catchup === "object" &&
+      (catchup as Record<string, unknown>).enabled === true,
+    );
+    if (enabled && !hasRefreshToken) {
+      warnings.push(
+        "- channels.cliq: inboundCatchup is enabled but no refreshToken is configured. Catch-up is unavailable; normal webhook delivery remains unchanged. Add a user-context refresh token with ZohoCliq.Messages.READ, or disable inboundCatchup.",
+      );
+    }
+  }
+
   if (!hasRefreshToken) {
     const requiredRtCaps = CLIQ_CAPABILITIES.filter(
       (c) =>

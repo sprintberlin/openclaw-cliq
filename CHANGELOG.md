@@ -11,6 +11,8 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+- **Bounded inbound catch-up (issue #229).** Opt-in `inboundCatchup` recovers a direct-chat Cliq record that exists in `GET /api/v2/chats/{chatId}/messages` but never became a webhook turn. It is triggered only by the next admitted DM; first enablement baselines the live native record instead of importing a backlog; later runs require a same-sender/same-text live anchor plus a persisted opaque cursor and dispatch only the bounded gap oldest-first through the existing native-id dedupe gate. There is no timer/polling loop, global Cliq MCP enablement, content-bearing log line, or recovery after an unanchored/failed history read. Requires `ZohoCliq.Messages.READ` on the existing refresh-token grant; Doctor says enabled catch-up is unavailable when that prerequisite is missing.
+
 ### Added
 
 - **Tolerant parser and context propagation for Cliq reply and quote context (issue #230).** The inbound quote parser now recognizes parent-message and reply references (`reply_to`, `parent`, `parent_message`, `quoted`, `quoted_message`, `reply_to_message`) both at the payload root and nested under `message` (including through the `params` wrapper), and propagates resolved parent IDs, sender information, and quoted bodies into the inbound context (`ReplyToId`, `ReplyToMessageId`, `ReplyToText`, `ReplyToSenderId`, `ReplyToSenderName`) and the agent envelope. When only the parent ID is provided and a user-context refresh token is configured, the parent text is enriched via `GET /api/v2/chats/{chatId}/messages`. Unverified Deluge handler symbols are explicitly not assumed in the generated handler template to protect against `execution_handler_update_failed`.

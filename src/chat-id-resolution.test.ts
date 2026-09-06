@@ -284,6 +284,34 @@ describe("CliqClient.listChatMessages — recent chat messages (edit-recovery)",
     await expect(client.listChatMessages("CT_c")).rejects.toThrow(/refreshToken/);
   });
 
+  it("preserves history sender, numeric time, type, and forward metadata for bounded catch-up", async () => {
+    const { CliqClient } = await import("./client.js");
+    installFetch({
+      messagesBody: {
+        data: [{
+          id: "forward-1",
+          sender: { id: "u1", name: "Alice" },
+          time: 1757066400000,
+          type: "forwarded",
+          text: "forward caption",
+          forward_info: { content: { text: "original" } },
+        }],
+      },
+    });
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, undefined, undefined, "refresh-tok");
+    await expect(client.listChatMessages("CT_c")).resolves.toEqual([{
+      messageId: "forward-1",
+      chatId: "CT_c",
+      senderId: "u1",
+      senderName: "Alice",
+      timestamp: "2025-09-05T10:00:00.000Z",
+      messageType: "forwarded",
+      text: "forward caption",
+      forwardInfo: { content: { text: "original" } },
+      file: undefined,
+    }]);
+  });
+
   it("clamps the limit to [1, 200]", async () => {
     const { CliqClient } = await import("./client.js");
     installFetch({ messagesBody: { messages: [] } });

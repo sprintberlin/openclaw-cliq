@@ -175,6 +175,14 @@
       "publicWebhookUrl": { "type": "string" },
       "inboundVerifiedAt": { "type": "string" },
       "inboundVerificationFailedAt": { "type": "string" },
+      "inboundCatchup": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+        }
+      },
       "refreshToken": {
         "anyOf": [
           {
@@ -613,6 +621,14 @@
             },
             "inboundVerificationFailedAt": {
               "type": "string"
+            },
+            "inboundCatchup": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+              }
             },
             "refreshToken": {
               "anyOf": [
@@ -1244,6 +1260,14 @@
           "publicWebhookUrl": { "type": "string" },
           "inboundVerifiedAt": { "type": "string" },
           "inboundVerificationFailedAt": { "type": "string" },
+          "inboundCatchup": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": { "type": "boolean" },
+              "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+            }
+          },
           "refreshToken": {
             "anyOf": [
               {
@@ -1682,6 +1706,14 @@
                 },
                 "inboundVerificationFailedAt": {
                   "type": "string"
+                },
+                "inboundCatchup": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "enabled": { "type": "boolean" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+                  }
                 },
                 "refreshToken": {
                   "anyOf": [

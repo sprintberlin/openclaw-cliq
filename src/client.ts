@@ -239,6 +239,16 @@ export interface CliqChannelConfig {
   inboundVerifiedAt?: string;
   /** ISO timestamp of the last failing public webhook verification. */
   inboundVerificationFailedAt?: string;
+  /**
+   * Opt-in bounded recovery of messages that exist in a chat but never became
+   * webhook turns. It runs only after an admitted live inbound; it is never a
+   * timer or polling loop. Disabled by default.
+   */
+  inboundCatchup?: {
+    enabled?: boolean;
+    /** Recent messages to inspect per admitted inbound (1–50). */
+    limit?: number;
+  };
   allowFrom?: string[];
   dmPolicy?: string;
   groupPolicy?: string;
@@ -685,6 +695,8 @@ export interface ResolvedCliqAccount {
    * `client_credentials` (which only works for bot DMs).
    */
   refreshToken?: string;
+  /** Effective opt-in catch-up configuration. Absent test/legacy shapes mean disabled. */
+  inboundCatchup?: { enabled: boolean; limit: number };
   /** Resolved REST API base (EU default unless overridden in config). */
   apiBase?: string;
   /** Resolved OAuth base (EU default unless overridden in config). */
@@ -810,6 +822,7 @@ export function resolveCliqConfig(
     },
     streamingMinEditIntervalMs,
     refreshToken: refreshToken || undefined,
+    inboundCatchup: normalizeCliqInboundCatchupConfig(section?.inboundCatchup),
     apiBase: section?.apiBase || undefined,
     oauthBase: section?.oauthBase || undefined,
     apiVersion: normalizeCliqApiVersionConfig(section?.apiVersion),
@@ -1265,6 +1278,18 @@ export interface CliqChatMessageRef {
   messageId: string;
   chatId: string;
   text?: string;
+  /** Sender identity returned by the chat history endpoint, when present. */
+  senderId?: string;
+  /** Sender display name, only carried to the agent envelope. */
+  senderName?: string;
+  /** Sender email/handle, only carried to the existing inbound context. */
+  senderEmail?: string;
+  /** Message timestamp returned by Cliq, when present. */
+  timestamp?: string;
+  /** Raw message type (for example `forwarded` or `file`). */
+  messageType?: string;
+  /** Forward metadata is opaque; the inbound formatter owns presentation. */
+  forwardInfo?: unknown;
   /**
    * File descriptor parsed from a `type: "file"` message's `content.file`
    * (`{ id, name, type }`). Present only for file messages. Used by the
@@ -1278,7 +1303,8 @@ export interface CliqChatMessageRef {
  * message refs. The response shape is `{ messages: [...] }` (or a bare
  * array in some API versions); each entry is parsed defensively for
  * `message_id` / `id` and `chat_id`, plus an optional `text` (used to
- * disambiguate when the message id alone does not match) and the optional
+ * disambiguate when the message id alone does not match), sender / time /
+ * forward metadata used by bounded inbound catch-up, and the optional
  * `content.file` descriptor for `type: "file"` messages. Records missing
  * a resolvable id are skipped, never thrown on.
  */
@@ -1300,7 +1326,27 @@ function parseCliqChatMessages(data: unknown, fallbackChatId?: string): CliqChat
         : typeof rec.chatId === "string" ? rec.chatId
         : fallbackChatId;
     if (!messageId || !chatId) continue;
-    const text = typeof rec.text === "string" ? rec.text : undefined;
+    const text = typeof rec.text === "string" ? rec.text.trim() || undefined : undefined;
+    const sender = rec.sender && typeof rec.sender === "object" && !Array.isArray(rec.sender)
+      ? rec.sender as Record<string, unknown>
+      : undefined;
+    const user = rec.user && typeof rec.user === "object" && !Array.isArray(rec.user)
+      ? rec.user as Record<string, unknown>
+      : undefined;
+    const senderId = readCliqMessageString(
+      rec.sender_id ?? rec.user_id ?? rec.from_id ?? sender?.id ?? user?.id,
+    );
+    const senderName = readCliqMessageString(
+      rec.sender_name ?? rec.from_name ?? sender?.name ?? sender?.display_name ?? user?.name,
+    );
+    const senderEmail = readCliqMessageString(
+      rec.sender_email ?? sender?.email ?? sender?.email_id ?? user?.email ?? user?.email_id,
+    );
+    const timestamp = readCliqMessageString(
+      rec.time ?? rec.timestamp ?? rec.created_time ?? rec.created_at,
+    );
+    const messageType = readCliqMessageString(rec.message_type ?? rec.type);
+    const forwardInfo = rec.forward_info ?? rec.forwardInfo;
     let file: CliqChatMessageRef["file"];
     const content =
       rec.content && typeof rec.content === "object" && !Array.isArray(rec.content)
@@ -1314,9 +1360,28 @@ function parseCliqChatMessages(data: unknown, fallbackChatId?: string): CliqChat
       const type = typeof f.type === "string" ? f.type.trim() : undefined;
       if (id || name || type) file = { id, name, type };
     }
-    refs.push({ messageId, chatId, text, file });
+    refs.push({
+      messageId,
+      chatId,
+      text,
+      senderId,
+      senderName,
+      senderEmail,
+      timestamp,
+      messageType,
+      forwardInfo,
+      file,
+    });
   }
   return refs;
+}
+
+function readCliqMessageString(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return new Date(value).toISOString();
+  }
+  return undefined;
 }
 
 
@@ -1333,6 +1398,16 @@ function parseCliqChatMessages(data: unknown, fallbackChatId?: string): CliqChat
  * without the `cliq:` prefix are treated as group/channel ids so raw ids
  * stored in older sessions keep working (defaulting to channelsbyname).
  */
+function normalizeCliqInboundCatchupConfig(
+  raw: CliqChannelConfig["inboundCatchup"],
+): { enabled: boolean; limit: number } {
+  if (!raw || typeof raw !== "object") return { enabled: false, limit: 50 };
+  const enabled = raw.enabled === true;
+  let limit = typeof raw.limit === "number" && Number.isFinite(raw.limit) ? Math.round(raw.limit) : 50;
+  limit = Math.max(1, Math.min(limit, 50));
+  return { enabled, limit };
+}
+
 export function normalizeCliqRouteTarget(to: string): NormalizedCliqTarget {
   if (!to) return { to, isDm: false };
   const m = /^cliq:([a-z]+):(.+)$/i.exec(to);

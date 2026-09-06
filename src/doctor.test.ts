@@ -536,6 +536,39 @@ describe("collectCliqPreviewWarnings — capability warnings", () => {
   });
 });
 
+describe("collectCliqPreviewWarnings — inbound catch-up (issue #229)", () => {
+  it("reports enabled catch-up as unavailable without a refresh token", () => {
+    const warnings = collectCliqPreviewWarnings({
+      cfg: cfgWith({
+        clientId: "id",
+        clientSecret: "secret",
+        botId: "bot",
+        webhookSecret: "wh",
+        dmPolicy: "open",
+        inboundCatchup: { enabled: true },
+      }),
+      doctorFixCommand: DOCTOR_FIX,
+    });
+    expect(warnings.join("\n")).toContain("inboundCatchup is enabled but no refreshToken");
+    expect(warnings.join("\n")).toContain("ZohoCliq.Messages.READ");
+  });
+
+  it("stays silent when catch-up is disabled", () => {
+    const warnings = collectCliqPreviewWarnings({
+      cfg: cfgWith({
+        clientId: "id",
+        clientSecret: "secret",
+        botId: "bot",
+        webhookSecret: "wh",
+        dmPolicy: "open",
+        inboundCatchup: { enabled: false },
+      }),
+      doctorFixCommand: DOCTOR_FIX,
+    });
+    expect(warnings.join("\n")).not.toContain("inboundCatchup");
+  });
+});
+
 describe("cliqDoctorAdapter integration with the doctor adapter contract", () => {
   it("collectPreviewWarnings routes through the adapter", async () => {
     const lines = await cliqDoctorAdapter.collectPreviewWarnings!({
