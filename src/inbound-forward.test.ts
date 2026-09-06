@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   formatCliqForwardBlock,
   hasCliqForwardMarker,
   parseCliqForwardContext,
+  resolveCliqForwardContext,
 } from "./inbound-forward.js";
 
 describe("parseCliqForwardContext", () => {
@@ -110,6 +111,165 @@ describe("hasCliqForwardMarker", () => {
   it("is false for an ordinary message", () => {
     expect(hasCliqForwardMarker({ message: "hi", user: { id: "u" } })).toBe(false);
     expect(hasCliqForwardMarker(null)).toBe(false);
+  });
+});
+
+describe("parseCliqForwardContext with Cliq's real forward_info shape", () => {
+  // Field shape verified live 2026-09-06 against
+  // GET /api/v2/chats/{chatId}/messages (3 forwards in a 72-message window):
+  // sender is the ORIGINAL author's user id as a STRING, dname the display
+  // name, msguid the original message id, time epoch milliseconds as a string.
+  const realForwardInfo = {
+    sender: "929484733",
+    dname: "Sebastian",
+    chid: "1424577094875623543",
+    msguid: "1788704063087311235313263",
+    time: "1788704063087",
+  };
+
+  it("parses forward_info with a string sender (regression: used to return undefined)", () => {
+    const out = parseCliqForwardContext({ forwarded_message: realForwardInfo });
+    expect(out).toBeDefined();
+    expect(out?.senderName).toBe("Sebastian");
+    expect(out?.senderId).toBe("929484733");
+    expect(out?.messageId).toBe("1788704063087311235313263");
+    expect(out?.sourceChatId).toBe("1424577094875623543");
+  });
+
+  it("normalizes epoch-millisecond time to ISO-8601", () => {
+    const out = parseCliqForwardContext({ forwarded_message: realForwardInfo });
+    expect(out?.time).toBe(new Date(1788704063087).toISOString());
+  });
+
+  it("keeps a non-epoch time string as-is", () => {
+    const out = parseCliqForwardContext({
+      forwarded_message: { dname: "Ada", time: "22 Juli 2026, 10:58 AM" },
+    });
+    expect(out?.time).toBe("22 Juli 2026, 10:58 AM");
+  });
+
+  it("drops an implausible epoch rather than rendering a bogus date", () => {
+    const out = parseCliqForwardContext({ forwarded_message: { dname: "Ada", time: "1" } });
+    expect(out?.time).toBeUndefined();
+  });
+
+  it("still parses the object sender form a hand-assembled handler may send", () => {
+    const out = parseCliqForwardContext({
+      forwarded_message: { sender: { id: "u9", name: "Cara" }, text: "hi" },
+    });
+    expect(out?.senderId).toBe("u9");
+    expect(out?.senderName).toBe("Cara");
+  });
+
+  it("does not treat the source chat id as a display title", () => {
+    const out = parseCliqForwardContext({ forwarded_message: realForwardInfo });
+    expect(out?.sourceTitle).toBeUndefined();
+    expect(formatCliqForwardBlock(out!)).not.toContain("1424577094875623543");
+  });
+});
+
+describe("resolveCliqForwardContext", () => {
+  const forwardEntry = {
+    messageId: "m-live",
+    text: "forwarded body",
+    messageType: "forwarded",
+    forwardInfo: { sender: "111111111", dname: "Original Author", time: "1788704063087" },
+  };
+  const clientWith = (messages: unknown[]) => ({
+    listChatMessages: vi.fn().mockResolvedValue(messages as never),
+  });
+
+  it("recovers attribution by native message id when the handler sent nothing", async () => {
+    const client = clientWith([forwardEntry]);
+    const out = await resolveCliqForwardContext(undefined, {
+      client: client as never,
+      chatId: "CT_1",
+      messageId: "m-live",
+      text: "forwarded body",
+      canReadChatMessages: true,
+    });
+    expect(out?.senderName).toBe("Original Author");
+    expect(out?.senderId).toBe("111111111");
+  });
+
+  it("falls back to a unique exact text match when no id is available", async () => {
+    const client = clientWith([forwardEntry]);
+    const out = await resolveCliqForwardContext(undefined, {
+      client: client as never,
+      chatId: "CT_1",
+      text: "forwarded body",
+      canReadChatMessages: true,
+    });
+    expect(out?.senderName).toBe("Original Author");
+  });
+
+  it("refuses to guess when the same forwarded text appears twice", async () => {
+    const client = clientWith([
+      forwardEntry,
+      { ...forwardEntry, messageId: "m-other", forwardInfo: { dname: "Someone Else" } },
+    ]);
+    const out = await resolveCliqForwardContext(undefined, {
+      client: client as never,
+      chatId: "CT_1",
+      text: "forwarded body",
+      canReadChatMessages: true,
+    });
+    expect(out).toBeUndefined();
+  });
+
+  it("never overrides attribution the handler already delivered", async () => {
+    const client = clientWith([forwardEntry]);
+    const out = await resolveCliqForwardContext(
+      { senderName: "From Handler" },
+      {
+        client: client as never,
+        chatId: "CT_1",
+        messageId: "m-live",
+        canReadChatMessages: true,
+      },
+    );
+    expect(out?.senderName).toBe("From Handler");
+    expect(client.listChatMessages).not.toHaveBeenCalled();
+  });
+
+  it("skips the read when no refresh token grants the user-context scope", async () => {
+    const client = clientWith([forwardEntry]);
+    const out = await resolveCliqForwardContext(undefined, {
+      client: client as never,
+      chatId: "CT_1",
+      messageId: "m-live",
+      canReadChatMessages: false,
+    });
+    expect(out).toBeUndefined();
+    expect(client.listChatMessages).not.toHaveBeenCalled();
+  });
+
+  it("ignores non-forwarded history entries", async () => {
+    const client = clientWith([
+      { messageId: "m-live", text: "forwarded body", messageType: "text" },
+    ]);
+    const out = await resolveCliqForwardContext(undefined, {
+      client: client as never,
+      chatId: "CT_1",
+      messageId: "m-live",
+      text: "forwarded body",
+      canReadChatMessages: true,
+    });
+    expect(out).toBeUndefined();
+  });
+
+  it("degrades to no attribution when the history read fails", async () => {
+    const client = { listChatMessages: vi.fn().mockRejectedValue(new Error("boom")) };
+    const onError = vi.fn();
+    const out = await resolveCliqForwardContext(undefined, {
+      client: client as never,
+      chatId: "CT_1",
+      messageId: "m-live",
+      canReadChatMessages: true,
+      onError,
+    });
+    expect(out).toBeUndefined();
+    expect(onError).toHaveBeenCalledWith(expect.any(Error), { kind: "inbound-forward-fetch" });
   });
 });
 

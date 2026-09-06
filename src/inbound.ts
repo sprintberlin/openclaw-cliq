@@ -55,6 +55,7 @@ import {
 import {
   hasCliqForwardMarker,
   parseCliqForwardContext,
+  resolveCliqForwardContext,
   formatCliqForwardBlock,
   type CliqForwardContext,
 } from "./inbound-forward.js";
@@ -1327,7 +1328,31 @@ export async function dispatchCliqInbound(params: {
   // the user's own words. When the forward carried no caption the parser
   // already promoted the original text to the body, so guard against
   // rendering it twice.
-  const forward = parsed.forward;
+  // Forward attribution recovery (issue #223).
+  //
+  // The deployed Deluge handler forwards no forward fields (doctor:
+  // `forwarded-message fields: [none]`), so `parsed.forward` is empty on a
+  // real forward and the block below would never render. The metadata is
+  // recoverable from Cliq's own history, but that is an extra API read, so it
+  // must never run for ordinary traffic: gate it on positive evidence that
+  // this turn is a forward.
+  //
+  // Known limitation: a forward that carries its own caption text is
+  // indistinguishable from an ordinary message in the handler payload, so it
+  // gets no attribution. Closing that gap needs a verified handler field and
+  // is tracked in #223 rather than paid for by every message.
+  const forwardNeedsLookup =
+    Boolean(parsed.forward) || parsed.messageType === "forwarded" || !cleanText.trim();
+  const forward = forwardNeedsLookup
+    ? await resolveCliqForwardContext(parsed.forward, {
+      client,
+      chatId: parsed.chatId || undefined,
+      messageId: parsed.messageId,
+      text: cleanText,
+      canReadChatMessages: Boolean(account.refreshToken),
+      onError: (err, info) => onError?.(err, info),
+    })
+    : parsed.forward;
   const forwardBlock =
     forward && (forward.text || forward.senderName)
       ? formatCliqForwardBlock(
