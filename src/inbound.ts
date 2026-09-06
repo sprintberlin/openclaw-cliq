@@ -154,6 +154,14 @@ export interface CliqRuntime {
  * an object with `text`, `chat` may carry channel info under different keys,
  * and a wrapped `params` shape sometimes appears. We tolerate all of these.
  */
+interface CliqMessageContent {
+  file?: { id?: string; name?: string; type?: string };
+  comment?: string;
+  thumbnail?: unknown;
+  text?: string;
+  description?: string;
+}
+
 export interface CliqWebhookPayload {
   handler?: string;
   /**
@@ -170,14 +178,41 @@ export interface CliqWebhookPayload {
         text?: string;
         id?: string;
         time?: string;
+        type?: string;
+        message_type?: string;
+        rte?: unknown;
+        content?: CliqMessageContent | string;
+        description?: string;
         reply_to?: string | Record<string, unknown>;
         parent?: Record<string, unknown>;
         parent_message?: Record<string, unknown>;
         quoted?: Record<string, unknown>;
         quoted_message?: Record<string, unknown>;
         reply_to_message?: Record<string, unknown>;
+        /** Some Chat-API deliveries mark the message as an edit. */
+        revision?: string | number;
+        is_edited?: boolean;
+        edited?: boolean;
+        isEdited?: boolean;
       };
   text?: string;
+  /**
+   * Message type fields the webhook may carry when Zoho delivers a Chat-API
+   * record instead of a plain `message` string. The parser does NOT guess new
+   * Deluge symbols; it only tolerates fields that already arrive and records
+   * them as safe, content-free metadata.
+   */
+  message_type?: string;
+  type?: string;
+  rte?: string;
+  content_type?: string;
+  /** Bare string body delivered for some non-text message shapes. */
+  description?: string;
+  revision?: string | number;
+  is_edited?: boolean;
+  edited?: boolean;
+  isEdited?: boolean;
+  content?: CliqMessageContent | string;
   user?: {
     id?: string;
     name?: string;
@@ -217,17 +252,6 @@ export interface CliqWebhookPayload {
     start?: number;
     end?: number;
   }>;
-  /**
-   * Cliq message `content` block — present on `type: "file"` messages. Holds
-   * the file descriptor (`content.file.{id,name,type}`) and an optional
-   * `comment` (the caption a user may attach to a file share). See
-   * <https://www.zoho.com/cliq/help/platform/cliq-objects/message-object.html>.
-   */
-  content?: {
-    file?: { id?: string; name?: string; type?: string };
-    comment?: string;
-    thumbnail?: unknown;
-  };
   /** Some Deluge handlers forward a bare `file` name string. Parsed best-effort. */
   file?: string;
   /**
@@ -334,6 +358,16 @@ export interface ParsedCliqInbound {
   mentionIds: string[];
   /** File attachments (images / files / voice) parsed from the message, if any. */
   attachments: CliqInboundAttachment[];
+  /**
+   * Safe metadata from an object-form Cliq message. It deliberately contains
+   * only protocol labels/identifiers, never rich payload content (card data,
+   * coordinates, contacts, thumbnails, or untrusted extra fields).
+   */
+  messageType?: string;
+  richText?: boolean;
+  revision?: string;
+  /** True only when the received payload explicitly says it is an edit. */
+  isEdited?: boolean;
   threadId?: string;
   /**
    * Quote / reply context (issue #49): the message a user replied to or
@@ -390,29 +424,84 @@ export interface ParsedCliqInbound {
   handler: string;
 }
 
-function extractMessageText(payload: CliqWebhookPayload): {
+interface ExtractedCliqMessage {
   text: string;
   messageId: string;
   time: string;
-} {
+  type?: string;
+  richText: boolean;
+  revision?: string;
+  isEdited: boolean;
+}
+
+function normalizeInboundLabel(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  // Metadata is never used as an API path, but bounding it keeps the safe
+  // context small and makes unknown-type placeholders deterministic.
+  if (!normalized || normalized.length > 80) return undefined;
+  return /^[a-z0-9][a-z0-9_.:/-]*$/i.test(normalized)
+    ? normalized
+    : undefined;
+}
+
+function normalizeInboundRevision(value: unknown): string | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value !== "string") return undefined;
+  const revision = value.trim();
+  return revision && revision.length <= 128 ? revision : undefined;
+}
+
+/**
+ * Extract plaintext and identity from the only two evidence-backed payload
+ * shapes: a bot handler's string `message`, or an object-form message record.
+ * Rich markup itself is preserved as text; no HTML/markdown conversion is
+ * attempted because the supplied `rte` shape has no stable webhook contract.
+ */
+function extractMessageText(payload: CliqWebhookPayload): ExtractedCliqMessage {
   let text = "";
   let messageId = "";
   let time = "";
+  let type = normalizeInboundLabel(payload.message_type ?? payload.type);
+  let richText = Boolean(payload.rte);
+  let revision = normalizeInboundRevision(payload.revision);
+  let isEdited =
+    payload.is_edited === true ||
+    payload.edited === true ||
+    payload.isEdited === true;
   if (typeof payload.message === "string") {
     text = payload.message.trim();
   } else if (payload.message && typeof payload.message === "object") {
     text = payload.message.text?.trim() ?? "";
     messageId = payload.message.id ?? "";
     time = payload.message.time ?? "";
+    type = normalizeInboundLabel(payload.message.message_type ?? payload.message.type) ?? type;
+    richText = richText || Boolean(payload.message.rte);
+    revision = normalizeInboundRevision(payload.message.revision) ?? revision;
+    isEdited =
+      isEdited ||
+      payload.message.is_edited === true ||
+      payload.message.edited === true ||
+      payload.message.isEdited === true;
   }
+  const messageContent =
+    payload.message && typeof payload.message === "object" &&
+    payload.message.content && typeof payload.message.content === "object"
+      ? payload.message.content
+      : undefined;
   if (!text && payload.text) text = payload.text.trim();
+  if (!text && typeof payload.description === "string") text = payload.description.trim();
+  const content = payload.content && typeof payload.content === "object"
+    ? payload.content
+    : messageContent;
+  if (!text) text = content?.text?.trim() ?? content?.description?.trim() ?? "";
   // A file share may carry the caption in `content.comment` rather than the
   // message text; surface it so the agent sees what the user said alongside
   // the attachment.
-  if (!text && payload.content?.comment) {
-    text = payload.content.comment.trim();
+  if (!text && content?.comment) {
+    text = content.comment.trim();
   }
-  return { text, messageId, time };
+  return { text, messageId, time, type, richText, revision, isEdited };
 }
 
 /**
@@ -431,8 +520,14 @@ function extractMessageText(payload: CliqWebhookPayload): {
  */
 function extractMessageAttachments(payload: CliqWebhookPayload): CliqInboundAttachment[] {
   const out: CliqInboundAttachment[] = [];
-  const caption = payload.content?.comment?.trim() || undefined;
-  const file = payload.content?.file;
+  const content = payload.content && typeof payload.content === "object"
+    ? payload.content
+    : payload.message && typeof payload.message === "object" &&
+        payload.message.content && typeof payload.message.content === "object"
+      ? payload.message.content
+      : undefined;
+  const caption = content?.comment?.trim() || undefined;
+  const file = content?.file;
   if (file && typeof file.id === "string" && file.id.trim()) {
     out.push({
       fileId: file.id.trim(),
@@ -564,7 +659,8 @@ export function parseCliqWebhookPayload(
     };
   }
 
-  const { text, messageId, time } = extractMessageText(payload);
+  const extracted = extractMessageText(payload);
+  const { text, messageId, time } = extracted;
   const attachments = extractMessageAttachments(payload);
   // Forwarded-message context (issue #223). A forward carries its original
   // body outside the plain `message` string the bot Message handler receives,
@@ -643,6 +739,15 @@ export function parseCliqWebhookPayload(
     bodyText = forward?.senderName
       ? `<forwarded message from ${forward.senderName}>`
       : "<forwarded message>";
+  }
+  // Cliq documents object-form `type: "text"` and `type: "file"`, but
+  // bot handlers normally pass only the plain string. If an authenticated
+  // handler does supply another type without usable text/attachment/form
+  // content, make it an explicit, deterministic turn rather than returning
+  // null. We retain no untrusted object fields: the label is normalized above
+  // and is intentionally the sole placeholder metadata.
+  if (!bodyText && extracted.type && extracted.type !== "text" && extracted.type !== "file") {
+    bodyText = `<cliq ${extracted.type} message>`;
   }
   if (!bodyText) return null;
 
@@ -731,6 +836,10 @@ export function parseCliqWebhookPayload(
     isMention,
     mentionIds,
     attachments,
+    messageType: extracted.type,
+    richText: extracted.richText || undefined,
+    revision: extracted.revision,
+    isEdited: extracted.isEdited || undefined,
     threadId: payload.thread?.id,
     replyTo,
     confirmAction: confirmParsed.action,
@@ -1318,6 +1427,16 @@ export async function dispatchCliqInbound(params: {
     ...(parsed.handler === "catchup" ? { InboundRecovered: true } : {}),
     MessageSid: parsed.messageId,
     MessageSidFull: parsed.messageId,
+    // Object-form Chat API messages can carry a type/rte/revision marker.
+    // Preserve only safe labels and the supplied revision value; never put
+    // card/location/contact payload objects into the agent context. A real
+    // message id remains the sole revision correlation key, so the dedupe
+    // layer sees a re-delivered edit as the same message unless Zoho provides
+    // a distinct event identity.
+    ...(parsed.messageType ? { CliqMessageType: parsed.messageType } : {}),
+    ...(parsed.richText ? { CliqRichText: true } : {}),
+    ...(parsed.revision ? { CliqRevision: parsed.revision } : {}),
+    ...(parsed.isEdited ? { CliqIsEdited: true } : {}),
     ReplyToId: replyTo?.messageId ?? parsed.threadId,
     ReplyToIdFull: replyTo?.messageId ?? parsed.threadId,
     ReplyToMessageId: replyTo?.messageId,
