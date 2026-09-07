@@ -2,9 +2,182 @@ import { describe, it, expect, vi } from "vitest";
 import {
   parseCliqReplyToContext,
   resolveCliqReplyToContext,
+  recoverCliqInboundContextFromHistory,
   formatCliqReplyToBlock,
   type CliqReplyToContext,
 } from "./inbound-quote.js";
+
+describe("parseCliqReplyToContext with Cliq's real replied_to shape", () => {
+  // Shape verified live 2026-09-07 against GET /api/v2/chats/{chatId}/messages
+  // on a genuine reply in the bot DM:
+  //   replied_to: { id, content, time: <epoch ms NUMBER>, type, sender: {id,name} }
+  const realRepliedTo = {
+    id: "1788763506530354244429666",
+    content: "parent body text",
+    time: 1788763506530,
+    type: "text",
+    sender: { id: "b-2500338000009392001", name: "Livia" },
+  };
+
+  it("parses replied_to (regression: the key was never recognized)", () => {
+    const out = parseCliqReplyToContext({ replied_to: realRepliedTo });
+    expect(out).toBeDefined();
+    expect(out?.messageId).toBe("1788763506530354244429666");
+    expect(out?.text).toBe("parent body text");
+    expect(out?.senderName).toBe("Livia");
+    expect(out?.senderId).toBe("b-2500338000009392001");
+  });
+
+  it("normalizes the numeric epoch-ms time to ISO-8601", () => {
+    const out = parseCliqReplyToContext({ replied_to: realRepliedTo });
+    expect(out?.time).toBe(new Date(1788763506530).toISOString());
+  });
+
+  it("drops an implausible numeric time instead of rendering a bogus date", () => {
+    const out = parseCliqReplyToContext({ replied_to: { content: "x", time: 5 } });
+    expect(out?.time).toBeUndefined();
+  });
+
+  it("keeps an already-formatted time string as-is", () => {
+    const out = parseCliqReplyToContext({
+      replied_to: { content: "x", time: "22 Juli 2026, 10:58 AM" },
+    });
+    expect(out?.time).toBe("22 Juli 2026, 10:58 AM");
+  });
+});
+
+describe("recoverCliqInboundContextFromHistory", () => {
+  const replyEntry = {
+    messageId: "m-live",
+    text: "my reply",
+    senderId: "u-1",
+    timestamp: "2026-09-07T06:45:06.530Z",
+    messageType: "text",
+    repliedTo: {
+      id: "m-parent",
+      content: "parent body",
+      time: 1788763506530,
+      sender: { id: "b-1", name: "Livia" },
+    },
+  };
+  const clientWith = (messages: unknown[]) => ({
+    listChatMessages: vi.fn().mockResolvedValue(messages as never),
+  });
+
+  it("recovers reply context the handler never delivered", async () => {
+    const client = clientWith([replyEntry]);
+    const out = await recoverCliqInboundContextFromHistory({
+      client: client as never,
+      chatId: "CT_1",
+      text: "my reply",
+      senderId: "u-1",
+      enabled: true,
+    });
+    expect(out?.replyTo?.text).toBe("parent body");
+    expect(out?.replyTo?.senderName).toBe("Livia");
+  });
+
+  it("picks the newest match when the same text was sent twice", async () => {
+    const older = {
+      ...replyEntry,
+      messageId: "m-old",
+      timestamp: "2026-09-07T05:00:00.000Z",
+      repliedTo: { ...replyEntry.repliedTo, content: "older parent" },
+    };
+    // Deliberately unordered: recency must not depend on list order.
+    const client = clientWith([replyEntry, older]);
+    const out = await recoverCliqInboundContextFromHistory({
+      client: client as never,
+      chatId: "CT_1",
+      text: "my reply",
+      senderId: "u-1",
+      enabled: true,
+    });
+    expect(out?.replyTo?.text).toBe("parent body");
+  });
+
+  it("does not match another user's identical text", async () => {
+    const client = clientWith([{ ...replyEntry, senderId: "someone-else" }]);
+    const out = await recoverCliqInboundContextFromHistory({
+      client: client as never,
+      chatId: "CT_1",
+      text: "my reply",
+      senderId: "u-1",
+      enabled: true,
+    });
+    expect(out).toBeUndefined();
+  });
+
+  it("recovers forward context from the same single lookup", async () => {
+    const client = clientWith([{
+      messageId: "m-fwd",
+      text: "forwarded body",
+      senderId: "u-1",
+      messageType: "forwarded",
+      forwardInfo: { sender: "111111111", dname: "Original Author", time: "1788704063087" },
+    }]);
+    const out = await recoverCliqInboundContextFromHistory({
+      client: client as never,
+      chatId: "CT_1",
+      text: "forwarded body",
+      senderId: "u-1",
+      enabled: true,
+    });
+    expect(out?.forward?.senderName).toBe("Original Author");
+  });
+
+  it("performs no read at all when the feature is disabled", async () => {
+    const client = clientWith([replyEntry]);
+    const out = await recoverCliqInboundContextFromHistory({
+      client: client as never,
+      chatId: "CT_1",
+      text: "my reply",
+      enabled: false,
+    });
+    expect(out).toBeUndefined();
+    expect(client.listChatMessages).not.toHaveBeenCalled();
+  });
+
+  it("skips an empty body that cannot be matched", async () => {
+    const client = clientWith([replyEntry]);
+    const out = await recoverCliqInboundContextFromHistory({
+      client: client as never,
+      chatId: "CT_1",
+      text: "   ",
+      enabled: true,
+    });
+    expect(out).toBeUndefined();
+    expect(client.listChatMessages).not.toHaveBeenCalled();
+  });
+
+  it("degrades to no context when the history read fails", async () => {
+    const client = { listChatMessages: vi.fn().mockRejectedValue(new Error("boom")) };
+    const onError = vi.fn();
+    const out = await recoverCliqInboundContextFromHistory({
+      client: client as never,
+      chatId: "CT_1",
+      text: "my reply",
+      enabled: true,
+      onError,
+    });
+    expect(out).toBeUndefined();
+    expect(onError).toHaveBeenCalledWith(expect.any(Error), { kind: "inbound-context-recovery" });
+  });
+
+  it("returns nothing for an ordinary message with neither reply nor forward", async () => {
+    const client = clientWith([
+      { messageId: "m-plain", text: "just text", senderId: "u-1", messageType: "text" },
+    ]);
+    const out = await recoverCliqInboundContextFromHistory({
+      client: client as never,
+      chatId: "CT_1",
+      text: "just text",
+      senderId: "u-1",
+      enabled: true,
+    });
+    expect(out).toBeUndefined();
+  });
+});
 
 describe("parseCliqReplyToContext", () => {
   it("returns undefined when no reply-to fields are present", () => {

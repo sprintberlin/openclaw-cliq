@@ -249,6 +249,18 @@ export interface CliqChannelConfig {
     /** Recent messages to inspect per admitted inbound (1–50). */
     limit?: number;
   };
+  /**
+   * Opt-in recovery of reply/quote context from chat history (issue #230).
+   *
+   * The bot Message handler forwards no parent reference, but Cliq stores one
+   * on the message itself as `replied_to` (verified live 2026-09-07). Unlike a
+   * forward, a reply carries no marker in the handler payload, so recovery
+   * cannot be gated on evidence and costs one `GET /chats/{id}/messages` read
+   * per inbound message. Off by default; needs a user-context refresh token.
+   */
+  replyContextRecovery?: {
+    enabled?: boolean;
+  };
   allowFrom?: string[];
   dmPolicy?: string;
   groupPolicy?: string;
@@ -697,6 +709,8 @@ export interface ResolvedCliqAccount {
   refreshToken?: string;
   /** Effective opt-in catch-up configuration. Absent test/legacy shapes mean disabled. */
   inboundCatchup?: { enabled: boolean; limit: number };
+  /** Effective opt-in reply-context recovery (issue #230). Disabled unless configured. */
+  replyContextRecovery?: { enabled: boolean };
   /** Resolved REST API base (EU default unless overridden in config). */
   apiBase?: string;
   /** Resolved OAuth base (EU default unless overridden in config). */
@@ -823,6 +837,9 @@ export function resolveCliqConfig(
     streamingMinEditIntervalMs,
     refreshToken: refreshToken || undefined,
     inboundCatchup: normalizeCliqInboundCatchupConfig(section?.inboundCatchup),
+    replyContextRecovery: {
+      enabled: section?.replyContextRecovery?.enabled === true,
+    },
     apiBase: section?.apiBase || undefined,
     oauthBase: section?.oauthBase || undefined,
     apiVersion: normalizeCliqApiVersionConfig(section?.apiVersion),
@@ -1291,6 +1308,12 @@ export interface CliqChatMessageRef {
   /** Forward metadata is opaque; the inbound formatter owns presentation. */
   forwardInfo?: unknown;
   /**
+   * Parent-message metadata Cliq stores on a reply (`replied_to`), verified
+   * live 2026-09-07. Opaque here; `inbound-quote.ts` owns the parsing and
+   * presentation, exactly as `forwardInfo` is owned by `inbound-forward.ts`.
+   */
+  repliedTo?: unknown;
+  /**
    * File descriptor parsed from a `type: "file"` message's `content.file`
    * (`{ id, name, type }`). Present only for file messages. Used by the
    * inbound-media path to resolve a name-only attachment's file id (issue #84).
@@ -1347,6 +1370,7 @@ function parseCliqChatMessages(data: unknown, fallbackChatId?: string): CliqChat
     );
     const messageType = readCliqMessageString(rec.message_type ?? rec.type);
     const forwardInfo = rec.forward_info ?? rec.forwardInfo;
+    const repliedTo = rec.replied_to ?? rec.repliedTo;
     let file: CliqChatMessageRef["file"];
     const content =
       rec.content && typeof rec.content === "object" && !Array.isArray(rec.content)
@@ -1370,6 +1394,7 @@ function parseCliqChatMessages(data: unknown, fallbackChatId?: string): CliqChat
       timestamp,
       messageType,
       forwardInfo,
+      repliedTo,
       file,
     });
   }

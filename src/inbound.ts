@@ -49,6 +49,7 @@ import {
 import {
   parseCliqReplyToContext,
   resolveCliqReplyToContext,
+  recoverCliqInboundContextFromHistory,
   formatCliqReplyToBlock,
   type CliqReplyToContext,
 } from "./inbound-quote.js";
@@ -1313,7 +1314,28 @@ export async function dispatchCliqInbound(params: {
   // list endpoint. A fetch failure degrades to "no quote text" and never
   // breaks the turn. The resolved text is then prepended to the agent envelope
   // body so the agent sees what the user is replying to.
-  const replyTo = await resolveCliqReplyToContext(parsed.replyTo, {
+  // The deployed handler forwards neither a parent reference nor a forward
+  // marker, so on a real reply/forward `parsed.replyTo` / `parsed.forward` are
+  // empty. Cliq stores both on the message itself (`replied_to`,
+  // `forward_info`) — verified live 2026-09-07 — reachable only through chat
+  // ...opt-in via `channels.cliq.replyContextRecovery`, off by default.
+  // The gate is SYNCHRONOUS on purpose: an await on a disabled feature still
+  // costs a microtask, which was enough to flip the ackPolicy=immediate
+  // ack-vs-dispatch race in the durable-ingest route tests.
+  const recoveryEnabled =
+    account.replyContextRecovery?.enabled === true && Boolean(account.refreshToken);
+  const recoveredContext = recoveryEnabled && !parsed.replyTo?.text
+    ? await recoverCliqInboundContextFromHistory({
+      client,
+      chatId: parsed.chatId || undefined,
+      text: cleanText,
+      senderId: parsed.senderId,
+      enabled: true,
+      onError: (err, info) => onError?.(err, info),
+    })
+    : undefined;
+  const replyToBase = parsed.replyTo ?? recoveredContext?.replyTo;
+  const replyTo = await resolveCliqReplyToContext(replyToBase, {
     client,
     chatId: parsed.chatId || undefined,
     canReadChatMessages: Boolean(account.refreshToken),
@@ -1342,8 +1364,9 @@ export async function dispatchCliqInbound(params: {
   // gets no attribution. Closing that gap needs a verified handler field and
   // is tracked in #223 rather than paid for by every message.
   const forwardNeedsLookup =
-    Boolean(parsed.forward) || parsed.messageType === "forwarded" || !cleanText.trim();
-  const forward = forwardNeedsLookup
+    !recoveredContext?.forward &&
+    (Boolean(parsed.forward) || parsed.messageType === "forwarded" || !cleanText.trim());
+  const forward = recoveredContext?.forward ?? (forwardNeedsLookup
     ? await resolveCliqForwardContext(parsed.forward, {
       client,
       chatId: parsed.chatId || undefined,
@@ -1352,7 +1375,7 @@ export async function dispatchCliqInbound(params: {
       canReadChatMessages: Boolean(account.refreshToken),
       onError: (err, info) => onError?.(err, info),
     })
-    : parsed.forward;
+    : parsed.forward);
   const forwardBlock =
     forward && (forward.text || forward.senderName)
       ? formatCliqForwardBlock(

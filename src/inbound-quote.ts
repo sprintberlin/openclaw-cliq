@@ -23,6 +23,11 @@
  *  - Post message `reply_to` arg <https://www.zoho.com/cliq/help/restapi/v2/messages/>
  */
 
+import {
+  parseCliqForwardContext,
+  type CliqForwardContext,
+} from "./inbound-forward.js";
+
 /** A normalized reference to the message a user replied to / quoted. */
 export interface CliqReplyToContext {
   /** Parent message id (Cliq message id, e.g. `1542711601585_349430767610289`). */
@@ -37,13 +42,36 @@ export interface CliqReplyToContext {
   time?: string;
 }
 
-/** Shape of the parent-message object the Deluge handler may forward. */
+/**
+ * Shape of the parent-message object.
+ *
+ * Two families are tolerated:
+ *
+ *  1. The hand-assembled family a Deluge handler may forward (`text`, string
+ *     `time`).
+ *  2. The **actual** shape Cliq stores on a reply, verified live 2026-09-07
+ *     against `GET /api/v2/chats/{chatId}/messages`:
+ *
+ *       replied_to: {
+ *         id:      "<parent message id>",
+ *         content: "<parent body text>",
+ *         time:    <epoch milliseconds, NUMBER>,
+ *         type:    "text",
+ *         sender:  { id: "<id>", name: "<display name>" }
+ *       }
+ *
+ *     Note `time` is a NUMBER here, unlike `forward_info.time` which is a
+ *     numeric string (see inbound-forward.ts). Reading it as a string only
+ *     silently dropped the parent timestamp.
+ */
 interface RawParentMessage {
   id?: string;
   message_id?: string;
   text?: string;
+  /** Cliq `replied_to.content`: the parent body text. */
   content?: string;
-  time?: string;
+  /** String for hand-assembled handlers; epoch-ms NUMBER for Cliq's own shape. */
+  time?: string | number;
   sender?: {
     id?: string;
     name?: string;
@@ -55,6 +83,9 @@ interface RawParentMessage {
 }
 
 const RAW_PARENT_KEYS = [
+  // Cliq's own field name, verified live on a real reply (2026-09-07).
+  "replied_to",
+  "repliedTo",
   "reply_to",
   "parent",
   "parent_message",
@@ -153,8 +184,7 @@ function parseRawParent(v: unknown): CliqReplyToContext | undefined {
     (typeof rec.text === "string" && rec.text.trim() && rec.text.trim()) ||
     (typeof rec.content === "string" && rec.content.trim() && rec.content.trim()) ||
     undefined;
-  const time =
-    (typeof rec.time === "string" && rec.time.trim() && rec.time.trim()) || undefined;
+  const time = normalizeParentTime(rec.time);
   const sender = rec.sender;
   const senderId =
     (sender && typeof sender.id === "string" && sender.id.trim() && sender.id.trim()) ||
@@ -168,6 +198,32 @@ function parseRawParent(v: unknown): CliqReplyToContext | undefined {
     undefined;
   if (!messageId && !text) return undefined;
   return { messageId, text, senderId, senderName, time };
+}
+
+/**
+ * Normalize a parent-message timestamp for display.
+ *
+ * Cliq delivers `replied_to.time` as epoch milliseconds in a NUMBER; a
+ * hand-assembled handler may send an already-formatted string. A plausible
+ * epoch becomes ISO-8601; a bare number outside that range is dropped rather
+ * than rendered as a bogus date; other strings pass through untouched.
+ */
+function normalizeParentTime(value: unknown): string | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return epochMsToIso(value);
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  if (/^\d+$/.test(trimmed)) return epochMsToIso(Number(trimmed));
+  return trimmed;
+}
+
+/** Epoch milliseconds within a sane range, as ISO-8601. */
+function epochMsToIso(ms: number): string | undefined {
+  if (!Number.isFinite(ms) || ms <= 0) return undefined;
+  const date = new Date(ms);
+  const year = date.getUTCFullYear();
+  if (Number.isNaN(date.getTime()) || year < 2000 || year > 2100) return undefined;
+  return date.toISOString();
 }
 
 /**
@@ -225,6 +281,102 @@ export async function resolveCliqReplyToContext(
     params.onError?.(err, { kind: "reply-to-fetch" });
     return replyTo;
   }
+}
+
+/**
+ * Recover inbound context (reply / forward) from Cliq's chat history
+ * (issues #230 + #223).
+ *
+ * The deployed Deluge Message handler forwards `message` / `user` / `chat`
+ * only: no parent reference for replies, no forward marker, and no native
+ * message id (`parsed.messageId` is a `syn:` fallback for string-message
+ * traffic), so id-based matching is impossible. Cliq does store both on the
+ * message itself — verified live 2026-09-07, a real reply carried
+ * `replied_to: { id, content, sender: { id, name }, time }`, and forwards
+ * carry `message_type: "forwarded"` + `forward_info` — reachable only via
+ * `GET /api/v2/chats/{chatId}/messages`.
+ *
+ * Neither a reply nor a caption-bearing forward has any marker in the handler
+ * payload, so this cannot be gated on evidence and costs one history read per
+ * inbound message. It is therefore opt-in via
+ * `channels.cliq.replyContextRecovery` and off by default.
+ *
+ * Matching: the webhook fires because the message was just sent, so the live
+ * message is the NEWEST history entry with the same body text (and sender,
+ * when known). List order is not assumed: the match with the highest
+ * timestamp wins, and equal-text ambiguity is resolved by recency rather than
+ * by guessing a parent. Never throws.
+ */
+export async function recoverCliqInboundContextFromHistory(
+  params: {
+    client: {
+      listChatMessages: (
+        chatId: string,
+        opts?: { limit?: number },
+      ) => Promise<{
+        messageId: string;
+        text?: string;
+        senderId?: string;
+        timestamp?: string;
+        messageType?: string;
+        forwardInfo?: unknown;
+        repliedTo?: unknown;
+      }[]>;
+    };
+    chatId?: string;
+    /** Body text of the live inbound message. Empty text cannot be matched. */
+    text?: string;
+    /** Live sender id, used to avoid matching another user's identical text. */
+    senderId?: string;
+    /** When false, the fetch is skipped (feature off or no refresh token). */
+    enabled: boolean;
+    recentMessagesLimit?: number;
+    onError?: (err: unknown, info: { kind: string }) => void;
+  },
+): Promise<{ replyTo?: CliqReplyToContext; forward?: CliqForwardContext } | undefined> {
+  if (!params.enabled) return undefined;
+  const chatId = params.chatId?.trim();
+  const liveText = params.text?.trim();
+  if (!chatId || !liveText) return undefined;
+
+  let messages: {
+    messageId: string;
+    text?: string;
+    senderId?: string;
+    timestamp?: string;
+    messageType?: string;
+    forwardInfo?: unknown;
+    repliedTo?: unknown;
+  }[];
+  try {
+    messages = await params.client.listChatMessages(chatId, {
+      limit: params.recentMessagesLimit ?? 50,
+    });
+  } catch (err) {
+    params.onError?.(err, { kind: "inbound-context-recovery" });
+    return undefined;
+  }
+
+  // Newest matching entry wins: the live message is the most recent one with
+  // this body (and sender). Timestamp compare is order-independent.
+  const liveSender = params.senderId?.trim();
+  let match: (typeof messages)[number] | undefined;
+  for (const m of messages) {
+    if (m.text?.trim() !== liveText) continue;
+    if (liveSender && m.senderId && m.senderId !== liveSender) continue;
+    if (!match || (m.timestamp ?? "") > (match.timestamp ?? "")) match = m;
+  }
+  if (!match) return undefined;
+
+  if (match.repliedTo) {
+    const replyTo = parseCliqReplyToContext({ replied_to: match.repliedTo });
+    if (replyTo) return { replyTo };
+  }
+  if (match.messageType === "forwarded" && match.forwardInfo !== undefined) {
+    const forward = parseCliqForwardContext({ forwarded_message: match.forwardInfo });
+    if (forward) return { forward };
+  }
+  return undefined;
 }
 
 /**
