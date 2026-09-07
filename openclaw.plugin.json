@@ -183,6 +183,13 @@
           "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
         }
       },
+      "replyContextRecovery": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean" }
+        }
+      },
       "refreshToken": {
         "anyOf": [
           {
@@ -628,6 +635,13 @@
               "properties": {
                 "enabled": { "type": "boolean" },
                 "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+              }
+            },
+            "replyContextRecovery": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" }
               }
             },
             "refreshToken": {
