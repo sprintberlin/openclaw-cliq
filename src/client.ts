@@ -1349,7 +1349,20 @@ function parseCliqChatMessages(data: unknown, fallbackChatId?: string): CliqChat
         : typeof rec.chatId === "string" ? rec.chatId
         : fallbackChatId;
     if (!messageId || !chatId) continue;
-    const text = typeof rec.text === "string" ? rec.text.trim() || undefined : undefined;
+    // Cliq stores the body under `content.text` (caption: `content.comment`);
+    // a top-level `text` is tolerated for other API versions. Reading only
+    // `rec.text` left every live history entry without a body, which silently
+    // defeated text-based recovery matching (issues #223/#230).
+    const contentForText =
+      rec.content && typeof rec.content === "object" && !Array.isArray(rec.content)
+        ? (rec.content as Record<string, unknown>)
+        : undefined;
+    const rawText =
+      (typeof rec.text === "string" && rec.text.trim()) ||
+      (typeof contentForText?.text === "string" && contentForText.text.trim()) ||
+      (typeof contentForText?.comment === "string" && contentForText.comment.trim()) ||
+      undefined;
+    const text = rawText || undefined;
     const sender = rec.sender && typeof rec.sender === "object" && !Array.isArray(rec.sender)
       ? rec.sender as Record<string, unknown>
       : undefined;
