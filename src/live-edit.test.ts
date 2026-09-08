@@ -1548,6 +1548,49 @@ describe("createLiveEditDeliver — media replies via payload.mediaUrl (issue #2
     // inbound stray-placeholder cleanup does not turn it into an error.
     expect(getLiveEditPlaceholderConsumed(deliver)).toBe(true);
     expect(fake.edits.at(-1)?.text).toBe("Datei folgt");
+    // ...and the upload must NOT repeat that same text as its caption, or the
+    // user sees the sentence twice (live 2026-09-08: the reconciled draft and
+    // the `send media` caption both carried the identical text).
+    expect(fake.mediaSends[0].text).toBeUndefined();
+  });
+
+  it("keeps the caption on the upload when there is no draft to carry the text", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      mediaReadFile: async () => Buffer.from("DATA"),
+    });
+    await deliver(
+      { text: "Hier ist die Datei", mediaUrl: "/tmp/report.xlsx" },
+      { final: true },
+    );
+    // Without a placeholder nothing else shows the text, so the caption stays
+    // on the attachment — the reply must never lose its sentence.
+    expect(fake.mediaSends[0].text).toBe("Hier ist die Datei");
+    expect(fake.edits).toHaveLength(0);
+    expect(fake.sends).toHaveLength(0);
+  });
+
+  it("keeps the caption when the draft cannot be edited (text would be lost otherwise)", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1", text: "\u{1F4AD} \u2026" },
+      initialDraftEditable: false,
+      mediaReadFile: async () => Buffer.from("DATA"),
+    });
+    await deliver(
+      { text: "Nicht editierbar", mediaUrl: "/tmp/report.xlsx" },
+      { final: true },
+    );
+    // A non-editable draft is deleted, so the attachment must carry the text.
+    expect(fake.mediaSends[0].text).toBe("Nicht editierbar");
   });
 
   it("falls back to the text path when the media source cannot be read", async () => {

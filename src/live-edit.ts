@@ -605,6 +605,21 @@ export function createLiveEditDeliver(
     // follows as plain messages.
     const caption = chunks[0] || undefined;
 
+    // When an editable placeholder/draft is live it already occupies a
+    // message slot ABOVE the attachment, and it is reconciled below by being
+    // edited to the reply text. Passing the same text as the upload caption
+    // as well would show the sentence twice (observed live 2026-09-08: the
+    // draft edit and the `send media` caption both carried the identical
+    // 32-character text). In that case the draft carries the text and the
+    // file is posted without a caption.
+    const draftCarriesText =
+      Boolean(
+        (opts.initialDraft || progressDraftActive || progressDraftStale) &&
+          draftMessageId &&
+          opts.initialDraftEditable !== false,
+      ) && Boolean(caption);
+    const uploadCaption = draftCarriesText ? undefined : caption;
+
     let delivered = 0;
     for (const [index, mediaUrl] of unique.entries()) {
       try {
@@ -615,7 +630,7 @@ export function createLiveEditDeliver(
         await client.sendMediaMessage({
           to,
           isDm,
-          ...(index === 0 && caption ? { text: caption } : {}),
+          ...(index === 0 && uploadCaption ? { text: uploadCaption } : {}),
           attachment,
         });
         stats.mediaSends++;
