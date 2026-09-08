@@ -82,6 +82,13 @@ export interface ParsedCliqTarget {
  *
  * Returns `null` when the input is empty or malformed.
  */
+/**
+ * A bare Cliq user id (Zoho user ids are numeric strings; channel unique
+ * names are alphanumeric with `-`/`_`, never all-digits). Used to resolve the
+ * genuinely ambiguous bare-id case toward a DM target (issue #239).
+ */
+const BARE_NUMERIC_ID = /^\d+$/;
+
 export function parseCliqTarget(raw: string | undefined | null): ParsedCliqTarget | null {
   const value = raw?.trim();
   if (!value) return null;
@@ -96,6 +103,22 @@ export function parseCliqTarget(raw: string | undefined | null): ParsedCliqTarge
     // kind is more likely a new group/channel shape than a DM variant).
     return { kind: "group", id, explicit: true };
   }
+  // `user:<id>` / `dm:<id>` without the `cliq:` provider prefix — a natural
+  // agent-supplied shape that used to be rejected as "Unknown target"
+  // (issue #239). Accept it as an explicit direct target. A value that still
+  // carries the `cliq:` provider prefix is NOT a kind-prefixed target here
+  // (`cliq:<id>` is the bare-id form handled below), so it is excluded.
+  const bareKind = /^cliq:/i.test(value) ? null : /^([a-z]+):(.+)$/i.exec(value);
+  if (bareKind) {
+    const kind = bareKind[1].toLowerCase();
+    const id = bareKind[2].trim();
+    if (!id) return null;
+    if (DM_KINDS.has(kind)) return { kind: "direct", id, explicit: true };
+    if (GROUP_KINDS.has(kind)) return { kind: "group", id, explicit: true };
+    // An unknown `foo:bar` prefix is ambiguous, not a bare id — reject it
+    // (unchanged behavior; the agent gets a clear error instead of a guess).
+    return null;
+  }
   // `cliq:<id>` with no kind, or a bare `<id>`. Reject anything that still
   // contains a `:` after stripping the provider prefix — that indicates a
   // malformed kind prefix the regex couldn't match (e.g. `cliq:user:` with
@@ -106,6 +129,14 @@ export function parseCliqTarget(raw: string | undefined | null): ParsedCliqTarge
   if (!stripped || stripped.includes(":")) return null;
   if (DM_KINDS.has(stripped.toLowerCase()) || GROUP_KINDS.has(stripped.toLowerCase())) {
     return null;
+  }
+  // A bare ALL-NUMERIC id is a Zoho user id — route it to the DM target
+  // instead of silently posting to `/channelsbyname/<id>` (a guaranteed 404,
+  // issue #239). Channel unique names are never all-digits, so this cannot
+  // swallow a legitimate channel name. Non-numeric ids keep the documented
+  // backward-compat group default.
+  if (BARE_NUMERIC_ID.test(stripped)) {
+    return { kind: "direct", id: stripped, explicit: false };
   }
   return { kind: "group", id: stripped, explicit: false };
 }
