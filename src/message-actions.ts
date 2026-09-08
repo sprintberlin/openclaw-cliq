@@ -36,6 +36,7 @@ import {
   type ResolvedCliqAccount,
 } from "./client.js";
 import { markdownToCliq } from "./markdown.js";
+import { notifyCliqToolSend } from "./activity.js";
 import { resolveCliqClient } from "./runtime-api.js";
 import {
   presentationToCliqCard,
@@ -536,6 +537,8 @@ function readMediaSendEntries(
 export interface MediaLoadContext {
   mediaReadFile?: (filePath: string) => Promise<Buffer>;
   mediaAccess?: { readFile?: (filePath: string) => Promise<Buffer> } | null;
+  /** Account identity used to reconcile successful tool sends with a turn. */
+  accountId?: string | null;
 }
 
 async function handleSend(
@@ -627,6 +630,11 @@ async function handleSend(
         text: rich,
         attachment,
       });
+      notifyCliqToolSend({
+        accountId: mediaCtx?.accountId ?? null,
+        to: target.to,
+        isDm: target.isDm,
+      });
       return okResult(
         `Sent media message to ${to}${result.messageId ? ` (messageId=${result.messageId})` : ""} with attachment "${attachment.fileName}" (${attachment.bytes.byteLength} bytes).`,
         {
@@ -695,6 +703,11 @@ async function handleSend(
               isDm: target.isDm,
               text: rich ?? "",
             });
+    notifyCliqToolSend({
+      accountId: mediaCtx?.accountId ?? null,
+      to: target.to,
+      isDm: target.isDm,
+    });
     return okResult(
       `Sent message to ${to}${result.messageId ? ` (messageId=${result.messageId})` : ""}${isPoll ? ` with ${pollOptions.length} poll option(s)` : buttons.length > 0 ? ` with ${buttons.length} button(s)` : slidesParam ? ` with ${slidesParam.length} slide(s)` : sectionsParam ? ` with ${sectionsParam.length} section(s)` : thumbnailParam ? ` with a thumbnail` : ""}.`,
       {
@@ -887,6 +900,7 @@ export const cliqMessageActions: ChannelMessageActionAdapter = {
           return await handleSend(client, params, {
             mediaReadFile: ctx.mediaReadFile,
             mediaAccess: ctx.mediaAccess,
+            accountId: ctx.accountId,
           });
         case "edit":
           return await handleEdit(client, params);

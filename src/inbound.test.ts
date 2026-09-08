@@ -3972,6 +3972,24 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
     return runtime;
   }
 
+  /**
+   * A runtime whose turn answers through the `message` TOOL instead of the
+   * reply-delivery path: no `deliver` call, but a real outbound send lands in
+   * the same conversation (issue #240).
+   */
+  function mockRuntimeToolOnlyReply(send: () => Promise<unknown>): CliqRuntime {
+    const runtime = mockRuntimeNoReply();
+    runtime.channel.inbound.run = async (params) => {
+      const adapter = (params as unknown as {
+        adapter: { resolveTurn: (...args: unknown[]) => unknown };
+      }).adapter;
+      adapter.resolveTurn({}, {}, {});
+      // The agent's visible output goes out through the message tool.
+      await send();
+    };
+    return runtime;
+  }
+
   function mockRuntimeSkippedCoreShape(): CliqRuntime {
     const runtime = mockRuntimeNoReply();
     runtime.channel.inbound.run = async (params) => {
@@ -4374,6 +4392,76 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
     expect(client.edits).toHaveLength(1);
     expect(client.edits[0].messageId).toBe("ph-1");
     expect(client.edits[0].text).toBe("⚠️ No reply generated.");
+    expect(client.deletes).toHaveLength(0);
+  });
+
+  it("deletes the placeholder instead of showing a failure notice when the turn answered through the message tool (issue #240)", async () => {
+    const { notifyCliqToolSend } = await import("./activity.js");
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    await dispatchCliqInbound({
+      runtime: mockRuntimeToolOnlyReply(async () => {
+        // The message tool delivers the visible answer itself and reports it.
+        await client.sendMessage({ to: "u1", text: "die Antwort", isDm: true });
+        notifyCliqToolSend({ accountId: null, to: "u1", isDm: true });
+      }),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "\ud83d\udcad \u2026", failureText: "\u26a0\ufe0f No reply generated." },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    // Regression for #240: the user was answered, so no error bubble.
+    expect(
+      client.edits.some((e) => e.text === "\u26a0\ufe0f No reply generated."),
+    ).toBe(false);
+    // The now-redundant placeholder is removed instead.
+    expect(client.deletes).toEqual([{ chatId: "chat-u1", messageId: "ph-1" }]);
+  });
+
+  it("still shows the failure notice when a tool send went to a different conversation (issue #240)", async () => {
+    const { notifyCliqToolSend } = await import("./activity.js");
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    await dispatchCliqInbound({
+      runtime: mockRuntimeToolOnlyReply(async () => {
+        // A send to an unrelated chat must not count as answering this turn.
+        notifyCliqToolSend({ accountId: null, to: "someone-else", isDm: true });
+      }),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "\ud83d\udcad \u2026", failureText: "\u26a0\ufe0f No reply generated." },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    expect(client.edits).toHaveLength(1);
+    expect(client.edits[0].text).toBe("\u26a0\ufe0f No reply generated.");
+  });
+
+  it("does not treat the plugin's own placeholder send as an answer (issue #240)", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    await dispatchCliqInbound({
+      // No deliver, no tool send — only the placeholder the plugin posted
+      // itself. That must still produce the failure notice.
+      runtime: mockRuntimeNoReply(),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "\ud83d\udcad \u2026", failureText: "\u26a0\ufe0f No reply generated." },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    expect(client.edits).toHaveLength(1);
+    expect(client.edits[0].text).toBe("\u26a0\ufe0f No reply generated.");
     expect(client.deletes).toHaveLength(0);
   });
 

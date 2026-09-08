@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { getChannelActivity } from "openclaw/plugin-sdk/infra-runtime";
-import { recordCliqActivity, trackCliqOutboundActivity } from "./activity.js";
+import {
+  observeCliqOutboundSends,
+  recordCliqActivity,
+  trackCliqOutboundActivity,
+  type CliqOutboundSendEvent,
+} from "./activity.js";
 
 describe("recordCliqActivity", () => {
   it("records inbound under the default account when accountId is null", () => {
@@ -28,6 +33,77 @@ describe("recordCliqActivity", () => {
     expect(() =>
       recordCliqActivity({ accountId: "default", direction: "inbound" }),
     ).not.toThrow();
+  });
+});
+
+describe("observeCliqOutboundSends", () => {
+  it("emits one event per successful tracked send, never for failures", async () => {
+    const events: CliqOutboundSendEvent[] = [];
+    const unsubscribe = observeCliqOutboundSends((event) => events.push(event));
+    try {
+      const client = {
+        sendMessage: async (_o?: { to?: string; isDm?: boolean }) => ({
+          messageId: "m1",
+        }),
+        sendMediaMessage: async () => {
+          throw new Error("send failed");
+        },
+        sendCard: async (_o?: { to?: string; isDm?: boolean }) => ({
+          messageId: "c1",
+        }),
+      };
+      const tracked = trackCliqOutboundActivity(client, "observe-1");
+      await expect(tracked.sendMediaMessage()).rejects.toThrow();
+      await tracked.sendMessage({ to: "u-9", isDm: true });
+      await tracked.sendCard({ to: "dev-team", isDm: false });
+      expect(events).toHaveLength(2);
+      expect(events[0]).toMatchObject({
+        accountId: "observe-1",
+        method: "sendMessage",
+        to: "u-9",
+        isDm: true,
+      });
+      expect(events[1]).toMatchObject({
+        accountId: "observe-1",
+        method: "sendCard",
+        to: "dev-team",
+        isDm: false,
+      });
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("stops emitting after unsubscribe", async () => {
+    const events: CliqOutboundSendEvent[] = [];
+    const unsubscribe = observeCliqOutboundSends((event) => events.push(event));
+    const client = {
+      sendMessage: async () => ({ messageId: "m1" }),
+      sendMediaMessage: async () => ({ messageId: "f1" }),
+      sendCard: async () => ({ messageId: "c1" }),
+    };
+    const tracked = trackCliqOutboundActivity(client, "observe-2");
+    await tracked.sendMessage();
+    unsubscribe();
+    await tracked.sendMessage();
+    expect(events).toHaveLength(1);
+  });
+
+  it("swallows a throwing listener instead of failing the send", async () => {
+    const unsubscribe = observeCliqOutboundSends(() => {
+      throw new Error("listener bug");
+    });
+    try {
+      const client = {
+        sendMessage: async () => ({ messageId: "m1" }),
+        sendMediaMessage: async () => ({ messageId: "f1" }),
+        sendCard: async () => ({ messageId: "c1" }),
+      };
+      const tracked = trackCliqOutboundActivity(client, "observe-3");
+      await expect(tracked.sendMessage()).resolves.toEqual({ messageId: "m1" });
+    } finally {
+      unsubscribe();
+    }
   });
 });
 
