@@ -1388,6 +1388,7 @@ describe("dispatchCliqInbound — stop / abort intent (issue #51)", () => {
   function makeClient() {
     return {
       sendMessage: vi.fn(async () => ({ messageId: "out-1" })),
+      sendMediaMessage: vi.fn(async () => ({ messageId: "media-1" })),
       sendCard: vi.fn(async () => ({ messageId: "out-1" })),
       editMessage: vi.fn(async (o: { chatId: string; messageId: string; text: string }) => ({
         messageId: o.messageId,
@@ -1518,6 +1519,7 @@ describe("dispatchCliqInbound — native slash command authorization (issue #91)
   function makeClient() {
     return {
       sendMessage: vi.fn(async () => ({ messageId: "out-1" })),
+      sendMediaMessage: vi.fn(async () => ({ messageId: "media-1" })),
       sendCard: vi.fn(async () => ({ messageId: "out-1" })),
       editMessage: vi.fn(async (o: { chatId: string; messageId: string; text: string }) => ({
         messageId: o.messageId,
@@ -1683,6 +1685,7 @@ describe("dispatchCliqInbound — inbound quote / reply context (issue #49)", ()
       sendMessage: vi.fn(async (_o: { to: string; text: string; isDm?: boolean }) => ({
         messageId: "out-1",
       })),
+      sendMediaMessage: vi.fn(async () => ({ messageId: "media-1" })),
       sendCard: vi.fn(async () => ({ messageId: "out-1" })),
       editMessage: vi.fn(async (o: { chatId: string; messageId: string; text: string }) => ({
         messageId: o.messageId,
@@ -1796,6 +1799,7 @@ describe("dispatchCliqInbound — inbound quote / reply context (issue #49)", ()
     )!;
     const client = {
       sendMessage: vi.fn(async () => ({ messageId: "out-1" })),
+      sendMediaMessage: vi.fn(async () => ({ messageId: "media-1" })),
       sendCard: vi.fn(async () => ({ messageId: "out-1" })),
       editMessage: vi.fn(async () => ({ messageId: "x", chatId: "y" })),
       resolveChannelChatId: vi.fn(async () => undefined),
@@ -1900,6 +1904,7 @@ describe("dispatchCliqInbound — inbound media (issue #48)", () => {
         messageId: o.isDm ? `mid-${o.to}` : undefined,
         chatId: o.isDm ? `chat-${o.to}` : undefined,
       })),
+      sendMediaMessage: vi.fn(async () => ({ messageId: "media-1" })),
       sendCard: vi.fn(async () => ({ messageId: "out-1" })),
       editMessage: vi.fn(async () => ({ messageId: "x", chatId: "x" })),
       resolveChannelChatId: vi.fn(async () => undefined),
@@ -2203,6 +2208,7 @@ describe("dispatchCliqInbound — thinking placeholder (issue #47)", () => {
           ? { messageId: "ph-1", chatId: opts.placeholderChatId ?? `chat-${o.to}` }
           : { messageId: "ph-1" };
       }),
+      sendMediaMessage: vi.fn(async () => ({ messageId: "media-1" })),
       sendCard: vi.fn(async (o: {
         to: string;
         text?: string;
@@ -3367,6 +3373,7 @@ describe("dispatchCliqInbound — card status phase transitions (issue #78)", ()
           ? { messageId: "card-1", chatId: opts.placeholderChatId ?? `chat-${o.to}` }
           : { messageId: "card-1" };
       }),
+      sendMediaMessage: vi.fn(async () => ({ messageId: "media-1" })),
       sendCard: vi.fn(async (o: {
         to: string;
         text?: string;
@@ -3602,6 +3609,7 @@ describe("dispatchCliqInbound — confirm gate (Phase 3 confirmation buttons)", 
         sends.push(o);
         return { messageId: "msg-1", chatId: `chat-${o.to}` };
       }),
+      sendMediaMessage: vi.fn(async () => ({ messageId: "media-1" })),
       sendCard: vi.fn(async (o: {
         to: string;
         text?: string;
@@ -4056,6 +4064,7 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
           ? { messageId: "ph-1", chatId: opts.placeholderChatId ?? `chat-${o.to}` }
           : { messageId: "ph-1" };
       }),
+      sendMediaMessage: vi.fn(async () => ({ messageId: "media-1" })),
       sendCard: vi.fn(async (o: {
         to: string;
         text?: string;
@@ -4591,6 +4600,7 @@ describe("dispatchCliqInbound — complete streaming turns (issue #210)", () => 
           ? { messageId, chatId: opts.placeholderChatId ?? `chat-${o.to}` }
           : { messageId };
       }),
+      sendMediaMessage: vi.fn(async () => ({ messageId: "media-1" })),
       sendCard: vi.fn(async (o: { to: string; text?: string; isDm?: boolean; theme?: string }) => {
         if (opts.failSend) throw new Error("send rejected");
         const messageId = `card-${nextId++}`;

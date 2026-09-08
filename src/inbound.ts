@@ -105,7 +105,7 @@ export interface CliqRuntime {
         ctx: unknown;
         cfg: OpenClawConfig;
         dispatcherOptions: {
-          deliver: (payload: { text?: string; mediaUrl?: string; channelData?: unknown }) => Promise<void>;
+          deliver: (payload: { text?: string; mediaUrl?: string; mediaUrls?: string[]; channelData?: unknown }) => Promise<void>;
           onError: (err: unknown, info: { kind: string }) => void;
         };
       }) => Promise<unknown>;
@@ -1157,6 +1157,7 @@ export async function dispatchCliqInbound(params: {
      CliqClient,
      | "sendMessage"
      | "sendCard"
+     | "sendMediaMessage"
      | "editMessage"
      | "resolveChannelChatId"
      | "listChatMessages"
@@ -1819,7 +1820,12 @@ export async function dispatchCliqInbound(params: {
           },
           delivery: {
             deliver: async (
-              replyPayload: { text?: string; channelData?: unknown },
+              replyPayload: {
+                text?: string;
+                mediaUrl?: string;
+                mediaUrls?: string[];
+                channelData?: unknown;
+              },
               info?: { kind?: string; final?: boolean },
             ) => {
               // Stop the animation the moment the reply arrives so a late
@@ -1830,12 +1836,17 @@ export async function dispatchCliqInbound(params: {
               // live-edit deliver routes cards through `sendCard`. Stripping
               // it here (the pre-fix behavior) dropped command card replies
               // whenever the thinking placeholder was active (issue #90).
+              // `mediaUrl` / `mediaUrls` carry the agent's `MEDIA:` directive
+              // on the final block; stripping them dropped the file while
+              // the text still claimed it was attached (issue #237).
               const isFinal = info?.final === true || info?.kind === "final";
               if (isFinal) progressController.markFinalReplyStarted();
               try {
                 await deliver(
                   {
                     text: replyPayload?.text,
+                    mediaUrl: replyPayload?.mediaUrl,
+                    mediaUrls: replyPayload?.mediaUrls,
                     channelData: replyPayload?.channelData,
                   },
                   {

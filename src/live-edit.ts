@@ -51,7 +51,13 @@
    * live-edit path then grows in place (issue #175) — one progress surface.
    * The thinking animator must not edit that draft (issue #184).
  */
-import { chunkMessage, type CliqClient } from "./client.js";
+import { readFile } from "node:fs/promises";
+
+import {
+  chunkMessage,
+  loadCliqMediaAttachment,
+  type CliqClient,
+} from "./client.js";
 import { markdownToCliq } from "./markdown.js";
 import {
   isCliqCardChannelData,
@@ -81,7 +87,16 @@ export interface LiveEditDeliverOptions {
     | "listChatMessages"
     | "deleteMessage"
     | "sendCard"
+    | "sendMediaMessage"
   >;
+  /**
+   * Reads a local media file for a reply payload that carries `mediaUrl`
+   * (issue #237). Defaults to `node:fs/promises` `readFile` — the agent's
+   * `MEDIA:` directive names a path on the gateway host. Tests inject their
+   * own reader; HTTPS media sources are fetched by
+   * {@link loadCliqMediaAttachment} and never reach this callback.
+   */
+  mediaReadFile?: (filePath: string) => Promise<Buffer>;
   /** Raw Cliq id the message is addressed to (user id for DMs, chatid/channel id for groups). */
   to: string;
   /** Whether this is a DM (delivered via `userids`) or a group (via `chatid`). */
@@ -139,6 +154,10 @@ export interface LiveEditDeliverStats {
   coalesced: number;
   /** Edits retried after a Cliq rate-limit (429) response. */
   rateLimitRetries: number;
+  /** Media attachments posted through the v2 multipart path (issue #237). */
+  mediaSends: number;
+  /** Media payloads that could not be loaded or posted. */
+  mediaFailures: number;
 }
 
 /**
@@ -193,7 +212,7 @@ export type LiveEditPlaceholderConsumed = boolean;
 export function createLiveEditDeliver(
   opts: LiveEditDeliverOptions,
 ): (
-  payload: { text?: string; mediaUrl?: string; channelData?: unknown },
+  payload: { text?: string; mediaUrl?: string; mediaUrls?: string[]; channelData?: unknown },
   info?: LiveEditDeliverInfo,
 ) => Promise<void> {
   const limit = opts.charLimit ?? DEFAULT_CHAR_LIMIT;
@@ -212,7 +231,10 @@ export function createLiveEditDeliver(
     skippedUnchanged: 0,
     coalesced: 0,
     rateLimitRetries: 0,
+    mediaSends: 0,
+    mediaFailures: 0,
   };
+  const mediaReadFile = opts.mediaReadFile ?? ((filePath: string) => readFile(filePath));
   /**
    * Set to `true` the moment a `deliver` call resolves the placeholder's
    * fate (edited into a reply, deleted after a failed edit, or superseded by
@@ -255,7 +277,7 @@ export function createLiveEditDeliver(
 
   const attach = <
     F extends (
-      payload: { text?: string; mediaUrl?: string; channelData?: unknown },
+      payload: { text?: string; mediaUrl?: string; mediaUrls?: string[]; channelData?: unknown },
       info?: LiveEditDeliverInfo,
     ) => Promise<void>,
   >(
@@ -548,6 +570,93 @@ export function createLiveEditDeliver(
    * first text chunk rides with the card, any overflow chunks go as plain
    * messages.
    */
+  /**
+   * Deliver a reply payload that carries a media attachment (issue #237).
+   *
+   * Core hands final-block media to the dispatcher's `deliver` as
+   * `mediaUrl` / `mediaUrls` on the reply payload; before this the field was
+   * declared but never read, so an agent's `MEDIA:` directive was rendered
+   * away and the user got text with no file. A Cliq attachment cannot be
+   * edited into an existing message (the v2 multipart post always creates a
+   * new message), so the placeholder/draft is reconciled the same way
+   * {@link deliverCard} does: edited to the caption, or deleted.
+   *
+   * Returns `true` when the payload was handled here (the text path must not
+   * run again for it), `false` when there is no media to send. A media
+   * failure is counted and reported as `false` so the caller still delivers
+   * the text — a lost attachment must never swallow the answer too.
+   */
+  const deliverMedia = async (
+    payload: { text?: string; mediaUrl?: string; mediaUrls?: string[] },
+  ): Promise<boolean> => {
+    const sources = [
+      ...(payload.mediaUrl ? [payload.mediaUrl] : []),
+      ...(Array.isArray(payload.mediaUrls) ? payload.mediaUrls : []),
+    ]
+      .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+      .filter((entry) => entry.length > 0);
+    const unique = [...new Set(sources)];
+    if (unique.length === 0) return false;
+
+    const rawText = payload.text ?? "";
+    const richText = rawText ? markdownToCliq(rawText) : "";
+    const chunks = richText ? chunkMessage(richText, limit) : [];
+    // The caption rides along with the FIRST attachment; any overflow text
+    // follows as plain messages.
+    const caption = chunks[0] || undefined;
+
+    let delivered = 0;
+    for (const [index, mediaUrl] of unique.entries()) {
+      try {
+        const attachment = await loadCliqMediaAttachment({
+          mediaUrl,
+          mediaReadFile,
+        });
+        await client.sendMediaMessage({
+          to,
+          isDm,
+          ...(index === 0 && caption ? { text: caption } : {}),
+          attachment,
+        });
+        stats.mediaSends++;
+        delivered++;
+      } catch {
+        stats.mediaFailures++;
+      }
+    }
+    if (delivered === 0) return false; // fall back to the text path
+
+    for (let i = 1; i < chunks.length; i++) {
+      await client.sendMessage({ to, text: chunks[i], isDm });
+      stats.sends++;
+    }
+
+    // Reconcile the placeholder/draft: a media post is always a NEW message,
+    // so the draft must not linger as `💭 …` nor trip the stray-placeholder
+    // failure notice (issue #240 covers the same contract for tool sends).
+    if ((opts.initialDraft || progressDraftActive || progressDraftStale) && draftMessageId) {
+      placeholderConsumed = true;
+      const chatId = await resolveDraftChatId();
+      if (chatId && opts.initialDraftEditable !== false) {
+        const finalText = caption ?? CLIQ_CARD_PLACEHOLDER_FINAL;
+        try {
+          await client.editMessage({
+            chatId,
+            messageId: draftMessageId,
+            text: finalText,
+          });
+          stats.edits++;
+        } catch {
+          await safeDeleteDraft();
+        }
+      } else if (chatId) {
+        await safeDeleteDraft();
+      }
+      sealDraft();
+    }
+    return true;
+  };
+
   const deliverCard = async (
     payload: { text?: string; channelData?: unknown },
   ): Promise<boolean> => {
@@ -627,6 +736,9 @@ export function createLiveEditDeliver(
       // top-level text would be dropped (empty-text no-op) and the
       // placeholder would then be turned into the failure notice.
       if (await deliverCard(payload)) return;
+      // A media payload posts the attachment (with the text as caption) and
+      // reconciles the draft itself — issue #237.
+      if (await deliverMedia(payload)) return;
       const text = payload.text;
       if (!text) return;
       const rich = markdownToCliq(text);
@@ -667,6 +779,7 @@ export function createLiveEditDeliver(
     payload: {
       text?: string;
       mediaUrl?: string;
+      mediaUrls?: string[];
       channelData?: unknown;
     },
     info?: LiveEditDeliverInfo,
@@ -677,6 +790,10 @@ export function createLiveEditDeliver(
     const hadProgressDraft = progressDraftActive || progressDraftStale;
     const allowShrink = isProgress || hadProgressDraft;
     if (await deliverCard(payload)) return;
+    // Media rides the multipart path, never a live edit: a Cliq attachment
+    // cannot be edited into an existing message. A progress draft keeps its
+    // own preview lifecycle, so media is only posted for real reply blocks.
+    if (!isProgress && (await deliverMedia(payload))) return;
     const text = payload.text;
     if (!text) return;
 
