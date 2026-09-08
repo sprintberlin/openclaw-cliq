@@ -48,6 +48,7 @@ function makeCfg(account: Partial<ResolvedCliqAccount>): OpenClawConfig {
 
 interface FakeClient {
   sends: { to: string; text: string; isDm?: boolean }[];
+  medias: { to: string; text?: string; isDm?: boolean; fileName: string; mimeType?: string; bytes: number }[];
   cards: { to: string; text?: string; isDm?: boolean; buttons?: unknown[]; theme?: string; pollOptions?: string[]; slides?: unknown[]; thumbnail?: string; sections?: unknown[] }[];
   edits: { chatId: string; messageId: string; text: string }[];
   deletes: { chatId: string; messageId: string }[];
@@ -55,6 +56,7 @@ interface FakeClient {
   reacts: { chatId: string; messageId: string; emoji: string; op: "add" | "remove" }[];
   chatIdResolves: string[];
   sendMessage: CliqClientLike["sendMessage"];
+  sendMediaMessage: CliqClientLike["sendMediaMessage"];
   sendCard: CliqClientLike["sendCard"];
   editMessage: CliqClientLike["editMessage"];
   deleteMessage: CliqClientLike["deleteMessage"];
@@ -69,8 +71,10 @@ function makeFakeClient(opts: {
   deleteOk?: boolean;
   reactOk?: boolean;
   messages?: { messageId: string; chatId: string; text?: string }[];
+  mediaSendError?: Error;
 } = {}): FakeClient {
   const sends: FakeClient["sends"] = [];
+  const medias: FakeClient["medias"] = [];
   const cards: FakeClient["cards"] = [];
   const edits: FakeClient["edits"] = [];
   const deletes: FakeClient["deletes"] = [];
@@ -80,6 +84,7 @@ function makeFakeClient(opts: {
   const reactOk = opts.reactOk ?? true;
   return {
     sends,
+    medias,
     cards,
     edits,
     deletes,
@@ -90,6 +95,25 @@ function makeFakeClient(opts: {
       sends.push(o);
       return { messageId: "m-sent", chatId: o.isDm ? "dm-chat" : undefined };
     }),
+    sendMediaMessage: vi.fn(
+      async (o: {
+        to: string;
+        text?: string;
+        isDm?: boolean;
+        attachment: { bytes: Uint8Array; fileName: string; mimeType?: string };
+      }) => {
+        if (opts.mediaSendError) throw opts.mediaSendError;
+        medias.push({
+          to: o.to,
+          text: o.text,
+          isDm: o.isDm,
+          fileName: o.attachment.fileName,
+          mimeType: o.attachment.mimeType,
+          bytes: o.attachment.bytes.byteLength,
+        });
+        return { messageId: "m-media", chatId: o.isDm ? "dm-chat" : undefined };
+      },
+    ),
     sendCard: vi.fn(async (o: { to: string; text?: string; isDm?: boolean; buttons?: unknown[]; theme?: string; pollOptions?: string[]; slides?: unknown[]; thumbnail?: string; sections?: unknown[] }) => {
       cards.push(o);
       return { messageId: "m-card", chatId: o.isDm ? "dm-chat" : undefined };
@@ -770,6 +794,270 @@ describe("cliqMessageActions.handleAction", () => {
       );
       expect(result.details).toMatchObject({ status: "failed" });
       expect(client.cards).toHaveLength(0);
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  // --- issue #238: attachments must be delivered or fail loudly ---------
+
+  it("send with `media` path: uploads via sendMediaMessage, never a plain text send", async () => {
+    const client = makeFakeClient({});
+    const account = makeAccount({});
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!({
+        channel: "cliq",
+        action: "send",
+        cfg: makeCfg(account),
+        accountId: null,
+        mediaReadFile: async () => Buffer.from("XLSXBYTES"),
+        params: {
+          to: "cliq:user:929484733",
+          message: "Hier ist die Datei",
+          media: "/tmp/report.xlsx",
+        },
+      } as Parameters<NonNullable<typeof cliqMessageActions.handleAction>>[0]);
+      expect(result.details).toMatchObject({
+        action: "send",
+        media: true,
+        fileName: "report.xlsx",
+        messageId: "m-media",
+      });
+      expect(client.medias).toHaveLength(1);
+      expect(client.medias[0]).toMatchObject({
+        to: "929484733",
+        isDm: true,
+        fileName: "report.xlsx",
+        mimeType:
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        bytes: 9,
+      });
+      // The bug in #238 was a silent fallback to the text-only path.
+      expect(client.sends).toHaveLength(0);
+      expect(client.cards).toHaveLength(0);
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("send with `attachments[]`: honours the declared name and mimeType", async () => {
+    const client = makeFakeClient({});
+    const account = makeAccount({});
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!({
+        channel: "cliq",
+        action: "send",
+        cfg: makeCfg(account),
+        accountId: null,
+        mediaReadFile: async () => Buffer.from("DATA"),
+        params: {
+          to: "cliq:channel:general",
+          message: "Bericht",
+          attachments: [
+            {
+              media: "/tmp/raw.bin",
+              name: "Report.xlsx",
+              mimeType: "application/vnd.ms-excel",
+            },
+          ],
+        },
+      } as Parameters<NonNullable<typeof cliqMessageActions.handleAction>>[0]);
+      expect(result.details).toMatchObject({ media: true, fileName: "Report.xlsx" });
+      expect(client.medias).toHaveLength(1);
+      expect(client.medias[0]).toMatchObject({
+        to: "general",
+        isDm: false,
+        fileName: "Report.xlsx",
+        mimeType: "application/vnd.ms-excel",
+      });
+      expect(client.sends).toHaveLength(0);
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("send with a top-level `media` duplicated in `attachments[]` uploads the file once", async () => {
+    const client = makeFakeClient({});
+    const account = makeAccount({});
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!({
+        channel: "cliq",
+        action: "send",
+        cfg: makeCfg(account),
+        accountId: null,
+        mediaReadFile: async () => Buffer.from("DATA"),
+        params: {
+          to: "cliq:user:u-1",
+          media: "/tmp/same.xlsx",
+          attachments: [{ media: "/tmp/same.xlsx", type: "file" }],
+        },
+      } as Parameters<NonNullable<typeof cliqMessageActions.handleAction>>[0]);
+      expect(result.details).toMatchObject({ media: true });
+      expect(client.medias).toHaveLength(1);
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("send with an attachment carrying no loadable `media` fails loudly and sends nothing", async () => {
+    const client = makeFakeClient({});
+    const account = makeAccount({});
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!(
+        buildCtx(
+          {
+            to: "cliq:user:u-1",
+            message: "Hier ist die Datei",
+            attachments: [{ type: "file", name: "report.xlsx", fileId: "abc" }],
+          },
+          account,
+        ) as Parameters<NonNullable<typeof cliqMessageActions.handleAction>>[0],
+      );
+      // Regression for #238: this used to return a plain-text success.
+      expect(result.details).toMatchObject({ status: "failed" });
+      expect(client.sends).toHaveLength(0);
+      expect(client.medias).toHaveLength(0);
+      expect(client.cards).toHaveLength(0);
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("send with media plus buttons is rejected instead of dropping either part", async () => {
+    const client = makeFakeClient({});
+    const account = makeAccount({});
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!({
+        channel: "cliq",
+        action: "send",
+        cfg: makeCfg(account),
+        accountId: null,
+        mediaReadFile: async () => Buffer.from("DATA"),
+        params: {
+          to: "cliq:user:u-1",
+          media: "/tmp/report.xlsx",
+          buttons: [{ label: "Open", value: "x" }],
+        },
+      } as Parameters<NonNullable<typeof cliqMessageActions.handleAction>>[0]);
+      expect(result.details).toMatchObject({ status: "failed" });
+      expect(client.medias).toHaveLength(0);
+      expect(client.cards).toHaveLength(0);
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("send with more than one media attachment is rejected", async () => {
+    const client = makeFakeClient({});
+    const account = makeAccount({});
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!({
+        channel: "cliq",
+        action: "send",
+        cfg: makeCfg(account),
+        accountId: null,
+        mediaReadFile: async () => Buffer.from("DATA"),
+        params: {
+          to: "cliq:user:u-1",
+          attachments: [{ media: "/tmp/a.xlsx" }, { media: "/tmp/b.xlsx" }],
+        },
+      } as Parameters<NonNullable<typeof cliqMessageActions.handleAction>>[0]);
+      expect(result.details).toMatchObject({ status: "failed" });
+      expect(client.medias).toHaveLength(0);
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("send reports failure when the media source cannot be read", async () => {
+    const client = makeFakeClient({});
+    const account = makeAccount({});
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!({
+        channel: "cliq",
+        action: "send",
+        cfg: makeCfg(account),
+        accountId: null,
+        mediaReadFile: async () => {
+          throw new Error("ENOENT: no such file");
+        },
+        params: { to: "cliq:user:u-1", media: "/tmp/missing.xlsx" },
+      } as Parameters<NonNullable<typeof cliqMessageActions.handleAction>>[0]);
+      expect(result.details).toMatchObject({ status: "failed" });
+      expect(client.medias).toHaveLength(0);
+      expect(client.sends).toHaveLength(0);
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("send reports failure when the media upload itself is rejected", async () => {
+    const client = makeFakeClient({ mediaSendError: new Error("413 too large") });
+    const account = makeAccount({});
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!({
+        channel: "cliq",
+        action: "send",
+        cfg: makeCfg(account),
+        accountId: null,
+        mediaReadFile: async () => Buffer.from("DATA"),
+        params: { to: "cliq:user:u-1", media: "/tmp/report.xlsx" },
+      } as Parameters<NonNullable<typeof cliqMessageActions.handleAction>>[0]);
+      expect(result.details).toMatchObject({ status: "failed" });
+      expect(client.sends).toHaveLength(0);
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("send without media is unchanged (no media call)", async () => {
+    const client = makeFakeClient({});
+    const account = makeAccount({});
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      await cliqMessageActions.handleAction!(
+        buildCtx(
+          { to: "cliq:user:u-1", message: "plain" },
+          account,
+        ) as Parameters<NonNullable<typeof cliqMessageActions.handleAction>>[0],
+      );
+      expect(client.sends).toHaveLength(1);
+      expect(client.medias).toHaveLength(0);
     } finally {
       setCliqClientRegistry(null);
     }
