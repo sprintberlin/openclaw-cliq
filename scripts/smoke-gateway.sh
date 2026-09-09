@@ -102,7 +102,7 @@ else
 fi
 
 echo "==> [2/12] Linking plugin into isolated profile '$PROFILE'"
-# Flag support differs across supported OpenClaw versions: 2026.8.1-beta.3
+# Flag support differs across supported OpenClaw versions: 2026.8.2
 # refuses a local-path install without --force, while 2026.7.1-2 rejects
 # --force together with --link. Try the plain form first, then the forced one.
 INSTALL_OUT="$(run_oc plugins install . --link 2>&1 || true)"

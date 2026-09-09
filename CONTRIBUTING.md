@@ -35,10 +35,10 @@ publishes.
 
 To load the checkout into a running gateway, link it (see
 [Install from a local checkout](README.md#install-from-a-local-checkout) in the
-README for the supported OpenClaw `2026.8.1-beta.3` minimum):
+README for the supported OpenClaw `2026.8.2` minimum):
 
 ```bash
-# OpenClaw 2026.8.1-beta.3+: --force acknowledges the non-ClawHub source warning
+# OpenClaw 2026.8.2+: --force acknowledges the non-ClawHub source warning
 openclaw plugins install --link --force .
 ```
 

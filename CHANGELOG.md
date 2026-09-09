@@ -11,6 +11,12 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-09
+
+### Changed
+
+- **Breaking: OpenClaw `2026.8.2` is now the minimum supported runtime.** `2026.8.1-beta.3` is no longer a supported floor: the plugin is now typechecked, built, and smoke-tested against the stable `2026.8.2` release, which is the version this plugin has been exercised on in production. The plugin API range, minimum gateway version, peer dependency, compatibility matrix (`.github/openclaw-compat.json`), and build metadata all state `2026.8.2`. Newer OpenClaw releases are expected to keep working but are not part of the tested matrix. Historical changelog entries, learnings, and recorded live evidence keep naming the version they were actually observed on.
+
 - **Bounded inbound catch-up (issue #229).** Opt-in `inboundCatchup` recovers a direct-chat Cliq record that exists in `GET /api/v2/chats/{chatId}/messages` but never became a webhook turn. It is triggered only by the next admitted DM; first enablement baselines the live native record instead of importing a backlog; later runs require a same-sender/same-text live anchor plus a persisted opaque cursor and dispatch only the bounded gap oldest-first through the existing native-id dedupe gate. There is no timer/polling loop, global Cliq MCP enablement, content-bearing log line, or recovery after an unanchored/failed history read. Requires `ZohoCliq.Messages.READ` on the existing refresh-token grant; Doctor says enabled catch-up is unavailable when that prerequisite is missing.
 
 ### Added
@@ -1521,7 +1527,8 @@ publish workflow extracts the matching section as the release notes (see
   lookup, plugin doctor, interactive setup wizard, SecretRef-backed credentials,
   security audit collector, session binding, multi-account, lifecycle hooks.
 
-[Unreleased]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.10...v0.2.0
 [0.1.10]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.8...v0.1.9

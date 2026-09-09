@@ -635,7 +635,7 @@ export default defineChannelPluginEntry({
         // tighter than the agent round-trip.
         //
         // Ack-first work must be detached from the request admission BEFORE
-        // the 200 is written (issue #122): on `>= 2026.8.1-beta.3` the
+        // the 200 is written (issue #122): starting with `2026.8.1-beta.3`, the
         // continuation of an inherited, already-released admission is refused
         // as if the gateway were draining, so every post-ack turn died with
         // `GatewayDrainingError`. Resolve the helper first — it must be
