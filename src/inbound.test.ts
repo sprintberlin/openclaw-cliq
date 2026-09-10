@@ -1388,6 +1388,7 @@ describe("dispatchCliqInbound — stop / abort intent (issue #51)", () => {
   function makeClient() {
     return {
       sendMessage: vi.fn(async () => ({ messageId: "out-1" })),
+      sendMediaMessage: vi.fn(async () => ({ messageId: "media-1" })),
       sendCard: vi.fn(async () => ({ messageId: "out-1" })),
       editMessage: vi.fn(async (o: { chatId: string; messageId: string; text: string }) => ({
         messageId: o.messageId,
@@ -1518,6 +1519,7 @@ describe("dispatchCliqInbound — native slash command authorization (issue #91)
   function makeClient() {
     return {
       sendMessage: vi.fn(async () => ({ messageId: "out-1" })),
+      sendMediaMessage: vi.fn(async () => ({ messageId: "media-1" })),
       sendCard: vi.fn(async () => ({ messageId: "out-1" })),
       editMessage: vi.fn(async (o: { chatId: string; messageId: string; text: string }) => ({
         messageId: o.messageId,
@@ -1683,6 +1685,7 @@ describe("dispatchCliqInbound — inbound quote / reply context (issue #49)", ()
       sendMessage: vi.fn(async (_o: { to: string; text: string; isDm?: boolean }) => ({
         messageId: "out-1",
       })),
+      sendMediaMessage: vi.fn(async () => ({ messageId: "media-1" })),
       sendCard: vi.fn(async () => ({ messageId: "out-1" })),
       editMessage: vi.fn(async (o: { chatId: string; messageId: string; text: string }) => ({
         messageId: o.messageId,
@@ -1796,6 +1799,7 @@ describe("dispatchCliqInbound — inbound quote / reply context (issue #49)", ()
     )!;
     const client = {
       sendMessage: vi.fn(async () => ({ messageId: "out-1" })),
+      sendMediaMessage: vi.fn(async () => ({ messageId: "media-1" })),
       sendCard: vi.fn(async () => ({ messageId: "out-1" })),
       editMessage: vi.fn(async () => ({ messageId: "x", chatId: "y" })),
       resolveChannelChatId: vi.fn(async () => undefined),
@@ -1900,6 +1904,7 @@ describe("dispatchCliqInbound — inbound media (issue #48)", () => {
         messageId: o.isDm ? `mid-${o.to}` : undefined,
         chatId: o.isDm ? `chat-${o.to}` : undefined,
       })),
+      sendMediaMessage: vi.fn(async () => ({ messageId: "media-1" })),
       sendCard: vi.fn(async () => ({ messageId: "out-1" })),
       editMessage: vi.fn(async () => ({ messageId: "x", chatId: "x" })),
       resolveChannelChatId: vi.fn(async () => undefined),
@@ -2203,6 +2208,7 @@ describe("dispatchCliqInbound — thinking placeholder (issue #47)", () => {
           ? { messageId: "ph-1", chatId: opts.placeholderChatId ?? `chat-${o.to}` }
           : { messageId: "ph-1" };
       }),
+      sendMediaMessage: vi.fn(async () => ({ messageId: "media-1" })),
       sendCard: vi.fn(async (o: {
         to: string;
         text?: string;
@@ -3367,6 +3373,7 @@ describe("dispatchCliqInbound — card status phase transitions (issue #78)", ()
           ? { messageId: "card-1", chatId: opts.placeholderChatId ?? `chat-${o.to}` }
           : { messageId: "card-1" };
       }),
+      sendMediaMessage: vi.fn(async () => ({ messageId: "media-1" })),
       sendCard: vi.fn(async (o: {
         to: string;
         text?: string;
@@ -3602,6 +3609,7 @@ describe("dispatchCliqInbound — confirm gate (Phase 3 confirmation buttons)", 
         sends.push(o);
         return { messageId: "msg-1", chatId: `chat-${o.to}` };
       }),
+      sendMediaMessage: vi.fn(async () => ({ messageId: "media-1" })),
       sendCard: vi.fn(async (o: {
         to: string;
         text?: string;
@@ -3964,6 +3972,24 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
     return runtime;
   }
 
+  /**
+   * A runtime whose turn answers through the `message` TOOL instead of the
+   * reply-delivery path: no `deliver` call, but a real outbound send lands in
+   * the same conversation (issue #240).
+   */
+  function mockRuntimeToolOnlyReply(send: () => Promise<unknown>): CliqRuntime {
+    const runtime = mockRuntimeNoReply();
+    runtime.channel.inbound.run = async (params) => {
+      const adapter = (params as unknown as {
+        adapter: { resolveTurn: (...args: unknown[]) => unknown };
+      }).adapter;
+      adapter.resolveTurn({}, {}, {});
+      // The agent's visible output goes out through the message tool.
+      await send();
+    };
+    return runtime;
+  }
+
   function mockRuntimeSkippedCoreShape(): CliqRuntime {
     const runtime = mockRuntimeNoReply();
     runtime.channel.inbound.run = async (params) => {
@@ -4056,6 +4082,7 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
           ? { messageId: "ph-1", chatId: opts.placeholderChatId ?? `chat-${o.to}` }
           : { messageId: "ph-1" };
       }),
+      sendMediaMessage: vi.fn(async () => ({ messageId: "media-1" })),
       sendCard: vi.fn(async (o: {
         to: string;
         text?: string;
@@ -4368,6 +4395,76 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
     expect(client.deletes).toHaveLength(0);
   });
 
+  it("deletes the placeholder instead of showing a failure notice when the turn answered through the message tool (issue #240)", async () => {
+    const { notifyCliqToolSend } = await import("./activity.js");
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    await dispatchCliqInbound({
+      runtime: mockRuntimeToolOnlyReply(async () => {
+        // The message tool delivers the visible answer itself and reports it.
+        await client.sendMessage({ to: "u1", text: "die Antwort", isDm: true });
+        notifyCliqToolSend({ accountId: null, to: "u1", isDm: true });
+      }),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "\ud83d\udcad \u2026", failureText: "\u26a0\ufe0f No reply generated." },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    // Regression for #240: the user was answered, so no error bubble.
+    expect(
+      client.edits.some((e) => e.text === "\u26a0\ufe0f No reply generated."),
+    ).toBe(false);
+    // The now-redundant placeholder is removed instead.
+    expect(client.deletes).toEqual([{ chatId: "chat-u1", messageId: "ph-1" }]);
+  });
+
+  it("still shows the failure notice when a tool send went to a different conversation (issue #240)", async () => {
+    const { notifyCliqToolSend } = await import("./activity.js");
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    await dispatchCliqInbound({
+      runtime: mockRuntimeToolOnlyReply(async () => {
+        // A send to an unrelated chat must not count as answering this turn.
+        notifyCliqToolSend({ accountId: null, to: "someone-else", isDm: true });
+      }),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "\ud83d\udcad \u2026", failureText: "\u26a0\ufe0f No reply generated." },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    expect(client.edits).toHaveLength(1);
+    expect(client.edits[0].text).toBe("\u26a0\ufe0f No reply generated.");
+  });
+
+  it("does not treat the plugin's own placeholder send as an answer (issue #240)", async () => {
+    const client = makeMockClient({ placeholderChatId: "chat-u1" });
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    await dispatchCliqInbound({
+      // No deliver, no tool send — only the placeholder the plugin posted
+      // itself. That must still produce the failure notice.
+      runtime: mockRuntimeNoReply(),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "\ud83d\udcad \u2026", failureText: "\u26a0\ufe0f No reply generated." },
+        refreshToken: "rt",
+        blockStreaming: false,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    expect(client.edits).toHaveLength(1);
+    expect(client.edits[0].text).toBe("\u26a0\ufe0f No reply generated.");
+    expect(client.deletes).toHaveLength(0);
+  });
+
   it("deletes placeholder and re-sends when cleanup edit fails (issue #91)", async () => {
     const client = makeMockClient({ placeholderChatId: "chat-u1", editFails: true });
     const onError = vi.fn();
@@ -4591,6 +4688,7 @@ describe("dispatchCliqInbound — complete streaming turns (issue #210)", () => 
           ? { messageId, chatId: opts.placeholderChatId ?? `chat-${o.to}` }
           : { messageId };
       }),
+      sendMediaMessage: vi.fn(async () => ({ messageId: "media-1" })),
       sendCard: vi.fn(async (o: { to: string; text?: string; isDm?: boolean; theme?: string }) => {
         if (opts.failSend) throw new Error("send rejected");
         const messageId = `card-${nextId++}`;

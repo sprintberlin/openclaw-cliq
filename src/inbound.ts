@@ -18,6 +18,7 @@ import {
 import { stripCliqMentions } from "./mentions.js";
 import { resolveCliqClient } from "./runtime-api.js";
 import { rememberCliqChatId } from "./heartbeat.js";
+import { observeCliqOutboundSends } from "./activity.js";
 import {
   clearLiveEditProgressDraft,
   createLiveEditDeliver,
@@ -105,7 +106,7 @@ export interface CliqRuntime {
         ctx: unknown;
         cfg: OpenClawConfig;
         dispatcherOptions: {
-          deliver: (payload: { text?: string; mediaUrl?: string; channelData?: unknown }) => Promise<void>;
+          deliver: (payload: { text?: string; mediaUrl?: string; mediaUrls?: string[]; channelData?: unknown }) => Promise<void>;
           onError: (err: unknown, info: { kind: string }) => void;
         };
       }) => Promise<unknown>;
@@ -1157,6 +1158,7 @@ export async function dispatchCliqInbound(params: {
      CliqClient,
      | "sendMessage"
      | "sendCard"
+     | "sendMediaMessage"
      | "editMessage"
      | "resolveChannelChatId"
      | "listChatMessages"
@@ -1754,6 +1756,13 @@ export async function dispatchCliqInbound(params: {
     thinkingAnimation?.stop();
     const progressDraftActive = getLiveEditProgressDraftActive(deliver);
     if (!initialDraft && !progressDraftActive) return;
+    // A turn may answer through the `message` TOOL instead of the reply
+    // delivery path. That send never touches the live-edit deliver, so the
+    // placeholder still looks untouched here even though the user was
+    // answered — rewriting it to the failure notice puts an error bubble
+    // next to a delivered reply (issue #240). Any successful outbound send
+    // to this conversation during the turn proves the user got something.
+    const answeredOutsideDeliver = observedOutboundSends > 0;
     if (turnResult?.skippedBenignly) {
       if (progressDraftActive) {
         await clearLiveEditProgressDraft(deliver);
@@ -1774,6 +1783,27 @@ export async function dispatchCliqInbound(params: {
       return;
     }
     if (getLiveEditPlaceholderConsumed(deliver) && !getLiveEditProgressDraftActive(deliver)) return;
+    if (answeredOutsideDeliver) {
+      // Delete the now-redundant placeholder rather than turning it into an
+      // error: the reply itself was delivered by the tool send.
+      if (progressDraftActive) {
+        await clearLiveEditProgressDraft(deliver);
+        return;
+      }
+      if (!initialDraft) return;
+      try {
+        await deleteStrayPlaceholder({
+          client,
+          draft: initialDraft,
+          to: deliverTo,
+          isDm: !parsed.isGroup,
+          onError: (err, info) => onError?.(err, info),
+        });
+      } catch (err) {
+        onError?.(err, { kind: "thinking-placeholder-cleanup" });
+      }
+      return;
+    }
     const noticeText =
       account.thinking?.failureText ?? "⚠️ Couldn't process that message.";
     try {
@@ -1787,6 +1817,20 @@ export async function dispatchCliqInbound(params: {
       onError?.(err, { kind: "thinking-placeholder-cleanup" });
     }
   };
+
+  // Count successful outbound sends addressed to THIS conversation for the
+  // duration of the turn (issue #240). The subscription is turn-scoped and
+  // always released in the `finally` below.
+  let observedOutboundSends = 0;
+  const unobserveOutboundSends = observeCliqOutboundSends((event) => {
+    // Placeholder posts/edits from this very turn must not count as an
+    // answer: only sends whose target matches this conversation and that
+    // originate outside the live-edit deliver are evidence of a reply. The
+    // live-edit path marks the placeholder consumed itself, so a deliver-
+    // routed send never reaches the failure-notice branch anyway.
+    if (event.to && event.to !== deliverTo) return;
+    observedOutboundSends++;
+  });
 
   let turnOutcome: { skippedBenignly: boolean } | undefined;
   try {
@@ -1819,7 +1863,12 @@ export async function dispatchCliqInbound(params: {
           },
           delivery: {
             deliver: async (
-              replyPayload: { text?: string; channelData?: unknown },
+              replyPayload: {
+                text?: string;
+                mediaUrl?: string;
+                mediaUrls?: string[];
+                channelData?: unknown;
+              },
               info?: { kind?: string; final?: boolean },
             ) => {
               // Stop the animation the moment the reply arrives so a late
@@ -1830,12 +1879,17 @@ export async function dispatchCliqInbound(params: {
               // live-edit deliver routes cards through `sendCard`. Stripping
               // it here (the pre-fix behavior) dropped command card replies
               // whenever the thinking placeholder was active (issue #90).
+              // `mediaUrl` / `mediaUrls` carry the agent's `MEDIA:` directive
+              // on the final block; stripping them dropped the file while
+              // the text still claimed it was attached (issue #237).
               const isFinal = info?.final === true || info?.kind === "final";
               if (isFinal) progressController.markFinalReplyStarted();
               try {
                 await deliver(
                   {
                     text: replyPayload?.text,
+                    mediaUrl: replyPayload?.mediaUrl,
+                    mediaUrls: replyPayload?.mediaUrls,
                     channelData: replyPayload?.channelData,
                   },
                   {
@@ -1871,6 +1925,7 @@ export async function dispatchCliqInbound(params: {
   } finally {
     progressController.cancel();
     contentTurn?.finish();
+    unobserveOutboundSends();
     await cleanupStrayPlaceholder(turnOutcome);
   }
 }

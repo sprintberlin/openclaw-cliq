@@ -54,6 +54,91 @@ type SendTrackable = Record<
 const ACTIVITY_TRACKED = Symbol.for("cliq.activityTracked");
 
 /**
+ * One successful outbound Cliq send, as observed by the activity wrapper.
+ *
+ * `origin: "tool"` marks a send the `message` TOOL made (explicitly notified
+ * from the message-actions adapter); `origin: "client"` is any successful
+ * tracked client send. The inbound path uses TOOL sends to tell "the turn
+ * produced no visible output" apart from "the turn answered through the
+ * `message` tool instead of the reply-delivery path" (issue #240) — client
+ * sends alone cannot make that call, because the live-edit deliver path's
+ * own progress/reply sends would masquerade as answers.
+ */
+export interface CliqOutboundSendEvent {
+  accountId: string | null;
+  /** Raw Cliq target of the send (user id for DMs, channel id for groups). */
+  to?: string;
+  isDm?: boolean;
+  method?: TrackedSendMethod;
+  origin: "client" | "tool";
+}
+
+type CliqOutboundSendListener = (event: CliqOutboundSendEvent) => void;
+
+const outboundSendListeners = new Set<CliqOutboundSendListener>();
+
+/**
+ * Observe successful outbound sends across every Cliq client built by the
+ * registry. Returns an unsubscribe function; callers MUST call it (the
+ * inbound path scopes the subscription to a single turn).
+ *
+ * A listener failure is swallowed — observation must never break a send.
+ */
+export function observeCliqOutboundSends(
+  listener: CliqOutboundSendListener,
+): () => void {
+  outboundSendListeners.add(listener);
+  return () => {
+    outboundSendListeners.delete(listener);
+  };
+}
+
+function emitCliqOutboundSend(event: CliqOutboundSendEvent): void {
+  for (const listener of outboundSendListeners) {
+    try {
+      listener(event);
+    } catch {
+      // Ignore: observation must never break a delivered send.
+    }
+  }
+}
+
+/**
+ * Notify that the `message` TOOL delivered a visible send in a conversation
+ * (issue #240). Called by the message-actions adapter after a successful
+ * `send`; the inbound path uses it to keep the thinking placeholder from
+ * being rewritten into the failure notice when the turn answered via the
+ * tool. Never throws.
+ */
+export function notifyCliqToolSend(params: {
+  accountId: string | null;
+  to: string;
+  isDm?: boolean;
+}): void {
+  try {
+    emitCliqOutboundSend({
+      origin: "tool",
+      accountId: params.accountId,
+      to: params.to,
+      ...(params.isDm === undefined ? {} : { isDm: params.isDm }),
+    });
+  } catch {
+    // Ignore: a bookkeeping failure must never break the tool send.
+  }
+}
+
+/** Read the `to` / `isDm` of a tracked send call defensively. */
+function readSendTarget(args: unknown[]): { to?: string; isDm?: boolean } {
+  const first = args[0];
+  if (!first || typeof first !== "object" || Array.isArray(first)) return {};
+  const rec = first as { to?: unknown; isDm?: unknown };
+  return {
+    ...(typeof rec.to === "string" ? { to: rec.to } : {}),
+    ...(typeof rec.isDm === "boolean" ? { isDm: rec.isDm } : {}),
+  };
+}
+
+/**
  * Wrap a client's send methods so a *successful* send records outbound
  * activity for its account.
  *
@@ -82,6 +167,12 @@ export function trackCliqOutboundActivity<T extends object>(
     ): Promise<unknown> {
       const result = await original.apply(this, args);
       recordCliqActivity({ accountId, direction: "outbound" });
+      emitCliqOutboundSend({
+        origin: "client",
+        accountId,
+        method,
+        ...readSendTarget(args as unknown[]),
+      });
       return result;
     } as SendTrackable[TrackedSendMethod];
   }

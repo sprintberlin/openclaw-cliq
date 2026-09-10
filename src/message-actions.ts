@@ -29,11 +29,14 @@ import type {
 import type { AgentToolResult } from "openclaw/plugin-sdk/tool-results";
 
 import {
+  loadCliqMediaAttachment,
   normalizeCliqRouteTarget,
   resolveCliqConfig,
+  type CliqMediaAttachment,
   type ResolvedCliqAccount,
 } from "./client.js";
 import { markdownToCliq } from "./markdown.js";
+import { notifyCliqToolSend } from "./activity.js";
 import { resolveCliqClient } from "./runtime-api.js";
 import {
   presentationToCliqCard,
@@ -323,6 +326,12 @@ interface CliqClientLike {
     text: string;
     isDm?: boolean;
   }): Promise<{ messageId?: string; chatId?: string }>;
+  sendMediaMessage(opts: {
+    to: string;
+    text?: string;
+    isDm?: boolean;
+    attachment: CliqMediaAttachment;
+  }): Promise<{ messageId?: string; chatId?: string }>;
   sendCard(opts: {
     to: string;
     text?: string;
@@ -466,13 +475,91 @@ async function handleFormSend(
   );
 }
 
+/** A media source the agent asked to deliver as a file attachment. */
+interface MediaSendEntry {
+  mediaUrl: string;
+  name?: string;
+  mimeType?: string;
+}
+
+/**
+ * Read the media-attachment params of a `send` defensively. Two shapes are
+ * accepted (issue #238 — the live failure used both):
+ *  - top-level `media`: a string path/URL → one entry.
+ *  - `attachments`: an array of `{ media, name?, mimeType? }` objects → one
+ *    entry per object that carries a usable `media` string.
+ *
+ * A non-empty `attachments` array whose entries carry NO loadable `media`
+ * string (e.g. Telegram-style `buffer`/`fileId` sources) is reported via
+ * `unusableAttachments` so the caller can fail loudly instead of silently
+ * dropping the file and reporting success — the exact bug #238 fixes.
+ */
+function readMediaSendEntries(
+  params: Record<string, unknown>,
+): { entries: MediaSendEntry[]; unusableAttachments: number } {
+  const entries: MediaSendEntry[] = [];
+  let unusableAttachments = 0;
+  const topMedia = readString(params, "media");
+  if (topMedia) entries.push({ mediaUrl: topMedia });
+  const rawAttachments = params["attachments"];
+  if (Array.isArray(rawAttachments)) {
+    for (const entry of rawAttachments) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        unusableAttachments++;
+        continue;
+      }
+      const rec = entry as Record<string, unknown>;
+      const media =
+        typeof rec.media === "string" && rec.media.trim().length > 0
+          ? rec.media.trim()
+          : undefined;
+      if (!media) {
+        unusableAttachments++;
+        continue;
+      }
+      const name = typeof rec.name === "string" && rec.name.trim() ? rec.name.trim() : undefined;
+      const mimeType =
+        typeof rec.mimeType === "string" && rec.mimeType.trim()
+          ? rec.mimeType.trim()
+          : typeof rec.contentType === "string" && rec.contentType.trim()
+            ? rec.contentType.trim()
+            : undefined;
+      // Skip an attachments[] entry that duplicates the top-level `media`
+      // (the live #238 call sent both pointing at the same file).
+      if (entries.some((e) => e.mediaUrl === media)) continue;
+      entries.push({ mediaUrl: media, name, mimeType });
+    }
+  }
+  return { entries, unusableAttachments };
+}
+
+/** Optional media-loading context threaded from ChannelMessageActionContext. */
+export interface MediaLoadContext {
+  mediaReadFile?: (filePath: string) => Promise<Buffer>;
+  mediaAccess?: { readFile?: (filePath: string) => Promise<Buffer> } | null;
+  /** Account identity used to reconcile successful tool sends with a turn. */
+  accountId?: string | null;
+}
+
 async function handleSend(
   client: CliqClientLike,
   params: Record<string, unknown>,
+  mediaCtx?: MediaLoadContext,
 ): Promise<AgentToolResult<unknown>> {
   const to = readString(params, "to") ?? readString(params, "channelId");
   const message = readString(params, "message");
   if (!to) return errorResult("`to` (channel target) is required for send.");
+  const { entries: mediaEntries, unusableAttachments } = readMediaSendEntries(params);
+  if (unusableAttachments > 0) {
+    return errorResult(
+      `attachments contained ${unusableAttachments} entr${unusableAttachments === 1 ? "y" : "ies"} with no loadable \`media\` source — buffer/fileId-based attachments are not supported on Cliq; pass a local file path or HTTPS URL via \`media\`.`,
+    );
+  }
+  if (mediaEntries.length > 1) {
+    return errorResult(
+      `only one media attachment per send is supported — split ${mediaEntries.length} files into separate sends.`,
+    );
+  }
   // A `form` param switches the send to the form-rendering path: the form
   // definition is rendered as one or more Cliq prompt card(s) (a `prompt`-
   // theme card with a button per select option, plus an optional summary
@@ -480,9 +567,6 @@ async function handleSend(
   // `theme` / `slides` — a form send is a distinct structured-input
   // solicitation, not a plain card post.
   const formInput = readFormParam(params["form"]);
-  if (formInput) {
-    return handleFormSend(client, to, formInput, params);
-  }
   const { buttons, presentationText } = resolveSendButtons(params);
   // Body text: explicit `message` wins; otherwise fall back to text derived
   // from a portable `presentation` (title/text/context blocks). A send with
@@ -494,22 +578,86 @@ async function handleSend(
   const theme = readString(params, "theme");
   const pollOptions = readStringArray(params, "pollOptions");
   const isPoll = theme === "poll";
+  // v3 Message Card supporting-content `slides` (table / list / label /
+  // images / text blocks) attach alongside the card for v3 opt-in accounts;
+  // ignored on v2. `thumbnail` (header image URL) + `sections` (labeled
+  // key/value field groups) are `modern-inline`-only. All three are parsed
+  // defensively — the renderer clamps and drops invalid entries, never throws.
+  const slides = readSlidesParam(params["slides"]);
+  const thumbnail = readThumbnailParam(params["thumbnail"]);
+  const sections = readSectionsParam(params["sections"]);
+  if (mediaEntries.length === 1) {
+    // Media sends cannot carry cards: the v2 multipart attachment post has no
+    // buttons/slides/sections/form surface. Fail loudly instead of dropping
+    // the card parts (or the file) silently — issue #238.
+    if (
+      formInput ||
+      buttons.length > 0 ||
+      isPoll ||
+      slides.length > 0 ||
+      sections.length > 0 ||
+      thumbnail
+    ) {
+      return errorResult(
+        "media attachments cannot be combined with form/buttons/poll/slides/sections/thumbnail — send the file and the card as separate messages.",
+      );
+    }
+    // A caption-less media send is allowed — Cliq accepts an attachment with
+    // no text — so there is no text/buttons requirement on this path.
+    const target = normalizeCliqRouteTarget(to);
+    const rich = body ? markdownToCliq(body) : undefined;
+    let attachment: CliqMediaAttachment;
+    try {
+      const loaded = await loadCliqMediaAttachment({
+        mediaUrl: mediaEntries[0].mediaUrl,
+        mediaReadFile: mediaCtx?.mediaReadFile,
+        mediaAccess: mediaCtx?.mediaAccess,
+      });
+      attachment = {
+        bytes: loaded.bytes,
+        fileName: mediaEntries[0].name ?? loaded.fileName,
+        mimeType: mediaEntries[0].mimeType ?? loaded.mimeType,
+      };
+    } catch (err) {
+      return errorResult(
+        `media attachment could not be loaded from "${mediaEntries[0].mediaUrl}": ${String(err)}`,
+      );
+    }
+    try {
+      const result = await client.sendMediaMessage({
+        to: target.to,
+        isDm: target.isDm,
+        text: rich,
+        attachment,
+      });
+      notifyCliqToolSend({
+        accountId: mediaCtx?.accountId ?? null,
+        to: target.to,
+        isDm: target.isDm,
+      });
+      return okResult(
+        `Sent media message to ${to}${result.messageId ? ` (messageId=${result.messageId})` : ""} with attachment "${attachment.fileName}" (${attachment.bytes.byteLength} bytes).`,
+        {
+          action: "send",
+          to,
+          media: true,
+          fileName: attachment.fileName,
+          bytes: attachment.bytes.byteLength,
+          messageId: result.messageId ?? null,
+        },
+      );
+    } catch (err) {
+      return errorResult(`send failed: ${String(err)}`);
+    }
+  }
+  if (formInput) {
+    return handleFormSend(client, to, formInput, params);
+  }
   if (isPoll && pollOptions.length < 2) {
     return errorResult(
       "`pollOptions` (min 2) is required for send with theme=poll.",
     );
   }
-  // v3 Message Card supporting-content `slides` (table / list / label /
-  // images / text blocks) attach alongside the card for v3 opt-in accounts;
-  // ignored on v2. Parsed defensively — invalid slides are dropped by the
-  // renderer, never throw.
-  const slides = readSlidesParam(params["slides"]);
-  // v3 `modern-inline` Message Card in-card fields: a `thumbnail` header
-  // image URL + `sections` of labeled key/value field groups. Both are
-  // `modern-inline`-only (ignored for `prompt` / `poll` and on v2); parsed
-  // defensively — the renderer clamps + drops invalid entries, never throws.
-  const thumbnail = readThumbnailParam(params["thumbnail"]);
-  const sections = readSectionsParam(params["sections"]);
   if (!body && buttons.length === 0 && !isPoll && slides.length === 0 && sections.length === 0) {
     return errorResult("`message` (text) or `buttons` is required for send.");
   }
@@ -555,6 +703,11 @@ async function handleSend(
               isDm: target.isDm,
               text: rich ?? "",
             });
+    notifyCliqToolSend({
+      accountId: mediaCtx?.accountId ?? null,
+      to: target.to,
+      isDm: target.isDm,
+    });
     return okResult(
       `Sent message to ${to}${result.messageId ? ` (messageId=${result.messageId})` : ""}${isPoll ? ` with ${pollOptions.length} poll option(s)` : buttons.length > 0 ? ` with ${buttons.length} button(s)` : slidesParam ? ` with ${slidesParam.length} slide(s)` : sectionsParam ? ` with ${sectionsParam.length} section(s)` : thumbnailParam ? ` with a thumbnail` : ""}.`,
       {
@@ -744,7 +897,11 @@ export const cliqMessageActions: ChannelMessageActionAdapter = {
     try {
       switch (action) {
         case "send":
-          return await handleSend(client, params);
+          return await handleSend(client, params, {
+            mediaReadFile: ctx.mediaReadFile,
+            mediaAccess: ctx.mediaAccess,
+            accountId: ctx.accountId,
+          });
         case "edit":
           return await handleEdit(client, params);
         case "delete":

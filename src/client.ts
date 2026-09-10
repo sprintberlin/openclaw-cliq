@@ -1908,41 +1908,59 @@ export class CliqClient {
   }
 
   /**
-   * Post a media attachment (raw bytes) to a DM or channel via the v2
-   * multipart endpoints. This is a v3 DEAD END: v3 message-post endpoints
-   * take a JSON `{ text, reply_to?, sync_message? }` body with NO
-   * `attachments` field, v3 has no Files API (no byte-upload surface), and
-   * the only v3 image option is a Message-Card `images` slide that accepts
-   * PUBLIC HTTPS image URLs only (no raw bytes) via the Message-Card channel
-   * endpoint — which posts as the authenticated USER (not the bot) and needs
-   * the user-context refresh token (`Channels.CREATE`). That path is strictly
-   * worse than the v2 multipart path (bot sender identity, raw bytes, any
-   * MIME type) for the plugin's media-upload use case, so media posts stay
-   * on `/api/v2/...` REGARDLESS of the `apiVersion` opt-in, indefinitely
+   * Post a media attachment (raw bytes) to a DM or channel via the dedicated
+   * v2 **Files API** (`POST /api/v2/bots/{bot}/files` for a bot DM,
+   * `POST /api/v2/channelsbyname/{name}/files` for a channel), per Zoho's
+   * published OpenAPI document (`files.yml`).
+   *
+   * File uploads do NOT go through the message-post endpoints. Verified
+   * against the live API (issue #242): `POST /api/v2/bots/{bot}/message`
+   * rejects `multipart/form-data` outright — a multipart body without any
+   * file returns 400 and one carrying `attachments`/`file` returns 404
+   * `operation_failed`. That endpoint accepts JSON only; the earlier
+   * multipart shape was covered by mocks and never held against Zoho.
+   *
+   * Field contract (files.yml): `files` carries the binary part, the DM
+   * recipient is `user_id` (not `userids`), a channel post identifies the
+   * sending bot via the `bot_unique_name` form field, and `comments` — the
+   * per-file caption — must be a JSON **array** string (a bare string is
+   * rejected with `input_json_invalid`). Both endpoints authorize with
+   * `ZohoCliq.Webhooks.CREATE`, so channel attachments no longer require a
+   * user-context refresh token.
+   *
+   * Still a v3 dead end: v3 message-post endpoints take a JSON body with no
+   * attachment field, v3 exposes no byte-upload surface, and its only image
+   * option is a Message-Card slide limited to public HTTPS URLs. Media posts
+   * therefore stay on `/api/v2/...` regardless of the `apiVersion` opt-in
    * (locked by a regression test in `src/channel.test.ts`).
+   *
+   * The success body reports `{ user_ids: [...] }` and carries no message id,
+   * so the returned `messageId` is normally `undefined`.
    */
   async sendMediaMessage(opts: SendMediaMessageOptions): Promise<{ messageId?: string }> {
     const isDm = Boolean(opts.isDm);
-    const scope = isDm ? "ZohoCliq.Webhooks.CREATE" : "ZohoCliq.Channels.UPDATE";
-    const needsUserContext = !isDm;
-    const token = await this.resolveOutboundToken(scope, needsUserContext);
+    // Both file-share endpoints authorize with the bot scope (files.yml),
+    // so this path never needs the user-context refresh token.
+    const token = await this.resolveOutboundToken("ZohoCliq.Webhooks.CREATE", false);
     const form = new FormData();
-    if (opts.text) form.set("text", opts.text);
     let url: string;
     if (isDm) {
-      url = `${this.apiBase}/api/v2/bots/${encodeURIComponent(this.botId)}/message`;
-      form.set("userids", opts.to);
+      url = `${this.apiBase}/api/v2/bots/${encodeURIComponent(this.botId)}/files`;
+      form.set("user_id", opts.to);
     } else {
-      // Channel media post: channelsbyname endpoint (see sendMessage/issue #26).
-      url = `${this.apiBase}/api/v2/channelsbyname/${encodeURIComponent(opts.to)}/message?bot_unique_name=${encodeURIComponent(this.botId)}`;
+      // Channel file share: post as the bot via `bot_unique_name` (files.yml).
+      url = `${this.apiBase}/api/v2/channelsbyname/${encodeURIComponent(opts.to)}/files`;
+      form.set("bot_unique_name", this.botId);
     }
+    // Caption: Zoho requires a JSON array here, one entry per uploaded file.
+    if (opts.text) form.set("comments", JSON.stringify([opts.text]));
     const mimeType = opts.attachment.mimeType ?? "application/octet-stream";
     // Copy into a standalone ArrayBuffer so the Blob does not capture a shared
     // Node Buffer pool (which would include unrelated adjacent allocations).
     const standalone = new Uint8Array(opts.attachment.bytes.byteLength);
     standalone.set(opts.attachment.bytes);
     const blob = new Blob([standalone], { type: mimeType });
-    form.set("attachments", blob, opts.attachment.fileName);
+    form.set("files", blob, opts.attachment.fileName);
     const targetKind = opts.isDm ? "dm" : "channel";
     this.logger.info?.(
       `[cliq] send media: ${targetKind} id=${opts.to} fileName=${opts.attachment.fileName} bytes=${opts.attachment.bytes.byteLength}${opts.text ? ` textLen=${opts.text.length}` : ""}`,

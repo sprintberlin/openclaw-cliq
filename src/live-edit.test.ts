@@ -24,6 +24,14 @@ interface FakeClient {
     theme?: string;
     pollOptions?: string[];
   }[];
+  mediaSends: {
+    to: string;
+    text?: string;
+    isDm?: boolean;
+    fileName: string;
+    mimeType?: string;
+    bytes: number;
+  }[];
   sendMessage: (opts: { to: string; text: string; isDm?: boolean }) => Promise<{
     messageId?: string;
     chatId?: string;
@@ -47,6 +55,12 @@ interface FakeClient {
     theme?: string;
     pollOptions?: string[];
   }) => Promise<{ messageId?: string; chatId?: string }>;
+  sendMediaMessage: (opts: {
+    to: string;
+    text?: string;
+    isDm?: boolean;
+    attachment: { bytes: Uint8Array; fileName: string; mimeType?: string };
+  }) => Promise<{ messageId?: string }>;
 }
 
 function makeFakeClient(opts: {
@@ -59,15 +73,17 @@ function makeFakeClient(opts: {
   dmSendFails?: boolean;
   cardSendFails?: boolean;
   cardChatId?: string;
+  mediaSendFails?: boolean;
 } = {}): FakeClient & Pick<
   CliqClient,
-  "sendMessage" | "editMessage" | "resolveChannelChatId" | "listChatMessages" | "deleteMessage" | "sendCard"
+  "sendMessage" | "editMessage" | "resolveChannelChatId" | "listChatMessages" | "deleteMessage" | "sendCard" | "sendMediaMessage"
 > {
   const sends: { to: string; text: string; isDm?: boolean }[] = [];
   const edits: { chatId: string; messageId: string; text: string }[] = [];
   const deletes: { chatId: string; messageId: string }[] = [];
   const chatIdResolves: { name: string; chatId: string | undefined }[] = [];
   const messageListCalls: { chatId: string; limit?: number }[] = [];
+  const mediaSends: FakeClient["mediaSends"] = [];
   const cardSends: {
     to: string;
     text?: string;
@@ -82,6 +98,7 @@ function makeFakeClient(opts: {
     deletes,
     chatIdResolves,
     messageListCalls,
+    mediaSends,
     cardSends,
     sendMessage: vi.fn(async (o: { to: string; text: string; isDm?: boolean }) => {
       if (opts.dmSendFails) throw new Error("send rejected");
@@ -111,6 +128,25 @@ function makeFakeClient(opts: {
       if (opts.deleteFails) throw new Error("delete rejected");
       return true;
     }),
+    sendMediaMessage: vi.fn(
+      async (o: {
+        to: string;
+        text?: string;
+        isDm?: boolean;
+        attachment: { bytes: Uint8Array; fileName: string; mimeType?: string };
+      }) => {
+        if (opts.mediaSendFails) throw new Error("media send rejected");
+        mediaSends.push({
+          to: o.to,
+          text: o.text,
+          isDm: o.isDm,
+          fileName: o.attachment.fileName,
+          mimeType: o.attachment.mimeType,
+          bytes: o.attachment.bytes.byteLength,
+        });
+        return { messageId: `md${mediaSends.length}` };
+      },
+    ),
     sendCard: vi.fn(async (o) => {
       if (opts.cardSendFails) throw new Error("card send rejected");
       cardSends.push(o);
@@ -1426,6 +1462,216 @@ describe("createLiveEditDeliver — card replies via channelData.cliqCard (issue
     expect(fake.edits).toHaveLength(1);
     expect(fake.edits[0].chatId).toBe("CT_dev_team");
     expect(getLiveEditPlaceholderConsumed(deliver)).toBe(true);
+  });
+});
+
+describe("createLiveEditDeliver — media replies via payload.mediaUrl (issue #237)", () => {
+  it("posts a mediaUrl payload through sendMediaMessage with the text as caption", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      mediaReadFile: async () => Buffer.from("XLSXBYTES"),
+    });
+    await deliver(
+      { text: "Hier ist die Excel-Datei", mediaUrl: "/tmp/report.xlsx" },
+      { final: true },
+    );
+    expect(fake.mediaSends).toHaveLength(1);
+    expect(fake.mediaSends[0]).toMatchObject({
+      to: "u1",
+      isDm: true,
+      fileName: "report.xlsx",
+      mimeType:
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      bytes: 9,
+    });
+    expect(fake.mediaSends[0].text).toBe("Hier ist die Excel-Datei");
+    // The regression: the file used to be dropped and only text was sent.
+    expect(fake.sends).toHaveLength(0);
+  });
+
+  it("posts every entry of mediaUrls and captions only the first", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      mediaReadFile: async () => Buffer.from("DATA"),
+    });
+    await deliver(
+      { text: "zwei Dateien", mediaUrls: ["/tmp/a.pdf", "/tmp/b.png"] },
+      { final: true },
+    );
+    expect(fake.mediaSends).toHaveLength(2);
+    expect(fake.mediaSends[0].fileName).toBe("a.pdf");
+    expect(fake.mediaSends[0].text).toBe("zwei Dateien");
+    expect(fake.mediaSends[1].fileName).toBe("b.png");
+    expect(fake.mediaSends[1].text).toBeUndefined();
+  });
+
+  it("deduplicates a mediaUrl that is repeated in mediaUrls", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      mediaReadFile: async () => Buffer.from("DATA"),
+    });
+    await deliver(
+      { text: "eine Datei", mediaUrl: "/tmp/same.xlsx", mediaUrls: ["/tmp/same.xlsx"] },
+      { final: true },
+    );
+    expect(fake.mediaSends).toHaveLength(1);
+  });
+
+  it("consumes the thinking placeholder instead of leaving it for the failure notice", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1", text: "💭 …" },
+      mediaReadFile: async () => Buffer.from("DATA"),
+    });
+    await deliver(
+      { text: "Datei folgt", mediaUrl: "/tmp/report.xlsx" },
+      { final: true },
+    );
+    expect(fake.mediaSends).toHaveLength(1);
+    // The placeholder must be reconciled (edited to the caption), so the
+    // inbound stray-placeholder cleanup does not turn it into an error.
+    expect(getLiveEditPlaceholderConsumed(deliver)).toBe(true);
+    expect(fake.edits.at(-1)?.text).toBe("Datei folgt");
+    // ...and the upload must NOT repeat that same text as its caption, or the
+    // user sees the sentence twice (live 2026-09-08: the reconciled draft and
+    // the `send media` caption both carried the identical text).
+    expect(fake.mediaSends[0].text).toBeUndefined();
+  });
+
+  it("keeps the caption on the upload when there is no draft to carry the text", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      mediaReadFile: async () => Buffer.from("DATA"),
+    });
+    await deliver(
+      { text: "Hier ist die Datei", mediaUrl: "/tmp/report.xlsx" },
+      { final: true },
+    );
+    // Without a placeholder nothing else shows the text, so the caption stays
+    // on the attachment — the reply must never lose its sentence.
+    expect(fake.mediaSends[0].text).toBe("Hier ist die Datei");
+    expect(fake.edits).toHaveLength(0);
+    expect(fake.sends).toHaveLength(0);
+  });
+
+  it("keeps the caption when the draft cannot be edited (text would be lost otherwise)", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1", text: "\u{1F4AD} \u2026" },
+      initialDraftEditable: false,
+      mediaReadFile: async () => Buffer.from("DATA"),
+    });
+    await deliver(
+      { text: "Nicht editierbar", mediaUrl: "/tmp/report.xlsx" },
+      { final: true },
+    );
+    // A non-editable draft is deleted, so the attachment must carry the text.
+    expect(fake.mediaSends[0].text).toBe("Nicht editierbar");
+  });
+
+  it("falls back to the text path when the media source cannot be read", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      mediaReadFile: async () => {
+        throw new Error("ENOENT");
+      },
+    });
+    await deliver(
+      { text: "Antwort trotzdem", mediaUrl: "/tmp/missing.xlsx" },
+      { final: true },
+    );
+    expect(fake.mediaSends).toHaveLength(0);
+    // A lost attachment must never swallow the answer as well.
+    expect(fake.sends).toHaveLength(1);
+    expect(fake.sends[0].text).toBe("Antwort trotzdem");
+  });
+
+  it("falls back to the text path when the media upload is rejected", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1", mediaSendFails: true });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      mediaReadFile: async () => Buffer.from("DATA"),
+    });
+    await deliver(
+      { text: "Antwort trotzdem", mediaUrl: "/tmp/report.xlsx" },
+      { final: true },
+    );
+    expect(fake.sends).toHaveLength(1);
+    expect(fake.sends[0].text).toBe("Antwort trotzdem");
+  });
+
+  it("leaves text-only payloads on the text path (no media call)", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+    });
+    await deliver({ text: "nur Text" }, { final: true });
+    expect(fake.mediaSends).toHaveLength(0);
+    expect(fake.sends).toHaveLength(1);
+  });
+
+  it("posts media on the legacy (block-streaming off) path too", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: false,
+      mediaReadFile: async () => Buffer.from("DATA"),
+    });
+    await deliver({ text: "Datei", mediaUrl: "/tmp/report.xlsx" }, { final: true });
+    expect(fake.mediaSends).toHaveLength(1);
+    expect(fake.sends).toHaveLength(0);
+  });
+
+  it("ignores media on a progress draft (preview keeps its own lifecycle)", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      mediaReadFile: async () => Buffer.from("DATA"),
+    });
+    await deliver(
+      { text: "Zwischenstand", mediaUrl: "/tmp/report.xlsx" },
+      { progress: true },
+    );
+    expect(fake.mediaSends).toHaveLength(0);
   });
 });
 

@@ -31,9 +31,26 @@ describe("parseCliqTarget", () => {
     expect(parseCliqTarget("cliq:group:dev-team")).toEqual({ kind: "group", id: "dev-team", explicit: true });
   });
 
-  it("treats a bare cliq:<id> as a group target (backward compat)", () => {
+  it("treats a bare cliq:<id> as a group target (backward compat, non-numeric ids only)", () => {
     expect(parseCliqTarget("cliq:dev-team")).toEqual({ kind: "group", id: "dev-team", explicit: false });
-    expect(parseCliqTarget("cliq:12345")).toEqual({ kind: "group", id: "12345", explicit: false });
+  });
+
+  it("routes a bare all-numeric id to a direct target — Zoho user ids are numeric, channel names never are (issue #239)", () => {
+    expect(parseCliqTarget("cliq:12345")).toEqual({ kind: "direct", id: "12345", explicit: false });
+    expect(parseCliqTarget("929484733")).toEqual({ kind: "direct", id: "929484733", explicit: false });
+    expect(parseCliqTarget("20098819618")).toEqual({ kind: "direct", id: "20098819618", explicit: false });
+  });
+
+  it("accepts user:/dm: kind prefixes without the cliq: provider prefix (issue #239)", () => {
+    expect(parseCliqTarget("user:929484733")).toEqual({ kind: "direct", id: "929484733", explicit: true });
+    expect(parseCliqTarget("dm:929484733")).toEqual({ kind: "direct", id: "929484733", explicit: true });
+    expect(parseCliqTarget("USER:929484733")).toEqual({ kind: "direct", id: "929484733", explicit: true });
+    expect(parseCliqTarget("channel:dev-team")).toEqual({ kind: "group", id: "dev-team", explicit: true });
+  });
+
+  it("rejects an unknown kind prefix without the cliq: provider prefix", () => {
+    expect(parseCliqTarget("foo:bar")).toBeNull();
+    expect(parseCliqTarget("user:")).toBeNull();
   });
 
   it("treats a bare id with no cliq: prefix as a group target", () => {
@@ -60,6 +77,12 @@ describe("normalizeCliqMessagingTarget", () => {
     expect(normalizeCliqMessagingTarget("cliq:dm:12345")).toBe("cliq:user:12345");
     expect(normalizeCliqMessagingTarget("cliq:group:dev-team")).toBe("cliq:channel:dev-team");
     expect(normalizeCliqMessagingTarget("cliq:chat:CT_1")).toBe("cliq:channel:CT_1");
+  });
+
+  it("canonicalizes provider-less kind prefixes and bare numeric user ids (issue #239)", () => {
+    expect(normalizeCliqMessagingTarget("user:929484733")).toBe("cliq:user:929484733");
+    expect(normalizeCliqMessagingTarget("929484733")).toBe("cliq:user:929484733");
+    expect(normalizeCliqMessagingTarget("dev-team")).toBe("cliq:channel:dev-team");
   });
 
   it("returns undefined for empty input", () => {
@@ -376,6 +399,8 @@ describe("looksLikeCliqTargetId", () => {
   it("recognizes bare ids", () => {
     expect(looksLikeCliqTargetId("dev-team")).toBe(true);
     expect(looksLikeCliqTargetId("cliq:dev-team")).toBe(true);
+    expect(looksLikeCliqTargetId("929484733")).toBe(true);
+    expect(looksLikeCliqTargetId("user:929484733")).toBe(true);
   });
 
   it("rejects empty input", () => {

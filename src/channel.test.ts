@@ -563,15 +563,20 @@ describe("cliq plugin", () => {
     } finally {
       globalThis.fetch = original;
     }
-    // The bot DM API call must be multipart/form-data with userids + the file attached.
-    const post = seen.find((s) => s.url.includes("/bots/bot/message"));
+    // Uploads go to the dedicated Files API, never the message endpoint
+    // (issue #242: /bots/{bot}/message rejects multipart outright).
+    expect(seen.find((s) => s.url.includes("/bots/bot/message"))).toBeUndefined();
+    const post = seen.find((s) => s.url.includes("/bots/bot/files"));
     expect(post).toBeDefined();
     const form = post!.body as FormData;
     expect(form).toBeInstanceOf(FormData);
-    expect(form.get("userids")).toBe("user-1");
-    expect(form.get("text")).toBe("*see this*");
+    // files.yml: the DM recipient is `user_id`, not the message-path `userids`.
+    expect(form.get("user_id")).toBe("user-1");
+    expect(form.get("userids")).toBeNull();
+    // The caption must be a JSON array — a bare string returns input_json_invalid.
+    expect(form.get("comments")).toBe(JSON.stringify(["*see this*"]));
     expect(form.get("chatid")).toBeNull();
-    const file = form.get("attachments") as File;
+    const file = form.get("files") as File;
     expect(file).toBeInstanceOf(File);
     expect(file.name).toBe("file.png");
     expect(file.type).toBe("image/png");
@@ -616,16 +621,18 @@ describe("cliq plugin", () => {
     } finally {
       globalThis.fetch = original;
     }
-    const post = seen.find((s) => s.url.includes("/channelsbyname/dev-team/message"));
+    const post = seen.find((s) => s.url.includes("/channelsbyname/dev-team/files"));
     expect(post).toBeDefined();
-    expect(post!.url).toContain("bot_unique_name=bot");
     const form = post!.body as FormData;
     expect(form).toBeInstanceOf(FormData);
+    // A channel file share identifies the sending bot through a form field
+    // (files.yml), not the message endpoint's query param.
+    expect(form.get("bot_unique_name")).toBe("bot");
     // Channel media posts must NOT carry a chatid or userids key (issue #26).
     expect(form.get("chatid")).toBeNull();
     expect(form.get("userids")).toBeNull();
-    expect(form.get("text")).toBe("see this");
-    const file = form.get("attachments") as File;
+    expect(form.get("comments")).toBe(JSON.stringify(["see this"]));
+    const file = form.get("files") as File;
     expect(file).toBeInstanceOf(File);
     expect(file.name).toBe("file.png");
   });
@@ -664,13 +671,13 @@ describe("cliq plugin", () => {
     } finally {
       globalThis.fetch = original;
     }
-    const post = seen.find((s) => s.url.includes("/bots/bot/message"));
+    const post = seen.find((s) => s.url.includes("/bots/bot/files"));
     expect(post).toBeDefined();
     const form = post!.body as FormData;
-    expect(form.get("userids")).toBe("u-1");
-    expect(form.get("text")).toBe("doc");
+    expect(form.get("user_id")).toBe("u-1");
+    expect(form.get("comments")).toBe(JSON.stringify(["doc"]));
     expect(form.get("chatid")).toBeNull();
-    const file = form.get("attachments") as File;
+    const file = form.get("files") as File;
     expect(file.name).toBe("report.txt");
     expect(file.type).toBe("text/plain");
     expect(new Uint8Array(await file.arrayBuffer())).toEqual(new Uint8Array(fileBytes));
@@ -736,22 +743,23 @@ describe("CliqClient.sendMediaMessage v3 dead-end (issue #65)", () => {
     } finally {
       globalThis.fetch = original;
     }
-    // Channel media must use the user-context refresh-token grant (the
-    // refresh-token grant reuses the consented scopes — no `scope` query
-    // param is sent, matching the v2 channel-post contract).
+    // Channel file shares authorize with the bot scope too (files.yml) —
+    // no user-context refresh token is needed anymore.
     const oauth = seen.find((s) => s.url === "oauth");
-    expect(oauth?.grantType).toBe("refresh_token");
-    expect(oauth?.scope).toBeNull();
-    // And must hit the v2 channelsbyname multipart endpoint, never /api/v3/.
+    expect(oauth?.grantType).toBe("client_credentials");
+    expect(oauth?.scope).toBe("ZohoCliq.Webhooks.CREATE");
+    // And must hit the v2 channelsbyname Files endpoint, never /api/v3/.
     const post = seen.find((s) => s.method === "POST" && s.url.includes("/channelsbyname/"));
     expect(post).toBeDefined();
-    expect(post!.url).toContain("/api/v2/channelsbyname/dev-team/message");
-    expect(post!.url).toContain("bot_unique_name=bot");
+    expect(post!.url).toContain("/api/v2/channelsbyname/dev-team/files");
     expect(post!.url).not.toContain("/api/v3/");
     expect(post!.body).toBeInstanceOf(FormData);
     const form = post!.body as FormData;
-    expect(form.get("text")).toBe("img");
-    expect((form.get("attachments") as File).name).toBe("file.png");
+    // The sending bot is identified by a form field on the files endpoint
+    // (files.yml), not by the message endpoint's query param.
+    expect(form.get("bot_unique_name")).toBe("bot");
+    expect(form.get("comments")).toBe(JSON.stringify(["img"]));
+    expect((form.get("files") as File).name).toBe("file.png");
   });
 
   it("DM media posts stay on /api/v2 multipart even when apiVersion==='v3'", async () => {
@@ -789,7 +797,7 @@ describe("CliqClient.sendMediaMessage v3 dead-end (issue #65)", () => {
     expect(oauth?.grantType).toBe("client_credentials");
     const post = seen.find((s) => s.method === "POST" && s.url.includes("/bots/"));
     expect(post).toBeDefined();
-    expect(post!.url).toContain("/api/v2/bots/bot/message");
+    expect(post!.url).toContain("/api/v2/bots/bot/files");
     expect(post!.url).not.toContain("/api/v3/");
   });
 });
