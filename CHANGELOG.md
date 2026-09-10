@@ -19,6 +19,7 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- Native v3 typing no longer posts to channels/groups by default, because Cliq attributes `/chats/{chatId}/activities` to the human refresh-token owner and exposes no bot sender override. New `heartbeat.typing: "off" | "dm" | "all"` defaults to `"dm"`; ambiguous raw chat IDs fail closed, while `"all"` is an explicit opt-in to the human attribution (#222).
 - Animated thinking placeholders now remain active during otherwise silent tool/reasoning phases even when partial, block, or progress streaming is enabled, then stop and drain any in-flight frame edit before the first real draft update so animation cannot overwrite generated text (#211).
 - Doctor distinguishes an unprovisioned Message/Mention handler (`400 execution_handler_not_found`) from missing `ZohoCliq.Bots.READ` consent, points new bots to handler provisioning, and leaves unrelated failures as unreadable state (#249).
 

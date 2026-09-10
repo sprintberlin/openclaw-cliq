@@ -37,6 +37,7 @@ interface TypingTurnState {
 }
 
 const chatIdMemory = new Map<string, string>();
+const chatKindMemory = new Map<string, "dm" | "group">();
 const typingTurns = new Map<string, TypingTurnState>();
 let typingNow: () => number = () => Date.now();
 
@@ -73,6 +74,7 @@ export function rememberCliqChatId(params: {
   const chatId = params.chatId.trim();
   if (!isCliqChatId(chatId)) return;
   const acct = params.accountId;
+  chatKindMemory.set(memoryKey(acct, chatId), params.isGroup ? "group" : "dm");
   rememberAlias(acct, chatId, chatId);
   rememberAlias(acct, `chat:${chatId}`, chatId);
   rememberAlias(acct, `cliq:chat:${chatId}`, chatId);
@@ -129,6 +131,7 @@ export function lookupCliqChatId(
  */
 export function resetCliqTypingState(opts?: { now?: () => number }): void {
   chatIdMemory.clear();
+  chatKindMemory.clear();
   typingTurns.clear();
   typingNow = opts?.now ?? (() => Date.now());
 }
@@ -161,6 +164,30 @@ function prewarmOauth(account: ResolvedCliqAccount): void {
 
 function canSendTyping(account: ResolvedCliqAccount): boolean {
   return Boolean(account.refreshToken);
+}
+
+function canSendTypingToTarget(params: {
+  account: ResolvedCliqAccount;
+  to: string;
+  chatId: string;
+}): boolean {
+  const mode = params.account.heartbeatTyping ?? "dm";
+  if (mode === "off") return false;
+  if (mode === "all") return true;
+
+  // The remembered inbound chat identity is stronger than a bare target:
+  // non-numeric sender ids and channel names are otherwise indistinguishable.
+  const rememberedKind = chatKindMemory.get(
+    memoryKey(params.account.accountId, params.chatId),
+  );
+  if (rememberedKind) return rememberedKind === "dm";
+
+  const parsed = parseCliqTarget(params.to);
+  // Only explicit kinds and all-numeric bare user ids are trustworthy. A raw
+  // CT_ id without remembered provenance could be a shared room: fail closed.
+  if (parsed?.explicit) return parsed.kind === "direct";
+  if (/^\d+$/.test(params.to.trim())) return true;
+  return false;
 }
 
 /**
@@ -205,13 +232,18 @@ function resolveAccountSafe(
  * broken account is skipped instead of producing a failed model turn.
  *
  * `sendTyping` — native v3 chat activity (`POST /api/v3/chats/{chatId}/activities`
- * with `{"action":"typing"}`, scope `ZohoCliq.Chats.UPDATE`). Sent only when a
- * refresh token is configured and a real chat id is known (inbound webhook
- * `chat.id`, never a Zoho user id). Throttled to at most one request every
+ * with `{"action":"typing"}`, scope `ZohoCliq.Chats.UPDATE`). Cliq attributes
+ * this activity to the human owner of the refresh token; its API has no bot
+ * sender override. `channels.cliq.heartbeat.typing` therefore defaults to
+ * `"dm"`: shared rooms are suppressed unless an operator explicitly selects
+ * `"all"`; `"off"` suppresses DMs too. Sent only when a refresh token and a
+ * real chat id are known (inbound webhook `chat.id`, never a Zoho user id).
+ * Throttled to at most one request every
  * {@link DEFAULT_CLIQ_TYPING_MIN_INTERVAL_MS} and bounded by
  * {@link DEFAULT_CLIQ_TYPING_MAX_DURATION_MS}. A 429 stops further activity
- * for the rest of the turn. HTTP 204 is API acceptance only; Cliq client UI
- * visibility is unconfirmed. Failures are swallowed — typing must never
+ * for the rest of the turn. The UI renders accepted activities as the human
+ * refresh-token owner; shared rooms are therefore suppressed by default.
+ * Failures are swallowed — typing must never
  * break or delay an agent turn. When typing cannot be sent, the call still
  * pre-warms the cached OAuth token.
  *
@@ -234,6 +266,7 @@ export const cliqHeartbeatAdapter = {
   }): void => {
     const account = resolveAccountSafe(params.cfg, params.accountId);
     if (!account || !params.to) return;
+    if (account.heartbeatTyping === "off") return;
     if (!canSendTyping(account)) {
       prewarmOauth(account);
       return;
@@ -245,6 +278,7 @@ export const cliqHeartbeatAdapter = {
           prewarmOauth(account);
           return;
         }
+        if (!canSendTypingToTarget({ account, to: params.to, chatId })) return;
         const key = turnKey(account.accountId, chatId);
         const now = typingNow();
         let turn = typingTurns.get(key);
@@ -289,7 +323,7 @@ export const cliqHeartbeatAdapter = {
   }): void => {
     if (!params?.cfg || !params.to) return;
     const account = resolveAccountSafe(params.cfg, params.accountId);
-    if (!account || !canSendTyping(account)) return;
+    if (!account || account.heartbeatTyping === "off" || !canSendTyping(account)) return;
     void (async () => {
       try {
         const chatId = await resolveTypingChatId({ account, to: params.to });

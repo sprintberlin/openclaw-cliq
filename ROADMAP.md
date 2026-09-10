@@ -123,14 +123,6 @@ Mostly v3-independent; **dynamic agents** in particular is high-value and can be
 - **`<think>` / reasoning normalization.** Normalize reasoning-tag variants
   (`<thinking>` / `<thought>` → `<think>`) so hidden chain-of-thought never
   reaches a Cliq preview. Builds on `src/live-edit.ts`. (Prior art: wecom.)
-- **Confirm whether Cliq renders a bot typing indicator.** Native v3
-  `POST /api/v3/chats/{chat_id}/activities` with `{"action":"typing"}` already
-  returns HTTP 204 (issue #178). Live 2026-08-28 evidence: 15 pulses plus
-  `text_cleared` against a bot DM returned 204 while the operator had the DM
-  open and saw no indicator. Do not claim a visible indicator until a live
-  round-trip documents one. Ref:
-  <https://www.zoho.com/cliq/help/restapi/v3/chats/>.
-
 ---
 
 ## Blocked on upstream (not actionable until resolved)
