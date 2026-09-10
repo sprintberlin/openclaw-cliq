@@ -5,8 +5,8 @@
  * cycles a visible in-chat placeholder because Cliq client UI for typing is
  * unconfirmed. This module optionally cycles the
  * placeholder through a set of text frames on an interval (via the existing
- * `editMessage` path) while the agent turn runs, then the caller stops the
- * animation the moment the reply arrives and does the final edit-into-reply.
+ * `editMessage` path) while the agent turn is silent, then the caller quenches
+ * and drains it before the first real reply/progress edit.
  *
  * Rate-limit safety: the interval is hard-floored (≥ 800 ms) and the total
  * animation duration is capped (default 60 s) so a very long agent turn does
@@ -14,9 +14,9 @@
  * holds the last frame. A failed frame edit stops the animation but never
  * breaks the turn (the reply is still delivered). Only one animation runs per
  * in-flight message: the caller holds a single {@link ThinkingAnimation} ref
- * and calls `stop()` before the final edit-into-reply. The inbound path does
- * not start this animator when block streaming is on (issue #184): both loops
- * would otherwise PUT the same `{chatId, messageId}`.
+ * and awaits `stop()` before the first real reply/progress edit. The stop
+ * drains a frame PUT already in flight, so the real edit is ordered after the
+ * final animation frame (issues #184, #211).
  */
 import type { CliqClient } from "./client.js";
 import {
@@ -57,8 +57,8 @@ export function resolveThinkingFrames(
 }
 
 export interface ThinkingAnimation {
-  /** Stop the animation timer (idempotent). Safe to call from any path. */
-  stop: () => void;
+  /** Stop the timer and drain an in-flight frame edit (idempotent). */
+  stop: () => Promise<void>;
 }
 
 export interface StartThinkingAnimationOptions {
@@ -87,9 +87,10 @@ export interface StartThinkingAnimationOptions {
 /**
  * Start a thinking-placeholder animation. Returns `null` when no animation
  * should run (mode off, no usable frames, or a single frame). The returned
- * {@link ThinkingAnimation.stop} cancels the pending timer and is idempotent —
- * the caller MUST call it before the final edit-into-reply so a late frame
- * edit does not clobber the reply.
+ * {@link ThinkingAnimation.stop} cancels the pending timer, drains an edit
+ * already in flight, and is idempotent. The caller MUST await it before the
+ * first real reply/progress edit so a late frame edit cannot clobber the
+ * growing draft.
  *
  * The animation advances one frame per `intervalMs` (hard-floored to
  * {@link MIN_CLIQ_THINKING_ANIMATE_INTERVAL_MS}) via a recursive `setTimeout`
@@ -120,6 +121,7 @@ export function startThinkingAnimation(
 
   let stopped = false;
   let handle: unknown | null = null;
+  let frameInFlight: Promise<void> | null = null;
   let frameIndex = 0;
   let chatIdResolved = opts.draft.chatId;
   let chatIdResolveAttempted = Boolean(chatIdResolved);
@@ -138,27 +140,31 @@ export function startThinkingAnimation(
     return chatIdResolved;
   };
 
-  const stop = (): void => {
-    if (stopped) return;
+  const markStopped = (): void => {
     stopped = true;
-    if (handle !== null) {
-      scheduler.clearTimeout(handle);
-      handle = null;
-    }
+    if (handle === null) return;
+    scheduler.clearTimeout(handle);
+    handle = null;
+  };
+
+  const stop = async (): Promise<void> => {
+    markStopped();
+    const pending = frameInFlight;
+    if (pending) await pending;
   };
 
   const runFrame = async (): Promise<void> => {
     if (stopped) return;
     // Cap total duration: stop advancing after the cap, hold the last frame.
     if (scheduler.now() - startedAt >= maxDurationMs) {
-      stop();
+      markStopped();
       return;
     }
     frameIndex = (frameIndex + 1) % frames.length;
     const chatId = await resolveChatId();
     if (!chatId) {
       // Cannot edit without a chat id — stop animating (don't break the turn).
-      stop();
+      markStopped();
       return;
     }
     if (stopped) return; // stopped while awaiting chat-id resolution
@@ -171,16 +177,27 @@ export function startThinkingAnimation(
     } catch (err) {
       // A failed frame edit stops the animation but never breaks the turn.
       opts.onError?.(err, { kind: "thinking-animate-frame" });
-      stop();
+      markStopped();
       return;
     }
     if (stopped) return;
     // Schedule the next frame (recursive so ticks never overlap).
-    handle = scheduler.setTimeout(runFrame, intervalMs);
+    scheduleNext();
+  };
+
+  const scheduleNext = (): void => {
+    handle = scheduler.setTimeout(() => {
+      handle = null;
+      const pending = runFrame();
+      frameInFlight = pending;
+      void pending.finally(() => {
+        if (frameInFlight === pending) frameInFlight = null;
+      });
+    }, intervalMs);
   };
 
   // First advance after one interval (the placeholder itself is frame 0).
-  handle = scheduler.setTimeout(runFrame, intervalMs);
+  scheduleNext();
 
   return { stop };
 }

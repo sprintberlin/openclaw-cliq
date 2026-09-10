@@ -2586,7 +2586,7 @@ describe("dispatchCliqInbound — thinking placeholder (issue #47)", () => {
     expect(client.deletes).toHaveLength(0);
   });
 
-  it("does not let thinking.animate overwrite the streaming preview (issue #184)", async () => {
+  it("animates while streaming is silent, then never overwrites the first block (issues #184, #211)", async () => {
     const client = makeMockClient({ placeholderChatId: "chat-u1" });
     const parsed = parseCliqWebhookPayload(dmPayload());
     const frames = ["💭 .", "💭 ..", "💭 ..."];
@@ -2658,9 +2658,12 @@ describe("dispatchCliqInbound — thinking placeholder (issue #47)", () => {
     });
     await vi.waitFor(() => expect(deliverTurn).toBeDefined());
     await new Promise((resolve) => setTimeout(resolve, 900));
-    expect(client.edits).toHaveLength(0);
+    expect(client.edits.some((e) => frames.includes(e.text))).toBe(true);
     releaseTurn?.();
     await dispatch;
+    const firstPreviewIndex = client.edits.findIndex((e) => !frames.includes(e.text));
+    expect(firstPreviewIndex).toBeGreaterThanOrEqual(1);
+    expect(client.edits.slice(firstPreviewIndex).some((e) => frames.includes(e.text))).toBe(false);
     const previewEdits = client.edits.filter((e) => !frames.includes(e.text));
     expect(previewEdits.map((e) => e.text)).toEqual([
       "first",

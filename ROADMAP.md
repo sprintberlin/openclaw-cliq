@@ -55,10 +55,6 @@
   that one message id carries placeholder → progress → final with no stale draft, and whether
   the Cliq client actually redraws each edit (separate from HTTP 204 acceptance). Mara must stay
   on Tier-1 afterwards. Needs the live hosts, so it stays a human step.
-- **Keep preview-on turns visible during silent phases (issue #211).** Animate the thinking
-  placeholder without racing or overwriting Core progress/answer edits, and stop animation on
-  the first substantive progress or reply update.
-
 ## Phase 4 — Programmatic Cliq via v3 CRUD
 
 v3 adds CRUD endpoints v2 never had (bots, slash commands, message actions, widgets, schedulers).
