@@ -49,7 +49,8 @@
    * `refreshToken` is configured (editing needs a user-context token). When
    * streaming preview is also on, the placeholder is the same draft the
    * live-edit path then grows in place (issue #175) — one progress surface.
-   * The thinking animator must not edit that draft (issue #184).
+   * The thinking animator may edit that draft only until it is quenched and
+   * drained before the first real preview edit (issues #184, #211).
  */
 import { readFile } from "node:fs/promises";
 

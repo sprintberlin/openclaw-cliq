@@ -1617,12 +1617,11 @@ export async function dispatchCliqInbound(params: {
         // preconditions for the placeholder are already met (a message id, a
         // refreshToken) — the gate above enforces those.
         //
-        // Issue #184: when block streaming is on, the placeholder is the same
-        // draft the live-edit path grows in place. Frame edits on that id
-        // overwrite streaming previews (textLen 4/5/6 cycling until the final
-        // answer). Keep the animator for the static-placeholder path only.
+        // Issues #184/#211: this is the same draft the live-edit path grows
+        // in place. Animate it during a silent tool/reasoning phase, then
+        // quench and drain the animator before the first real
+        // partial/block/progress edit so a late frame cannot overwrite text.
         if (
-          !account.blockStreaming &&
           account.thinking?.animate &&
           account.thinking.animate !== "off"
         ) {
@@ -1705,7 +1704,7 @@ export async function dispatchCliqInbound(params: {
         )),
     reasoningVisible: reasoningLevel === "stream",
     update: async (text, options) => {
-      thinkingAnimation?.stop();
+      await thinkingAnimation?.stop();
       try {
         if (!text) {
           await clearLiveEditProgressDraft(deliver);
@@ -1722,13 +1721,13 @@ export async function dispatchCliqInbound(params: {
       }
     },
     deleteCurrent: async () => {
-      thinkingAnimation?.stop();
+      await thinkingAnimation?.stop();
       await clearLiveEditProgressDraft(deliver);
     },
-    onPartialReply: (payload) => {
+    onPartialReply: async (payload) => {
       const text = payload?.text;
       if (!text) return;
-      thinkingAnimation?.stop();
+      await thinkingAnimation?.stop();
       return deliver({ text }, { snapshot: true }).catch((err) => {
         handleOnError(err, { kind: "partial-preview" });
       });
@@ -1753,7 +1752,7 @@ export async function dispatchCliqInbound(params: {
   ): Promise<void> => {
     // Stop the animation first so a late frame edit cannot clobber the
     // cleanup edit (or race with the reply deliver).
-    thinkingAnimation?.stop();
+    await thinkingAnimation?.stop();
     const progressDraftActive = getLiveEditProgressDraftActive(deliver);
     if (!initialDraft && !progressDraftActive) return;
     // A turn may answer through the `message` TOOL instead of the reply
@@ -1873,7 +1872,7 @@ export async function dispatchCliqInbound(params: {
             ) => {
               // Stop the animation the moment the reply arrives so a late
               // frame edit cannot clobber the final edit-into-reply.
-              thinkingAnimation?.stop();
+              await thinkingAnimation?.stop();
               // Forward the FULL reply payload — `channelData.cliqCard`
               // carries interactive command menus (/model, /models); the
               // live-edit deliver routes cards through `sendCard`. Stripping

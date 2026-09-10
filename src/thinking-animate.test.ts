@@ -211,6 +211,46 @@ describe("startThinkingAnimation (issue #86)", () => {
     expect(sched.pending()).toBe(0);
   });
 
+  it("stop() drains a frame edit already in flight before handing off the draft (#211)", async () => {
+    const sched = makeFakeScheduler();
+    let releaseEdit: (() => void) | undefined;
+    let editSettled = false;
+    const editGate = new Promise<void>((resolve) => {
+      releaseEdit = resolve;
+    });
+    const editMessage = vi.fn(async () => {
+      await editGate;
+      editSettled = true;
+      return { messageId: "m1", chatId: "chat-1" };
+    });
+    const anim = startThinkingAnimation({
+      client: {
+        editMessage,
+        resolveChannelChatId: vi.fn(async () => "chat-1"),
+      },
+      draft: { messageId: "m1", chatId: "chat-1" },
+      to: "u1",
+      isDm: true,
+      mode: "dots",
+      intervalMs: 1000,
+      scheduler: sched,
+    })!;
+
+    sched.advance(1000);
+    await vi.waitFor(() => expect(editMessage).toHaveBeenCalledOnce());
+    let stopped = false;
+    const stop = anim.stop().then(() => {
+      stopped = true;
+    });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+
+    releaseEdit?.();
+    await stop;
+    expect(editSettled).toBe(true);
+    expect(sched.pending()).toBe(0);
+  });
+
   it("stop() is idempotent", () => {
     const fake = makeFakeClient();
     const sched = makeFakeScheduler();

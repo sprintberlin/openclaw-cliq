@@ -507,16 +507,16 @@ export type CliqThinkingConfig = {
   /**
    * Optional lightweight animation for the "thinking" placeholder (issue #86).
    * While the agent turn runs, the placeholder is edited on an interval through
-   * a set of text frames (cycling), then edited into the final reply when the
-   * reply arrives. Native v3 typing is a separate unconfirmed-UI capability
+   * a set of text frames (cycling), then handed to the first real preview or
+   * final-reply edit. Native v3 typing is a separate capability
    * (issue #178); this simulates a visible in-chat substitute via periodic
    * edits. The interval is hard-floored (≥ 800 ms) and the total
    * animation duration is capped (default 60 s) so a long turn does not hammer
    * the edit endpoint. A failed frame edit stops the animation but never
-   * breaks the turn (the reply is still delivered). The inbound path skips
-   * this animator when block streaming is on (issue #184): the placeholder is
-   * the same draft the live-edit path grows, and frame edits would overwrite
-   * streaming previews.
+   * breaks the turn (the reply is still delivered). With streaming enabled,
+   * the animator runs only through the silent phase; it is stopped and any
+   * in-flight frame PUT is drained before the first real draft update so it
+   * cannot overwrite preview text (issues #184, #211).
    *  - `"off"`: no animation (static placeholder).
    *  - `"dots"` (default): cycle `💭 .` → `💭 ..` → `💭 …` (loop).
    *  - `"spinner"`: cycle braille-spinner frames prefixed with a fixed label
@@ -735,8 +735,8 @@ export interface ResolvedCliqAccount {
      * `refreshToken` is configured. When streaming preview is also on, the
      * placeholder is the same message the live-edit path then edits into the
      * growing reply (issue #175) — one progress surface, never two. The
-     * thinking animator is skipped in that case (issue #184) so frame edits
-     * cannot overwrite the growing draft.
+     * thinking animator owns only the silent phase and is drained before the
+     * first real draft edit (issues #184, #211).
     */
   thinking: {
     mode: "off" | "placeholder" | "card";
