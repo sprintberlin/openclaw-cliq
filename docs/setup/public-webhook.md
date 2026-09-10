@@ -272,7 +272,7 @@ constant-time secret check and expects the request to arrive unmodified.
 > shorter than a slow turn, raise it (as above) rather than lowering the
 > plugin's guarantees. If you cannot, `ackPolicy: "immediate"` trades the
 > documented lost-message-on-crash risk for a fast ack — but do not use it on
-> OpenClaw `2026.8.1-beta.3`, where post-ack turns can fail with
+> OpenClaw `2026.8.2`, where post-ack turns can fail with
 > `GatewayDrainingError`. `openclaw cliq doctor` warns whenever `immediate` is
 > configured.
 

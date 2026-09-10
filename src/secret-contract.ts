@@ -6,7 +6,7 @@ import {
   type SecretDefaults,
   type SecretTargetRegistryEntry,
   // `openclaw/plugin-sdk/channel-secret-runtime` was dropped from the exports
-  // map in 2026.8.1-beta.3; the basic module exports the same symbols and is
+  // map in 2026.8.2; the basic module exports the same symbols and is
   // present on the supported runtime (in 2026.7.x the removed module merely
   // re-exported them from here).
 } from "openclaw/plugin-sdk/channel-secret-basic-runtime";

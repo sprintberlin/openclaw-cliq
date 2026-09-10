@@ -1,6 +1,6 @@
 {
   "name": "@sprintcx/openclaw-cliq",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Native Zoho Cliq channel for OpenClaw — reply to DMs and channel @mentions as a bot, with streaming previews, cards, and message actions.",
   "type": "module",
   "license": "MIT",
@@ -61,21 +61,21 @@
       "blurb": "Connect OpenClaw to Zoho Cliq."
     },
     "compat": {
-      "pluginApi": ">=2026.8.1-beta.3",
-      "minGatewayVersion": "2026.8.1-beta.3"
+      "pluginApi": ">=2026.8.2",
+      "minGatewayVersion": "2026.8.2"
     },
     "build": {
-      "openclawVersion": "2026.8.1-beta.3"
+      "openclawVersion": "2026.8.2"
     }
   },
   "devDependencies": {
     "@types/node": "^22.20.1",
     "es-module-lexer": "2.3.2",
-    "openclaw": "2026.8.1-beta.3",
+    "openclaw": "2026.8.2",
     "typescript": "7.0.2",
     "vitest": "^4.1.11"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.8.1-beta.3"
+    "openclaw": ">=2026.8.2"
   }
 }

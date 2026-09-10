@@ -1072,28 +1072,28 @@ describe("guided setup integration (issue #92)", () => {
     expect(
       checkInstalledOpenClawCompatibility({
         resolvePackageJson: () => "/sdk/package.json",
-        readJson: () => ({ version: "2026.8.1-beta.3" }),
-        supportedVersions: ["2026.8.1-beta.3"],
+        readJson: () => ({ version: "2026.8.2" }),
+        supportedVersions: ["2026.8.2"],
       }),
     ).toEqual({
-      installedVersion: "2026.8.1-beta.3",
-      supportedVersions: ["2026.8.1-beta.3"],
+      installedVersion: "2026.8.2",
+      supportedVersions: ["2026.8.2"],
       status: "supported",
     });
     expect(
       checkInstalledOpenClawCompatibility({
         resolvePackageJson: () => "/sdk/package.json",
         readJson: () => ({ version: "2025.1.0" }),
-        supportedVersions: ["2026.8.1-beta.3"],
+        supportedVersions: ["2026.8.2"],
       }).status,
     ).toBe("unsupported");
     const live = checkInstalledOpenClawCompatibility();
-    expect(live.installedVersion).toBe("2026.8.1-beta.3");
+    expect(live.installedVersion).toBe("2026.8.2");
     expect(live.status).toBe("supported");
   });
 
   it("reads the supported OpenClaw versions from the shared compat matrix", () => {
     const versions = readSupportedOpenClawVersions();
-    expect(versions).toEqual(["2026.8.1-beta.3"]);
+    expect(versions).toEqual(["2026.8.2"]);
   });
 });

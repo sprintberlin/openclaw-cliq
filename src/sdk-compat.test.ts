@@ -134,7 +134,7 @@ describe("readInboundProcessedOutcome", () => {
 });
 
 describe("resolveRunDetachedWebhookWork (issue #122)", () => {
-  it("returns and caches the helper when the symbol is present (>= 2026.8.1-beta.3)", async () => {
+  it("returns and caches the helper when the symbol is present (>= 2026.8.2)", async () => {
     const runDetached = vi.fn(async (work: () => Promise<unknown>) => await work());
     const factory = vi.fn(() => ({ runDetachedWebhookWork: runDetached }));
     vi.doMock(WEBHOOK_GUARDS_MODULE, factory);

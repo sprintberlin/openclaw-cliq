@@ -11,7 +11,7 @@ let overrideForTest: RunDetachedWebhookWorkFn | null | undefined;
  * Resolve the helper that keeps ack-first webhook processing admitted after
  * the HTTP response is written (issue #122).
  *
- * On `>= 2026.8.1-beta.3` this is the SDK's `runDetachedWebhookWork`. If the
+ * On `>= 2026.8.2` this is the SDK's `runDetachedWebhookWork`. If the
  * symbol is absent, this resolves to `null` and the caller keeps the defensive
  * plain fire-and-forget fallback. The lookup is a dynamic namespace access in `src/sdk-compat.ts`, never a static
  * named import, so a missing export cannot break plugin load.

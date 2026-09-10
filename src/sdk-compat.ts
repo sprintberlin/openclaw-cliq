@@ -11,7 +11,7 @@
  * dynamic `import()` and namespace property access, so a missing export
  * degrades to `undefined` instead of killing the plugin.
  *
- * Supported range today: `>=2026.8.1-beta.3` (the build/typecheck floor).
+ * Supported range today: `>=2026.8.2` (the build/typecheck floor).
  */
 
 /**
@@ -48,7 +48,7 @@ async function loadChannelPairingApprove(): Promise<ChannelPairingApproveFn | nu
 
 /**
  * Resolve the SDK's pairing-approve helper when the running OpenClaw version
- * still exports it, else `null` (`>= 2026.8.1-beta.3`, where
+ * still exports it, else `null` (`>= 2026.8.2`, where
  * `openclaw/plugin-sdk/conversation-runtime` narrowed its re-export of the
  * pairing store to `readChannelAllowFromStore` + `upsertChannelPairingRequest`).
  *
@@ -91,7 +91,7 @@ async function loadChannelReadyPatch(): Promise<ChannelReadyPatchFn | null> {
 
 /**
  * Resolve the SDK's `channelReadyPatch` helper when the running OpenClaw
- * version exports it (`>= 2026.8.1-beta.3`), else `null` (older runtimes that
+ * version exports it (`>= 2026.8.2`), else `null` (older runtimes that
  * have no `lifecycle` field).
  *
  * Newer gateways set `lifecycle: "starting"` before handing off to
@@ -187,7 +187,7 @@ export async function readInboundProcessedOutcome(
  * Structural type for the SDK's detached-webhook-work helper.
  *
  * Deliberately NOT `typeof runDetachedWebhookWork`: the symbol only exists on
- * `>= 2026.8.1-beta.3`, and a `typeof` reference would require importing it.
+ * `>= 2026.8.2`, and a `typeof` reference would require importing it.
  */
 export type RunDetachedWebhookWorkFn = <T>(work: () => Promise<T>) => Promise<T>;
 
@@ -211,7 +211,7 @@ async function loadRunDetachedWebhookWork(): Promise<RunDetachedWebhookWorkFn | 
 
 /**
  * Resolve the SDK's `runDetachedWebhookWork` helper when the running OpenClaw
- * version exports it (`>= 2026.8.1-beta.3`), else `null` as a defensive
+ * version exports it (`>= 2026.8.2`), else `null` as a defensive
  * fallback for unsupported older runtimes.
  *
  * An ack-first webhook handler responds before its processing finishes, so the

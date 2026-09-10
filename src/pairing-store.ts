@@ -13,8 +13,8 @@
  *    SDK's `approveChannelPairingCode` helper was withdrawn.
  *
  * Storage is a plugin-owned JSON file under the OpenClaw state directory
- * rather than an SDK store: `plugin-state-store-runtime` exists only on
- * `2026.8.1-beta.3`, and `persistent-dedupe` is a TTL/replay guard whose
+ * rather than an SDK store: although `plugin-state-store-runtime` exists on
+ * the supported runtime, `persistent-dedupe` is a TTL/replay guard whose
  * entries may be pruned by size — neither is a safe home for an
  * authorization record that must survive as long as the allowlist does.
  * The file is small, written atomically, and cached in process.
