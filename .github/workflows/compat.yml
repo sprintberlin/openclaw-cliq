@@ -117,6 +117,13 @@ jobs:
           node-version: 22
           cache: npm
 
+      # Node 22 ships npm 10, which crashes with
+      # "Cannot read properties of null (reading 'edgesOut')" when the
+      # openclaw tarball is installed into the tree `npm ci` just built.
+      # The runtime under test is pinned by the matrix, not by this client.
+      - name: Use an npm that can install the runtime tarball
+        run: npm i -g npm@11
+
       - run: npm ci
 
       - name: Download the artifact built against the floor version
