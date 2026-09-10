@@ -211,6 +211,95 @@ export default defineChannelPluginEntry({
               process.exitCode = code;
             },
           );
+        cliq
+          .command("provision")
+          .description(
+            "Provision the Cliq config and bot handlers without prompts; inspects and prints a redacted plan unless --yes is given",
+          )
+          .option("--account <accountId>", "Cliq account id (defaults to the single-account config)")
+          .option("--client-id <clientId>", `OAuth client id (or $${"CLIQ_CLIENT_ID"})`)
+          .option("--bot-id <botId>", "Bot unique name used by runtime message paths")
+          .option("--bot-name <botName>", "Bot display name used for @mention stripping")
+          .option("--data-center <id>", "Zoho data center id (defaults to the configured or EU default)")
+          .option("--public-webhook-url <url>", "Public HTTPS webhook URL Zoho posts to")
+          .option("--handlers", "Also inspect and provision the Message and Mention handlers")
+          .option("--yes", "Apply the plan; without it the command stays read-only and exits non-zero")
+          .action(async (opts: {
+            account?: string;
+            clientId?: string;
+            botId?: string;
+            botName?: string;
+            dataCenter?: string;
+            publicWebhookUrl?: string;
+            handlers?: boolean;
+            yes?: boolean;
+          }) => {
+            const { runCliqProvisionCommand } = await import("./src/provision-command.js");
+            const code = await runCliqProvisionCommand({
+              cfg: api.config as OpenClawConfig,
+              accountId: opts.account,
+              clientId: opts.clientId,
+              botId: opts.botId,
+              botName: opts.botName,
+              dataCenter: opts.dataCenter,
+              publicWebhookUrl: opts.publicWebhookUrl,
+              provisionHandlers: opts.handlers,
+              yes: opts.yes,
+            });
+            process.exitCode = code;
+          });
+        cliq
+          .command("print-handlers")
+          .description(
+            "Print the canonical Message and Mention Deluge handlers for the manual console-paste path",
+          )
+          .option("--webhook-url <url>", "Public webhook URL (defaults to channels.cliq.publicWebhookUrl)")
+          .option(
+            "--webhook-secret <secret>",
+            "Embed this secret instead of the <webhookSecret> placeholder; the configured secret is never printed implicitly",
+          )
+          .option("--json", "Emit both scripts as JSON")
+          .action(async (opts: { webhookUrl?: string; webhookSecret?: string; json?: boolean }) => {
+            const { runCliqPrintHandlersCommand } = await import(
+              "./src/print-handlers-command.js"
+            );
+            process.exitCode = runCliqPrintHandlersCommand({
+              cfg: api.config as OpenClawConfig,
+              webhookUrl: opts.webhookUrl,
+              webhookSecret: opts.webhookSecret,
+              json: opts.json,
+            });
+          });
+        cliq
+          .command("oauth-exchange")
+          .description(
+            "Exchange a self-client authorization code for a refresh token and store it without printing it",
+          )
+          .option("--account <accountId>", "Cliq account id (defaults to the single-account config)")
+          .option("--client-id <clientId>", "OAuth client id (defaults to the configured value)")
+          .option(
+            "--code <code>",
+            `Authorization code; prefer $${"OPENCLAW_CLIQ_AUTH_CODE"} so it stays out of shell history`,
+          )
+          .option("--check", "Verify the already-configured refresh token instead of exchanging a code")
+          .action(async (opts: {
+            account?: string;
+            clientId?: string;
+            code?: string;
+            check?: boolean;
+          }) => {
+            const { runCliqOAuthExchangeCommand } = await import(
+              "./src/oauth-exchange-command.js"
+            );
+            const code = await runCliqOAuthExchangeCommand({
+              cfg: api.config as OpenClawConfig,
+              accountId: opts.account,
+              clientId: opts.clientId,
+              code: opts.code,
+              check: opts.check,
+            });
+            process.exitCode = code;
+          });
       },
       {
         descriptors: [

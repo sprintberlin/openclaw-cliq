@@ -11,6 +11,12 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Added
+
+- `openclaw cliq provision` provisions config and handlers without a TTY. Secrets are read from the environment rather than argv; without `--yes` the run is read-only, prints the redacted plan, and exits non-zero (#246).
+- `openclaw cliq print-handlers` renders the canonical Message and Mention Deluge scripts for the manual console-paste path from the same builder the provisioning flow uses. The configured secret is never printed implicitly; the output carries a `<webhookSecret>` placeholder unless a secret is passed explicitly (#247).
+- `openclaw cliq oauth-exchange` converts a self-client authorization code into `channels.cliq.refreshToken` with an atomic write, reports the granted scopes against the combined profile, and never prints the token or the code. `--check` verifies an existing token without writing (#248).
+
 ### Fixed
 
 - Doctor distinguishes an unprovisioned Message/Mention handler (`400 execution_handler_not_found`) from missing `ZohoCliq.Bots.READ` consent, points new bots to handler provisioning, and leaves unrelated failures as unreadable state (#249).
