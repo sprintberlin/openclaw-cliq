@@ -11,6 +11,16 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Fixed
+
+- Doctor distinguishes an unprovisioned Message/Mention handler (`400 execution_handler_not_found`) from missing `ZohoCliq.Bots.READ` consent, points new bots to handler provisioning, and leaves unrelated failures as unreadable state (#249).
+
+### Documentation
+
+- Bot-creation instructions now match the Zoho API/MCP schema: Cliq assigns `unique_name`; API callers provide `name`, required `scope`, `execution_type`, and `channel_participation` (#243).
+- Public-webhook setup documents the domain-free sslip.io/nip.io + Caddy path and its security/availability caveats (#245).
+- Handler provisioning warns that Zoho MCP handler sub-resource tools return `400 request_url_invalid`; use direct REST or `openclaw setup` (#250).
+
 ## [0.3.0] - 2026-09-09
 
 ### Changed

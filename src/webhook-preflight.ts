@@ -713,9 +713,10 @@ export function formatCliqPreflightReport(report: CliqPreflightReport): string[]
   // authenticated" be read as "Zoho can deliver" (issue #124).
   const handlerStage = report.stages.find((stage) => stage.id === "handler_secret");
   if (report.ok && handlerStage && handlerStage.status === "skipped") {
-    lines.push(
-      "Note: this does NOT prove Zoho holds the same webhook secret — the checks above used the configured secret against your own endpoint. Grant ZohoCliq.Bots.READ and rerun to compare the bot's handler scripts.",
-    );
+    const handlerNotProvisioned = /execution_handler_not_found|not provisioned yet/i.test(handlerStage.detail);
+    lines.push(handlerNotProvisioned
+      ? "Note: this does NOT prove Zoho can deliver yet — the Message and Mention handlers are not provisioned. Use openclaw setup or the manual §5/direct-REST provisioning path; re-consenting ZohoCliq.Bots.READ will not create handlers."
+      : "Note: this does NOT prove Zoho holds the same webhook secret — the checks above used the configured secret against your own endpoint. Grant ZohoCliq.Bots.READ and rerun to compare the bot's handler scripts.");
   }
   return lines;
 }

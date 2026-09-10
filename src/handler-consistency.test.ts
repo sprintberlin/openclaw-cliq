@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   checkCliqHandlerConsistency,
+  classifyCliqHandlerReadProblem,
   createCliqHandlerScriptReader,
   extractDelugeStringAssignment,
   fingerprintCliqSecret,
@@ -480,5 +481,94 @@ describe("proposeCliqHandlerUrlAdoption (issue #172)", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toMatch(/mention/i);
+  });
+});
+
+describe("handler-read classification (issue #249)", () => {
+  const notProvisioned = {
+    error: "Zoho answered HTTP 400",
+    errorCode: "execution_handler_not_found",
+    errorStatus: 400,
+  };
+
+  it("classifies execution_handler_not_found as an unprovisioned handler, not a scope failure", () => {
+    expect(classifyCliqHandlerReadProblem(notProvisioned)).toBe("handler_not_provisioned");
+  });
+
+  it("classifies a 401 and an explicit scope code as a consent failure", () => {
+    expect(
+      classifyCliqHandlerReadProblem({ error: "Zoho refused the read with HTTP 401", errorStatus: 401 }),
+    ).toBe("missing_scope");
+    expect(
+      classifyCliqHandlerReadProblem({
+        error: "could not mint a ZohoCliq.Bots.READ access token",
+        errorCode: "missing_scope",
+      }),
+    ).toBe("missing_scope");
+  });
+
+  it("leaves any other failure unreadable rather than guessing a cause", () => {
+    expect(classifyCliqHandlerReadProblem({ error: "Zoho answered HTTP 500", errorStatus: 500 })).toBe(
+      "unreadable",
+    );
+  });
+
+  it("reports an unprovisioned handler as such and never as a missing script body", () => {
+    const result = checkCliqHandlerConsistency({
+      handlers: [
+        { type: "message_handler", ...notProvisioned },
+        { type: "mention_handler", ...notProvisioned },
+      ],
+      configSecret: SECRET,
+    });
+    expect(result.status).toBe("skipped");
+    expect(result.readProblem).toBe("handler_not_provisioned");
+    expect(result.detail).toMatch(/not provisioned yet/i);
+    expect(result.detail).toMatch(/execution_handler_not_found/);
+  });
+
+  it("keeps the scope diagnosis when the read is genuinely unauthorized", () => {
+    const result = checkCliqHandlerConsistency({
+      handlers: [
+        { type: "message_handler", error: "Zoho refused the read with HTTP 401", errorStatus: 401 },
+        { type: "mention_handler", error: "Zoho refused the read with HTTP 401", errorStatus: 401 },
+      ],
+      configSecret: SECRET,
+    });
+    expect(result.status).toBe("skipped");
+    expect(result.readProblem).toBe("missing_scope");
+    expect(result.detail).not.toMatch(/not provisioned yet/i);
+  });
+
+  it("prefers the unprovisioned diagnosis when one handler exists and the other does not", () => {
+    const result = checkCliqHandlerConsistency({
+      handlers: [
+        { type: "message_handler", script: script() },
+        { type: "mention_handler", ...notProvisioned },
+      ],
+      configSecret: SECRET,
+    });
+    expect(result.status).toBe("skipped");
+    expect(result.readProblem).toBe("handler_not_provisioned");
+  });
+
+  it("points the preflight note at provisioning instead of re-consent", () => {
+    const lines = formatCliqPreflightReport({
+      ok: true,
+      url: HOOK_URL,
+      nonce: "nonce-value",
+      dispatched: false,
+      stages: [
+        {
+          id: "handler_secret",
+          status: "skipped",
+          label: "Handler secret",
+          detail:
+            "the Zoho-held webhook secret could not be completely compared: message handler is not provisioned yet (Zoho returned execution_handler_not_found).",
+        },
+      ],
+    }).join(" ");
+    expect(lines).toMatch(/not provisioned/i);
+    expect(lines).not.toMatch(/Grant ZohoCliq\.Bots\.READ and rerun/);
   });
 });

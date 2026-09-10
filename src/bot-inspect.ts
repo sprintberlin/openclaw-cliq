@@ -54,7 +54,12 @@ export interface CliqBotReader {
   listBots(maxItems?: number): Promise<CliqBotRecord[] | CliqBotReadFailure>;
   getBot(botId: string): Promise<CliqBotRecord | CliqBotReadFailure>;
   listSubscribers(botIdOrUniqueName: string, maxItems?: number): Promise<CliqBotSubscriberPage | CliqBotReadFailure>;
-  readHandlerScript(handlerType: string, botId?: string): Promise<{ script?: string; error?: string }>;
+  readHandlerScript(handlerType: string, botId?: string): Promise<{
+    script?: string;
+    error?: string;
+    errorCode?: string;
+    errorStatus?: number;
+  }>;
 }
 
 export interface CliqDoctorBotInspectionView {
@@ -134,7 +139,13 @@ async function readHandlers(
   for (const type of CLIQ_INBOUND_HANDLER_TYPES) {
     try {
       const result = await reader.readHandlerScript(type, botId);
-      handlers.push({ type, script: result.script, error: result.error });
+      handlers.push({
+        type,
+        script: result.script,
+        error: result.error,
+        errorCode: result.errorCode,
+        errorStatus: result.errorStatus,
+      });
     } catch {
       handlers.push({ type, error: "the handler read threw an unexpected error" });
     }
@@ -293,12 +304,17 @@ export function toCliqDoctorBotInspection(
     inspection.handlerContentShapes.status === "uncovered" ||
     inspection.handlerContentShapes.status === "declared_unexercised"
   ) {
+    const handlerRemediation = inspection.handlerConsistency.readProblem === "handler_not_provisioned"
+      ? [
+          "Provision the Message and Mention handlers with the provisioning stage in `openclaw setup`, or paste the manual §5 Deluge handlers / use the direct REST contract in docs/setup/provisioning-api-contract.md. This new-bot state is not a ZohoCliq.Bots.READ consent failure.",
+        ]
+      : [
+          "Grant and re-consent ZohoCliq.Bots.READ; subscriber details additionally require the bot creator or an organization administrator. Use a real Cliq client to send one native reply/quote and one forwarded message: the bot send API cannot synthesize either relationship, and static field declarations are not live delivery proof.",
+        ];
     return {
       status: "warn",
       evidence,
-      remediation: [
-        "Grant and re-consent ZohoCliq.Bots.READ; subscriber details additionally require the bot creator or an organization administrator. Use a real Cliq client to send one native reply/quote and one forwarded message: the bot send API cannot synthesize either relationship, and static field declarations are not live delivery proof.",
-      ],
+      remediation: handlerRemediation,
     };
   }
   return { status: "pass", evidence };
