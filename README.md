@@ -1045,6 +1045,32 @@ Each stage reports `pass`, `warn`, `fail`, or `skipped`, with redacted evidence 
 
 Rerunning setup keeps existing credentials and custom handlers unless a change is confirmed. Declining an optional message test is reported as cancelled, not failed. Provide the listed environment variables to the gateway service after setup; the wizard does not print secret values.
 
+#### Headless provisioning
+
+The wizard needs a TTY. For SSH and agent-driven installs three commands cover the same ground without prompts.
+
+`openclaw cliq provision` assembles the config and, with `--handlers`, inspects and provisions the Message and Mention handlers. Secrets come from the environment (`CLIQ_CLIENT_ID`, `CLIQ_CLIENT_SECRET`, `CLIQ_WEBHOOK_SECRET`, `CLIQ_REFRESH_TOKEN`), never from argv where `ps` and shell history would capture them. Without `--yes` the command stays read-only: it prints the redacted plan and exits non-zero, so automation cannot mistake a dry run for an apply. Missing inputs are reported in one aggregated error rather than one at a time.
+
+```bash
+export CLIQ_CLIENT_ID=... CLIQ_CLIENT_SECRET=... CLIQ_WEBHOOK_SECRET=...
+openclaw cliq provision --bot-id aura --public-webhook-url https://host.example.com/cliq/webhook --handlers
+openclaw cliq provision --bot-id aura --public-webhook-url https://host.example.com/cliq/webhook --handlers --yes
+```
+
+`openclaw cliq print-handlers` renders the canonical Deluge scripts for the manual console-paste path from the same builder the provisioning flow uses, so a pasted handler cannot drift from an API-provisioned one. Without `--webhook-secret` it emits the `<webhookSecret>` placeholder; it never falls back to the configured secret, because reading a credential merely to print it would put it into terminal scrollback by surprise.
+
+```bash
+openclaw cliq print-handlers --webhook-url https://host.example.com/cliq/webhook
+openclaw cliq print-handlers --webhook-url https://host.example.com/cliq/webhook --json
+```
+
+`openclaw cliq oauth-exchange` converts a self-client authorization code into `channels.cliq.refreshToken`. The token is written atomically and never printed — there is no `--print` escape hatch, so output masking and scrollback cannot lose it. Prefer `$OPENCLAW_CLIQ_AUTH_CODE` over `--code` to keep the single-use code out of shell history. The command reports the granted scopes and warns when the combined profile from [§3b](#3b-oauth-scopes) is incomplete. `--check` verifies an already-configured token and writes nothing.
+
+```bash
+OPENCLAW_CLIQ_AUTH_CODE=1000.… openclaw cliq oauth-exchange
+openclaw cliq oauth-exchange --check
+```
+
 `--outbound-test` and `--roundtrip` both require `--target`, `--kind dm|group`, and `--confirm`. `--roundtrip` posts one clearly labeled, copyable **multi-line** challenge. Its copied body has the nonce, a reserved `example.invalid` email, the fictional NANP number `+1 202-555-0100`, and a quoted string; these exercise newline/quote/entity-like text without asking the operator to send personal data. The report never repeats the body or any message content — it records only that the complete synthetic request was observed. A human sends all lines through the real Cliq bot (a DM, or a group @mention); the agent must answer exactly `OPENCLAW_CLIQ_ROUNDTRIP_REPLY <nonce>`. Seeing the full request proves this text shape reached the inbound webhook; seeing the exact reply proves the agent turn, the configured policy, and the outbound reply all completed. A partial first line or a copied challenge does not count. Native Cliq **replies/quotes and forwards are not synthesizeable through the bot send API**, so they stay explicitly unexercised even when the roundtrip passes: use a real Cliq client to create one of each, and treat handler field declarations as static contract evidence only. Chat text is the only correlation signal a read-only diagnostic has, so to attribute an individual hop, grep the gateway logs for the same nonce. A DM roundtrip additionally needs a chat id from the send response (`apiVersion.dmPost: "v3"` returns one); without it the doctor fails at `roundtrip_correlation` rather than polling blindly.
 
 The config stage also warns when a multi-user Cliq bot still resolves `session.dmScope` to `main` (shared conversation context and delivery route) and whenever `ackPolicy: "immediate"` is configured (a crash after the ack loses the message; on OpenClaw `>= 2026.8.2` the plugin must reserve detached work with `runDetachedWebhookWork` before responding or the healthy gateway rejects the turn with `GatewayDrainingError`).
