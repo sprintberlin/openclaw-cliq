@@ -278,6 +278,47 @@ constant-time secret check and expects the request to arrive unmodified.
 
 ---
 
+## Option 1a — No domain: sslip.io / nip.io + Caddy
+
+A public VPS needs HTTPS but not necessarily a domain you own. IP-encoding
+wildcard DNS services resolve a hostname directly to the IP written into it:
+
+```text
+83-141-21-119.sslip.io  →  83.141.21.119
+```
+
+Use that hostname as the Caddy site address; no DNS account or zone setup is
+required:
+
+```caddyfile
+83-141-21-119.sslip.io {
+	handle /cliq/webhook {
+		reverse_proxy 127.0.0.1:18789
+	}
+
+	handle {
+		respond 404
+	}
+}
+```
+
+Open TCP 80 for the ACME HTTP-01 challenge and redirect, and TCP 443 for the
+webhook. Keep port 18789 private. Caddy obtains and renews a normal Let's
+Encrypt certificate automatically. Verify the result before provisioning:
+
+```bash
+openclaw cliq webhook-preflight https://83-141-21-119.sslip.io/cliq/webhook
+```
+
+Caveats:
+
+- sslip.io and nip.io are free third-party DNS services; prefer a domain you
+  control for long-lived production deployments.
+- The hostname exposes the VPS IP.
+- Let's Encrypt rate limits still apply.
+- To migrate later, change the Caddy site address, rerun `webhook-preflight`,
+  and update both Zoho handler URLs (`openclaw setup` can repair them).
+
 ## Option 2 — Cloudflare Tunnel
 
 The right choice for a machine **behind NAT** — a desktop agent, a home
