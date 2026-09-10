@@ -102,14 +102,18 @@ else
 fi
 
 echo "==> [2/12] Linking plugin into isolated profile '$PROFILE'"
-# Flag support differs across supported OpenClaw versions: 2026.8.2
-# refuses a local-path install without --force, while 2026.7.1-2 rejects
-# --force together with --link. Try the plain form first, then the forced one.
-INSTALL_OUT="$(run_oc plugins install . --link 2>&1 || true)"
+# Plugin-install flags differ across supported OpenClaw versions. Build the
+# argument list from the CLI's own help so one smoke works across the matrix.
+INSTALL_ARGS=(plugins install . --link)
+if run_oc plugins install --help 2>&1 | grep -q -- "--accept-capabilities"; then
+  INSTALL_ARGS+=(--accept-capabilities)
+fi
+
+INSTALL_OUT="$(run_oc "${INSTALL_ARGS[@]}" 2>&1 || true)"
 echo "$INSTALL_OUT"
 if echo "$INSTALL_OUT" | grep -qi -- "--force"; then
   echo "    Retrying install with --force (newer CLI requires explicit trust)"
-  run_oc plugins install . --link --force
+  run_oc "${INSTALL_ARGS[@]}" --force
 fi
 
 echo "==> [3/12] Loading plugin runtime and asserting it registered"
