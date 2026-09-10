@@ -112,15 +112,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Node 24 is accepted by both supported runtimes. OpenClaw 2026.9.3 no
+      # longer installs on Node 22 (requires >=24.16.0 <25 or >=26.1.0).
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
 
-      # Node 22 ships npm 10, which crashes with
-      # "Cannot read properties of null (reading 'edgesOut')" when the
-      # openclaw tarball is installed into the tree `npm ci` just built.
-      # The runtime under test is pinned by the matrix, not by this client.
+      # npm 10 can crash with "Cannot read properties of null (reading
+      # 'edgesOut')" when the OpenClaw tarball is installed into the tree
+      # `npm ci` just built. The runtime under test is pinned by the matrix,
+      # not by this client.
       - name: Use an npm that can install the runtime tarball
         run: npm i -g npm@11
 
