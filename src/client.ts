@@ -51,6 +51,9 @@ export type CliqStreamingMode = StreamingMode;
  */
 export type CliqStreamingProgressConfig = ChannelStreamingProgressConfig;
 
+/** Native v3 typing exposure. Activities are attributed to the refresh-token owner. */
+export type CliqHeartbeatTypingMode = "off" | "dm" | "all";
+
 /**
  * Effective Cliq default preview mode when neither `streaming.mode` nor the
  * legacy `streaming.preview` is set. `"partial"` preserves today's
@@ -260,6 +263,18 @@ export interface CliqChannelConfig {
    */
   replyContextRecovery?: {
     enabled?: boolean;
+  };
+  /**
+   * Native v3 typing activity policy (issue #222).
+   *
+   * Cliq attributes `/chats/{chatId}/activities` to the human owner of the
+   * refresh token; the API has no bot/sender override. `"dm"` is therefore
+   * the safe default: shared rooms never show a human as typing for the bot.
+   * `"all"` explicitly accepts that identity caveat for channels; `"off"`
+   * disables native typing entirely.
+   */
+  heartbeat?: {
+    typing?: CliqHeartbeatTypingMode;
   };
   allowFrom?: string[];
   dmPolicy?: string;
@@ -711,6 +726,8 @@ export interface ResolvedCliqAccount {
   inboundCatchup?: { enabled: boolean; limit: number };
   /** Effective opt-in reply-context recovery (issue #230). Disabled unless configured. */
   replyContextRecovery?: { enabled: boolean };
+  /** Effective native typing policy; defaults to `"dm"` (issue #222). */
+  heartbeatTyping?: CliqHeartbeatTypingMode;
   /** Resolved REST API base (EU default unless overridden in config). */
   apiBase?: string;
   /** Resolved OAuth base (EU default unless overridden in config). */
@@ -840,6 +857,12 @@ export function resolveCliqConfig(
     replyContextRecovery: {
       enabled: section?.replyContextRecovery?.enabled === true,
     },
+    heartbeatTyping:
+      section?.heartbeat?.typing === "off"
+        ? "off"
+        : section?.heartbeat?.typing === "all"
+          ? "all"
+          : "dm",
     apiBase: section?.apiBase || undefined,
     oauthBase: section?.oauthBase || undefined,
     apiVersion: normalizeCliqApiVersionConfig(section?.apiVersion),

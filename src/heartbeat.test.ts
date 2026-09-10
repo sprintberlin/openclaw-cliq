@@ -287,7 +287,7 @@ describe("cliq heartbeat adapter", () => {
     }
   });
 
-  it("accepts a raw CT_ chat id as `to`", async () => {
+  it("fails closed for a raw CT_ chat id with no remembered DM/group provenance", async () => {
     const fetch = installFetch();
     try {
       cliqHeartbeatAdapter.sendTyping({
@@ -295,10 +295,82 @@ describe("cliq heartbeat adapter", () => {
         to: "CT_already_a_chat",
       });
       await flush();
+      expect(fetch.activities).toHaveLength(0);
+    } finally {
+      fetch.restore();
+    }
+  });
+
+  it("suppresses a remembered group by default so the refresh-token owner is not impersonated", async () => {
+    const fetch = installFetch();
+    try {
+      rememberCliqChatId({
+        chatId: "CT_shared_room",
+        channelUniqueName: "dev-team",
+        isGroup: true,
+      });
+      cliqHeartbeatAdapter.sendTyping({
+        cfg: WITH_REFRESH,
+        to: "cliq:channel:dev-team",
+      });
+      await flush();
+      expect(fetch.activities).toHaveLength(0);
+      expect(fetch.refreshCalls).toBe(0);
+    } finally {
+      fetch.restore();
+    }
+  });
+
+  it("allows group typing only with explicit heartbeat.typing=all opt-in", async () => {
+    const fetch = installFetch();
+    const allTargets = cfgWith({
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+      refreshToken: "rt",
+      heartbeat: { typing: "all" },
+    });
+    try {
+      rememberCliqChatId({
+        chatId: "CT_shared_room",
+        channelUniqueName: "dev-team",
+        isGroup: true,
+      });
+      cliqHeartbeatAdapter.sendTyping({
+        cfg: allTargets,
+        to: "cliq:channel:dev-team",
+      });
+      await flush();
       expect(fetch.activities).toHaveLength(1);
       expect(fetch.activities[0].url).toContain(
-        "/api/v3/chats/CT_already_a_chat/activities",
+        "/api/v3/chats/CT_shared_room/activities",
       );
+      expect(JSON.parse(fetch.activities[0].body)).toEqual({ action: "typing" });
+    } finally {
+      fetch.restore();
+    }
+  });
+
+  it("heartbeat.typing=off suppresses DM typing and token prewarming", async () => {
+    const fetch = installFetch();
+    const off = cfgWith({
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+      refreshToken: "rt",
+      heartbeat: { typing: "off" },
+    });
+    try {
+      rememberCliqChatId({
+        chatId: "CT_dm",
+        senderId: "u1",
+        isGroup: false,
+      });
+      cliqHeartbeatAdapter.sendTyping({ cfg: off, to: "u1" });
+      cliqHeartbeatAdapter.clearTyping({ cfg: off, to: "u1" });
+      await flush();
+      expect(fetch.activities).toHaveLength(0);
+      expect(fetch.oauthCalls).toBe(0);
     } finally {
       fetch.restore();
     }

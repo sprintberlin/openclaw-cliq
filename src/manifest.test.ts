@@ -602,6 +602,46 @@ describe("cliq thinking manifest defaults (issue #89)", () => {
   });
 });
 
+describe("cliq native typing identity policy (issue #222)", () => {
+  const channelSchema = manifest.channelConfigs.cliq.schema;
+  const topLevelSchema = manifest.configSchema;
+  const accountSchema = channelSchema.properties?.accounts?.additionalProperties as JsonSchema | undefined;
+  const topLevelAccountSchema = topLevelSchema.properties?.accounts?.additionalProperties as JsonSchema | undefined;
+
+  it("declares heartbeat.typing=off|dm|all with a safe dm default in every schema copy", () => {
+    for (const schema of [channelSchema, topLevelSchema, accountSchema, topLevelAccountSchema]) {
+      expect(schema?.properties?.heartbeat?.properties?.typing?.enum).toEqual([
+        "off",
+        "dm",
+        "all",
+      ]);
+      expect(schema?.properties?.heartbeat?.properties?.typing?.default).toBe("dm");
+    }
+  });
+
+  it("resolves omitted typing to dm and preserves explicit opt-in or opt-out", () => {
+    expect(resolveCliqConfig(cfgWith({
+      clientId: "id", clientSecret: "s", botId: "b",
+    })).heartbeatTyping).toBe("dm");
+    expect(resolveCliqConfig(cfgWith({
+      clientId: "id", clientSecret: "s", botId: "b", heartbeat: { typing: "all" },
+    })).heartbeatTyping).toBe("all");
+    expect(resolveCliqConfig(cfgWith({
+      clientId: "id", clientSecret: "s", botId: "b", heartbeat: { typing: "off" },
+    })).heartbeatTyping).toBe("off");
+  });
+
+  it("rejects an unknown typing policy", () => {
+    const errors = validate(channelSchema, {
+      clientId: "id",
+      clientSecret: "s",
+      botId: "b",
+      heartbeat: { typing: "bot" },
+    });
+    expect(errors.some((error) => error.includes("not one of"))).toBe(true);
+  });
+});
+
 describe("cliq apiVersion manifest schema (issue #86)", () => {
   // The bug: the manifest declared `apiVersion` as a string with
   // `"default": "v2"`. OpenClaw injects manifest config-schema defaults at
