@@ -295,3 +295,43 @@ describe("inspectCliqBot — disclosure", () => {
     expect(serialized).not.toContain(WEBHOOK_SECRET);
   });
 });
+
+describe("toCliqDoctorBotInspection — handler remediation (issue #249)", () => {
+  const notProvisioned = {
+    error: "Zoho answered HTTP 400",
+    errorCode: "execution_handler_not_found",
+    errorStatus: 400,
+  };
+
+  it("sends an unprovisioned bot to provisioning, never to re-consenting Bots.READ", async () => {
+    const result = await inspectCliqBot({
+      account: account(),
+      publicWebhookUrl: "https://cliq.example.com/cliq/webhook",
+      reader: reader({
+        getBot: vi.fn(async () => botRecord({ handlers: [] })),
+        readHandlerScript: vi.fn(async () => notProvisioned),
+      }),
+    });
+    const doctor = toCliqDoctorBotInspection(result);
+    expect(doctor.status).toBe("warn");
+    const remediation = doctor.remediation?.join(" ") ?? "";
+    expect(remediation).toMatch(/provision/i);
+    expect(remediation).not.toMatch(/Grant and re-consent ZohoCliq\.Bots\.READ/);
+  });
+
+  it("keeps the re-consent remediation when the read is genuinely unauthorized", async () => {
+    const result = await inspectCliqBot({
+      account: account(),
+      publicWebhookUrl: "https://cliq.example.com/cliq/webhook",
+      reader: reader({
+        readHandlerScript: vi.fn(async () => ({
+          error: "Zoho refused the read with HTTP 401",
+          errorStatus: 401,
+        })),
+      }),
+    });
+    const doctor = toCliqDoctorBotInspection(result);
+    const remediation = doctor.remediation?.join(" ") ?? "";
+    expect(remediation).toMatch(/Grant and re-consent ZohoCliq\.Bots\.READ/);
+  });
+});

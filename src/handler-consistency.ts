@@ -51,12 +51,72 @@ export interface CliqHandlerScriptRecord {
   type: string;
   script?: string | null;
   error?: string;
+  /**
+   * Stable error code from Zoho's handler-read response, when available.
+   * Keep this separate from `error`: the latter is deliberately redacted,
+   * human-readable diagnostic text and must never contain the response body.
+   */
+  errorCode?: string;
+  /** HTTP status from the handler-read response, when available. */
+  errorStatus?: number;
 }
 
 export interface CliqHandlerConsistencyResult {
   status: CliqHandlerConsistencyStatus;
   /** Human-readable, fingerprint-only summary. Never contains a secret. */
   detail: string;
+  /**
+   * Why a handler could not be read, when that is the limiting evidence.
+   * This lets doctor offer a targeted repair instead of treating every 4xx as
+   * a missing OAuth consent.
+   */
+  readProblem?: CliqHandlerReadProblem;
+}
+
+export type CliqHandlerReadProblem =
+  | "handler_not_provisioned"
+  | "missing_scope"
+  | "unreadable";
+
+/**
+ * Classify a reduced, non-secret handler-read failure.
+ *
+ * `execution_handler_not_found` is a normal new-bot state: Cliq has no
+ * stored handler to read yet. It must not be diagnosed as a `Bots.READ`
+ * consent problem merely because the endpoint uses an HTTP 400 response.
+ */
+export function classifyCliqHandlerReadProblem(
+  handler: Pick<CliqHandlerScriptRecord, "error" | "errorCode" | "errorStatus">,
+): CliqHandlerReadProblem {
+  const code = handler.errorCode?.trim().toLowerCase();
+  if (code === "execution_handler_not_found") return "handler_not_provisioned";
+  if (handler.errorStatus === 401 || code === "oauthtoken_scope_invalid" || code?.includes("scope")) {
+    return "missing_scope";
+  }
+  return "unreadable";
+}
+
+function describeHandlerReadFailure(handler: CliqHandlerScriptRecord): string {
+  const label = describeHandler(handler.type);
+  switch (classifyCliqHandlerReadProblem(handler)) {
+    case "handler_not_provisioned":
+      return `${label} is not provisioned yet (Zoho returned execution_handler_not_found)`;
+    case "missing_scope":
+      return `${label} could not be read (${handler.error ?? "Zoho rejected the handler read as unauthorized"})`;
+    case "unreadable":
+      return `${label} could not be read (${handler.error ?? "no script body was returned"})`;
+  }
+}
+
+function mostSpecificHandlerReadProblem(
+  handlers: readonly CliqHandlerScriptRecord[],
+): CliqHandlerReadProblem | undefined {
+  const problems = handlers
+    .filter((handler) => handler.error || typeof handler.script !== "string" || handler.script.length === 0)
+    .map(classifyCliqHandlerReadProblem);
+  if (problems.includes("handler_not_provisioned")) return "handler_not_provisioned";
+  if (problems.includes("missing_scope")) return "missing_scope";
+  return problems.includes("unreadable") ? "unreadable" : undefined;
 }
 
 /**
@@ -291,9 +351,7 @@ export function checkCliqHandlerConsistency(
   for (const handler of options.handlers) {
     const label = describeHandler(handler.type);
     if (handler.error || typeof handler.script !== "string" || handler.script.length === 0) {
-      skips.push(
-        `${label} could not be read (${handler.error ?? "no script body was returned"})`,
-      );
+      skips.push(describeHandlerReadFailure(handler));
       continue;
     }
     const handlerSecret = extractDelugeStringAssignment(handler.script, "webhookSecret");
@@ -393,12 +451,14 @@ export function checkCliqHandlerConsistency(
     return { status: "fail", detail: `${failures.join("; ")}.${trailer}` };
   }
   if (skips.length > 0) {
+    const readProblem = mostSpecificHandlerReadProblem(options.handlers);
     const compared = matched.length > 0
       ? ` ${matched.join(" and ")} matched, but equality cannot be claimed for every inbound path.`
       : "";
     return {
       status: "skipped",
       detail: `the Zoho-held webhook secret could not be completely compared: ${skips.join("; ")}.${compared}`,
+      readProblem,
     };
   }
   return {
@@ -526,7 +586,12 @@ export function createCliqHandlerScriptReader(params: {
   readHandlerScript: (
     handlerType: string,
     botId?: string,
-  ) => Promise<{ script?: string; error?: string }>;
+  ) => Promise<{
+    script?: string;
+    error?: string;
+    errorCode?: string;
+    errorStatus?: number;
+  }>;
   listBots: CliqBotIdLister;
 }): (() => Promise<CliqHandlerScriptRecord[]>) | null {
   if (!params.account.botId) return null;
@@ -543,7 +608,13 @@ export function createCliqHandlerScriptReader(params: {
     for (const type of CLIQ_INBOUND_HANDLER_TYPES) {
       try {
         const result = await params.readHandlerScript(type, resolved.botId);
-        records.push({ type, script: result.script, error: result.error });
+        records.push({
+          type,
+          script: result.script,
+          error: result.error,
+          errorCode: result.errorCode,
+          errorStatus: result.errorStatus,
+        });
       } catch {
         records.push({ type, error: "the handler read threw an unexpected error" });
       }

@@ -86,9 +86,12 @@ Open the bot builder: click your **profile picture** (top-right in Zoho Cliq) �
 1. In **Bots & Tools**, open the **Bots** section.
 2. Click **Create Bot**.
 3. Fill in:
-   - **Bot Name** (display name, e.g. `OpenClaw Agent`) — this is what users see.
-   - **Bot Unique Name** (e.g. `openclaw_agent`) — this is the `botId` you will put in the plugin config. Lowercase, underscores, no spaces.
+   - **Bot Name** (display name, e.g. `OpenClaw Agent`, max 20 characters) — this is what users see.
    - **Bot Type**: choose **Custom Bot** (a Deluge-backed bot whose handlers forward to the webhook). A pure "Webhook Bot" is not required — we use a Custom Bot with a Deluge handler that `invokeUrl`s our endpoint.
+
+   Cliq assigns the **unique name** itself from the display name; it is not a field you fill in. Read it back from the created bot — that assigned value is the `botId` you put in the plugin config.
+
+   Creating the same bot over the API (or the Zoho MCP server's `ZohoCliq_create_bot`) uses different field names than this form: `name`, `description`, `scope` (`organization` | `team` | `personal`, required), `execution_type` (`deluge` | `webhook`), and `channel_participation`. There is no `bot_unique_name` or `bot_type` field — both are rejected as `extra_key_found`, and `unique_name` comes back in the response.
 4. Set the bot's **Functional Handlers**:
    - **Mention Handler** — fired when the bot is @mentioned in a channel.
    - **Message Handler** — fired when a user DMs the bot directly.
@@ -111,7 +114,7 @@ The plugin registers a single HTTP route at **`POST /cliq/webhook`** on your Ope
 
    The route is registered with `auth: "plugin"`, so no additional gateway-level bearer token is required; the `webhookSecret` is verified by the plugin itself via the `x-cliq-webhook-secret` header.
 
-3. Make sure the gateway host is reachable from the public internet (Zoho's servers POST to it). See **[Expose the webhook publicly](https://github.com/sprintberlin/openclaw-cliq/blob/main/docs/setup/public-webhook.md)** for deployment options (VPS + reverse proxy, Cloudflare Tunnel, existing proxy, dev tunnels, self-hosted tunnel) with secure Caddy and nginx examples.
+3. Make sure the gateway host is reachable from the public internet (Zoho's servers POST to it). See **[Expose the webhook publicly](https://github.com/sprintberlin/openclaw-cliq/blob/main/docs/setup/public-webhook.md)** for deployment options (VPS + reverse proxy, domain-free sslip.io/nip.io + Caddy, Cloudflare Tunnel, existing proxy, dev tunnels, self-hosted tunnel) with secure Caddy and nginx examples.
 
    Verify the public path before wiring up Zoho — this checks DNS, TLS, the reverse proxy, the route, and the shared secret, and finishes with a probe that reaches the plugin without dispatching an agent turn:
 
@@ -631,6 +634,8 @@ Every field except the required ones has a sensible default; `groups` / `thinkin
 The Cliq bot must forward every mention / message event to the OpenClaw webhook. The two handlers use **almost** the same script, but they are **not** interchangeable — see the note after the script.
 
 > **`openclaw setup` can do this for you.** When `publicWebhookUrl` is configured and the OAuth client carries the provisioning scopes from [§3b](#3b-oauth-scopes), setup shows a **read-only dry-run** of the Zoho-held handlers and then offers to create or repair them; a newly created bot includes Zoho's required non-empty description, and the Welcome handler is included only when the greeting is opted in. Nothing is changed without a separate confirmation that defaults to *no*. A handler whose URL matches but whose **secret differs** is reported as a conflict rather than "already configured" — that state passes the preflight while real inbound traffic fails with `401`. Unreadable and hand-written handlers are never overwritten, and every write is read back before it counts as successful. The steps below remain the manual path, and are still the correct route when you prefer not to grant `ZohoCliq.Bots.CREATE` / `ZohoCliq.Bots.UPDATE`.
+
+> **Do not provision handlers through the Zoho MCP server.** Its `ZohoCliq_create_bot_handler` / `ZohoCliq_get_bot_handler` / `ZohoCliq_update_bot_handler` tools fail with `400 request_url_invalid` regardless of bot-id format, while bot-level tools on the same server work. Use `openclaw setup`, the manual paste below, or the direct REST endpoints in [the provisioning API contract](https://github.com/sprintberlin/openclaw-cliq/blob/main/docs/setup/provisioning-api-contract.md).
 
 > **Where to find them:** in the Cliq Bot editor open **Edit Handlers**, then click *Edit Code* on **Message Handler** (DMs) and **Mention Handler** (channel @mentions) — the two arrowed below.
 

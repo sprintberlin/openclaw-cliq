@@ -115,7 +115,12 @@ export interface CliqDoctorClient {
   getApiBase(): string;
   listUsers(maxItems?: number): Promise<CliqDirectoryEntry[]>;
   listChannels(maxItems?: number): Promise<CliqDirectoryEntry[]>;
-  readBotHandlerScript?(handlerType: string, botId?: string): Promise<{ script?: string; error?: string }>;
+  readBotHandlerScript?(handlerType: string, botId?: string): Promise<{
+    script?: string;
+    error?: string;
+    errorCode?: string;
+    errorStatus?: number;
+  }>;
   listBots?(maxItems?: number): ReturnType<CliqBotReader["listBots"]>;
   getBot?(botId: string): ReturnType<CliqBotReader["getBot"]>;
   listBotSubscribers?(botIdOrUniqueName: string, maxItems?: number): ReturnType<CliqBotReader["listSubscribers"]>;

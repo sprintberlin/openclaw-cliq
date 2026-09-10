@@ -2956,18 +2956,25 @@ export class CliqClient {
    * fingerprint comparison and is never logged, never embedded in an error
    * message, and never surfaced in a diagnostic report. A failure is reduced
    * to its HTTP status so an error body (which can echo request content)
-   * cannot leak either.
+   * cannot leak either. The stable error code is preserved separately so
+   * diagnostics can distinguish an unprovisioned handler from a missing
+   * `Bots.READ` consent without surfacing the raw response.
    */
   async readBotHandlerScript(
     handlerType: string,
     internalBotId = this.botId,
-  ): Promise<{ script?: string; error?: string }> {
+  ): Promise<{
+    script?: string;
+    error?: string;
+    errorCode?: string;
+    errorStatus?: number;
+  }> {
     const path = `/api/v3/bots/${encodeURIComponent(internalBotId)}/handlers/${encodeURIComponent(handlerType)}`;
     let token: string;
     try {
       token = await this.getAccessToken("ZohoCliq.Bots.READ");
     } catch {
-      return { error: "could not mint a ZohoCliq.Bots.READ access token" };
+      return { error: "could not mint a ZohoCliq.Bots.READ access token", errorCode: "missing_scope" };
     }
     let res: { ok: boolean; status: number; json: () => Promise<unknown> };
     try {
@@ -2979,11 +2986,23 @@ export class CliqClient {
       return { error: `the request to read the ${handlerType} failed at the transport layer` };
     }
     if (!res.ok) {
+      let code: string | undefined;
+      try {
+        const data = await res.json();
+        const value = data && typeof data === "object" && typeof (data as { code?: unknown }).code === "string"
+          ? (data as { code: string }).code
+          : undefined;
+        code = value?.toLowerCase();
+      } catch {
+        // The reduced error below deliberately omits any response body.
+      }
       return {
         error:
           res.status === 401 || res.status === 403
             ? `Zoho refused the read with HTTP ${res.status} — the token is probably missing the ZohoCliq.Bots.READ scope`
             : `Zoho answered HTTP ${res.status}`,
+        errorCode: code,
+        errorStatus: res.status,
       };
     }
     let data: unknown;

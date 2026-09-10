@@ -2,6 +2,8 @@
 
 This document records the Zoho Cliq REST API behavior verified live against the EU data center. Bot create currently requires a non-empty `description` in addition to `name` and `scope: "organization"` (EU, 2026-08-29). It is the contract for bot and handler provisioning work; it is not a substitute for the normal manual setup instructions in the [README](../../README.md).
 
+> **This contract applies to the direct REST API only.** The Zoho MCP server's handler sub-resource tools (`ZohoCliq_create_bot_handler`, `ZohoCliq_get_bot_handler`, `ZohoCliq_update_bot_handler`) route incorrectly and answer `400 request_url_invalid` for every bot-id format — internal `b-…`, bare numeric, and unique name alike. Bot-level tools on the same server work, which makes the handler failure look like an API defect rather than a routing one. Use the endpoints below or `openclaw setup`.
+
 ## Bot endpoints
 
 ### Create a bot
