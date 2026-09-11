@@ -109,6 +109,15 @@ describe("describeDelugeBodySyntax (issue #227 evidence)", () => {
     const fp = describeDelugeBodySyntax("x".repeat(500));
     expect(fp.length).toBeLessThanOrEqual(96);
   });
+
+  it("keeps the generated suffix visible for a long rejected body", () => {
+    const fp = describeDelugeBodySyntax(
+      `{"handler":"message","message":"${"long text ".repeat(80)}","user":BROKEN_TAIL}`,
+    );
+    expect(fp.length).toBeLessThanOrEqual(96);
+    expect(fp).toContain("…");
+    expect(fp).toMatch(/,"x\*":x\*_x\*}$/);
+  });
 });
 
 describe("repair survives added flat handler fields (#228 regression)", () => {
@@ -129,6 +138,26 @@ describe("repair survives added flat handler fields (#228 regression)", () => {
       '{"handler":"mention","handlerSchema":"v2","locale":"de","message":"sagt "hallo"","user":{"id":"u-2"},"chat":{"id":"c-2"},"eventId":"evt-2"}';
     const repaired = repairDelugeUnescapedMessageBody(raw) as Record<string, unknown>;
     expect(repaired?.message).toBe('sagt "hallo"');
+  });
+
+  it("repairs the live shape when Deluge adds structural whitespace", () => {
+    const raw =
+      '{"handler":"message","handlerSchema":"v2","message":"OPENCLAW_CLIQ_ROUNDTRIP_REQUEST test\nContact email: test@example.invalid\nQuoted text: "doctor-safe"" , "user" : {"id":"u-1","name":"Alice"}, "chat" : {"id":"c-1","type":"single"}, "eventId" : "evt-1"}';
+    const repaired = repairDelugeUnescapedMessageBody(raw) as Record<string, unknown>;
+    expect(repaired).toBeDefined();
+    expect(repaired.message).toBe(
+      'OPENCLAW_CLIQ_ROUNDTRIP_REQUEST test\nContact email: test@example.invalid\nQuoted text: "doctor-safe"',
+    );
+    expect((repaired.user as Record<string, unknown>).id).toBe("u-1");
+    expect((repaired.chat as Record<string, unknown>).id).toBe("c-1");
+  });
+
+  it("finds the generated boundary past a known field name nested in the suffix", () => {
+    const raw =
+      '{"handler":"message","message":"line one\nline "two"","user":{"id":"u-1","profile":{"user":{"id":"nested"}}},"chat":{"id":"c-1"},"eventId":"evt-1"}';
+    const repaired = repairDelugeUnescapedMessageBody(raw) as Record<string, unknown>;
+    expect(repaired.message).toBe('line one\nline "two"');
+    expect((repaired.user as Record<string, unknown>).id).toBe("u-1");
   });
 
   it("does not treat a corrupted marker value as a skippable field", () => {
