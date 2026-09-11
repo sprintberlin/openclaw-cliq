@@ -1612,6 +1612,18 @@ describe("Deluge unescaped-message repair over the webhook (#223/#227)", () => {
     expect(warns.filter((l) => l.startsWith("[cliq] inbound skipped:"))).toHaveLength(0);
   });
 
+  it("dispatches the live multiline/entity shape with Deluge separator whitespace", async () => {
+    const { webhook, warns, dispatches } = registrationWithLogs({
+      extra: { dmPolicy: "open" },
+    });
+    const corrupt =
+      '{"handler":"message","handlerSchema":"v2","message":"OPENCLAW_CLIQ_ROUNDTRIP_REQUEST test\nContact email: test@example.invalid\nTelephone: +1 202-555-0100\nQuoted text: "doctor-safe"" , "user" : {"id":"user-123","name":"Alice"}, "chat" : {"id":"chat-1-B","type":"single"}, "eventId" : "evt-live-shape-1"}';
+    const res = await postRaw(webhook, corrupt);
+    expect(res.statusCode).toBe(200);
+    expect(dispatches()).toBe(1);
+    expect(warns.filter((l) => l.startsWith("[cliq] inbound skipped:"))).toHaveLength(0);
+  });
+
   it("still rejects (with the shape fingerprint) what the repair cannot fix", async () => {
     const { webhook, warns } = registrationWithLogs();
     // Distinctive marker word so the assertion proves the *fingerprint*

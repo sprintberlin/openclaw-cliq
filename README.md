@@ -771,7 +771,11 @@ return response;
 > (`handler=mention&message=...`), which is **not** the JSON body this
 > plugin expects — the gateway returns `400 Unexpected token 'h',
 > "handler=me"... is not valid JSON`. Always use `body:` together with
-> the `Content-Type: application/json` header shown above.
+> the `Content-Type: application/json` header shown above. Even on that
+> canonical path, Zoho's `Map.toString()` does not reliably escape quotes or
+> newlines in `message` and may vary whitespace/order in the generated suffix;
+> the webhook repairs recognized generated-handler bodies before parsing.
+> Preserve the generated field names when maintaining handlers manually.
 
 #### 5a. Welcome Handler (optional)
 

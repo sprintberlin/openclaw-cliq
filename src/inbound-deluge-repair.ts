@@ -25,14 +25,13 @@
  * `"handler":"…","message":"` comes free text, and the structural tail
  * (`,"user": … }`) is machine-generated and cannot contain the literal
  * `","user":` inside its own values. The real closing boundary is therefore
- * the **last** occurrence of `","user":` in the body: free text that itself
- * contains that literal sits *before* the real boundary, so `lastIndexOf`
- * finds the real one and the literal stays part of the message text.
- *
- * The message text is re-escaped with `JSON.stringify` and the body is parsed
- * again. Returns `undefined` whenever the body does not match the generated
- * shape or the repaired form still fails to parse — the caller then falls
- * through to the existing reject path with its skip logging (issue #232).
+ * the **last parseable generated-field separator** after the message value.
+ * Deluge may vary insignificant whitespace and Map iteration order, so the
+ * repair tries candidate boundaries before known generated fields from right
+ * to left and accepts only one whose reconstructed suffix parses as the full
+ * generated object. Free text that itself contains a separator-like literal
+ * remains part of the message unless the remainder is a valid generated
+ * payload.
  */
 
 /**
@@ -46,7 +45,8 @@
 const VALUE_START =
   /^\{\s*"handler"\s*:\s*"(?:message|mention|dm)"\s*,\s*(?:"[A-Za-z0-9_]+"\s*:\s*"[^"\\\n]*"\s*,\s*)*"message"\s*:\s*"/;
 
-const TAIL_BOUNDARY = '","user":';
+const TAIL_BOUNDARY =
+  /"\s*,\s*"(?:user|chat|eventId|event_id|attachments|mentions|channel|thread)"\s*:/g;
 
 export function repairDelugeUnescapedMessageBody(raw: string): unknown | undefined {
   const body = raw.trim();
@@ -69,23 +69,36 @@ export function repairDelugeUnescapedMessageBody(raw: string): unknown | undefin
   if (!start) return undefined;
 
   const after = body.slice(start[0].length);
-  const boundary = after.lastIndexOf(TAIL_BOUNDARY);
-  if (boundary <= 0) return undefined;
+  const candidates = [...after.matchAll(TAIL_BOUNDARY)];
+  for (const candidate of candidates.reverse()) {
+    const boundary = candidate.index;
+    if (boundary === undefined || boundary <= 0) continue;
 
-  const rawText = after.slice(0, boundary);
-  const tail = after.slice(boundary + 1); // starts with `,"user":`
-  const repaired =
-    body.slice(0, start[0].length - 1) + // up to (not incl.) the value's opening quote
-    JSON.stringify(rawText) +
-    tail;
-  try {
-    const value: unknown = JSON.parse(repaired);
-    return value && typeof value === "object" && !Array.isArray(value)
-      ? value
-      : undefined;
-  } catch {
-    return undefined;
+    const rawText = after.slice(0, boundary);
+    const tail = after.slice(boundary + 1); // preserve comma + Deluge whitespace
+    const repaired =
+      body.slice(0, start[0].length - 1) + // up to (not incl.) the value's opening quote
+      JSON.stringify(rawText) +
+      tail;
+    try {
+      const value: unknown = JSON.parse(repaired);
+      if (
+        value &&
+        typeof value === "object" &&
+        !Array.isArray(value) &&
+        (value as Record<string, unknown>).message === rawText &&
+        typeof (value as Record<string, unknown>).user === "object" &&
+        typeof (value as Record<string, unknown>).chat === "object"
+      ) {
+        return value;
+      }
+    } catch {
+      // A separator-like literal inside message text is not a structural
+      // boundary. Continue left until the reconstructed generated suffix
+      // parses as a complete object carrying the required user/chat maps.
+    }
   }
+  return undefined;
 }
 
 /**
@@ -94,6 +107,12 @@ export function repairDelugeUnescapedMessageBody(raw: string): unknown | undefin
  * identifies the *syntax* of a corrupt payload (unescaped quotes vs. Deluge
  * `a=b` map syntax vs. truncated body) without exposing any user text, so the
  * next unknown corruption documents itself in the default-visible skip line.
+ *
+ * A long body keeps its **tail** as well as its head. The structural boundary
+ * this repair depends on (`","user":` and the generated suffix) lives at the
+ * end, so a head-only fingerprint truncates away the only evidence that
+ * explains why a repair declined — exactly what happened to the 2026-09-11
+ * roundtrip, where 1384 bytes were diagnosed from the first 96.
  */
 export function describeDelugeBodySyntax(raw: string, maxLen = 96): string {
   const masked = raw
@@ -102,5 +121,10 @@ export function describeDelugeBodySyntax(raw: string, maxLen = 96): string {
     .replace(/[^\s⏎]/g, (ch) => (/[A-Za-z0-9]/.test(ch) ? "x" : ch))
     .replace(/x{2,}/g, "x*")
     .replace(/\s+/g, " ");
-  return masked.slice(0, maxLen);
+  if (masked.length <= maxLen) return masked;
+  const ELLIPSIS = "…";
+  // Bias toward the tail: the generated suffix is where the boundary lives.
+  const tailLen = Math.floor((maxLen - ELLIPSIS.length) / 2);
+  const headLen = maxLen - ELLIPSIS.length - tailLen;
+  return masked.slice(0, headLen) + ELLIPSIS + masked.slice(masked.length - tailLen);
 }
