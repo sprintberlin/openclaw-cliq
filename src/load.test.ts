@@ -1534,7 +1534,7 @@ describe("default-visible inbound skip logging (issue #232)", () => {
     expect(second.statusCode).toBe(200);
     const schemaWarnings = warns.filter((line) => line.startsWith("[cliq] inbound handler schema"));
     expect(schemaWarnings).toEqual([
-      expect.stringContaining("schema unversioned is stale; expected v2"),
+      expect.stringContaining("schema unversioned is stale; expected v3"),
     ]);
     expect(schemaWarnings[0]).toMatch(/openclaw setup|confirmation-gated handler repair/i);
     expect(schemaWarnings[0]).not.toContain("first legacy");
@@ -1548,7 +1548,7 @@ describe("default-visible inbound skip logging (issue #232)", () => {
     const res = await post(
       webhook,
       createDmDelugePayload({
-        handlerSchema: "v2",
+        handlerSchema: "v3",
         message: { text: "current", id: "current-schema" },
       }),
     );
@@ -1617,7 +1617,7 @@ describe("Deluge unescaped-message repair over the webhook (#223/#227)", () => {
       extra: { dmPolicy: "open" },
     });
     const corrupt =
-      '{"handler":"message","handlerSchema":"v2","message":"OPENCLAW_CLIQ_ROUNDTRIP_REQUEST test\nContact email: test@example.invalid\nTelephone: +1 202-555-0100\nQuoted text: "doctor-safe"" , "user" : {"id":"user-123","name":"Alice"}, "chat" : {"id":"chat-1-B","type":"single"}, "eventId" : "evt-live-shape-1"}';
+      '{"handler":"message","handlerSchema":"v3","message":"OPENCLAW_CLIQ_ROUNDTRIP_REQUEST test\nContact email: test@example.invalid\nTelephone: +1 202-555-0100\nQuoted text: "doctor-safe"" , "user" : {"id":"user-123","name":"Alice"}, "chat" : {"id":"chat-1-B","type":"single"}, "eventId" : "evt-live-shape-1"}';
     const res = await postRaw(webhook, corrupt);
     expect(res.statusCode).toBe(200);
     expect(dispatches()).toBe(1);

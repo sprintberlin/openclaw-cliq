@@ -90,6 +90,54 @@ describe("checkCliqHandlerConsistency (issue #124)", () => {
     expect(result.detail).not.toContain(SECRET);
   });
 
+  it("fails a generated Message Handler that reduces attachments to JSON names only", () => {
+    const message = [
+      script(),
+      'payload.put("attachments", attachments);',
+    ].join("\n");
+    const result = checkCliqHandlerConsistency({
+      handlers: handlers(message, script()),
+      configSecret: SECRET,
+      expectedWebhookUrl: HOOK_URL,
+    });
+    expect(result.status).toBe("fail");
+    expect(result.detail).toMatch(/does not forward.*multipart files/i);
+    expect(result.detail).not.toContain(SECRET);
+  });
+
+  it("passes a generated Message Handler with Zoho-formatted Deluge whitespace", () => {
+    const zohoFormattedMessage = [
+      `webhookUrl = "${HOOK_URL}";`,
+      `webhookSecret = "${SECRET}";`,
+      'payload = Map();',
+      'payload.put("handler","message");',
+      'payload.put("handlerSchema","v3");',
+      'payload.put("eventId",eventId);',
+      'response = Map();',
+      'response.put("eventId",eventId);',
+      'payloadPart = Map();',
+      'payloadPart.put("stringPart","true");',
+      'payloadPart.put("paramName","payload");',
+      'payloadPart.put("content",payload.toString());',
+      'requestFiles = List();',
+      'requestFiles.add(payloadPart);',
+      'invokeurl',
+      '[',
+      '\turl :webhookUrl',
+      '\ttype :POST',
+      '\theaders:{"x-cliq-webhook-secret":webhookSecret}',
+      '\tfiles:requestFiles',
+      ']',
+      'return response;',
+    ].join("\n");
+    const result = checkCliqHandlerConsistency({
+      handlers: handlers(zohoFormattedMessage, script()),
+      configSecret: SECRET,
+      expectedWebhookUrl: HOOK_URL,
+    });
+    expect(result.status).toBe("pass");
+  });
+
   it("fails and names the handler when config and handler secrets differ", () => {
     const handlerSecret = "zoho-held-different-secret";
     const result = checkCliqHandlerConsistency({
@@ -140,7 +188,7 @@ describe("checkCliqHandlerConsistency (issue #124)", () => {
 
     expect(result.status).toBe("fail");
     expect(result.detail).toMatch(/no recognisable handlerSchema literal/i);
-    expect(result.detail).toMatch(/expected handlerSchema "v2"/i);
+    expect(result.detail).toMatch(/expected handlerSchema "v3"/i);
     expect(result.detail).toMatch(/openclaw setup|confirmation-gated handler repair/i);
     expect(result.detail).not.toContain(SECRET);
   });
@@ -154,7 +202,7 @@ describe("checkCliqHandlerConsistency (issue #124)", () => {
 
     expect(result.status).toBe("fail");
     expect(result.detail).toContain('handlerSchema "v999"');
-    expect(result.detail).toContain('handlerSchema "v2"');
+    expect(result.detail).toContain('handlerSchema "v3"');
     expect(result.detail).not.toContain(SECRET);
   });
 

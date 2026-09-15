@@ -178,7 +178,7 @@ Each scope's grant is shown in parentheses — *client_credentials* is fetched a
 - **`ZohoCliq.Users.READ`** *(client_credentials)* — Resolve sender user info.
 - **`ZohoCliq.Messages.UPDATE`** *(refresh token)* — Edit a sent message in place (block-streaming live-edit of one Cliq response).
 - **`ZohoCliq.Chats.UPDATE`** *(refresh token)* — Native v3 typing via `POST /api/v3/chats/{chat_id}/activities` with body `{"action":"typing"}` (success is empty HTTP 204). A user id is not a chat id. This scope does not unlock `GET /api/v2/chats`. Cliq renders the indicator as the **human refresh-token owner**, never as the bot; the API exposes no sender override. The plugin therefore defaults `heartbeat.typing` to `"dm"` and suppresses this activity in shared rooms.
-- **`ZohoCliq.Messages.READ`** *(refresh token)* — Read recent chat messages to resolve an inbound file attachment's file id (a Cliq bot Message handler delivers `attachments` as bare file-name strings — the plugin fetches the file message via `GET /api/v2/chats/{chatId}/messages` to recover the downloadable id). Skip it for a text-only bot and inbound images degrade to name-only (no bytes reach the agent); the quote/reply parent-text fetch also uses this scope.
+- **`ZohoCliq.Messages.READ`** *(refresh token)* — Read recent chat messages to resolve an inbound file attachment's file id when a legacy/custom handler forwarded only its name (the plugin fetches the file message via `GET /api/v2/chats/{chatId}/messages` to recover the downloadable id). The current generated Message Handler forwards the Deluge FILE bytes directly as multipart, but this scope remains useful as a compatibility fallback and for quote/reply parent-text fetches.
 - **`ZohoCliq.Messages.DELETE`** *(refresh token)* — Delete a sent message via the v3 bulk-delete endpoint (only when the `delete` family resolves to v3 — the v2 single-message delete reuses `Messages.UPDATE`; opt-in, see [§4](#4-openclaw-configuration)).
 - **`ZohoCliq.messageactions.CREATE`** *(refresh token)* — Add / remove message reactions (the `message(action=react)` tool).
 - **`ZohoCliq.Attachments.READ`** *(refresh token)* — Download inbound file / image / voice attachments (`GET /api/v2/files/{id}`) so they reach the agent.
@@ -654,18 +654,17 @@ webhookSecret = "<the same secret you set as webhookSecret in openclaw.json>";
 // Cliq provides `message`, `user`, and `chat` in the Message/Mention handler
 // scope. The plugin's parser accepts these Cliq objects as-is (it tolerates the
 // different chat/channel key variants), so just forward them directly.
-// Forward `attachments` too (issue #84): a Cliq bot Message handler receives
-// the file names a user attached as a separate `attachments` argument (bare
-// file-name strings — no id / MIME); without forwarding them, a caption-less
-// image is rejected as `invalid payload` and an image with a caption dispatches
-// but the file never reaches the agent. The plugin resolves the file id from
-// the chat-messages list when a `refreshToken` is configured (§3c). The
-// argument is absent for text-only messages (Deluge passes null), so guard it.
+// Cliq passes `attachments` as Deluge FILE objects. `payload.toString()` turns
+// those into names and discards the bytes, which leaves voice notes at the
+// gateway as e.g. `voice-message-…wav` with no downloadable id. Keep a JSON
+// name list for matching/diagnostics, and send the actual FILE objects as
+// multipart parts so the gateway can stage them locally. Text-only messages
+// keep the raw-JSON path below.
 payload = Map();
 payload.put("handler", "message");   // <-- use "mention" in the Mention Handler
 // Generated-handler payload contract marker (issue #228). Keep this literal:
 // `openclaw cliq doctor` reads it back to identify a stale Zoho-held script.
-payload.put("handlerSchema", "v2");
+payload.put("handlerSchema", "v3");
 payload.put("message", message);
 payload.put("user", user);
 payload.put("chat", chat);
@@ -678,8 +677,14 @@ eventId = zoho.currenttime.toString("yyyyMMddHHmmss") + "-" + randomNumber(10000
 payload.put("eventId", eventId);
 // Message Handler only — the Mention Handler does not receive `attachments`,
 // so this block must be removed there (see the note below the script).
-if (attachments != null) {
-    payload.put("attachments", attachments);
+if (attachments != null)
+{
+    attachmentNames = List();
+    for each attachment in attachments
+    {
+        attachmentNames.add(attachment.getFileName());
+    }
+    payload.put("attachments", attachmentNames);
 }
 
 // Auth + content type. The secret header is REQUIRED when webhookSecret is set
@@ -688,14 +693,50 @@ headers = Map();
 headers.put("Content-Type", "application/json");
 headers.put("x-cliq-webhook-secret", webhookSecret);
 
-// POST to OpenClaw as raw JSON. Use `body:` (NOT `parameters:`) — see note below.
-invokeUrl
-[
-    url    : webhookUrl
-    type   : POST
-    body   : payload.toString()
-    headers: headers
-];
+// POST text-only events as raw JSON. For attachments, add the JSON payload as
+// a string multipart part plus every Deluge FILE object; invokeUrl creates the
+// multipart Content-Type/boundary itself, so only the secret header is set on
+// that branch.
+attachmentFiles = List();
+if (attachments != null)
+{
+    for each attachment in attachments
+    {
+        attachmentFiles.add(attachment);
+    }
+}
+if (attachmentFiles.size() == 0)
+{
+    invokeUrl
+    [
+        url    : webhookUrl
+        type   : POST
+        body   : payload.toString()
+        headers: headers
+    ];
+}
+else
+{
+    requestFiles = List();
+    payloadPart = Map();
+    payloadPart.put("stringPart", "true");
+    payloadPart.put("paramName", "payload");
+    payloadPart.put("content", payload.toString());
+    payloadPart.put("contentType", "application/json");
+    payloadPart.put("encodingType", "UTF-8");
+    requestFiles.add(payloadPart);
+    for each attachment in attachmentFiles
+    {
+        requestFiles.add(attachment);
+    }
+    invokeUrl
+    [
+        url    : webhookUrl
+        type   : POST
+        files  : requestFiles
+        headers: {"x-cliq-webhook-secret":webhookSecret}
+    ];
+}
 
 // The reply is delivered by the OpenClaw gateway via the Cliq bot API. Echo
 // the eventId so the Zoho Bot execution log is correlatable with gateway
@@ -708,8 +749,8 @@ return response;
 
 > The script above is for the **Message Handler** (DMs — `handler` value `"message"`).
 > The **Mention Handler** (channel/group @mentions) is the same script **minus the
-> `attachments` block** and with the `handler` value `"mention"` — i.e. in the Mention
-> Handler delete the `if (attachments != null) { ... }` lines and set
+> attachment-name and multipart branches** and with the `handler` value `"mention"` —
+> i.e. use the simple raw-JSON `invokeUrl` branch and set
 > `payload.put("handler", "mention")`. Group vs DM is detected automatically from the
 > forwarded `chat` object, so no extra mapping is needed.
 > The scripts cannot be byte-identical: the Mention Handler does not provide the
@@ -717,7 +758,13 @@ return response;
 > Zoho's script validation when the handler is saved via the provisioning API
 > (`execution_handler_update_failed` — see the
 > [verified provisioning API contract](https://github.com/sprintberlin/openclaw-cliq/blob/main/docs/setup/provisioning-api-contract.md)).
-> In live Cliq Message Handlers, `message` may be a bare string with no
+> A legacy handler that forwards only `payload.put("attachments", attachments)`
+> still lets the plugin try the `Messages.READ` history lookup, but it is not
+> sufficient for all voice-message deliveries: serialization can preserve only
+> the displayed `.wav` name. Re-run `openclaw setup` or `openclaw cliq provision`
+> after upgrading; the read-only planner detects the missing multipart branch and
+> offers a confirmation-gated Message Handler repair. In live Cliq Message
+> Handlers, `message` may be a bare string with no
 > `message.id` or `message.time`. The `eventId` line above is what gives the
 > plugin a retry-stable identity for that shape. Message identity resolves in
 > this order: Cliq's native `message.id` when present, then the forwarded
@@ -732,7 +779,7 @@ return response;
 > or `response.put("eventId")` (issue #231 — without the echo every Zoho
 > execution row stays `output: "{}"`).
 > Alternatively, re-paste both handler scripts manually to pick up the
-> `eventId` line.
+> current generated contract.
 
 > **⚠️ Security: the handler script exposes the webhook secret.** The secret is
 > a literal in the Deluge script, so it is readable by **anyone who can edit the

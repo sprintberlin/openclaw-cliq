@@ -16,7 +16,7 @@ const SECRET = "config-secret";
 function script(
   secret = SECRET,
   url = URL_OK,
-  extra = `payload.put("${CLIQ_HANDLER_SCHEMA_FIELD}", "${CLIQ_HANDLER_SCHEMA_VERSION}");\npayload.put("eventId", eventId);\nresponse.put("eventId", eventId);`,
+  extra = `payload.put("${CLIQ_HANDLER_SCHEMA_FIELD}", "${CLIQ_HANDLER_SCHEMA_VERSION}");\npayload.put("eventId", eventId);\nresponse.put("eventId", eventId);\npayload.put("attachments", attachments);\nfiles  : requestFiles\npayloadPart.put("paramName", "payload");`,
 ): string {
   return `webhookUrl = "${url}";\nwebhookSecret = "${secret}";\npayload = Map();\n${extra}`;
 }
@@ -51,6 +51,9 @@ describe("buildCliqHandlerScript", () => {
     expect(body).toContain('payload.put("handler", "message")');
     expect(body).toContain(`payload.put("${CLIQ_HANDLER_SCHEMA_FIELD}", "${CLIQ_HANDLER_SCHEMA_VERSION}");`);
     expect(body).toContain("attachments");
+    expect(body).toContain("attachment.getFileName()");
+    expect(body).toContain("files  : requestFiles");
+    expect(body).toContain('payloadPart.put("paramName", "payload")');
     expect(body).toContain("body   : payload.toString()");
     expect(body).toContain('headers.put("Content-Type", "application/json")');
     expect(body).not.toContain("parameters");
@@ -119,7 +122,7 @@ describe("buildCliqHandlerScript", () => {
     });
   });
 
-  it("puts the static v2 schema marker in every generated handler without a new Deluge variable (#228)", () => {
+  it("puts the static v3 schema marker in every generated handler without a new Deluge variable (#228)", () => {
     for (const handlerType of ["message_handler", "mention_handler", "welcome_handler"] as const) {
       const body = buildCliqHandlerScript({
         handlerType,
@@ -139,6 +142,7 @@ describe("buildCliqHandlerScript", () => {
     });
     expect(body).toContain('payload.put("handler", "mention")');
     expect(body).not.toContain("attachments");
+    expect(body).not.toContain("requestFiles");
     expect(body).toContain('payload.put("eventId"');
   });
 
@@ -175,6 +179,29 @@ describe("planCliqHandlerProvisioning — read-only", () => {
     expect(result.status).toBe("in_sync");
     expect(result.botId).toBe("b-464329000000074001");
     expect(result.items.map((item) => item.action)).toEqual(["none", "none"]);
+  });
+
+  it("plans a Message Handler repair when attachments are serialized but not forwarded as files", async () => {
+    const legacyMessage = script().replace(
+      '\nfiles  : requestFiles\npayloadPart.put("paramName", "payload");',
+      "",
+    );
+    const result = await plan({
+      reader: reader({
+        readHandlerScript: vi.fn(async (type: string) => ({
+          script: type === "message_handler" ? legacyMessage : script(),
+        })),
+      }),
+    });
+    expect(result.status).toBe("conflict");
+    expect(result.items[0]).toMatchObject({
+      type: "message_handler",
+      action: "repair",
+      conflict: "stale_script",
+      requiresConfirmation: true,
+    });
+    expect(result.items[0]?.reason).toMatch(/multipart files|voice\/file bytes/i);
+    expect(result.items[1]?.action).toBe("none");
   });
 
   it("plans a confirmed repair for a handler that does not echo its eventId (issue #231)", async () => {
@@ -215,7 +242,7 @@ describe("planCliqHandlerProvisioning — read-only", () => {
       expect(item.action).toBe("repair");
       expect(item.conflict).toBe("stale_script");
       expect(item.requiresConfirmation).toBe(true);
-      expect(item.reason).toMatch(/handlerSchema v2/i);
+      expect(item.reason).toMatch(/handlerSchema v3/i);
       expect(item.reason).toMatch(/restart does not update/i);
     }
   });

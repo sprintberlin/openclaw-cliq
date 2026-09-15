@@ -125,10 +125,10 @@ describe("repair survives added flat handler fields (#228 regression)", () => {
   // silently disabled the repair and made a live corrupt forward 400 again.
   it("repairs a body carrying handlerSchema before the message value", () => {
     const raw =
-      '{"handler":"message","handlerSchema":"v2","message":"Eintrag aus dem "others"\nist nicht ersichtlich","user":{"id":"u-1","name":"Alice"},"chat":{"id":"c-1","type":"single"},"eventId":"evt-1"}';
+      '{"handler":"message","handlerSchema":"v3","message":"Eintrag aus dem "others"\nist nicht ersichtlich","user":{"id":"u-1","name":"Alice"},"chat":{"id":"c-1","type":"single"},"eventId":"evt-1"}';
     const repaired = repairDelugeUnescapedMessageBody(raw) as Record<string, unknown>;
     expect(repaired).toBeDefined();
-    expect(repaired.handlerSchema).toBe("v2");
+    expect(repaired.handlerSchema).toBe("v3");
     expect(repaired.message).toBe('Eintrag aus dem "others"\nist nicht ersichtlich');
     expect((repaired.user as Record<string, unknown>).id).toBe("u-1");
   });

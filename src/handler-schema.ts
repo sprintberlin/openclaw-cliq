@@ -16,11 +16,12 @@ export const CLIQ_HANDLER_SCHEMA_FIELD = "handlerSchema";
 /**
  * Current generated-handler payload contract.
  *
- * `v1` was the unmarked historical shape. `v2` adds only this marker; its
- * message remains the verified bare Message/Mention-handler string rather
- * than assuming unverified rich Deluge variables exist.
+ * `v1` was the unmarked historical shape. `v2` added the marker while still
+ * serializing Message-handler attachments into JSON. `v3` sends those Deluge
+ * FILE objects as multipart data, so bytes survive even when no downloadable
+ * file id is exposed to the JSON webhook payload.
  */
-export const CLIQ_HANDLER_SCHEMA_VERSION = "v2";
+export const CLIQ_HANDLER_SCHEMA_VERSION = "v3";
 
 export type CliqHandlerSchemaCompatibility = "current" | "missing" | "unsupported";
 

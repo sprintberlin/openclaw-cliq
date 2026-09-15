@@ -298,6 +298,16 @@ export function extractDelugeStringAssignment(
   return match ? (match[1] ?? null) : null;
 }
 
+/**
+ * Detect whether a Deluge Message-handler script forwards FILE attachments as multipart.
+ * Tolerates whitespace and case differences in Deluge syntax from Zoho's script formatting.
+ */
+export function hasDelugeMultipartFiles(script: string): boolean {
+  const hasFilesParam = /\bfiles\s*:\s*requestFiles\b/i.test(script);
+  const hasPayloadPart = /payloadPart\.put\(\s*["']paramName["']\s*,\s*["']payload["']\s*\)/.test(script);
+  return hasFilesParam && hasPayloadPart;
+}
+
 /** Compare two URLs for delivery equivalence (trailing slash / case-insensitive host). */
 function sameWebhookUrl(a: string, b: string): boolean {
   const normalize = (raw: string): string => {
@@ -392,8 +402,8 @@ export function checkCliqHandlerConsistency(
       // A generated handler lives in Zoho independently from the plugin
       // artifact. URL/secret equality alone cannot prove that its payload has
       // the contract this runtime parses. Keep the literal marker check
-      // beside the existing targeted eventId diagnostics: `v2` proves a
-      // complete generated contract, while the targeted messages remain
+      // beside the existing targeted eventId diagnostics: the current marker
+      // proves a complete generated contract, while the targeted messages remain
       // useful for a known legacy script operators need to recognize. A
       // hand-written handler (no recognisable secret literal) stays on its
       // existing skip path and is never reported as a schema casualty.
@@ -430,6 +440,17 @@ export function checkCliqHandlerConsistency(
     ) {
       failures.push(
         `${label} does not return its eventId, so its Zoho execution rows stay "{}" and a message that never became an agent turn cannot be correlated with gateway logs`,
+      );
+    }
+
+    if (
+      handlerSecret !== null &&
+      handler.type === "message_handler" &&
+      /payload\.put\(\s*["']attachments["']/.test(handler.script) &&
+      !hasDelugeMultipartFiles(handler.script)
+    ) {
+      failures.push(
+        `${label} does not forward Message-handler attachments as multipart files, so voice/file bytes can collapse to a display name before the webhook receives them`,
       );
     }
   }

@@ -3,6 +3,7 @@ import {
   CLIQ_INBOUND_HANDLER_TYPES,
   extractDelugeStringAssignment,
   fingerprintCliqSecret,
+  hasDelugeMultipartFiles,
   type CliqInboundHandlerType,
 } from "./handler-consistency.js";
 import {
@@ -118,7 +119,7 @@ export interface CliqProvisioningReader {
  *
  * A handler is separately stored in Zoho, so a plugin upgrade cannot change
  * the script that actually executes. Each generated variant therefore posts
- * the literal `handlerSchema: "v2"`. It is a static `payload.put` literal,
+ * the literal current `handlerSchema` marker. It is a static `payload.put` literal,
  * not a new Deluge variable or a read of undocumented Message-handler fields:
  * that gives read-back diagnostics a reliable contract marker without widening
  * the validation surface that can yield permanent, non-retryable
@@ -172,8 +173,61 @@ export function buildCliqHandlerScript(params: {
   }
   const attachments =
     params.handlerType === "message_handler"
-      ? 'if (attachments != null)\n{\n    payload.put("attachments", attachments);\n}\n'
+      ? 'if (attachments != null)\n{\n    attachmentNames = List();\n    for each attachment in attachments\n    {\n        attachmentNames.add(attachment.getFileName());\n    }\n    payload.put("attachments", attachmentNames);\n}\n'
       : "";
+  const requestPayload =
+    params.handlerType === "message_handler"
+      ? [
+          "attachmentFiles = List();",
+          "if (attachments != null)",
+          "{",
+          "    for each attachment in attachments",
+          "    {",
+          "        attachmentFiles.add(attachment);",
+          "    }",
+          "}",
+          "if (attachmentFiles.size() == 0)",
+          "{",
+          "    invokeUrl",
+          "    [",
+          "        url    : webhookUrl",
+          "        type   : POST",
+          "        body   : payload.toString()",
+          "        headers: headers",
+          "    ];",
+          "}",
+          "else",
+          "{",
+          "    requestFiles = List();",
+          "    payloadPart = Map();",
+          '    payloadPart.put("stringPart", "true");',
+          '    payloadPart.put("paramName", "payload");',
+          "    payloadPart.put(\"content\", payload.toString());",
+          '    payloadPart.put("contentType", "application/json");',
+          '    payloadPart.put("encodingType", "UTF-8");',
+          "    requestFiles.add(payloadPart);",
+          "    for each attachment in attachmentFiles",
+          "    {",
+          "        requestFiles.add(attachment);",
+          "    }",
+          "    invokeUrl",
+          "    [",
+          "        url    : webhookUrl",
+          "        type   : POST",
+          "        files  : requestFiles",
+          '        headers: {"x-cliq-webhook-secret":webhookSecret}',
+          "    ];",
+          "}",
+        ].join("\n")
+      : [
+          "invokeUrl",
+          "[",
+          "    url    : webhookUrl",
+          "    type   : POST",
+          "    body   : payload.toString()",
+          "    headers: headers",
+          "];",
+        ].join("\n");
   return [
     `webhookUrl = "${params.webhookUrl}";`,
     `webhookSecret = "${params.webhookSecret}";`,
@@ -191,13 +245,7 @@ export function buildCliqHandlerScript(params: {
     'headers.put("Content-Type", "application/json");',
     'headers.put("x-cliq-webhook-secret", webhookSecret);',
     "",
-    "invokeUrl",
-    "[",
-    "    url    : webhookUrl",
-    "    type   : POST",
-    "    body   : payload.toString()",
-    "    headers: headers",
-    "];",
+    requestPayload,
     "",
     "response = Map();",
     'response.put("eventId", eventId);',
@@ -384,6 +432,18 @@ function classifyHandler(params: {
       action: "repair",
       conflict: "stale_script",
       reason: `${name} carries ${observed}; it must post handlerSchema ${CLIQ_HANDLER_SCHEMA_VERSION} so the gateway can identify the Zoho-held payload contract. Run the confirmation-gated handler repair; a plugin upgrade or gateway restart does not update Zoho's stored script`,
+      requiresConfirmation: true,
+    };
+  }
+  if (
+    params.type === "message_handler" &&
+    !hasDelugeMultipartFiles(read.script)
+  ) {
+    return {
+      type: params.type,
+      action: "repair",
+      conflict: "stale_script",
+      reason: `${name} serializes attachment objects into JSON only, so Cliq voice/file bytes can collapse to a display name; it must forward Message-handler attachments as multipart files`,
       requiresConfirmation: true,
     };
   }
