@@ -231,6 +231,45 @@ describe("CliqClient.listChatMessages — recent chat messages (edit-recovery)",
       id: "a_01016700908717835021141080_1_20098818989",
       name: "2020_03.png",
       type: "image/png",
+      downloadUrl: undefined,
+    });
+  });
+
+  it("parses nested history file ids and download URLs for voice-message variants", async () => {
+    const { CliqClient } = await import("./client.js");
+    installFetch({
+      messagesBody: {
+        data: [{
+          id: "voice-message-id",
+          type: "file",
+          content: {
+            file: {
+              attachment: {
+                file_id: "voice-file-id",
+                file_name: "voice-sample.wav",
+                content_type: "audio/wav",
+              },
+            },
+          },
+        }],
+      },
+    });
+    const client = new CliqClient(
+      "id",
+      "secret",
+      "bot",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "refresh-tok",
+    );
+    const refs = await client.listChatMessages("CT_voice");
+    expect(refs[0]?.file).toEqual({
+      id: "voice-file-id",
+      name: "voice-sample.wav",
+      type: "audio/wav",
+      downloadUrl: undefined,
     });
   });
 

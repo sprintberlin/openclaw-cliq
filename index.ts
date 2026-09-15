@@ -13,10 +13,10 @@ import {
   isCliqSessionConflictError,
   parseCliqWebhookPayload,
   describeCliqPayloadRejection,
-  readJsonBody,
   resolveCliqMentionDecision,
   type CliqRuntime,
 } from "./src/inbound.js";
+import { readCliqWebhookBody } from "./src/inbound-webhook-body.js";
 import {
   createFailedAuthRateLimiter,
   rejectUnauthedWebhook,
@@ -380,7 +380,7 @@ export default defineChannelPluginEntry({
           return true;
         }
 
-        const body = await readJsonBody(req);
+        const body = await readCliqWebhookBody(req);
         if (!body.ok) {
           // Issue #224: this branch used to be the last silent drop on the
           // inbound path. An authenticated POST whose body is empty or
@@ -499,6 +499,34 @@ export default defineChannelPluginEntry({
           res.statusCode = 400;
           res.end("invalid payload");
           return true;
+        }
+
+        // Generated v3 Message handlers forward Deluge FILE objects as
+        // multipart parts. Keep their bytes outside the JSON parser, then add
+        // the normalized descriptors to this single admitted turn.
+        if (body.attachments?.length) {
+          const byName = new Map(
+            body.attachments
+              .filter((attachment) => attachment.fileName)
+              .map((attachment) => [attachment.fileName!, attachment]),
+          );
+          parsed.attachments = parsed.attachments.map((attachment) =>
+            attachment.fileName && byName.has(attachment.fileName)
+              ? {
+                  ...attachment,
+                  ...byName.get(attachment.fileName),
+                  fileName: attachment.fileName,
+                }
+              : attachment,
+          );
+          const existingNames = new Set(
+            parsed.attachments.map((attachment) => attachment.fileName).filter(Boolean),
+          );
+          parsed.attachments.push(
+            ...body.attachments.filter(
+              (attachment) => !attachment.fileName || !existingNames.has(attachment.fileName),
+            ),
+          );
         }
 
         // A Zoho handler is separately stored code: an older handler must

@@ -4,8 +4,8 @@ import {
   type InboundMentionFacts,
   type InboundImplicitMentionKind,
 } from "openclaw/plugin-sdk/channel-inbound";
-import type { IncomingMessage } from "node:http";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
+import type { IncomingMessage } from "node:http";
 import { resolveAgentConfig } from "openclaw/plugin-sdk/agent-scope-runtime";
 import { getSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import type { CliqClient, ResolvedCliqAccount } from "./client.js";
@@ -47,6 +47,7 @@ import {
   type CliqInboundAttachment,
   type CliqInboundMediaFacts,
 } from "./inbound-media.js";
+import { normalizeCliqAttachments } from "./attachment-normalization.js";
 import {
   parseCliqReplyToContext,
   resolveCliqReplyToContext,
@@ -158,7 +159,7 @@ export interface CliqRuntime {
  * and a wrapped `params` shape sometimes appears. We tolerate all of these.
  */
 interface CliqMessageContent {
-  file?: { id?: string; name?: string; type?: string };
+  file?: unknown;
   comment?: string;
   thumbnail?: unknown;
   text?: string;
@@ -197,6 +198,8 @@ export interface CliqWebhookPayload {
         is_edited?: boolean;
         edited?: boolean;
         isEdited?: boolean;
+        attachments?: unknown;
+        file?: unknown;
       };
   text?: string;
   /**
@@ -255,18 +258,19 @@ export interface CliqWebhookPayload {
     start?: number;
     end?: number;
   }>;
-  /** Some Deluge handlers forward a bare `file` name string. Parsed best-effort. */
-  file?: string;
+  /** Some Deluge handlers forward a bare name or structured file descriptor. */
+  file?: unknown;
   /**
    * Defensive: some bot handlers forward an `attachments` array alongside the
-   * message object. A Cliq **bot Message handler** delivers `attachments` as
-   * an array of bare file-name strings (no id, no MIME) — see issue #84. Each
-   * string entry is surfaced as a name-only attachment (`fileName` set, no
-   * `fileId`); the file id is recovered best-effort via the chat-messages
-   * list endpoint in the dispatch path. Object entries (`{ id, name, type }`)
-   * are also tolerated when present.
+   * message object. Legacy JSON handlers can reduce Cliq's Deluge FILE
+   * objects to bare names; current handlers add the original files as
+   * multipart parts. The parser also tolerates structured ID/URL descriptors.
    */
-  attachments?: Array<string | { id?: string; name?: string; type?: string }>;
+  attachments?: unknown;
+  attachment?: unknown;
+  files?: unknown;
+  audio?: unknown;
+  voice?: unknown;
   /**
    * Cliq platform **Form** submission (Phase 3). When the bot's Form Handler
    * Deluge script forwards a submission to our webhook, the payload carries
@@ -306,6 +310,13 @@ export interface CliqWebhookPayload {
     eventId?: string;
     event_id?: string;
     handlerSchema?: string;
+    attachments?: unknown;
+    attachment?: unknown;
+    files?: unknown;
+    audio?: unknown;
+    voice?: unknown;
+    content?: CliqMessageContent | string;
+    file?: unknown;
   };
   /**
    * Quote / reply context (issue #49 / #230). A reply's parent message id may
@@ -514,54 +525,45 @@ function extractMessageText(payload: CliqWebhookPayload): ExtractedCliqMessage {
  * name string or an `attachments` array; both are tolerated. The `params`
  * wrapper is unwrapped by the caller before this runs.
  *
- * A Cliq **bot Message handler** delivers `attachments` as an array of bare
- * file-name strings (no id, no MIME) — see issue #84. Such entries are surfaced
- * with `fileId` unset and `fileName` only; the file id is recovered
- * best-effort via the chat-messages list endpoint in the dispatch path
- * (`resolveInboundAttachmentFileIds`). A name-only entry that cannot be
- * resolved still surfaces its name to the agent so the turn is useful.
+ * A legacy JSON-only Message handler may deliver only attachment names.
+ * Such entries are surfaced with `fileId` unset; the dispatch path attempts a
+ * chat-history lookup. Current generated handlers carry the original FILE
+ * bytes as multipart parts, and structured ID/URL variants are normalized.
  */
 function extractMessageAttachments(payload: CliqWebhookPayload): CliqInboundAttachment[] {
   const out: CliqInboundAttachment[] = [];
+  const append = (attachments: CliqInboundAttachment[]) => {
+    for (const attachment of attachments) {
+      const duplicate = out.some(
+        (existing) =>
+          (attachment.fileId && existing.fileId === attachment.fileId) ||
+          (attachment.downloadUrl && existing.downloadUrl === attachment.downloadUrl),
+      );
+      if (!duplicate) out.push(attachment);
+    }
+  };
+  const messageObject = payload.message && typeof payload.message === "object"
+    ? payload.message
+    : undefined;
   const content = payload.content && typeof payload.content === "object"
     ? payload.content
-    : payload.message && typeof payload.message === "object" &&
-        payload.message.content && typeof payload.message.content === "object"
-      ? payload.message.content
+    : messageObject?.content && typeof messageObject.content === "object"
+      ? messageObject.content
       : undefined;
   const caption = content?.comment?.trim() || undefined;
-  const file = content?.file;
-  if (file && typeof file.id === "string" && file.id.trim()) {
-    out.push({
-      fileId: file.id.trim(),
-      fileName: file.name?.trim() || undefined,
-      mimeType: file.type?.trim() || undefined,
-      caption,
-    });
-  } else if (Array.isArray(payload.attachments)) {
-    for (const a of payload.attachments) {
-      if (typeof a === "string") {
-        const name = a.trim();
-        if (name) {
-          out.push({ fileName: name, caption });
-        }
-      } else if (a && typeof a === "object") {
-        const id = typeof a.id === "string" ? a.id.trim() : undefined;
-        const name = typeof a.name === "string" ? a.name.trim() : undefined;
-        if (id) {
-          out.push({
-            fileId: id,
-            fileName: name || undefined,
-            mimeType: a.type?.trim() || undefined,
-            caption,
-          });
-        } else if (name) {
-          // Name-only object entry (no id) — same degradation as a string.
-          out.push({ fileName: name, mimeType: a.type?.trim() || undefined, caption });
-        }
-      }
-    }
+  append(normalizeCliqAttachments(content, caption));
+  append(normalizeCliqAttachments(messageObject?.attachments, caption));
+  if (typeof messageObject?.file !== "string") {
+    append(normalizeCliqAttachments(messageObject?.file, caption));
   }
+  if (typeof payload.file !== "string") {
+    append(normalizeCliqAttachments(payload.file, caption));
+  }
+  append(normalizeCliqAttachments(payload.attachment, caption));
+  append(normalizeCliqAttachments(payload.files, caption));
+  append(normalizeCliqAttachments(payload.audio, caption));
+  append(normalizeCliqAttachments(payload.voice, caption));
+  append(normalizeCliqAttachments(payload.attachments, caption));
   // A bare `file` string is the file name only — no id — so it is not
   // downloadable by itself. We do not synthesize an attachment for it; the
   // text path still surfaces it when it is the only payload field.
@@ -659,6 +661,13 @@ export function parseCliqWebhookPayload(
       eventId: payload.params.eventId ?? payload.eventId,
       event_id: payload.params.event_id ?? payload.event_id,
       handlerSchema: payload.params.handlerSchema ?? payload.handlerSchema,
+      attachments: payload.params.attachments ?? payload.attachments,
+      attachment: payload.params.attachment ?? payload.attachment,
+      files: payload.params.files ?? payload.files,
+      audio: payload.params.audio ?? payload.audio,
+      voice: payload.params.voice ?? payload.voice,
+      content: payload.params.content ?? payload.content,
+      file: payload.params.file ?? payload.file,
     };
   }
 
@@ -707,7 +716,7 @@ export function parseCliqWebhookPayload(
   }
   if (!bodyText && attachments.length > 0) {
     const first = attachments[0];
-    if (first.fileId) {
+    if (first.fileId || first.downloadUrl || first.bytes) {
       const kind = first.mimeType?.split("/")[0]?.toLowerCase();
       bodyText = kind ? `<media:${kind}>` : "<media>";
     } else {
@@ -728,9 +737,11 @@ export function parseCliqWebhookPayload(
     text &&
     !formResponse.matched &&
     !formSubmission &&
-    attachments.some((a) => !a.fileId)
+    attachments.some((a) => !a.fileId && !a.downloadUrl && !a.bytes)
   ) {
-    const name = attachments.find((a) => !a.fileId && a.fileName?.trim())?.fileName?.trim();
+    const name = attachments.find(
+      (a) => !a.fileId && !a.downloadUrl && !a.bytes && a.fileName?.trim(),
+    )?.fileName?.trim();
     if (name) {
       bodyText = `<file: ${name}>\n${bodyText}`;
     }
@@ -983,141 +994,27 @@ export function resolveCliqMentionDecision(
 }
 
 import {
-  describeDelugeBodySyntax,
-  repairDelugeUnescapedMessageBody,
-} from "./inbound-deluge-repair.js";
+  readCliqWebhookBody,
+  normalizeFormUrlencodedBody,
+} from "./inbound-webhook-body.js";
 
-/**
- * Read the request body as JSON. Rejects payloads larger than `maxBytes`.
- *
- * As a forgiving fallback, a body whose `Content-Type` is
- * `application/x-www-form-urlencoded` (or that fails to parse as JSON but
- * looks like a Deluge `parameters:`-style form-urlencoded body such as
- * `handler=mention&message=...`) is normalized into the equivalent JSON
- * object. This lets the webhook accept both the documented raw-JSON body
- * (`body: payload.toString()` in Deluge) and the form-encoded body that
- * Deluge's `parameters:` key produces. The raw-JSON shape is canonical;
- * the form-encoded path is a tolerance fallback only.
- */
-export async function readJsonBody(
+export { normalizeFormUrlencodedBody };
+
+/** Preserve the historical 1 MiB JSON-reader limit for callers and tests. */
+export function readJsonBody(
   req: Pick<IncomingMessage, "on" | "removeAllListeners" | "destroy"> & {
     headers?: IncomingMessage["headers"];
   },
   maxBytes = 1024 * 1024,
-): Promise<
-    { ok: true; value: unknown; repaired?: boolean } | { ok: false; error: string }
-  > {
-  return await new Promise((resolve) => {
-    let resolved = false;
-    const done = (
-      result:
-        | { ok: true; value: unknown; repaired?: boolean }
-        | { ok: false; error: string },
-    ) => {
-      if (resolved) return;
-      resolved = true;
-      req.removeAllListeners();
-      resolve(result);
-    };
-    const chunks: Buffer[] = [];
-    let total = 0;
-    req.on("data", (chunk: Buffer) => {
-      total += chunk.length;
-      if (total > maxBytes) {
-        done({ ok: false, error: "payload too large" });
-        req.destroy();
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on("end", () => {
-      const raw = Buffer.concat(chunks).toString("utf8");
-      if (!raw.trim()) {
-        done({ ok: false, error: "empty payload" });
-        return;
-      }
-      try {
-        done({ ok: true, value: JSON.parse(raw) });
-      } catch {
-        const normalized = normalizeFormUrlencodedBody(raw, req.headers);
-        if (normalized !== undefined) {
-          done({ ok: true, value: normalized });
-          return;
-        }
-        // Issue #223/#227: Zoho's `payload.toString()` does not escape string
-        // values, so a message containing a quote or line break arrives as
-        // structurally-complete but unparseable JSON. The generated-handler
-        // grammar is known, so repair instead of dropping.
-        const repaired = repairDelugeUnescapedMessageBody(raw);
-        if (repaired !== undefined) {
-          done({ ok: true, value: repaired, repaired: true });
-          return;
-        }
-        done({
-          ok: false,
-          error: `body is not valid JSON and could not be normalized as a Deluge form-urlencoded payload; use \`body: payload.toString()\` with a \`Content-Type: application/json\` header in the Deluge handler; shape: ${describeDelugeBodySyntax(raw)}`,
-        });
-      }
-    });
-    req.on("error", (err: Error) => {
-      done({ ok: false, error: err.message });
-    });
-  });
+) {
+  return readCliqWebhookBody(req, maxBytes);
 }
 
 /**
- * Detect a Deluge `parameters:`-style form-urlencoded body and convert it
- * to the equivalent JSON object the webhook parser expects. Returns
- * `undefined` when the body does not look form-urlencoded or cannot be
- * decoded. This is a tolerance fallback — the canonical body shape is raw
- * JSON (Deluge `body: payload.toString()`).
+ * The webhook body reader lives separately from message normalization so it
+ * can preserve binary multipart attachments without putting bytes into a
+ * JSON-shaped payload. Re-export the historical names for API/test stability.
  */
-export function normalizeFormUrlencodedBody(
-  raw: string,
-  headers?: IncomingMessage["headers"],
-): unknown | undefined {
-  const contentType = headers?.["content-type"];
-  const ct = Array.isArray(contentType) ? contentType[0] : contentType;
-  const isFormCt =
-    typeof ct === "string" &&
-    ct.toLowerCase().includes("application/x-www-form-urlencoded");
-  // Only attempt form-decoding when the content-type signals it, OR when
-  // the raw body clearly looks form-encoded (key=value&...) but is not
-  // JSON. This avoids misinterpreting arbitrary non-JSON text.
-  const looksFormEncoded =
-    raw.includes("=") &&
-    !raw.trimStart().startsWith("{") &&
-    !raw.trimStart().startsWith("[");
-  if (!isFormCt && !looksFormEncoded) return undefined;
-  try {
-    const params = new URLSearchParams(raw);
-    const obj: Record<string, unknown> = {};
-    for (const [key, value] of params.entries()) {
-      // The Deluge `parameters:` key posts a single form field whose name
-      // is the JSON string itself (e.g. `handler=mention&message=...`).
-      // Where a value is itself JSON, unwrap it; otherwise keep the string.
-      obj[key] = tryParseJson(value) ?? value;
-    }
-    return obj;
-  } catch {
-    return undefined;
-  }
-}
-
-function tryParseJson(value: string): unknown | undefined {
-  const trimmed = value.trim();
-  if (
-    !trimmed ||
-    (trimmed[0] !== "{" && trimmed[0] !== "[" && trimmed[0] !== '"')
-  ) {
-    return undefined;
-  }
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return undefined;
-  }
-}
 
 /**
  * Detect a Cliq / SDK "reply session initialization conflicted" error. This
@@ -1164,7 +1061,7 @@ export async function dispatchCliqInbound(params: {
      | "listChatMessages"
      | "deleteMessage"
      | "downloadAttachment"
-    >;
+    > & Partial<Pick<CliqClient, "downloadAttachmentUrl">>;
 }): Promise<void> {
   const { runtime, cfg, account, parsed, onError } = params;
   const peerKind = parsed.isGroup ? "group" : "dm";

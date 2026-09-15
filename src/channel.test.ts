@@ -1636,6 +1636,20 @@ describe("normalizeCliqRouteTarget (issue #11)", () => {
     });
   });
 
+  it("routes Core-stripped channel:<name> to the same group target", () => {
+    expect(normalizeCliqRouteTarget("channel:dev-team")).toEqual({
+      to: "dev-team",
+      isDm: false,
+    });
+  });
+
+  it("routes Core-stripped user:<id> to a DM user target", () => {
+    expect(normalizeCliqRouteTarget("user:20000000001")).toEqual({
+      to: "20000000001",
+      isDm: true,
+    });
+  });
+
   it("defaults a bare id to group delivery (backward compat)", () => {
     expect(normalizeCliqRouteTarget("20098819618")).toEqual({
       to: "20098819618",

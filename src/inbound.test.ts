@@ -611,7 +611,7 @@ describe("parseCliqWebhookPayload", () => {
     const parsed = parseCliqWebhookPayload({
       handler: "message",
       message: "was siehst du?",
-      user: { id: "20098819618", name: "Alice" },
+      user: { id: "20000000001", name: "Alice" },
       chat: { id: "CT_dm-B2", type: "bot" },
       attachments: ["2020_03.png"],
     } as CliqWebhookPayload);
@@ -621,11 +621,77 @@ describe("parseCliqWebhookPayload", () => {
     expect(parsed!.text).toBe("<file: 2020_03.png>\nwas siehst du?");
   });
 
+  it("parses the live voice-message name-only form without inventing an id", () => {
+    const parsed = parseCliqWebhookPayload({
+      handler: "message",
+      message: "",
+      user: { id: "20000000001", name: "Alice" },
+      chat: { id: "CT_dm-B2", type: "bot" },
+      attachments: ["voice-sample.wav"],
+    } as CliqWebhookPayload);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.attachments).toEqual([
+      { fileName: "voice-sample.wav" },
+    ]);
+    expect(parsed!.text).toBe("<file: voice-sample.wav>");
+  });
+
+  it("parses nested IDs and download URLs from params-wrapped attachment variants", () => {
+    const parsed = parseCliqWebhookPayload({
+      handler: "message",
+      params: {
+        message: { text: "voice" },
+        user: { id: "u1" },
+        chat: { id: "CT_dm" },
+        attachments: {
+          files: [{
+            attachment: {
+              file_id: "voice-file-1",
+              file_name: "voice.wav",
+              content_type: "audio/wav",
+            },
+          }],
+        },
+      },
+    } as CliqWebhookPayload);
+    expect(parsed?.attachments).toEqual([{
+      fileId: "voice-file-1",
+      downloadUrl: undefined,
+      fileName: "voice.wav",
+      mimeType: "audio/wav",
+      caption: undefined,
+      bytes: undefined,
+    }]);
+  });
+
+  it("parses message-nested and root download descriptors", () => {
+    const parsed = parseCliqWebhookPayload({
+      handler: "message",
+      message: {
+        text: "voice",
+        attachments: [{
+          file: {
+            downloadUrl: "https://cliq.zoho.eu/api/v2/attachments/download?signature=opaque",
+            filename: "voice.wav",
+            mimeType: "audio/wav",
+          },
+        }],
+      },
+      user: { id: "u1" },
+      chat: { id: "CT_dm" },
+    } as CliqWebhookPayload);
+    expect(parsed?.attachments).toMatchObject([{
+      downloadUrl: "https://cliq.zoho.eu/api/v2/attachments/download?signature=opaque",
+      fileName: "voice.wav",
+      mimeType: "audio/wav",
+    }]);
+  });
+
   it("synthesizes a <file: name> body for a caption-less name-only attachment (issue #84)", () => {
     const parsed = parseCliqWebhookPayload({
       handler: "message",
       message: "",
-      user: { id: "20098819618", name: "Alice" },
+      user: { id: "20000000001", name: "Alice" },
       chat: { id: "CT_dm-B2", type: "bot" },
       attachments: ["2020_03.png"],
     } as CliqWebhookPayload);
@@ -677,7 +743,7 @@ describe("parseCliqWebhookPayload", () => {
       const parsed = parseCliqWebhookPayload({
         handler: "message",
         message: "",
-        user: { id: "20098819618", name: "Alice" },
+        user: { id: "20000000001", name: "Alice" },
         chat: { id: "CT_dm-B2", type: "bot" },
         attachments: ["2020_03.png"],
       } as CliqWebhookPayload);
@@ -2121,6 +2187,126 @@ describe("dispatchCliqInbound — inbound media (issue #48)", () => {
     });
     expect(client.listChatMessages).not.toHaveBeenCalled();
     expect(client.downloads).toEqual(["fileid-1"]);
+  });
+
+  it("stages multipart-forwarded text and markdown attachments directly without calling listChatMessages or downloadAttachment", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const client = makeMediaClient();
+    const parsed = parseCliqWebhookPayload({
+      handler: "message",
+      message: "Hier sind die Dokumente",
+      user: { id: "u1", name: "Alice" },
+      chat: { id: "CT_1000000000000000000_20000000000-B2" },
+      attachments: ["notes.txt", "notes.md"],
+    } as CliqWebhookPayload)!;
+    parsed.attachments = [
+      {
+        fileName: "notes.txt",
+        bytes: Buffer.from("test document content"),
+        mimeType: "text/plain",
+      },
+      {
+        fileName: "notes.md",
+        bytes: Buffer.from("# test markdown"),
+        mimeType: "text/markdown",
+      },
+    ];
+
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({ refreshToken: "rt" }),
+      parsed,
+      client,
+    });
+
+    expect(client.listChatMessages).not.toHaveBeenCalled();
+    expect(client.downloads).toHaveLength(0);
+    expect(saveMediaBufferMock).toHaveBeenCalledTimes(2);
+    expect(saveMediaBufferMock.mock.calls[0][1]).toBe("text/plain");
+    expect(saveMediaBufferMock.mock.calls[0][4]).toBe("notes.txt");
+    expect(saveMediaBufferMock.mock.calls[1][1]).toBe("text/markdown");
+    expect(saveMediaBufferMock.mock.calls[1][4]).toBe("notes.md");
+    expect(capture.ctxPayload?.MediaPaths).toEqual([
+      "/mocked/media-store/inbound/notes.txt",
+      "/mocked/media-store/inbound/notes.md",
+    ]);
+    expect(capture.ctxPayload?.MediaTypes).toEqual(["text/plain", "text/markdown"]);
+  });
+
+  it("stages multipart-forwarded voice notes (.wav, .m4a) with transcribed: false", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const client = makeMediaClient();
+    const parsed = parseCliqWebhookPayload({
+      handler: "message",
+      message: "",
+      user: { id: "u1", name: "Alice" },
+      chat: { id: "CT_1000000000000000000_20000000000-B2" },
+      attachments: ["voice-message.wav", "audio.m4a"],
+    } as CliqWebhookPayload)!;
+    parsed.attachments = [
+      {
+        fileName: "voice-message.wav",
+        bytes: Buffer.from([0x52, 0x49, 0x46, 0x46]),
+        mimeType: "audio/wav",
+      },
+      {
+        fileName: "audio.m4a",
+        bytes: Buffer.from([0x00, 0x00, 0x00, 0x20]),
+        mimeType: "audio/mp4",
+      },
+    ];
+
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({ refreshToken: "rt" }),
+      parsed,
+      client,
+    });
+
+    expect(client.listChatMessages).not.toHaveBeenCalled();
+    expect(client.downloads).toHaveLength(0);
+    expect(saveMediaBufferMock).toHaveBeenCalledTimes(2);
+    expect(saveMediaBufferMock.mock.calls[0][1]).toBe("audio/wav");
+    expect(saveMediaBufferMock.mock.calls[1][1]).toBe("audio/mp4");
+    expect(capture.ctxPayload?.MediaPaths).toEqual([
+      "/mocked/media-store/inbound/voice-message.wav",
+      "/mocked/media-store/inbound/audio.m4a",
+    ]);
+  });
+
+  it("handles listChatMessages 400 operation_failed on bot DM chats gracefully by degrading to name-only turn", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const client = makeMediaClient();
+    client.listChatMessages = vi.fn(async () => {
+      throw new Error("cliq: GET /api/v2/chats/CT_1000000000000000000_20000000000-B2/messages?limit=50 failed (400): {\"code\":\"operation_failed\"}");
+    });
+    const parsed = parseCliqWebhookPayload({
+      handler: "message",
+      message: "",
+      user: { id: "u1", name: "Alice" },
+      chat: { id: "CT_1000000000000000000_20000000000-B2" },
+      attachments: ["notes.txt"],
+    } as CliqWebhookPayload)!;
+
+    let reportedKind = "";
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({ refreshToken: "rt" }),
+      parsed,
+      client,
+      onError: (_err, info) => {
+        reportedKind = info.kind;
+      },
+    });
+
+    expect(client.listChatMessages).toHaveBeenCalledWith("CT_1000000000000000000_20000000000-B2", { limit: 50 });
+    expect(reportedKind).toBe("inbound-media-no-fileid");
+    expect(saveMediaBufferMock).not.toHaveBeenCalled();
+    expect(capture.ctxPayload?.MediaPath).toBeUndefined();
+    expect(capture.ctxPayload?.RawBody).toBe("<file: notes.txt>");
   });
 });
 
@@ -4630,7 +4816,7 @@ describe("isCliqSessionConflictError (issue #84)", () => {
   it("matches the SDK reply-session-init-conflict error message", () => {
     expect(
       isCliqSessionConflictError(
-        new Error("reply session initialization conflicted for agent:martin:cliq:direct:dm:20098819618"),
+        new Error("reply session initialization conflicted for agent:martin:cliq:direct:dm:20000000001"),
       ),
     ).toBe(true);
   });

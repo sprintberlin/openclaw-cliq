@@ -22,11 +22,31 @@ import {
   findCliqDataCenterByApiBase,
   findCliqDataCenterByApiDomain,
 } from "./region.js";
+import { normalizeCliqAttachment } from "./attachment-normalization.js";
 
 const EU_API_BASE = "https://cliq.zoho.eu";
 const EU_OAUTH_BASE = "https://accounts.zoho.eu";
 
 const MESSAGE_CHAR_LIMIT = 5000;
+
+/**
+ * Live company attachment path Zoho delivers in webhook payloads
+ * (observed 2026-09-14): `/company/{orgId}/v2/attachments/{opaqueId}`.
+ */
+const CLIQ_COMPANY_ATTACHMENT_PATH = /^\/company\/\d+\/v2\/attachments\/[A-Za-z0-9_-]+$/;
+
+/** Allowed inbound attachment download pathnames on the Cliq API origin. */
+export function isAllowedCliqAttachmentPath(pathname: string): boolean {
+  return pathname.startsWith("/api/") || CLIQ_COMPANY_ATTACHMENT_PATH.test(pathname);
+}
+
+/** Redact long opaque segments so rejection logs stay diagnostic but bounded. */
+export function redactCliqAttachmentPath(pathname: string): string {
+  return pathname
+    .split("/")
+    .map((segment) => (segment.length > 16 ? `${segment.slice(0, 12)}…` : segment))
+    .join("/");
+}
 
 /**
  * Default minimum wall-clock distance between two in-place preview edits of
@@ -1341,7 +1361,7 @@ export interface CliqChatMessageRef {
    * (`{ id, name, type }`). Present only for file messages. Used by the
    * inbound-media path to resolve a name-only attachment's file id (issue #84).
    */
-  file?: { id?: string; name?: string; type?: string };
+  file?: { id?: string; name?: string; type?: string; downloadUrl?: string };
 }
 
 /**
@@ -1412,13 +1432,16 @@ function parseCliqChatMessages(data: unknown, fallbackChatId?: string): CliqChat
       rec.content && typeof rec.content === "object" && !Array.isArray(rec.content)
         ? (rec.content as Record<string, unknown>)
         : undefined;
-    const rawFile = content?.file;
-    if (rawFile && typeof rawFile === "object" && !Array.isArray(rawFile)) {
-      const f = rawFile as Record<string, unknown>;
-      const id = typeof f.id === "string" ? f.id.trim() : undefined;
-      const name = typeof f.name === "string" ? f.name.trim() : undefined;
-      const type = typeof f.type === "string" ? f.type.trim() : undefined;
-      if (id || name || type) file = { id, name, type };
+    const normalizedFile = normalizeCliqAttachment(
+      content?.file ?? rec.file ?? rec.attachment,
+    );
+    if (normalizedFile) {
+      file = {
+        id: normalizedFile.fileId,
+        name: normalizedFile.fileName,
+        type: normalizedFile.mimeType,
+        downloadUrl: normalizedFile.downloadUrl,
+      };
     }
     refs.push({
       messageId,
@@ -1453,6 +1476,7 @@ function readCliqMessageString(value: unknown): string | undefined {
  *   - `cliq:user:<id>` / `cliq:dm:<id>`  → DM, deliver via `userids` to /bots/{botId}/message
  *   - `cliq:chat:<id>`                   → group/channel, deliver via channelsbyname
  *   - `cliq:channel:<uniqueName>`        → group/channel, deliver via channelsbyname
+ *   - Core-normalized `user:<id>` / `channel:<uniqueName>` aliases follow the same routes
  * The `to` for a non-DM target MUST be the channel unique name (the
  * channelsbyname endpoint keys off it in the URL path); a bare chat id is
  * only a fallback when the inbound payload carried no unique name. Targets
@@ -1471,7 +1495,11 @@ function normalizeCliqInboundCatchupConfig(
 
 export function normalizeCliqRouteTarget(to: string): NormalizedCliqTarget {
   if (!to) return { to, isDm: false };
-  const m = /^cliq:([a-z]+):(.+)$/i.exec(to);
+  // OpenClaw may pass the full channel-scoped route or strip the leading
+  // `cliq:` before outbound delivery. Preserve the historical behavior for
+  // unknown unscoped prefixes while accepting only the known short aliases.
+  const m = /^cliq:([a-z]+):(.+)$/i.exec(to)
+    ?? /^(user|dm|chat|channel|group):(.+)$/i.exec(to);
   if (!m) return { to, isDm: false };
   const kind = m[1].toLowerCase();
   const id = m[2];
@@ -2553,13 +2581,49 @@ export class CliqClient {
    * bytes + the response `Content-Type`.
    */
   async downloadAttachment(fileId: string): Promise<{ bytes: Uint8Array; contentType?: string }> {
-    const path = `/api/v2/files/${encodeURIComponent(fileId)}`;
+    return this.downloadAttachmentUrl(`/api/v2/files/${encodeURIComponent(fileId)}`);
+  }
+
+  /**
+   * Download an inbound Cliq attachment from an absolute or API-relative URL.
+   *
+   * Some Zoho/Deluge webhook variants carry a ready-made download URL instead
+   * of the Files-API id. Treat that URL as untrusted webhook input: resolve it
+   * against the configured Cliq API base, require HTTPS, and require the exact
+   * same origin. Allowed pathnames are `/api/...` plus the live company
+   * attachment path `/company/{orgId}/v2/attachments/{id}`. This permits
+   * regional Cliq URLs and query-bearing signed paths without turning the
+   * gateway into an arbitrary URL fetcher.
+   */
+  async downloadAttachmentUrl(
+    downloadUrl: string,
+  ): Promise<{ bytes: Uint8Array; contentType?: string }> {
+    let apiBase: URL;
+    let url: URL;
+    try {
+      apiBase = new URL(this.apiBase);
+      url = new URL(downloadUrl, apiBase);
+    } catch {
+      throw new Error("cliq: attachment download URL is invalid");
+    }
+    if (url.protocol !== "https:" || url.origin !== apiBase.origin) {
+      throw new Error("cliq: attachment download URL must use the configured Cliq API origin over HTTPS");
+    }
+    if (!isAllowedCliqAttachmentPath(url.pathname)) {
+      // Log a redacted pathname (never the query — it can carry an opaque
+      // signature) so a live Zoho URL shape is diagnosable from the gateway log.
+      this.logger.warn?.(
+        `[cliq] attachment download URL rejected: non-API path=${redactCliqAttachmentPath(url.pathname)}`,
+      );
+      throw new Error("cliq: attachment download URL must target the Cliq API");
+    }
     const token = await this.resolveOutboundToken(
       "ZohoCliq.Attachments.READ",
       Boolean(this.refreshToken),
     );
-    const url = `${this.apiBase}${path}`;
-    this.logger.info?.(`[cliq] download attachment: fileId=${fileId}`);
+    // Never log the webhook-provided URL: it may contain an opaque signature
+    // or other bearer-like query material.
+    this.logger.info?.("[cliq] download attachment");
     const res = await fetch(url, {
       method: "GET",
       headers: { Authorization: `Zoho-oauthtoken ${token}` },
@@ -2567,14 +2631,14 @@ export class CliqClient {
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       this.logger.warn?.(
-        `[cliq] download attachment non-2xx: status=${res.status} fileId=${fileId} body=${truncateForLog(body)}`,
+        `[cliq] download attachment non-2xx: status=${res.status} body=${truncateForLog(body)}`,
       );
-      throw new Error(`cliq: download attachment (${fileId}) failed (${res.status}): ${body}`);
+      throw new Error(`cliq: download attachment failed (${res.status}): ${body}`);
     }
     const buf = new Uint8Array(await res.arrayBuffer());
     const ct = res.headers.get("content-type") ?? undefined;
     this.logger.debug?.(
-      `[cliq] download attachment ok: fileId=${fileId} bytes=${buf.byteLength} ct=${ct ?? "-"}`,
+      `[cliq] download attachment ok: bytes=${buf.byteLength} ct=${ct ?? "-"}`,
     );
     return { bytes: buf, contentType: ct };
   }

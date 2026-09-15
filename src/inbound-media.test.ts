@@ -160,6 +160,61 @@ describe("prepareInboundMedia", () => {
     expect(paths).toHaveLength(0);
     expect(reported).toEqual([{ kind: "inbound-media-no-fileid", fileId: "" }]);
   });
+
+  it("stages multipart-forwarded voice bytes without a second download", async () => {
+    const downloadAttachment = vi.fn();
+    const { media } = await prepareInboundMedia({
+      attachments: [{
+        bytes: new Uint8Array([0x52, 0x49, 0x46, 0x46]),
+        fileName: "voice-sample.wav",
+        mimeType: "audio/wav",
+      }],
+      client: { downloadAttachment },
+      messageId: "voice-event",
+    });
+    expect(downloadAttachment).not.toHaveBeenCalled();
+    expect(media).toMatchObject([{
+      contentType: "audio/wav",
+      kind: "audio",
+      transcribed: false,
+      messageId: "voice-event",
+    }]);
+  });
+
+  it("infers audio/wav from the live voice filename when multipart omits MIME", async () => {
+    const { media } = await prepareInboundMedia({
+      attachments: [{
+        bytes: new Uint8Array([0x52, 0x49, 0x46, 0x46]),
+        fileName: "voice-sample.wav",
+      }],
+      client: { downloadAttachment: vi.fn() },
+    });
+    expect(media[0]).toMatchObject({
+      contentType: "audio/wav",
+      kind: "audio",
+      transcribed: false,
+    });
+  });
+
+  it("downloads a URL-backed attachment through the dedicated client method", async () => {
+    const downloadAttachment = vi.fn();
+    const downloadAttachmentUrl = vi.fn(async () => ({
+      bytes: new Uint8Array([1, 2]),
+      contentType: "audio/wav",
+    }));
+    const { media } = await prepareInboundMedia({
+      attachments: [{
+        downloadUrl: "/api/v2/attachments/download?token=opaque",
+        fileName: "voice.wav",
+      }],
+      client: { downloadAttachment, downloadAttachmentUrl },
+    });
+    expect(downloadAttachment).not.toHaveBeenCalled();
+    expect(downloadAttachmentUrl).toHaveBeenCalledWith(
+      "/api/v2/attachments/download?token=opaque",
+    );
+    expect(media[0]?.kind).toBe("audio");
+  });
 });
 
 describe("resolveInboundAttachmentFileIds (issue #84)", () => {
@@ -203,6 +258,19 @@ describe("resolveInboundAttachmentFileIds (issue #84)", () => {
       canReadChatMessages: true,
     });
     expect(out[0].fileId).toBe("latest-id");
+  });
+
+  it("does not map multiple unmatched attachment names to one latest file", async () => {
+    const listChatMessages = vi.fn(async () => [
+      { messageId: "m", chatId: "CT_dm", file: { id: "latest-id", name: "other.wav" } },
+    ]);
+    const out = await resolveInboundAttachmentFileIds({
+      attachments: [{ fileName: "a.wav" }, { fileName: "b.wav" }],
+      client: { listChatMessages },
+      chatId: "CT_dm",
+      canReadChatMessages: true,
+    });
+    expect(out.every((attachment) => attachment.fileId === undefined)).toBe(true);
   });
 
   it("is a no-op when all attachments already have a fileId (no API call)", async () => {
