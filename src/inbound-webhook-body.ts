@@ -33,10 +33,19 @@ function multipartBoundary(contentType: string): string | undefined {
   return boundary && boundary.length <= 200 ? boundary : undefined;
 }
 
+function parseDispositionParameter(value: string, parameter: string): string | undefined {
+  const escaped = parameter.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(
+    `(?:^|;)\\s*${escaped}=(?:"([^"]*)"|'([^']*)'|([^;\\s]*))`,
+    "i",
+  ).exec(value);
+  return match?.[1] ?? match?.[2] ?? match?.[3];
+}
+
 function parseDisposition(value: string): { name?: string; fileName?: string } {
-  const name = /(?:^|;)\s*name="([^"]*)"/i.exec(value)?.[1];
+  const name = parseDispositionParameter(value, "name");
   const encodedFileName = /(?:^|;)\s*filename\*=UTF-8''([^;\r\n]*)/i.exec(value)?.[1];
-  let fileName = /(?:^|;)\s*filename="([^"]*)"/i.exec(value)?.[1];
+  let fileName = parseDispositionParameter(value, "filename");
   if (encodedFileName) {
     try {
       fileName = decodeURIComponent(encodedFileName);

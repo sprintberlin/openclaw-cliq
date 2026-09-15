@@ -14,6 +14,7 @@ publish workflow extracts the matching section as the release notes (see
 ### Fixed
 
 - Inbound Message-handler multipart requests are now recognized from their bounded `payload` part when Zoho Deluge omits or mislabels `Content-Type`, instead of being parsed as form fields and dropped before agent dispatch.
+- `Content-Disposition` parameters of a Deluge multipart part are now accepted in double-quoted, single-quoted, and unquoted token form; live traffic showed `name=payload` without quotes, which previously fell through the sniffer into form parsing (#270).
 
 ### Changed
 

@@ -24,13 +24,19 @@ class FakeRequest extends EventEmitter {
   }
 }
 
-function multipartBody(boundary: string, payload: unknown, file: Buffer): Buffer {
+function multipartBody(
+  boundary: string,
+  payload: unknown,
+  file: Buffer,
+  payloadName = 'name="payload"',
+  fileName = 'filename="voice-sample.wav"',
+): Buffer {
   return Buffer.concat([
     Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="payload"\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(payload)}\r\n`,
+      `--${boundary}\r\nContent-Disposition: form-data; ${payloadName}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(payload)}\r\n`,
     ),
     Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="voice-sample.wav"\r\nContent-Type: audio/wav\r\n\r\n`,
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; ${fileName}\r\nContent-Type: audio/wav\r\n\r\n`,
     ),
     file,
     Buffer.from(`\r\n--${boundary}--\r\n`),
@@ -94,6 +100,41 @@ describe("Cliq multipart webhook body", () => {
       if (!result.ok) return;
       expect(result.value).toEqual(payload);
       expect(Buffer.from(result.attachments?.[0]?.bytes ?? [])).toEqual(file);
+    },
+  );
+
+  it.each([
+    { payloadName: "name=payload", fileName: "filename=voice-sample.wav" },
+    { payloadName: "name='payload'", fileName: "filename='voice-sample.wav'" },
+  ])(
+    "accepts non-double-quoted Deluge disposition parameters: $payloadName, $fileName",
+    async ({ payloadName, fileName }) => {
+      const boundary = "ZohoDelugeUnquotedBoundary";
+      const payload = {
+        handler: "message",
+        handlerSchema: "v4",
+        message: "hello",
+        user: { id: "u1" },
+        chat: { id: "CT_dm" },
+        attachments: ["voice.wav"],
+      };
+      const body = multipartBody(
+        boundary,
+        payload,
+        Buffer.from("voice-bytes"),
+        payloadName,
+        fileName,
+      );
+      const request = new FakeRequest({ "content-type": "application/x-www-form-urlencoded" });
+      const pending = readCliqWebhookBody(request as never);
+      request.emit("data", body);
+      request.emit("end");
+      const result = await pending;
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value).toEqual(payload);
+      expect(result.attachments?.[0]?.fileName).toBe("voice-sample.wav");
     },
   );
 
