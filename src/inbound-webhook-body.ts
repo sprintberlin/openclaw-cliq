@@ -15,8 +15,16 @@ interface MultipartPart {
 
 const CRLF = Buffer.from("\r\n");
 const CRLFCRLF = Buffer.from("\r\n\r\n");
+const LF = Buffer.from("\n");
+const LFLF = Buffer.from("\n\n");
 const DEFAULT_JSON_MAX_BYTES = 1024 * 1024;
 const DEFAULT_MULTIPART_MAX_BYTES = 25 * 1024 * 1024;
+
+function multipartLineEndingAt(body: Buffer, offset: number): Buffer | undefined {
+  if (body.subarray(offset, offset + CRLF.length).equals(CRLF)) return CRLF;
+  if (body.subarray(offset, offset + LF.length).equals(LF)) return LF;
+  return undefined;
+}
 
 function readHeaderValue(
   headers: IncomingMessage["headers"] | undefined,
@@ -65,18 +73,21 @@ function parseDisposition(value: string): { name?: string; fileName?: string } {
  */
 function sniffCliqMultipartBoundary(body: Buffer): string | undefined {
   if (body.length < 4 || body[0] !== 0x2d || body[1] !== 0x2d) return undefined;
-  const firstLineEnd = body.indexOf(CRLF, 2);
-  if (firstLineEnd < 0 || firstLineEnd > 202) return undefined;
+  const firstLf = body.indexOf(0x0a, 2);
+  if (firstLf < 0 || firstLf > 203) return undefined;
+  const firstLineEnd = body[firstLf - 1] === 0x0d ? firstLf - 1 : firstLf;
   const boundary = body.subarray(2, firstLineEnd).toString("latin1");
   if (!boundary || boundary.length > 200 || !/^[\x21-\x7e]+$/.test(boundary)) {
     return undefined;
   }
-  const headersStart = firstLineEnd + CRLF.length;
-  const headersEnd = body.indexOf(CRLFCRLF, headersStart);
+  const lineEnding = body[firstLf - 1] === 0x0d ? CRLF : LF;
+  const headerTerminator = lineEnding === CRLF ? CRLFCRLF : LFLF;
+  const headersStart = firstLf + 1;
+  const headersEnd = body.indexOf(headerTerminator, headersStart);
   if (headersEnd < 0 || headersEnd - headersStart > 16 * 1024) return undefined;
   const rawHeaders = body.subarray(headersStart, headersEnd).toString("latin1");
   const dispositionLine = rawHeaders
-    .split("\r\n")
+    .split(/\r?\n/)
     .find((line) => line.toLowerCase().startsWith("content-disposition:"));
   if (!dispositionLine) return undefined;
   const disposition = parseDisposition(dispositionLine.slice(dispositionLine.indexOf(":") + 1));
@@ -96,7 +107,6 @@ export function parseCliqMultipartBody(
   maxParts = 24,
 ): MultipartPart[] | undefined {
   const delimiter = Buffer.from(`--${boundary}`);
-  const nextDelimiter = Buffer.from(`\r\n--${boundary}`);
   const parts: MultipartPart[] = [];
   let cursor = 0;
 
@@ -105,17 +115,24 @@ export function parseCliqMultipartBody(
     if (start < 0) break;
     let partStart = start + delimiter.length;
     if (body.subarray(partStart, partStart + 2).equals(Buffer.from("--"))) break;
-    if (body.subarray(partStart, partStart + 2).equals(CRLF)) partStart += 2;
-    const headersEnd = body.indexOf(CRLFCRLF, partStart);
+    const lineEnding = multipartLineEndingAt(body, partStart);
+    if (!lineEnding) return undefined;
+    partStart += lineEnding.length;
+    const headerTerminator = lineEnding === CRLF ? CRLFCRLF : LFLF;
+    const headersEnd = body.indexOf(headerTerminator, partStart);
     if (headersEnd < 0 || headersEnd - partStart > 16 * 1024) return undefined;
-    const nextPrefix = body.indexOf(nextDelimiter, headersEnd + CRLFCRLF.length);
+    const nextDelimiter = Buffer.concat([lineEnding, delimiter]);
+    const nextPrefix = body.indexOf(
+      nextDelimiter,
+      headersEnd + headerTerminator.length,
+    );
     if (nextPrefix < 0) return undefined;
-    const next = nextPrefix + CRLF.length;
+    const next = nextPrefix + lineEnding.length;
     const payloadEnd = nextPrefix;
 
     const rawHeaders = body.subarray(partStart, headersEnd).toString("latin1");
     const headers = new Map<string, string>();
-    for (const line of rawHeaders.split("\r\n")) {
+    for (const line of rawHeaders.split(/\r?\n/)) {
       const colon = line.indexOf(":");
       if (colon <= 0) continue;
       headers.set(line.slice(0, colon).trim().toLowerCase(), line.slice(colon + 1).trim());
@@ -124,7 +141,7 @@ export function parseCliqMultipartBody(
     parts.push({
       ...disposition,
       contentType: headers.get("content-type"),
-      bytes: new Uint8Array(body.subarray(headersEnd + CRLFCRLF.length, payloadEnd)),
+      bytes: new Uint8Array(body.subarray(headersEnd + headerTerminator.length, payloadEnd)),
     });
     cursor = next;
   }
