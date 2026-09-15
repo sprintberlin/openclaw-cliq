@@ -11,6 +11,8 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-15
+
 ### Added
 
 - `openclaw cliq provision` provisions config and handlers without a TTY. Secrets are read from the environment rather than argv; without `--yes` the run is read-only, prints the redacted plan, and exits non-zero (#246).
@@ -1560,7 +1562,8 @@ publish workflow extracts the matching section as the release notes (see
   lookup, plugin doctor, interactive setup wizard, SecretRef-backed credentials,
   security audit collector, session binding, multi-account, lifecycle hooks.
 
-[Unreleased]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.10...v0.2.0
 [0.1.10]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.9...v0.1.10
