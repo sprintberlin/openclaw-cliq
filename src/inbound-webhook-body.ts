@@ -48,6 +48,35 @@ function parseDisposition(value: string): { name?: string; fileName?: string } {
 }
 
 /**
+ * Zoho's Deluge `invokeUrl files:` transport can emit a valid multipart body
+ * while omitting or mislabelling the request Content-Type. Detect only the
+ * generated handler's canonical first part (`payload` / `metadata`) so an
+ * arbitrary body beginning with dashes cannot opt into multipart parsing or
+ * the larger attachment-size limit.
+ */
+function sniffCliqMultipartBoundary(body: Buffer): string | undefined {
+  if (body.length < 4 || body[0] !== 0x2d || body[1] !== 0x2d) return undefined;
+  const firstLineEnd = body.indexOf(CRLF, 2);
+  if (firstLineEnd < 0 || firstLineEnd > 202) return undefined;
+  const boundary = body.subarray(2, firstLineEnd).toString("latin1");
+  if (!boundary || boundary.length > 200 || !/^[\x21-\x7e]+$/.test(boundary)) {
+    return undefined;
+  }
+  const headersStart = firstLineEnd + CRLF.length;
+  const headersEnd = body.indexOf(CRLFCRLF, headersStart);
+  if (headersEnd < 0 || headersEnd - headersStart > 16 * 1024) return undefined;
+  const rawHeaders = body.subarray(headersStart, headersEnd).toString("latin1");
+  const dispositionLine = rawHeaders
+    .split("\r\n")
+    .find((line) => line.toLowerCase().startsWith("content-disposition:"));
+  if (!dispositionLine) return undefined;
+  const disposition = parseDisposition(dispositionLine.slice(dispositionLine.indexOf(":") + 1));
+  return disposition.name === "payload" || disposition.name === "metadata"
+    ? boundary
+    : undefined;
+}
+
+/**
  * Parse the small multipart shape emitted by the generated Deluge handler.
  * Limits are intentionally strict: the route-level body limit is the primary
  * bound, and per-part headers/part count prevent adversarial multipart growth.
@@ -197,8 +226,8 @@ export async function readCliqWebhookBody(
   maxBytes?: number,
 ): Promise<CliqWebhookBodyReadResult> {
   const contentType = readHeaderValue(req.headers, "content-type") ?? "";
-  const boundary = multipartBoundary(contentType);
-  const effectiveMaxBytes = maxBytes
+  let boundary = multipartBoundary(contentType);
+  let effectiveMaxBytes = maxBytes
     ?? (boundary ? DEFAULT_MULTIPART_MAX_BYTES : DEFAULT_JSON_MAX_BYTES);
   return await new Promise((resolve) => {
     let resolved = false;
@@ -209,8 +238,17 @@ export async function readCliqWebhookBody(
       resolve(result);
     };
     const chunks: Buffer[] = [];
+    let sniffPrefix = Buffer.alloc(0);
     let total = 0;
     req.on("data", (chunk: Buffer) => {
+      if (!boundary && sniffPrefix.length < 16 * 1024 + 256) {
+        const remaining = 16 * 1024 + 256 - sniffPrefix.length;
+        sniffPrefix = Buffer.concat([sniffPrefix, chunk.subarray(0, remaining)]);
+        boundary = sniffCliqMultipartBoundary(sniffPrefix);
+        if (boundary && maxBytes === undefined) {
+          effectiveMaxBytes = DEFAULT_MULTIPART_MAX_BYTES;
+        }
+      }
       total += chunk.length;
       if (total > effectiveMaxBytes) {
         done({ ok: false, error: "payload too large" });
@@ -225,6 +263,7 @@ export async function readCliqWebhookBody(
         done({ ok: false, error: "empty payload" });
         return;
       }
+      boundary ??= sniffCliqMultipartBoundary(buffer);
       if (boundary) {
         const parts = parseCliqMultipartBody(buffer, boundary);
         const payloadPart = parts?.find((part) => part.name === "payload" || part.name === "metadata");

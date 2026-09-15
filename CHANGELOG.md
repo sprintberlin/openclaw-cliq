@@ -11,6 +11,10 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Fixed
+
+- Inbound Message-handler multipart requests are now recognized from their bounded `payload` part when Zoho Deluge omits or mislabels `Content-Type`, instead of being parsed as form fields and dropped before agent dispatch.
+
 ### Changed
 
 - Text-only generated Message, Mention, Welcome, and documented Form handlers now pass the Deluge Map itself to `invokeUrl body:` instead of `payload.toString()`, so Zoho owns JSON escaping. The Message Handler multipart attachment `stringPart` still uses `payload.toString()` until that branch is proven live. Existing installs must repair/re-paste handlers; `handlerSchema` is now `v4` (#259).
