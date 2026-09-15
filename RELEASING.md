@@ -107,6 +107,8 @@ This error is **not** caused by the changelog size. We still cap the changelog
 sent to ClawHub (~3.5 KB) as a defensive size guard, but that is unrelated to
 this failure — do not "fix" a `pending` error by trimming the changelog.
 
+**Async flip latency (observed on v0.4.0, 2026-09-15):** an accepted publish can sit in `pending-publication` for ~15-20 minutes *after* the workflow already reported success. During that window `clawhub package inspect` still lists the previous `latest`, `inspect --version X.Y.Z` answers "Version not found", and a manual repeat publish fails with `Version X.Y.Z already exists` — which is itself confirmation the upload landed (ClawHub dedupes by version). Wait and re-run `inspect`; do not re-publish with a bumped version.
+
 > If ClawHub ships a CLI that understands the async flow (polls `attemptId`),
 > the retry loop simply succeeds on attempt 1 and this note becomes moot — no
 > workflow change required.
