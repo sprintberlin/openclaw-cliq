@@ -255,7 +255,7 @@ export async function readCliqWebhookBody(
       }
       done({
         ok: false,
-        error: `body is not valid JSON and could not be normalized as a Deluge form-urlencoded payload; use \`body: payload.toString()\` with a \`Content-Type: application/json\` header in the Deluge handler; shape: ${describeBodySyntax(raw)}`,
+        error: `body is not valid JSON and could not be normalized as a Deluge form-urlencoded payload; use \`body: payload\` with a \`Content-Type: application/json\` header in the Deluge handler; shape: ${describeBodySyntax(raw)}`,
       });
     });
     req.on("error", (error: Error) => done({ ok: false, error: error.message }));

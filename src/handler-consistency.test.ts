@@ -111,7 +111,7 @@ describe("checkCliqHandlerConsistency (issue #124)", () => {
       `webhookSecret = "${SECRET}";`,
       'payload = Map();',
       'payload.put("handler","message");',
-      'payload.put("handlerSchema","v3");',
+      'payload.put("handlerSchema","v4");',
       'payload.put("eventId",eventId);',
       'response = Map();',
       'response.put("eventId",eventId);',
@@ -188,7 +188,7 @@ describe("checkCliqHandlerConsistency (issue #124)", () => {
 
     expect(result.status).toBe("fail");
     expect(result.detail).toMatch(/no recognisable handlerSchema literal/i);
-    expect(result.detail).toMatch(/expected handlerSchema "v3"/i);
+    expect(result.detail).toMatch(/expected handlerSchema "v4"/i);
     expect(result.detail).toMatch(/openclaw setup|confirmation-gated handler repair/i);
     expect(result.detail).not.toContain(SECRET);
   });
@@ -202,7 +202,7 @@ describe("checkCliqHandlerConsistency (issue #124)", () => {
 
     expect(result.status).toBe("fail");
     expect(result.detail).toContain('handlerSchema "v999"');
-    expect(result.detail).toContain('handlerSchema "v3"');
+    expect(result.detail).toContain('handlerSchema "v4"');
     expect(result.detail).not.toContain(SECRET);
   });
 

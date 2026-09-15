@@ -84,7 +84,7 @@ One line per durable learning; full fact + tags in the linked file. `rg` this fo
 - [Cliq reactions API](080-cliq-reactions-api.md)  — apis: /api/v2/chats/{chatId}/messages/{messageId}/reactions,ZohoCliq.messageactions.CREATE,ZohoCliq.messageactions.READ
 - [Group/channel chat-id resolution for live-edit (issue #28)](081-group-channel-chat-id-resolution-for-live-edit.md)  — apis: /api/v2/channelsbyname/{name},/api/v2/channelsbyname/{name}/message,/api/v2/chats/dev-team/messages/...
 - [Deluge payload is inconsistent](082-deluge-payload-is-inconsistent.md)
-- [Deluge webhook must POST raw JSON with `body: payload.toString()` + `Content-Type: application/json`](083-deluge-webhook-must-post-raw-json-with-body.md)
+- [Deluge webhook must POST the payload Map with `body: payload` + `Content-Type: application/json`](083-deluge-webhook-must-post-raw-json-with-body.md)
 - [Multi-data-center + `api_domain` self-correction (issue #46)](084-multi-data-center-api-domain-self-correction-issue.md)  — files: src/region.ts
 - [EU endpoints are the default but no longer hard-coded](085-eu-endpoints-are-the-default-but-no-longer.md)  — files: src/region.ts
 - [Cliq bot-message API error envelope is not formally documented](086-cliq-bot-message-api-error-envelope-is-not.md)  — files: src/send-retry.ts

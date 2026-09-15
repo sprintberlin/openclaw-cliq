@@ -19,9 +19,12 @@ export const CLIQ_HANDLER_SCHEMA_FIELD = "handlerSchema";
  * `v1` was the unmarked historical shape. `v2` added the marker while still
  * serializing Message-handler attachments into JSON. `v3` sends those Deluge
  * FILE objects as multipart data, so bytes survive even when no downloadable
- * file id is exposed to the JSON webhook payload.
+ * file id is exposed to the JSON webhook payload. `v4` posts the text-only
+ * Map itself to `invokeUrl body:` so Zoho owns JSON escaping; the Message
+ * Handler multipart branch still serializes its `stringPart` with
+ * `payload.toString()` until that path is proven separately.
  */
-export const CLIQ_HANDLER_SCHEMA_VERSION = "v3";
+export const CLIQ_HANDLER_SCHEMA_VERSION = "v4";
 
 export type CliqHandlerSchemaCompatibility = "current" | "missing" | "unsupported";
 

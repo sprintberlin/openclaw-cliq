@@ -17,7 +17,7 @@ function service(overrides: Partial<CliqBotProvisioningService> = {}): CliqBotPr
       bot: { id: "b-1", unique_name: "franzi", name: "Franzi" },
     })),
     readHandlerScript: vi.fn(async () => ({
-      script: `webhookUrl = "${URL_OK}";\nwebhookSecret = "${SECRET}";\npayload.put("handlerSchema", "v3");\npayload.put("eventId", eventId);\nresponse.put("eventId", eventId);\npayload.put("attachments", attachments);\nfiles  : requestFiles\npayloadPart.put("paramName", "payload");`,
+      script: `webhookUrl = "${URL_OK}";\nwebhookSecret = "${SECRET}";\npayload.put("handlerSchema", "v4");\npayload.put("eventId", eventId);\nresponse.put("eventId", eventId);\npayload.put("attachments", attachments);\nfiles  : requestFiles\npayloadPart.put("paramName", "payload");`,
     })),
     createHandler: vi.fn(async () => ({ ok: true as const })),
     updateHandler: vi.fn(async () => ({ ok: true as const })),

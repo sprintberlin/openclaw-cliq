@@ -11,6 +11,10 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Changed
+
+- Text-only generated Message, Mention, Welcome, and documented Form handlers now pass the Deluge Map itself to `invokeUrl body:` instead of `payload.toString()`, so Zoho owns JSON escaping. The Message Handler multipart attachment `stringPart` still uses `payload.toString()` until that branch is proven live. Existing installs must repair/re-paste handlers; `handlerSchema` is now `v4` (#259).
+
 ## [0.4.0] - 2026-09-15
 
 ### Added

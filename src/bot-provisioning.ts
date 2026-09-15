@@ -87,8 +87,11 @@ export interface CliqProvisioningReader {
  * Handler does not receive the `attachments` parameter, and a Mention script
  * that references it fails Zoho's validation with
  * `execution_handler_update_failed` — a script-validity fault, not a
- * transient error. The payload is posted with `body:` (raw JSON) rather than
- * `parameters:`, which would form-encode it and break the webhook.
+ * transient error. Text-only payloads pass the Deluge Map itself to `body:`
+ * so Zoho owns JSON serialization and escaping; `parameters:` would
+ * form-encode the payload and break the webhook. The multipart attachment
+ * branch still needs a TEXT `stringPart`, so it retains `payload.toString()`
+ * until that wire shape is tested separately.
  */
 /**
  * Build the Deluge body for one provisioned bot handler.
@@ -161,7 +164,7 @@ export function buildCliqHandlerScript(params: {
       "[",
       "    url    : webhookUrl",
       "    type   : POST",
-      "    body   : payload.toString()",
+      "    body   : payload",
       "    headers: headers",
       "];",
       "",
@@ -192,7 +195,7 @@ export function buildCliqHandlerScript(params: {
           "    [",
           "        url    : webhookUrl",
           "        type   : POST",
-          "        body   : payload.toString()",
+          "        body   : payload",
           "        headers: headers",
           "    ];",
           "}",
@@ -224,7 +227,7 @@ export function buildCliqHandlerScript(params: {
           "[",
           "    url    : webhookUrl",
           "    type   : POST",
-          "    body   : payload.toString()",
+          "    body   : payload",
           "    headers: headers",
           "];",
         ].join("\n");

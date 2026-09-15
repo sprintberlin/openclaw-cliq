@@ -43,7 +43,7 @@ describe("Cliq multipart webhook body", () => {
     const file = Buffer.from([0x52, 0x49, 0x46, 0x46, 0, 1, 2, 13, 10]);
     const payload = {
       handler: "message",
-      handlerSchema: "v3",
+      handlerSchema: "v4",
       message: "",
       user: { id: "u1" },
       chat: { id: "CT_dm" },

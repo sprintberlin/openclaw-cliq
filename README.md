@@ -664,7 +664,7 @@ payload = Map();
 payload.put("handler", "message");   // <-- use "mention" in the Mention Handler
 // Generated-handler payload contract marker (issue #228). Keep this literal:
 // `openclaw cliq doctor` reads it back to identify a stale Zoho-held script.
-payload.put("handlerSchema", "v3");
+payload.put("handlerSchema", "v4");
 payload.put("message", message);
 payload.put("user", user);
 payload.put("chat", chat);
@@ -693,7 +693,8 @@ headers = Map();
 headers.put("Content-Type", "application/json");
 headers.put("x-cliq-webhook-secret", webhookSecret);
 
-// POST text-only events as raw JSON. For attachments, add the JSON payload as
+// POST text-only events by passing the Deluge Map directly so Zoho owns JSON
+// escaping. For attachments, add the JSON payload as
 // a string multipart part plus every Deluge FILE object; invokeUrl creates the
 // multipart Content-Type/boundary itself, so only the secret header is set on
 // that branch.
@@ -711,7 +712,7 @@ if (attachmentFiles.size() == 0)
     [
         url    : webhookUrl
         type   : POST
-        body   : payload.toString()
+        body   : payload
         headers: headers
     ];
 }
@@ -848,7 +849,7 @@ invokeUrl
 [
     url    : webhookUrl
     type   : POST
-    body   : payload.toString()
+    body   : payload
     headers: headers
 ];
 
@@ -898,7 +899,7 @@ invokeUrl
 [
     url    : webhookUrl
     type   : POST
-    body   : payload.toString()
+    body   : payload
     headers: headers
 ];
 

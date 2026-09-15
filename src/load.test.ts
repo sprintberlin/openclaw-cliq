@@ -1534,7 +1534,7 @@ describe("default-visible inbound skip logging (issue #232)", () => {
     expect(second.statusCode).toBe(200);
     const schemaWarnings = warns.filter((line) => line.startsWith("[cliq] inbound handler schema"));
     expect(schemaWarnings).toEqual([
-      expect.stringContaining("schema unversioned is stale; expected v3"),
+      expect.stringContaining("schema unversioned is stale; expected v4"),
     ]);
     expect(schemaWarnings[0]).toMatch(/openclaw setup|confirmation-gated handler repair/i);
     expect(schemaWarnings[0]).not.toContain("first legacy");
@@ -1548,7 +1548,7 @@ describe("default-visible inbound skip logging (issue #232)", () => {
     const res = await post(
       webhook,
       createDmDelugePayload({
-        handlerSchema: "v3",
+        handlerSchema: "v4",
         message: { text: "current", id: "current-schema" },
       }),
     );

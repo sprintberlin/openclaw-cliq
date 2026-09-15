@@ -42,7 +42,7 @@ function plan(params: {
 }
 
 describe("buildCliqHandlerScript", () => {
-  it("emits a message handler that forwards attachments as raw JSON", () => {
+  it("passes the Deluge Map directly on the text-only Message-handler path", () => {
     const body = buildCliqHandlerScript({
       handlerType: "message_handler",
       webhookUrl: URL_OK,
@@ -54,7 +54,11 @@ describe("buildCliqHandlerScript", () => {
     expect(body).toContain("attachment.getFileName()");
     expect(body).toContain("files  : requestFiles");
     expect(body).toContain('payloadPart.put("paramName", "payload")');
-    expect(body).toContain("body   : payload.toString()");
+    expect(body).toContain("body   : payload");
+    expect(body).not.toContain("body   : payload.toString()");
+    // Multipart still requires a TEXT stringPart; that transport is a
+    // separate live experiment from the KEY-VALUE `body:` path.
+    expect(body).toContain('payloadPart.put("content", payload.toString())');
     expect(body).toContain('headers.put("Content-Type", "application/json")');
     expect(body).not.toContain("parameters");
     expect(body).toContain('eventId = zoho.currenttime.toString("yyyyMMddHHmmss") + "-" + randomNumber(100000,999999) + randomNumber(100000,999999)');
@@ -64,6 +68,19 @@ describe("buildCliqHandlerScript", () => {
     expect(eventIdLine).toBeGreaterThan(-1);
     expect(invokeUrl).toBeGreaterThan(eventIdLine);
   });
+
+  it.each(["mention_handler", "welcome_handler"] as const)(
+    "passes the Deluge Map directly on the %s raw-body path",
+    (handlerType) => {
+      const body = buildCliqHandlerScript({
+        handlerType,
+        webhookUrl: URL_OK,
+        webhookSecret: SECRET,
+      });
+      expect(body).toContain("body   : payload");
+      expect(body).not.toContain("body   : payload.toString()");
+    },
+  );
 
   describe("correlated execution output (issue #231)", () => {
     const handlerTypes = [
@@ -242,7 +259,7 @@ describe("planCliqHandlerProvisioning — read-only", () => {
       expect(item.action).toBe("repair");
       expect(item.conflict).toBe("stale_script");
       expect(item.requiresConfirmation).toBe(true);
-      expect(item.reason).toMatch(/handlerSchema v3/i);
+      expect(item.reason).toMatch(/handlerSchema v4/i);
       expect(item.reason).toMatch(/restart does not update/i);
     }
   });
