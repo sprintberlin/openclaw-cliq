@@ -70,6 +70,74 @@ describe("Cliq multipart webhook body", () => {
     expect(Buffer.from(result.attachments?.[0]?.bytes ?? [])).toEqual(file);
   });
 
+  it.each<Record<string, string>>([{}, { "content-type": "application/json" }])(
+    "detects the generated Deluge multipart body when Content-Type is missing or wrong: %j",
+    async (headers) => {
+      const boundary = "ZohoDelugeBoundary123";
+      const file = Buffer.from("voice-bytes");
+      const payload = {
+        handler: "message",
+        handlerSchema: "v4",
+        message: "hello",
+        user: { id: "u1" },
+        chat: { id: "CT_dm" },
+        attachments: ["voice.wav"],
+      };
+      const body = multipartBody(boundary, payload, file);
+      const request = new FakeRequest(headers);
+      const pending = readCliqWebhookBody(request as never);
+      request.emit("data", body);
+      request.emit("end");
+      const result = await pending;
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value).toEqual(payload);
+      expect(Buffer.from(result.attachments?.[0]?.bytes ?? [])).toEqual(file);
+    },
+  );
+
+  it("promotes a sniffed Deluge multipart body to the attachment-size limit", async () => {
+    const boundary = "missing-content-type-big-file";
+    const file = Buffer.alloc(1024 * 1024 + 4096, 1);
+    const body = multipartBody(
+      boundary,
+      {
+        handler: "message",
+        handlerSchema: "v4",
+        message: "file",
+        user: { id: "u1" },
+        chat: { id: "CT_dm" },
+        attachments: ["voice-sample.wav"],
+      },
+      file,
+    );
+    const request = new FakeRequest({});
+    const pending = readCliqWebhookBody(request as never);
+    request.emit("data", body);
+    request.emit("end");
+    const result = await pending;
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.attachments?.[0]?.bytes?.byteLength).toBe(file.length);
+  });
+
+  it("does not grant the multipart size limit to an unrelated dashed body", async () => {
+    const body = Buffer.concat([
+      Buffer.from(
+        "--not-multipart\r\nContent-Disposition: form-data; name=\"other\"\r\n\r\n",
+      ),
+      Buffer.alloc(1024 * 1024 + 1, 1),
+      Buffer.from("\r\n--not-multipart--\r\n"),
+    ]);
+    const request = new FakeRequest({});
+    const pending = readCliqWebhookBody(request as never);
+    request.emit("data", body);
+    await expect(pending).resolves.toEqual({ ok: false, error: "payload too large" });
+    expect(request.destroyed).toBe(true);
+  });
+
   it("rejects multipart input without the JSON payload part", () => {
     const boundary = "missing-payload";
     const body = Buffer.from(

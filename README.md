@@ -697,7 +697,9 @@ headers.put("x-cliq-webhook-secret", webhookSecret);
 // escaping. For attachments, add the JSON payload as
 // a string multipart part plus every Deluge FILE object; invokeUrl creates the
 // multipart Content-Type/boundary itself, so only the secret header is set on
-// that branch.
+// that branch. Some Deluge executions omit or mislabel that generated
+// Content-Type; the gateway recognizes this bounded canonical `payload` part
+// from the body before parsing the attached FILE parts.
 attachmentFiles = List();
 if (attachments != null)
 {
