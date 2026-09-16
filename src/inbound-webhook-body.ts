@@ -86,9 +86,9 @@ function scanMultipartHeaderBlock(
     if (lineEnd - pos > 16 * 1024) return undefined;
     const line = body.subarray(pos, lineEnd).toString("latin1");
     if (line === "") {
-      return headerLines.length > 0
-        ? { contentStart: lineFeed + 1, headerLines }
-        : undefined;
+      // Live Deluge (2026-09-16 09:19) also emits a payload part with no
+      // part headers at all, so an empty header block still has content.
+      return { contentStart: lineFeed + 1, headerLines };
     }
     // With no blank separator line, part content (for example a JSON payload
     // whose first line contains a colon) would otherwise be swallowed as a
@@ -101,7 +101,7 @@ function scanMultipartHeaderBlock(
       headerName === "content-type" ||
       headerName === "content-transfer-encoding";
     if (!knownPartHeader) {
-      return headerLines.length > 0 ? { contentStart: pos, headerLines } : undefined;
+      return { contentStart: pos, headerLines };
     }
     headerLines.push(line);
     pos = lineFeed + 1;
@@ -116,6 +116,26 @@ function scanMultipartHeaderBlock(
  * arbitrary body beginning with dashes cannot opt into multipart parsing or
  * the larger attachment-size limit.
  */
+/**
+ * Live evidence (2026-09-16 09:19): text-only DMs reached the webhook as
+ * Deluge multipart whose payload part carried NO Content-Disposition, the
+ * JSON starting immediately after the boundary line. Recognize exactly the
+ * generated handler's object shape so an arbitrary dash-prefixed body
+ * cannot opt into multipart parsing or the larger attachment-size limit.
+ */
+function looksLikeGeneratedCliqPayload(raw: string): boolean {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("{")) return false;
+  try {
+    const value: unknown = JSON.parse(trimmed);
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const record = value as Record<string, unknown>;
+    return record.user !== undefined || record.handler !== undefined || record.chat !== undefined;
+  } catch {
+    return /"(?:handler|user|chat)"\s*:/.test(trimmed);
+  }
+}
+
 function sniffCliqMultipartBoundary(body: Buffer): string | undefined {
   if (body.length < 4 || body[0] !== 0x2d || body[1] !== 0x2d) return undefined;
   const firstLf = body.indexOf(0x0a, 2);
@@ -130,11 +150,19 @@ function sniffCliqMultipartBoundary(body: Buffer): string | undefined {
   const dispositionLine = scanned.headerLines.find((line) =>
     line.toLowerCase().startsWith("content-disposition:"),
   );
-  if (!dispositionLine) return undefined;
-  const disposition = parseDisposition(dispositionLine.slice(dispositionLine.indexOf(":") + 1));
-  return disposition.name === "payload" || disposition.name === "metadata"
-    ? boundary
-    : undefined;
+  if (dispositionLine) {
+    const disposition = parseDisposition(dispositionLine.slice(dispositionLine.indexOf(":") + 1));
+    if (disposition.name === "payload" || disposition.name === "metadata") {
+      return boundary;
+    }
+  }
+  // No recognizable payload disposition: accept only when the first part's
+  // content is the generated handler's JSON object (live text DMs,
+  // 2026-09-16 09:19, boundary token surfaced as the first form key).
+  const peek = body
+    .subarray(scanned.contentStart, Math.min(body.length, scanned.contentStart + 4096))
+    .toString("utf8");
+  return looksLikeGeneratedCliqPayload(peek) ? boundary : undefined;
 }
 
 /**
@@ -340,7 +368,8 @@ export async function readCliqWebhookBody(
       boundary ??= sniffCliqMultipartBoundary(buffer);
       if (boundary) {
         const parts = parseCliqMultipartBody(buffer, boundary);
-        const payloadPart = parts?.find((part) => part.name === "payload" || part.name === "metadata");
+        const payloadPart = parts?.find((part) => part.name === "payload" || part.name === "metadata")
+          ?? parts?.find((part) => looksLikeGeneratedCliqPayload(Buffer.from(part.bytes).toString("utf8")));
         if (!parts || !payloadPart) {
           done({ ok: false, error: "invalid Cliq multipart payload" });
           return;

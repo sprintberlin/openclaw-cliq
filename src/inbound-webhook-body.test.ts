@@ -45,6 +45,32 @@ function multipartBody(
 }
 
 describe("Cliq multipart webhook body", () => {
+  it("accepts a Deluge multipart body whose payload part has no Content-Disposition header", async () => {
+    const boundary = "z5wrc7EOqrgWBilrODmsZENijLCo5sxmXE";
+    const payload = {
+      handler: "message",
+      handlerSchema: "v4",
+      message: "Hallo",
+      user: { id: "20098819618" },
+      chat: { id: "CT_dm" },
+    };
+    const body = Buffer.from(
+      `--${boundary}
+${JSON.stringify(payload)}
+--${boundary}--
+`,
+    );
+    const request = new FakeRequest({ "content-type": "application/x-www-form-urlencoded" });
+    const pending = readCliqWebhookBody(request as never);
+    request.emit("data", body);
+    request.emit("end");
+    const result = await pending;
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toEqual(payload);
+  });
+
   it("keeps generated-handler JSON and binary voice bytes together", async () => {
     const boundary = "cliq-test-boundary";
     const file = Buffer.from([0x52, 0x49, 0x46, 0x46, 0, 1, 2, 13, 10]);
