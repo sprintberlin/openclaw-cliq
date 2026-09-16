@@ -45,6 +45,50 @@ function multipartBody(
 }
 
 describe("Cliq multipart webhook body", () => {
+  it("reconstructs a generated Deluge map sent as individual multipart fields under application/json", async () => {
+    const boundary = "YSdQFera-DPm-67LPHVlBKJ-u8z09Zv";
+    const fields: Array<[string, string]> = [
+      ["handler", "message"],
+      ["handlerSchema", "v4"],
+      ["message", "Hallo"],
+      ["user", JSON.stringify({ id: "20098819618", email: "user@example.test" })],
+      ["chat", JSON.stringify({ id: "CT_dm", chat_type: "bot" })],
+      ["eventId", "20260916165333-458069207458"],
+      ["attachments", "[]"],
+    ];
+    const body = Buffer.from(
+      fields.map(([name, value]) => [
+        `--${boundary}\r\n`,
+        `Content-Disposition: form-data; name="${name}"\r\n`,
+        "Content-Type: text/plain; charset=UTF-8\r\n",
+        "Content-Transfer-Encoding: 8bit\r\n",
+        "\r\n",
+        `${value}\r\n`,
+      ].join("")).join("") + `--${boundary}--\r\n`,
+    );
+    const request = new FakeRequest({ "content-type": "application/json" });
+    const pending = readCliqWebhookBody(request as never);
+    request.emit("data", body.subarray(0, 663));
+    request.emit("data", body.subarray(663));
+    request.emit("end");
+    const result = await pending;
+
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        handler: "message",
+        handlerSchema: "v4",
+        message: "Hallo",
+        user: { id: "20098819618", email: "user@example.test" },
+        chat: { id: "CT_dm", chat_type: "bot" },
+        eventId: "20260916165333-458069207458",
+        attachments: [],
+      },
+      attachments: [],
+      repaired: undefined,
+    });
+  });
+
   it("accepts a Deluge multipart body whose payload part has no Content-Disposition header", async () => {
     const boundary = "z5wrc7EOqrgWBilrODmsZENijLCo5sxmXE";
     const payload = {
@@ -307,7 +351,7 @@ ${JSON.stringify(payload)}
     request.emit("end");
     await expect(pending).resolves.toEqual({
       ok: false,
-      error: "invalid Cliq multipart payload",
+      error: "multipart payload could not be parsed or reconstructed",
     });
   });
 

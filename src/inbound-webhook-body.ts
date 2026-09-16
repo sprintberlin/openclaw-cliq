@@ -18,6 +18,34 @@ const LF = Buffer.from("\n");
 const DEFAULT_JSON_MAX_BYTES = 1024 * 1024;
 const DEFAULT_MULTIPART_MAX_BYTES = 25 * 1024 * 1024;
 
+/**
+ * Deluge may serialize `body: payload` as one multipart part per map entry
+ * while still declaring the whole request as `application/json`. These are
+ * the fields emitted by the generated message/mention handlers.
+ */
+const CLIQ_GENERATED_MULTIPART_FIELDS = new Set([
+  "handler",
+  "handlerSchema",
+  "message",
+  "user",
+  "chat",
+  "eventId",
+  "event_id",
+  "attachments",
+  "mentions",
+  "channel",
+  "thread",
+]);
+
+const CLIQ_GENERATED_MULTIPART_JSON_FIELDS = new Set([
+  "user",
+  "chat",
+  "attachments",
+  "mentions",
+  "channel",
+  "thread",
+]);
+
 function multipartLineEndingAt(body: Buffer, offset: number): Buffer | undefined {
   if (body.subarray(offset, offset + CRLF.length).equals(CRLF)) return CRLF;
   if (body.subarray(offset, offset + LF.length).equals(LF)) return LF;
@@ -152,7 +180,11 @@ function sniffCliqMultipartBoundary(body: Buffer): string | undefined {
   );
   if (dispositionLine) {
     const disposition = parseDisposition(dispositionLine.slice(dispositionLine.indexOf(":") + 1));
-    if (disposition.name === "payload" || disposition.name === "metadata") {
+    if (
+      disposition.name === "payload" ||
+      disposition.name === "metadata" ||
+      (disposition.name !== undefined && CLIQ_GENERATED_MULTIPART_FIELDS.has(disposition.name))
+    ) {
       return boundary;
     }
   }
@@ -262,6 +294,59 @@ function parsePayloadJson(raw: string): { value: unknown; repaired?: boolean } |
   }
 }
 
+/**
+ * Reconstruct the payload when Deluge serializes every map entry as its own
+ * multipart field. Live evidence (2026-09-16 16:53) contained seven parts:
+ * handler, handlerSchema, message, user, chat, eventId and attachments, while
+ * the request misleadingly declared `Content-Type: application/json`.
+ *
+ * Free-text fields stay strings even when they look like JSON. Only the
+ * generated structured fields are decoded, and the required identity/chat
+ * shape must be present before the result is accepted.
+ */
+function reconstructCliqPayloadFromFieldParts(parts: MultipartPart[]): unknown | undefined {
+  const value: Record<string, unknown> = {};
+  const seen = new Set<string>();
+
+  for (const part of parts) {
+    const name = part.name;
+    if (
+      !name ||
+      part.fileName ||
+      !CLIQ_GENERATED_MULTIPART_FIELDS.has(name)
+    ) {
+      continue;
+    }
+    if (seen.has(name)) return undefined;
+    seen.add(name);
+
+    const raw = Buffer.from(part.bytes).toString("utf8");
+    if (CLIQ_GENERATED_MULTIPART_JSON_FIELDS.has(name)) {
+      const parsed = tryParseJson(raw);
+      if (parsed === undefined) return undefined;
+      value[name] = parsed;
+    } else {
+      value[name] = raw;
+    }
+  }
+
+  const user = value.user;
+  const chat = value.chat;
+  if (
+    typeof value.message !== "string" ||
+    !user ||
+    typeof user !== "object" ||
+    Array.isArray(user) ||
+    typeof (user as Record<string, unknown>).id !== "string" ||
+    !chat ||
+    typeof chat !== "object" ||
+    Array.isArray(chat)
+  ) {
+    return undefined;
+  }
+  return value;
+}
+
 function attachMultipartFiles(
   payload: unknown,
   parts: MultipartPart[],
@@ -368,15 +453,20 @@ export async function readCliqWebhookBody(
       boundary ??= sniffCliqMultipartBoundary(buffer);
       if (boundary) {
         const parts = parseCliqMultipartBody(buffer, boundary);
-        const payloadPart = parts?.find((part) => part.name === "payload" || part.name === "metadata")
-          ?? parts?.find((part) => looksLikeGeneratedCliqPayload(Buffer.from(part.bytes).toString("utf8")));
-        if (!parts || !payloadPart) {
+        if (!parts) {
           done({ ok: false, error: "invalid Cliq multipart payload" });
           return;
         }
-        const parsed = parsePayloadJson(Buffer.from(payloadPart.bytes).toString("utf8"));
+        const payloadPart = parts.find((part) => part.name === "payload" || part.name === "metadata")
+          ?? parts.find((part) => looksLikeGeneratedCliqPayload(Buffer.from(part.bytes).toString("utf8")));
+        const parsed: { value: unknown; repaired?: boolean } | undefined = payloadPart
+          ? parsePayloadJson(Buffer.from(payloadPart.bytes).toString("utf8"))
+          : (() => {
+              const value = reconstructCliqPayloadFromFieldParts(parts);
+              return value === undefined ? undefined : { value };
+            })();
         if (!parsed) {
-          done({ ok: false, error: "multipart payload field is not valid JSON" });
+          done({ ok: false, error: "multipart payload could not be parsed or reconstructed" });
           return;
         }
         const attached = attachMultipartFiles(parsed.value, parts);
