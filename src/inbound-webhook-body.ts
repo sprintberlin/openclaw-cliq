@@ -14,11 +14,37 @@ interface MultipartPart {
 }
 
 const CRLF = Buffer.from("\r\n");
-const CRLFCRLF = Buffer.from("\r\n\r\n");
 const LF = Buffer.from("\n");
-const LFLF = Buffer.from("\n\n");
 const DEFAULT_JSON_MAX_BYTES = 1024 * 1024;
 const DEFAULT_MULTIPART_MAX_BYTES = 25 * 1024 * 1024;
+
+/**
+ * Deluge may serialize `body: payload` as one multipart part per map entry
+ * while still declaring the whole request as `application/json`. These are
+ * the fields emitted by the generated message/mention handlers.
+ */
+const CLIQ_GENERATED_MULTIPART_FIELDS = new Set([
+  "handler",
+  "handlerSchema",
+  "message",
+  "user",
+  "chat",
+  "eventId",
+  "event_id",
+  "attachments",
+  "mentions",
+  "channel",
+  "thread",
+]);
+
+const CLIQ_GENERATED_MULTIPART_JSON_FIELDS = new Set([
+  "user",
+  "chat",
+  "attachments",
+  "mentions",
+  "channel",
+  "thread",
+]);
 
 function multipartLineEndingAt(body: Buffer, offset: number): Buffer | undefined {
   if (body.subarray(offset, offset + CRLF.length).equals(CRLF)) return CRLF;
@@ -65,12 +91,79 @@ function parseDisposition(value: string): { name?: string; fileName?: string } {
 }
 
 /**
+ * Scan one multipart part's header block starting at `start`.
+ *
+ * Live Deluge traffic (2026-09-16) reached the webhook with part headers that
+ * run directly into the part content with no blank separator line, on top of
+ * the already-known LF-only framing and unquoted disposition parameters. A
+ * fixed CRLFCRLF/LFLF terminator search fails on that shape, so headers are
+ * collected line-by-line: the block ends at a blank line (canonical) or at
+ * the first non-header-shaped line (missing separator), and `contentStart`
+ * is where part content begins either way.
+ */
+function scanMultipartHeaderBlock(
+  body: Buffer,
+  start: number,
+): { contentStart: number; headerLines: string[] } | undefined {
+  const headerLines: string[] = [];
+  let pos = start;
+  while (headerLines.length < 32) {
+    const lineFeed = body.indexOf(0x0a, pos);
+    if (lineFeed < 0) return undefined;
+    const lineEnd = lineFeed > pos && body[lineFeed - 1] === 0x0d ? lineFeed - 1 : lineFeed;
+    if (lineEnd - pos > 16 * 1024) return undefined;
+    const line = body.subarray(pos, lineEnd).toString("latin1");
+    if (line === "") {
+      // Live Deluge (2026-09-16 09:19) also emits a payload part with no
+      // part headers at all, so an empty header block still has content.
+      return { contentStart: lineFeed + 1, headerLines };
+    }
+    // With no blank separator line, part content (for example a JSON payload
+    // whose first line contains a colon) would otherwise be swallowed as a
+    // header. Deluge only emits these three part headers, so anything else
+    // ends the header block and starts the content.
+    const colon = line.indexOf(":");
+    const headerName = colon > 0 ? line.slice(0, colon).trim().toLowerCase() : "";
+    const knownPartHeader =
+      headerName === "content-disposition" ||
+      headerName === "content-type" ||
+      headerName === "content-transfer-encoding";
+    if (!knownPartHeader) {
+      return { contentStart: pos, headerLines };
+    }
+    headerLines.push(line);
+    pos = lineFeed + 1;
+  }
+  return undefined;
+}
+
+/**
  * Zoho's Deluge `invokeUrl files:` transport can emit a valid multipart body
  * while omitting or mislabelling the request Content-Type. Detect only the
  * generated handler's canonical first part (`payload` / `metadata`) so an
  * arbitrary body beginning with dashes cannot opt into multipart parsing or
  * the larger attachment-size limit.
  */
+/**
+ * Live evidence (2026-09-16 09:19): text-only DMs reached the webhook as
+ * Deluge multipart whose payload part carried NO Content-Disposition, the
+ * JSON starting immediately after the boundary line. Recognize exactly the
+ * generated handler's object shape so an arbitrary dash-prefixed body
+ * cannot opt into multipart parsing or the larger attachment-size limit.
+ */
+function looksLikeGeneratedCliqPayload(raw: string): boolean {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("{")) return false;
+  try {
+    const value: unknown = JSON.parse(trimmed);
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const record = value as Record<string, unknown>;
+    return record.user !== undefined || record.handler !== undefined || record.chat !== undefined;
+  } catch {
+    return /"(?:handler|user|chat)"\s*:/.test(trimmed);
+  }
+}
+
 function sniffCliqMultipartBoundary(body: Buffer): string | undefined {
   if (body.length < 4 || body[0] !== 0x2d || body[1] !== 0x2d) return undefined;
   const firstLf = body.indexOf(0x0a, 2);
@@ -80,26 +173,38 @@ function sniffCliqMultipartBoundary(body: Buffer): string | undefined {
   if (!boundary || boundary.length > 200 || !/^[\x21-\x7e]+$/.test(boundary)) {
     return undefined;
   }
-  const lineEnding = body[firstLf - 1] === 0x0d ? CRLF : LF;
-  const headerTerminator = lineEnding === CRLF ? CRLFCRLF : LFLF;
-  const headersStart = firstLf + 1;
-  const headersEnd = body.indexOf(headerTerminator, headersStart);
-  if (headersEnd < 0 || headersEnd - headersStart > 16 * 1024) return undefined;
-  const rawHeaders = body.subarray(headersStart, headersEnd).toString("latin1");
-  const dispositionLine = rawHeaders
-    .split(/\r?\n/)
-    .find((line) => line.toLowerCase().startsWith("content-disposition:"));
-  if (!dispositionLine) return undefined;
-  const disposition = parseDisposition(dispositionLine.slice(dispositionLine.indexOf(":") + 1));
-  return disposition.name === "payload" || disposition.name === "metadata"
-    ? boundary
-    : undefined;
+  const scanned = scanMultipartHeaderBlock(body, firstLf + 1);
+  if (!scanned) return undefined;
+  const dispositionLine = scanned.headerLines.find((line) =>
+    line.toLowerCase().startsWith("content-disposition:"),
+  );
+  if (dispositionLine) {
+    const disposition = parseDisposition(dispositionLine.slice(dispositionLine.indexOf(":") + 1));
+    if (
+      disposition.name === "payload" ||
+      disposition.name === "metadata" ||
+      (disposition.name !== undefined && CLIQ_GENERATED_MULTIPART_FIELDS.has(disposition.name))
+    ) {
+      return boundary;
+    }
+  }
+  // No recognizable payload disposition: accept only when the first part's
+  // content is the generated handler's JSON object (live text DMs,
+  // 2026-09-16 09:19, boundary token surfaced as the first form key).
+  const peek = body
+    .subarray(scanned.contentStart, Math.min(body.length, scanned.contentStart + 4096))
+    .toString("utf8");
+  return looksLikeGeneratedCliqPayload(peek) ? boundary : undefined;
 }
 
 /**
  * Parse the small multipart shape emitted by the generated Deluge handler.
  * Limits are intentionally strict: the route-level body limit is the primary
- * bound, and per-part headers/part count prevent adversarial multipart growth.
+ * bound, and per-part headers/part count prevent adversarial multipart
+ * growth. Part headers may end with a canonical blank line or run directly
+ * into the part content (live Deluge evidence, 2026-09-16), and the line
+ * ending before each subsequent delimiter may differ from the first part's
+ * framing.
  */
 export function parseCliqMultipartBody(
   body: Buffer,
@@ -107,6 +212,8 @@ export function parseCliqMultipartBody(
   maxParts = 24,
 ): MultipartPart[] | undefined {
   const delimiter = Buffer.from(`--${boundary}`);
+  const lfDelimiter = Buffer.concat([LF, delimiter]);
+  const crlfDelimiter = Buffer.concat([CRLF, delimiter]);
   const parts: MultipartPart[] = [];
   let cursor = 0;
 
@@ -118,21 +225,22 @@ export function parseCliqMultipartBody(
     const lineEnding = multipartLineEndingAt(body, partStart);
     if (!lineEnding) return undefined;
     partStart += lineEnding.length;
-    const headerTerminator = lineEnding === CRLF ? CRLFCRLF : LFLF;
-    const headersEnd = body.indexOf(headerTerminator, partStart);
-    if (headersEnd < 0 || headersEnd - partStart > 16 * 1024) return undefined;
-    const nextDelimiter = Buffer.concat([lineEnding, delimiter]);
-    const nextPrefix = body.indexOf(
-      nextDelimiter,
-      headersEnd + headerTerminator.length,
-    );
-    if (nextPrefix < 0) return undefined;
-    const next = nextPrefix + lineEnding.length;
-    const payloadEnd = nextPrefix;
+    const scanned = scanMultipartHeaderBlock(body, partStart);
+    if (!scanned) return undefined;
+    const contentStart = scanned.contentStart;
+    const lfAt = body.indexOf(lfDelimiter, contentStart);
+    const crlfAt = body.indexOf(crlfDelimiter, contentStart);
+    let delimiterEol: number;
+    if (crlfAt >= 0 && (lfAt < 0 || crlfAt <= lfAt)) {
+      delimiterEol = crlfAt;
+    } else if (lfAt >= 0) {
+      delimiterEol = lfAt;
+    } else {
+      return undefined;
+    }
 
-    const rawHeaders = body.subarray(partStart, headersEnd).toString("latin1");
     const headers = new Map<string, string>();
-    for (const line of rawHeaders.split(/\r?\n/)) {
+    for (const line of scanned.headerLines) {
       const colon = line.indexOf(":");
       if (colon <= 0) continue;
       headers.set(line.slice(0, colon).trim().toLowerCase(), line.slice(colon + 1).trim());
@@ -141,9 +249,9 @@ export function parseCliqMultipartBody(
     parts.push({
       ...disposition,
       contentType: headers.get("content-type"),
-      bytes: new Uint8Array(body.subarray(headersEnd + headerTerminator.length, payloadEnd)),
+      bytes: new Uint8Array(body.subarray(contentStart, delimiterEol)),
     });
-    cursor = next;
+    cursor = delimiterEol + (body[delimiterEol] === 0x0d ? CRLF.length : LF.length);
   }
   return parts.length > 0 ? parts : undefined;
 }
@@ -184,6 +292,59 @@ function parsePayloadJson(raw: string): { value: unknown; repaired?: boolean } |
     const repaired = repairDelugeUnescapedMessageBody(raw);
     return repaired === undefined ? undefined : { value: repaired, repaired: true };
   }
+}
+
+/**
+ * Reconstruct the payload when Deluge serializes every map entry as its own
+ * multipart field. Live evidence (2026-09-16 16:53) contained seven parts:
+ * handler, handlerSchema, message, user, chat, eventId and attachments, while
+ * the request misleadingly declared `Content-Type: application/json`.
+ *
+ * Free-text fields stay strings even when they look like JSON. Only the
+ * generated structured fields are decoded, and the required identity/chat
+ * shape must be present before the result is accepted.
+ */
+function reconstructCliqPayloadFromFieldParts(parts: MultipartPart[]): unknown | undefined {
+  const value: Record<string, unknown> = {};
+  const seen = new Set<string>();
+
+  for (const part of parts) {
+    const name = part.name;
+    if (
+      !name ||
+      part.fileName ||
+      !CLIQ_GENERATED_MULTIPART_FIELDS.has(name)
+    ) {
+      continue;
+    }
+    if (seen.has(name)) return undefined;
+    seen.add(name);
+
+    const raw = Buffer.from(part.bytes).toString("utf8");
+    if (CLIQ_GENERATED_MULTIPART_JSON_FIELDS.has(name)) {
+      const parsed = tryParseJson(raw);
+      if (parsed === undefined) return undefined;
+      value[name] = parsed;
+    } else {
+      value[name] = raw;
+    }
+  }
+
+  const user = value.user;
+  const chat = value.chat;
+  if (
+    typeof value.message !== "string" ||
+    !user ||
+    typeof user !== "object" ||
+    Array.isArray(user) ||
+    typeof (user as Record<string, unknown>).id !== "string" ||
+    !chat ||
+    typeof chat !== "object" ||
+    Array.isArray(chat)
+  ) {
+    return undefined;
+  }
+  return value;
 }
 
 function attachMultipartFiles(
@@ -292,14 +453,20 @@ export async function readCliqWebhookBody(
       boundary ??= sniffCliqMultipartBoundary(buffer);
       if (boundary) {
         const parts = parseCliqMultipartBody(buffer, boundary);
-        const payloadPart = parts?.find((part) => part.name === "payload" || part.name === "metadata");
-        if (!parts || !payloadPart) {
+        if (!parts) {
           done({ ok: false, error: "invalid Cliq multipart payload" });
           return;
         }
-        const parsed = parsePayloadJson(Buffer.from(payloadPart.bytes).toString("utf8"));
+        const payloadPart = parts.find((part) => part.name === "payload" || part.name === "metadata")
+          ?? parts.find((part) => looksLikeGeneratedCliqPayload(Buffer.from(part.bytes).toString("utf8")));
+        const parsed: { value: unknown; repaired?: boolean } | undefined = payloadPart
+          ? parsePayloadJson(Buffer.from(payloadPart.bytes).toString("utf8"))
+          : (() => {
+              const value = reconstructCliqPayloadFromFieldParts(parts);
+              return value === undefined ? undefined : { value };
+            })();
         if (!parsed) {
-          done({ ok: false, error: "multipart payload field is not valid JSON" });
+          done({ ok: false, error: "multipart payload could not be parsed or reconstructed" });
           return;
         }
         const attached = attachMultipartFiles(parsed.value, parts);

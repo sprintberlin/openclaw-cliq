@@ -699,8 +699,9 @@ headers.put("x-cliq-webhook-secret", webhookSecret);
 // multipart Content-Type/boundary itself, so only the secret header is set on
 // that branch. Some Deluge executions omit or mislabel that generated
 // Content-Type, may serialize disposition parameters without double quotes,
-// and may use LF-only framing; the gateway recognizes this bounded canonical
-// `payload` part from the body before parsing the attached FILE parts.
+// may use LF-only framing, and may omit the blank line between part headers
+// and content; the gateway recognizes this bounded canonical `payload` part
+// from the body before parsing the attached FILE parts.
 attachmentFiles = List();
 if (attachments != null)
 {
