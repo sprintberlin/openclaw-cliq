@@ -14,9 +14,7 @@ interface MultipartPart {
 }
 
 const CRLF = Buffer.from("\r\n");
-const CRLFCRLF = Buffer.from("\r\n\r\n");
 const LF = Buffer.from("\n");
-const LFLF = Buffer.from("\n\n");
 const DEFAULT_JSON_MAX_BYTES = 1024 * 1024;
 const DEFAULT_MULTIPART_MAX_BYTES = 25 * 1024 * 1024;
 
@@ -65,6 +63,53 @@ function parseDisposition(value: string): { name?: string; fileName?: string } {
 }
 
 /**
+ * Scan one multipart part's header block starting at `start`.
+ *
+ * Live Deluge traffic (2026-09-16) reached the webhook with part headers that
+ * run directly into the part content with no blank separator line, on top of
+ * the already-known LF-only framing and unquoted disposition parameters. A
+ * fixed CRLFCRLF/LFLF terminator search fails on that shape, so headers are
+ * collected line-by-line: the block ends at a blank line (canonical) or at
+ * the first non-header-shaped line (missing separator), and `contentStart`
+ * is where part content begins either way.
+ */
+function scanMultipartHeaderBlock(
+  body: Buffer,
+  start: number,
+): { contentStart: number; headerLines: string[] } | undefined {
+  const headerLines: string[] = [];
+  let pos = start;
+  while (headerLines.length < 32) {
+    const lineFeed = body.indexOf(0x0a, pos);
+    if (lineFeed < 0) return undefined;
+    const lineEnd = lineFeed > pos && body[lineFeed - 1] === 0x0d ? lineFeed - 1 : lineFeed;
+    if (lineEnd - pos > 16 * 1024) return undefined;
+    const line = body.subarray(pos, lineEnd).toString("latin1");
+    if (line === "") {
+      return headerLines.length > 0
+        ? { contentStart: lineFeed + 1, headerLines }
+        : undefined;
+    }
+    // With no blank separator line, part content (for example a JSON payload
+    // whose first line contains a colon) would otherwise be swallowed as a
+    // header. Deluge only emits these three part headers, so anything else
+    // ends the header block and starts the content.
+    const colon = line.indexOf(":");
+    const headerName = colon > 0 ? line.slice(0, colon).trim().toLowerCase() : "";
+    const knownPartHeader =
+      headerName === "content-disposition" ||
+      headerName === "content-type" ||
+      headerName === "content-transfer-encoding";
+    if (!knownPartHeader) {
+      return headerLines.length > 0 ? { contentStart: pos, headerLines } : undefined;
+    }
+    headerLines.push(line);
+    pos = lineFeed + 1;
+  }
+  return undefined;
+}
+
+/**
  * Zoho's Deluge `invokeUrl files:` transport can emit a valid multipart body
  * while omitting or mislabelling the request Content-Type. Detect only the
  * generated handler's canonical first part (`payload` / `metadata`) so an
@@ -80,15 +125,11 @@ function sniffCliqMultipartBoundary(body: Buffer): string | undefined {
   if (!boundary || boundary.length > 200 || !/^[\x21-\x7e]+$/.test(boundary)) {
     return undefined;
   }
-  const lineEnding = body[firstLf - 1] === 0x0d ? CRLF : LF;
-  const headerTerminator = lineEnding === CRLF ? CRLFCRLF : LFLF;
-  const headersStart = firstLf + 1;
-  const headersEnd = body.indexOf(headerTerminator, headersStart);
-  if (headersEnd < 0 || headersEnd - headersStart > 16 * 1024) return undefined;
-  const rawHeaders = body.subarray(headersStart, headersEnd).toString("latin1");
-  const dispositionLine = rawHeaders
-    .split(/\r?\n/)
-    .find((line) => line.toLowerCase().startsWith("content-disposition:"));
+  const scanned = scanMultipartHeaderBlock(body, firstLf + 1);
+  if (!scanned) return undefined;
+  const dispositionLine = scanned.headerLines.find((line) =>
+    line.toLowerCase().startsWith("content-disposition:"),
+  );
   if (!dispositionLine) return undefined;
   const disposition = parseDisposition(dispositionLine.slice(dispositionLine.indexOf(":") + 1));
   return disposition.name === "payload" || disposition.name === "metadata"
@@ -99,7 +140,11 @@ function sniffCliqMultipartBoundary(body: Buffer): string | undefined {
 /**
  * Parse the small multipart shape emitted by the generated Deluge handler.
  * Limits are intentionally strict: the route-level body limit is the primary
- * bound, and per-part headers/part count prevent adversarial multipart growth.
+ * bound, and per-part headers/part count prevent adversarial multipart
+ * growth. Part headers may end with a canonical blank line or run directly
+ * into the part content (live Deluge evidence, 2026-09-16), and the line
+ * ending before each subsequent delimiter may differ from the first part's
+ * framing.
  */
 export function parseCliqMultipartBody(
   body: Buffer,
@@ -107,6 +152,8 @@ export function parseCliqMultipartBody(
   maxParts = 24,
 ): MultipartPart[] | undefined {
   const delimiter = Buffer.from(`--${boundary}`);
+  const lfDelimiter = Buffer.concat([LF, delimiter]);
+  const crlfDelimiter = Buffer.concat([CRLF, delimiter]);
   const parts: MultipartPart[] = [];
   let cursor = 0;
 
@@ -118,21 +165,22 @@ export function parseCliqMultipartBody(
     const lineEnding = multipartLineEndingAt(body, partStart);
     if (!lineEnding) return undefined;
     partStart += lineEnding.length;
-    const headerTerminator = lineEnding === CRLF ? CRLFCRLF : LFLF;
-    const headersEnd = body.indexOf(headerTerminator, partStart);
-    if (headersEnd < 0 || headersEnd - partStart > 16 * 1024) return undefined;
-    const nextDelimiter = Buffer.concat([lineEnding, delimiter]);
-    const nextPrefix = body.indexOf(
-      nextDelimiter,
-      headersEnd + headerTerminator.length,
-    );
-    if (nextPrefix < 0) return undefined;
-    const next = nextPrefix + lineEnding.length;
-    const payloadEnd = nextPrefix;
+    const scanned = scanMultipartHeaderBlock(body, partStart);
+    if (!scanned) return undefined;
+    const contentStart = scanned.contentStart;
+    const lfAt = body.indexOf(lfDelimiter, contentStart);
+    const crlfAt = body.indexOf(crlfDelimiter, contentStart);
+    let delimiterEol: number;
+    if (crlfAt >= 0 && (lfAt < 0 || crlfAt <= lfAt)) {
+      delimiterEol = crlfAt;
+    } else if (lfAt >= 0) {
+      delimiterEol = lfAt;
+    } else {
+      return undefined;
+    }
 
-    const rawHeaders = body.subarray(partStart, headersEnd).toString("latin1");
     const headers = new Map<string, string>();
-    for (const line of rawHeaders.split(/\r?\n/)) {
+    for (const line of scanned.headerLines) {
       const colon = line.indexOf(":");
       if (colon <= 0) continue;
       headers.set(line.slice(0, colon).trim().toLowerCase(), line.slice(colon + 1).trim());
@@ -141,9 +189,9 @@ export function parseCliqMultipartBody(
     parts.push({
       ...disposition,
       contentType: headers.get("content-type"),
-      bytes: new Uint8Array(body.subarray(headersEnd + headerTerminator.length, payloadEnd)),
+      bytes: new Uint8Array(body.subarray(contentStart, delimiterEol)),
     });
-    cursor = next;
+    cursor = delimiterEol + (body[delimiterEol] === 0x0d ? CRLF.length : LF.length);
   }
   return parts.length > 0 ? parts : undefined;
 }

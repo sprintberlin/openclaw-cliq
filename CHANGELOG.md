@@ -16,6 +16,7 @@ publish workflow extracts the matching section as the release notes (see
 - Inbound Message-handler multipart requests are now recognized from their bounded `payload` part when Zoho Deluge omits or mislabels `Content-Type`, instead of being parsed as form fields and dropped before agent dispatch.
 - `Content-Disposition` parameters of a Deluge multipart part are now accepted in double-quoted, single-quoted, and unquoted token form; live traffic showed `name=payload` without quotes, which previously fell through the sniffer into form parsing (#270).
 - Multipart recovery now accepts LF-only part framing in addition to canonical CRLF framing; a live replay showed Deluge-compatible payloads can reach the webhook with bare `\n` separators (#270).
+- Deluge multipart bodies whose part headers run directly into the part content with no blank separator line are now parsed instead of falling through to form parsing and being dropped as `parser_rejected`; live attachment DMs (2026-09-16) showed exactly that framing, with the boundary token surfacing as the first form key (#272).
 
 ### Changed
 

@@ -178,6 +178,44 @@ describe("Cliq multipart webhook body", () => {
     },
   );
 
+  it.each([
+    { lineEnding: "\r\n", boundary: "89FM0vgYAmCExqUnkqXjn541NYvwP1pm-" },
+    { lineEnding: "\n", boundary: "-l2T2qchoIbw8WVm3pEx2UxuPaE2D-qxQktoj" },
+  ])(
+    "accepts a Deluge multipart body with no blank line after part headers: $boundary",
+    async ({ lineEnding, boundary }) => {
+      const payload = {
+        handler: "message",
+        handlerSchema: "v4",
+        message: "hello",
+        user: { id: "u1" },
+        chat: { id: "CT_dm" },
+        attachments: ["voice-sample.wav"],
+      };
+      const body = Buffer.concat([
+        Buffer.from(
+          `--${boundary}${lineEnding}Content-Disposition: form-data; name=payload${lineEnding}${JSON.stringify(payload)}${lineEnding}`,
+        ),
+        Buffer.from(
+          `--${boundary}${lineEnding}Content-Disposition: form-data; name=file; filename=voice-sample.wav${lineEnding}Content-Type: audio/wav${lineEnding}`,
+        ),
+        Buffer.from("voice-bytes"),
+        Buffer.from(`${lineEnding}--${boundary}--${lineEnding}`),
+      ]);
+      const request = new FakeRequest({ "content-type": "application/x-www-form-urlencoded" });
+      const pending = readCliqWebhookBody(request as never);
+      request.emit("data", body);
+      request.emit("end");
+      const result = await pending;
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value).toEqual(payload);
+      expect(result.attachments?.[0]?.fileName).toBe("voice-sample.wav");
+      expect(Buffer.from(result.attachments?.[0]?.bytes ?? []).toString()).toBe("voice-bytes");
+    },
+  );
+
   it("promotes a sniffed Deluge multipart body to the attachment-size limit", async () => {
     const boundary = "missing-content-type-big-file";
     const file = Buffer.alloc(1024 * 1024 + 4096, 1);
