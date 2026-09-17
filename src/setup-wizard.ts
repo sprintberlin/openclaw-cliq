@@ -826,16 +826,6 @@ const cliqFinalize: NonNullable<ChannelSetupWizard["finalize"]> = async ({
     reportInput.notes = [...(reportInput.notes ?? []), onboarding.nextAction];
   }
 
-  // The full roundtrip is distinct from the one-way first-contact DM: it asks
-  // the operator to reply with a nonce and correlates the inbound agent turn
-  // plus outbound answer. It is separately consented and fail-soft so
-  // cancelling it never invalidates setup.
-  const roundtrip = await runOptionalCliqRoundtripDuringSetup({
-    cfg: next,
-    prompter,
-  });
-  if (roundtrip !== "not_requested") reportInput.delivery = roundtrip;
-
   next = await guardCliqDmScopeDuringSetup({ cfg: next, prompter });
 
   // Trusted-organization mode is opt-in. Only an existing deliberately open
@@ -1072,94 +1062,6 @@ function collectRequiredCliqEnvironment(cfg: OpenClawConfig): string[] {
     if (match) names.add(match[1]);
   }
   return [...names];
-}
-
-export type CliqSetupRoundtripResult = "pass" | "failed" | "cancelled" | "not_requested";
-
-/**
- * Optional consented roundtrip at the end of setup.
- *
- * Three separate gates: opting in, naming the target and kind, and a final
- * confirmation. Declining at any point leaves Zoho untouched and is reported
- * as cancelled rather than as a failure, so a cancelled test never makes an
- * otherwise healthy setup look broken.
- */
-export async function runOptionalCliqRoundtripDuringSetup(params: {
-  cfg: OpenClawConfig;
-  prompter: WizardPrompter;
-  runDoctor?: typeof runCliqDoctor;
-}): Promise<CliqSetupRoundtripResult> {
-  const runDoctor = params.runDoctor ?? runCliqDoctor;
-  let begin = false;
-  try {
-    begin = await params.prompter.confirm({
-      message:
-        "Run an optional end-to-end roundtrip test now? It posts one nonce-bearing message and waits for your reply.",
-      initialValue: false,
-    });
-  } catch {
-    return "not_requested";
-  }
-  if (!begin) return "not_requested";
-
-  let targetKind: string;
-  let target: string;
-  try {
-    targetKind = await params.prompter.select<string>({
-      message: "Roundtrip target kind",
-      options: [
-        { value: "dm", label: "Direct message" },
-        { value: "group", label: "Channel @mention" },
-      ],
-      initialValue: "dm",
-    });
-    target = (
-      await params.prompter.text({
-        message:
-          targetKind === "group"
-            ? "Channel unique name to test"
-            : "Zoho user id to DM for the test",
-      })
-    ).trim();
-  } catch {
-    return "cancelled";
-  }
-  if (!target) return "cancelled";
-
-  let confirmed = false;
-  try {
-    confirmed = await params.prompter.confirm({
-      message: `Send the nonce-bearing roundtrip challenge to ${target} now?`,
-      initialValue: false,
-    });
-  } catch {
-    return "cancelled";
-  }
-  if (!confirmed) return "cancelled";
-
-  try {
-    const report = await runDoctor(params.cfg, {
-      accountId: DEFAULT_ACCOUNT_ID,
-      roundtrip: true,
-      target,
-      targetKind: targetKind === "group" ? "group" : "dm",
-      confirmed: true,
-    });
-    const stage = report.stages.find((item) => item.id === "roundtrip");
-    await noteSafely(
-      params.prompter,
-      `Roundtrip stage: ${stage?.status ?? "unknown"}${stage?.boundary ? ` (boundary: ${stage.boundary})` : ""}`,
-      "Zoho Cliq roundtrip",
-    );
-    return stage?.status === "pass" ? "pass" : "failed";
-  } catch {
-    await noteSafely(
-      params.prompter,
-      "The roundtrip test could not run; no configuration was changed.",
-      "Zoho Cliq roundtrip",
-    );
-    return "failed";
-  }
 }
 
 export async function guardCliqDmScopeDuringSetup(params: {

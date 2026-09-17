@@ -186,10 +186,9 @@ function describeDeclaredFields(keys: Set<string>, fields: readonly string[]): s
 
 /**
  * Report which inbound content shapes a Zoho-held script *declares* it will
- * forward. The doctor can automatically roundtrip ordinary multiline text,
- * but posting a bot message cannot synthesize a native Cliq reply/quote or a
- * forward. Keep those paths visibly unexercised instead of inferring coverage
- * from secret/URL equality or from a plain-text roundtrip.
+ * forward. Posting a bot message cannot synthesize a native Cliq reply/quote or a
+ * forward, and no automated bot API exists to simulate those events. Keep those
+ * paths visibly unexercised instead of inferring live coverage from secret/URL equality.
  */
 export function inspectCliqHandlerContentShapeCoverage(
   handlers: readonly CliqHandlerScriptRecord[],

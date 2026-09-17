@@ -6,7 +6,6 @@ import {
   validateCliqSetupResult,
   guardCliqDmScopeDuringSetup,
   prepareCliqSecretsForPersistence,
-  runOptionalCliqRoundtripDuringSetup,
   readSupportedOpenClawVersions,
   checkInstalledOpenClawCompatibility,
   isCliqChannelConfigured,
@@ -882,52 +881,6 @@ describe("guided setup secret persistence (issue #92)", () => {
     const next = prepareCliqSecretsForPersistence({ originalCfg: original, generatedCfg: original });
     expect((next as any).channels.cliq.clientSecret).toEqual(existingRef);
     expect((next as any).channels.cliq.webhookSecret).toBe("$CLIQ_WEBHOOK_SECRET");
-  });
-});
-
-describe("optional full roundtrip during setup (issue #92)", () => {
-  it("does nothing when the operator declines", async () => {
-    const { prompter } = makeScriptedPrompter([{ method: "confirm", value: false }]);
-    const runDoctor = vi.fn();
-    const result = await runOptionalCliqRoundtripDuringSetup({
-      cfg: cfgWith({}), prompter, runDoctor,
-    });
-    expect(result).toBe("not_requested");
-    expect(runDoctor).not.toHaveBeenCalled();
-  });
-
-  it("requires kind, target, and a final explicit confirmation", async () => {
-    const { prompter } = makeScriptedPrompter([
-      { method: "confirm", value: true },
-      { method: "select", value: "dm" },
-      { method: "text", value: "user-1" },
-      { method: "confirm", value: true },
-    ]);
-    const runDoctor = vi.fn(async () => ({
-      outcome: "healthy",
-      stages: [{ id: "roundtrip", status: "pass", evidence: [], remediation: [] }],
-    } as never));
-    const result = await runOptionalCliqRoundtripDuringSetup({
-      cfg: cfgWith({}), prompter, runDoctor,
-    });
-    expect(result).toBe("pass");
-    expect(runDoctor).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ roundtrip: true, target: "user-1", targetKind: "dm", confirmed: true }),
-    );
-  });
-
-  it("reports a cancelled final confirmation as cancelled", async () => {
-    const { prompter } = makeScriptedPrompter([
-      { method: "confirm", value: true },
-      { method: "select", value: "group" },
-      { method: "text", value: "dev-team" },
-      { method: "confirm", value: false },
-    ]);
-    const result = await runOptionalCliqRoundtripDuringSetup({
-      cfg: cfgWith({}), prompter, runDoctor: vi.fn(),
-    });
-    expect(result).toBe("cancelled");
   });
 });
 
