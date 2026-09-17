@@ -173,11 +173,9 @@ export default defineChannelPluginEntry({
           )
           .option("--account <accountId>", "Cliq account id (defaults to the single-account config)")
           .option("--outbound-test", "Send one clearly labeled test message after explicit confirmation")
-          .option("--roundtrip", "Run the nonce-correlated inbound and reply roundtrip after explicit confirmation")
           .option("--target <target>", "Target user id (dm) or channel unique name (group)")
           .option("--kind <kind>", "Target kind: dm or group")
           .option("--confirm", "Confirm that a diagnostic message may be sent")
-          .option("--timeout <seconds>", "Roundtrip timeout in seconds (default 120)")
           .option(
             "--adopt-handler-url",
             "Store the verified Zoho handler URL as channels.cliq.publicWebhookUrl after a passing preflight",
@@ -187,11 +185,9 @@ export default defineChannelPluginEntry({
             async (opts: {
               account?: string;
               outboundTest?: boolean;
-              roundtrip?: boolean;
               target?: string;
               kind?: string;
               confirm?: boolean;
-              timeout?: string;
               json?: boolean;
               adoptHandlerUrl?: boolean;
             }) => {
@@ -200,11 +196,9 @@ export default defineChannelPluginEntry({
                 cfg: api.config as OpenClawConfig,
                 accountId: opts.account,
                 outboundTest: opts.outboundTest,
-                roundtrip: opts.roundtrip,
                 target: opts.target,
                 kind: opts.kind,
                 confirm: opts.confirm,
-                timeout: opts.timeout,
                 json: opts.json,
                 adoptHandlerUrl: opts.adoptHandlerUrl,
               });

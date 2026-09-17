@@ -22,6 +22,7 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Changed
 
+- **Breaking for doctor JSON consumers:** `openclaw cliq doctor` no longer has `--roundtrip` or `--timeout`. The operator-driven nonce challenge, chat-history polling, roundtrip stage, optional `correlation` report field, and the matching setup-wizard prompt are gone. The JSON schema version is now `2`. Read-only doctor, webhook preflight, handler inspection, and consented one-way `--outbound-test` remain. Native reply/quote/forward coverage stays a real-client check (#267).
 - Text-only generated Message, Mention, Welcome, and documented Form handlers now pass the Deluge Map itself to `invokeUrl body:` instead of `payload.toString()`, so Zoho owns JSON escaping. The Message Handler multipart attachment `stringPart` still uses `payload.toString()` until that branch is proven live. Existing installs must repair/re-paste handlers; `handlerSchema` is now `v4` (#259).
 
 ## [0.4.0] - 2026-09-15

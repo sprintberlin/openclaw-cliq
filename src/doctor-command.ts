@@ -10,11 +10,9 @@ export interface CliqDoctorCommandOptions {
   cfg: OpenClawConfig;
   accountId?: string;
   outboundTest?: boolean;
-  roundtrip?: boolean;
   target?: string;
   kind?: string;
   confirm?: boolean;
-  timeout?: string;
   json?: boolean;
   adoptHandlerUrl?: boolean;
 }
@@ -38,12 +36,6 @@ function parseTargetKind(kind: string | undefined): "dm" | "group" | undefined {
   return kind === "dm" || kind === "group" ? kind : undefined;
 }
 
-function parseTimeout(timeout: string | undefined): number | undefined {
-  if (timeout === undefined) return undefined;
-  const seconds = Number(timeout);
-  return Number.isFinite(seconds) ? seconds * 1_000 : Number.NaN;
-}
-
 export async function runCliqDoctorCommand(
   options: CliqDoctorCommandOptions,
   commandDeps: CliqDoctorCommandDeps = defaultDeps,
@@ -56,11 +48,9 @@ export async function runCliqDoctorCommand(
     {
       accountId: options.accountId,
       outboundTest: options.outboundTest,
-      roundtrip: options.roundtrip,
       target: options.target,
       targetKind,
       confirmed: options.confirm,
-      timeoutMs: parseTimeout(options.timeout),
       json: options.json,
       adoptHandlerUrl: options.adoptHandlerUrl,
       invocationError: invalidKind ? "--kind must be dm or group" : undefined,

@@ -5,7 +5,6 @@ import {
   normalizeCliqRouteTarget,
   readEffectiveCliqSection,
   resolveCliqConfig,
-  type CliqChatMessageRef,
   type CliqClient,
   type CliqDirectoryEntry,
   type ResolvedCliqAccount,
@@ -35,7 +34,7 @@ import {
   type PersistCliqInboundVerificationResult,
 } from "./inbound-verification-store.js";
 
-export const CLIQ_DOCTOR_SCHEMA_VERSION = 1 as const;
+export const CLIQ_DOCTOR_SCHEMA_VERSION = 2 as const;
 export const CLIQ_DOCTOR_EXIT = {
   healthy: 0,
   degraded: 1,
@@ -45,7 +44,7 @@ export const CLIQ_DOCTOR_EXIT = {
 
 export type CliqDoctorStageStatus = "pass" | "warn" | "fail" | "skipped";
 export type CliqDoctorOutcome = "healthy" | "degraded" | "failed" | "invalid";
-export type CliqDoctorMode = "read_only" | "outbound_test" | "roundtrip" | "adopt_handler_url";
+export type CliqDoctorMode = "read_only" | "outbound_test" | "adopt_handler_url";
 export type CliqDoctorTargetKind = "dm" | "group";
 
 export type CliqDoctorStageId =
@@ -56,8 +55,7 @@ export type CliqDoctorStageId =
   | "bot_handlers"
   | "public_webhook"
   | "discovery"
-  | "outbound_test"
-  | "roundtrip";
+  | "outbound_test";
 
 export interface CliqDoctorStage {
   id: CliqDoctorStageId;
@@ -66,13 +64,6 @@ export interface CliqDoctorStage {
   evidence: string[];
   remediation: string[];
   boundary?: string;
-}
-
-export interface CliqDoctorCorrelation {
-  nonce: string;
-  targetKind: CliqDoctorTargetKind;
-  requestObserved: boolean;
-  replyObserved: boolean;
 }
 
 export interface CliqDoctorReport {
@@ -86,18 +77,15 @@ export interface CliqDoctorReport {
   exitCode: number;
   readOnly: boolean;
   invocationError?: string;
-  correlation?: CliqDoctorCorrelation;
   stages: CliqDoctorStage[];
 }
 
 export interface CliqDoctorOptions {
   accountId?: string;
   outboundTest?: boolean;
-  roundtrip?: boolean;
   target?: string;
   targetKind?: CliqDoctorTargetKind;
   confirmed?: boolean;
-  timeoutMs?: number;
   json?: boolean;
   adoptHandlerUrl?: boolean;
   invocationError?: string;
@@ -125,8 +113,6 @@ export interface CliqDoctorClient {
   getBot?(botId: string): ReturnType<CliqBotReader["getBot"]>;
   listBotSubscribers?(botIdOrUniqueName: string, maxItems?: number): ReturnType<CliqBotReader["listSubscribers"]>;
   sendMessage(options: { to: string; text: string; isDm?: boolean }): Promise<{ messageId?: string; chatId?: string }>;
-  resolveChannelChatId(channelUniqueName: string): Promise<string | undefined>;
-  listChatMessages(chatId: string, options?: { limit?: number }): Promise<CliqChatMessageRef[]>;
 }
 
 export interface CliqDoctorDeps {
@@ -153,10 +139,7 @@ export interface CliqDoctorDeps {
     now?: Date;
   }) => Promise<PersistCliqInboundVerificationResult>;
   randomUUID: () => string;
-  sleep: (milliseconds: number) => Promise<void>;
   now: () => Date;
-  nowMs: () => number;
-  pollIntervalMs: number;
 }
 
 const STAGE_LABELS: Record<CliqDoctorStageId, string> = {
@@ -168,7 +151,6 @@ const STAGE_LABELS: Record<CliqDoctorStageId, string> = {
   public_webhook: "Public webhook preflight",
   discovery: "Directory, user, and channel discovery",
   outbound_test: "Consented outbound test",
-  roundtrip: "Nonce-correlated inbound, agent, and reply roundtrip",
 };
 
 const STAGE_ORDER = Object.keys(STAGE_LABELS) as CliqDoctorStageId[];
@@ -182,10 +164,7 @@ const defaultDeps: CliqDoctorDeps = {
     runCliqWebhookPreflight({ url, secret, readHandlers }),
   persistHandlerUrlAdoption: persistCliqHandlerUrlAdoption,
   randomUUID,
-  sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   now: () => new Date(),
-  nowMs: () => Date.now(),
-  pollIntervalMs: 2_000,
 };
 
 function stage(
@@ -265,22 +244,6 @@ export function redactCliqDoctorText(text: string, values: readonly string[] = [
   return redacted;
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("roundtrip correlation request timed out")), timeoutMs);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (err) => {
-        clearTimeout(timer);
-        reject(err);
-      },
-    );
-  });
-}
-
 function safeError(err: unknown, values: readonly string[]): string {
   const message = redactCliqDoctorText(err instanceof Error ? err.message : String(err), values);
   const status = message.match(/\((\d{3})\)/)?.[1];
@@ -295,27 +258,17 @@ function safeError(err: unknown, values: readonly string[]): string {
 
 function validateOptions(options: CliqDoctorOptions): string | null {
   if (options.invocationError) return options.invocationError;
-  if (options.outboundTest && options.roundtrip) {
-    return "choose either --outbound-test or --roundtrip, not both";
-  }
-  const destructive = Boolean(options.outboundTest || options.roundtrip);
-  if (destructive && !options.target) return "--target is required for an outbound test or roundtrip";
-  if (destructive && !options.targetKind) return "--kind dm|group is required for an outbound test or roundtrip";
+  const destructive = Boolean(options.outboundTest);
+  if (destructive && !options.target) return "--target is required for an outbound test";
+  if (destructive && !options.targetKind) return "--kind dm|group is required for an outbound test";
   if (destructive && !options.confirmed) return "--confirm is required before sending a diagnostic message";
   if (!destructive && (options.target || options.targetKind || options.confirmed)) {
-    return "--target, --kind, and --confirm require --outbound-test or --roundtrip";
-  }
-  if (options.timeoutMs !== undefined && !options.roundtrip) {
-    return "--timeout is only valid with --roundtrip";
-  }
-  if (options.timeoutMs !== undefined && (!Number.isFinite(options.timeoutMs) || options.timeoutMs < 1_000 || options.timeoutMs > 600_000)) {
-    return "--timeout must be between 1 and 600 seconds";
+    return "--target, --kind, and --confirm require --outbound-test";
   }
   return null;
 }
 
 function modeOf(options: CliqDoctorOptions): CliqDoctorMode {
-  if (options.roundtrip) return "roundtrip";
   if (options.outboundTest) return "outbound_test";
   if (options.adoptHandlerUrl) return "adopt_handler_url";
   return "read_only";
@@ -625,7 +578,7 @@ async function buildCapabilitiesStage(
     );
     if (!sendExercised) {
       remediation.push(
-        "Use --outbound-test (and --roundtrip) to exercise the send scopes that have no read-only probe.",
+        "Use --outbound-test to exercise the send scopes that have no read-only probe.",
       );
     }
   }
@@ -931,316 +884,70 @@ function priorFailure(stages: readonly CliqDoctorStage[]): CliqDoctorStage | und
   );
 }
 
-function roundtripPolicyEvidence(cfg: OpenClawConfig, target: string): string {
-  const cliq = (cfg as unknown as { channels?: { cliq?: Record<string, unknown> } }).channels?.cliq;
-  const groups = cliq?.groups;
-  const groupConfig = groups && typeof groups === "object"
-    ? (groups as Record<string, unknown>)[target] ?? (groups as Record<string, unknown>)["*"]
-    : undefined;
-  return groupConfig
-    ? "configured group admission/tool policy remains active for the roundtrip agent turn"
-    : "no target-specific group tool policy was found; the normal agent policy remains active";
-}
-
-/**
- * Build the content the human copies through the real Cliq client for a
- * consented Doctor roundtrip. The deliberately-reserved email and fictional
- * NANP number exercise the multiline/entity-like shape without asking an
- * operator to paste personal data. This text must stay out of diagnostic
- * reports and logs; it is only compared in-memory while polling Cliq.
- */
-export function buildCliqDoctorRoundtripRequestText(nonce: string): string {
-  const requestMarker = `OPENCLAW_CLIQ_ROUNDTRIP_REQUEST ${nonce}`;
-  const replyMarker = `OPENCLAW_CLIQ_ROUNDTRIP_REPLY ${nonce}`;
-  return [
-    requestMarker,
-    `Contact email: cliq-doctor-${nonce}@example.invalid`,
-    "Telephone: +1 202-555-0100",
-    'Quoted text: "doctor-safe"',
-    `Reply with exactly this line and nothing else: ${replyMarker}`,
-  ].join("\n");
-}
-
-/**
- * Correlate only the full synthetic request. A group sender may put the Cliq
- * @mention in front of the first line; that prefix is accepted, but every
- * subsequent line must still exactly match. This prevents a one-line nonce
- * copy from proving a multiline/entity-like roundtrip it did not exercise.
- */
-function isCliqDoctorRoundtripRequest(text: string | undefined, expected: string): boolean {
-  const normalized = text?.trim().replace(/\r\n/g, "\n");
-  const expectedNormalized = expected.trim();
-  if (normalized === expectedNormalized) return true;
-  if (!normalized) return false;
-  const [expectedFirst, ...expectedRest] = expectedNormalized.split("\n");
-  const [actualFirst, ...actualRest] = normalized.split("\n");
-  if (!expectedFirst || actualRest.join("\n") !== expectedRest.join("\n")) return false;
-  if (!actualFirst.endsWith(expectedFirst)) return false;
-  // The only accepted prefix is a native-looking Cliq @mention. Do not let
-  // an arbitrary leading sentence hide a partial/altered copied challenge.
-  return actualFirst.slice(0, -expectedFirst.length).trim().startsWith("@");
-}
-
 async function buildOutboundStage(
-  cfg: OpenClawConfig,
   options: CliqDoctorOptions,
   account: ResolvedCliqAccount | null,
   client: CliqDoctorClient | null,
   deps: CliqDoctorDeps,
   previousStages: readonly CliqDoctorStage[],
   values: readonly string[],
-): Promise<{
-  result: CliqDoctorStage;
-  nonce?: string;
-  chatId?: string;
-  kickoffMessageId?: string;
-  requestMarker?: string;
-  requestText?: string;
-  replyMarker?: string;
-}> {
-  if (!options.outboundTest && !options.roundtrip) {
-    return { result: skipped("outbound_test", "not requested; default doctor mode performs no sends") };
+): Promise<CliqDoctorStage> {
+  if (!options.outboundTest) {
+    return skipped("outbound_test", "not requested; default doctor mode performs no sends");
   }
   if (!account || !client || !options.target || !options.targetKind) {
-    return {
-      result: stage(
-        "outbound_test",
-        "fail",
-        ["required account or target information is unavailable"],
-        ["Fix the earlier diagnostic boundary and rerun with an explicit target and confirmation."],
-        "outbound_precondition",
-      ),
-    };
+    return stage(
+      "outbound_test",
+      "fail",
+      ["required account or target information is unavailable"],
+      ["Fix the earlier diagnostic boundary and rerun with an explicit target and confirmation."],
+      "outbound_precondition",
+    );
   }
   const failed = priorFailure(previousStages);
   if (failed) {
-    return {
-      result: stage(
-        "outbound_test",
-        "fail",
-        [`send was not attempted because ${failed.id} failed`],
-        ["Fix the earlier failed stage before sending a diagnostic message."],
-        "outbound_precondition",
-      ),
-    };
-  }
-  const publicStage = previousStages.find((item) => item.id === "public_webhook");
-  if (options.roundtrip && publicStage?.status !== "pass") {
-    return {
-      result: stage(
-        "outbound_test",
-        "fail",
-        ["roundtrip challenge was not sent because the public webhook preflight did not pass"],
-        ["Configure and pass the public webhook stage before requesting a roundtrip."],
-        "outbound_precondition",
-      ),
-    };
+    return stage(
+      "outbound_test",
+      "fail",
+      [`send was not attempted because ${failed.id} failed`],
+      ["Fix the earlier failed stage before sending a diagnostic message."],
+      "outbound_precondition",
+    );
   }
   const normalized = normalizeCliqRouteTarget(
     `${options.targetKind === "dm" ? "cliq:dm:" : "cliq:channel:"}${options.target}`,
   );
   if (!normalized) {
-    return {
-      result: stage(
-        "outbound_test",
-        "fail",
-        ["the selected target could not be normalized"],
-        ["Choose a directory-resolved user id for DM or channel unique name for group."],
-        "target_selection",
-      ),
-    };
+    return stage(
+      "outbound_test",
+      "fail",
+      ["the selected target could not be normalized"],
+      ["Choose a directory-resolved user id for DM or channel unique name for group."],
+      "target_selection",
+    );
   }
   const nonce = deps.randomUUID();
-  const requestMarker = `OPENCLAW_CLIQ_ROUNDTRIP_REQUEST ${nonce}`;
-  const replyMarker = `OPENCLAW_CLIQ_ROUNDTRIP_REPLY ${nonce}`;
-  // This is intentionally synthetic, reserved data. It proves that the
-  // webhook path preserves newlines, a quoted string, and common Cliq entity
-  // candidates without sending a real person's contact details. Keep it out
-  // of doctor evidence and normal logs; CliqClient logs only the text length.
-  const requestText = buildCliqDoctorRoundtripRequestText(nonce);
-  const text = options.roundtrip
-    ? `[OpenClaw Cliq doctor roundtrip ${nonce}]\n${options.targetKind === "group" ? "Mention the bot and send" : "Send"} the following multi-line text exactly:\n${requestText}`
-    : `[OpenClaw Cliq doctor outbound test ${nonce}] No reply is required.`;
+  const text = `[OpenClaw Cliq doctor outbound test ${nonce}] No reply is required.`;
   try {
     const sent = await client.sendMessage({
       to: normalized.to,
       text,
       isDm: normalized.isDm,
     });
-    const chatId = sent.chatId ?? (normalized.isDm
-      ? undefined
-      : await client.resolveChannelChatId(normalized.to));
     const evidence = [
       `clearly labeled diagnostic message sent to the confirmed ${options.targetKind} target`,
       sent.messageId ? "Zoho returned a redacted message identifier" : "Zoho accepted the send without a message identifier",
     ];
-    if (options.roundtrip) evidence.push(roundtripPolicyEvidence(cfg, normalized.to));
-    return {
-      result: stage("outbound_test", "pass", evidence),
-      nonce,
-      chatId,
-      kickoffMessageId: sent.messageId,
-      requestMarker,
-      requestText,
-      replyMarker,
-    };
+    return stage("outbound_test", "pass", evidence);
   } catch (err) {
-    return {
-      result: stage(
-        "outbound_test",
-        "fail",
-        [safeError(err, values)],
-        ["Verify the selected target, required send scope, bot visibility/membership, and OAuth grant."],
-        "cliq_outbound",
-      ),
-    };
-  }
-}
-
-async function buildRoundtripStage(
-  options: CliqDoctorOptions,
-  client: CliqDoctorClient | null,
-  deps: CliqDoctorDeps,
-  outbound: Awaited<ReturnType<typeof buildOutboundStage>>,
-  values: readonly string[],
-): Promise<{ result: CliqDoctorStage; correlation?: CliqDoctorCorrelation }> {
-  if (!options.roundtrip) {
-    return { result: skipped("roundtrip", "not requested; use --roundtrip with explicit target selection and --confirm") };
-  }
-  if (
-    outbound.result.status !== "pass" ||
-    !client ||
-    !outbound.nonce ||
-    !outbound.requestMarker ||
-    !outbound.requestText ||
-    !outbound.replyMarker
-  ) {
-    return {
-      result: skipped("roundtrip", "not run: the consented roundtrip challenge was not sent"),
-    };
-  }
-  if (!outbound.chatId) {
-    return {
-      result: stage(
-        "roundtrip",
-        "fail",
-        [
-          "the challenge was sent, but no chat id could be resolved for read-only correlation",
-          options.targetKind === "dm"
-            ? "the DM send response carried no chat id, which the v2/v3 bot-message endpoints only return via message_details"
-            : "the channel unique name did not resolve to a chat id",
-        ],
-        options.targetKind === "dm"
-          ? [
-              "Rerun the roundtrip as a group target, or verify the DM send path returns message_details (apiVersion dmPost v3) so the chat id is available.",
-            ]
-          : [
-              "Grant ZohoCliq.Channels.READ and verify the channel unique name resolves to a chat id.",
-            ],
-        "roundtrip_correlation",
-      ),
-      correlation: {
-        nonce: outbound.nonce,
-        targetKind: options.targetKind!,
-        requestObserved: false,
-        replyObserved: false,
-      },
-    };
-  }
-  const roundtripEvidence = [
-    "the complete multi-line nonce request was observed in Cliq, exercising a reserved example.invalid email, fictional phone number, and quoted text without recording their values in the report",
-    "a later message whose entire body is the nonce reply was observed in Cliq, so the agent turn, configured policy, and outbound reply all completed",
-    "chat text is the only correlation signal available to a read-only diagnostic; inspect gateway logs for the same nonce to attribute an individual hop",
-    "native Cliq reply/quote and forwarded-message relationships are not synthesized by this API-driven test; the bot/handler stage reports their static field declarations and a real-client manual check remains required",
-  ];
-  const timeoutMs = options.timeoutMs ?? 120_000;
-  const deadline = deps.nowMs() + timeoutMs;
-  let requestObserved = false;
-  let pollTimedOut = false;
-  while (true) {
-    const budget = deadline - deps.nowMs();
-    if (budget <= 0) break;
-    try {
-      const messages = await withTimeout(
-        client.listChatMessages(outbound.chatId, { limit: 100 }),
-        budget,
-      );
-      const relevant = messages.filter((message) => message.messageId !== outbound.kickoffMessageId);
-      requestObserved ||= relevant.some(
-        (message) => isCliqDoctorRoundtripRequest(message.text, outbound.requestText!),
-      );
-      const replyObserved = relevant.some((message) => {
-        const text = message.text?.trim();
-        return text === outbound.replyMarker;
-      });
-      if (requestObserved && replyObserved) {
-        return {
-          result: stage(
-            "roundtrip",
-            "pass",
-            roundtripEvidence,
-          ),
-          correlation: {
-            nonce: outbound.nonce,
-            targetKind: options.targetKind!,
-            requestObserved: true,
-            replyObserved: true,
-          },
-        };
-      }
-    } catch (err) {
-      if (err instanceof Error && err.message === "roundtrip correlation request timed out") {
-        pollTimedOut = true;
-        break;
-      }
-      return {
-        result: stage(
-          "roundtrip",
-          "fail",
-          [safeError(err, values)],
-          ["Verify ZohoCliq.Messages.READ and the resolved chat id, then rerun the roundtrip."],
-          "roundtrip_correlation",
-        ),
-        correlation: {
-          nonce: outbound.nonce,
-          targetKind: options.targetKind!,
-          requestObserved,
-          replyObserved: false,
-        },
-      };
-    }
-    const remaining = deadline - deps.nowMs();
-    if (remaining <= 0) break;
-    await deps.sleep(Math.min(deps.pollIntervalMs, remaining));
-  }
-  const timeoutEvidence = pollTimedOut
-    ? ["the final correlation read did not return before the roundtrip deadline"]
-    : [];
-  return {
-    result: stage(
-      "roundtrip",
+    return stage(
+      "outbound_test",
       "fail",
-      requestObserved
-        ? [
-            "the nonce-bearing inbound request appeared in Cliq, but the exact agent reply did not appear before timeout",
-            ...timeoutEvidence,
-          ]
-        : [
-            "the complete multi-line user request did not appear in Cliq before timeout",
-            ...timeoutEvidence,
-          ],
-      requestObserved
-        ? ["Inspect gateway agent-turn, CRM/tool-policy, and outbound Cliq logs for the nonce; the failure is after user delivery."]
-        : ["Confirm the user sent the exact request through the real bot DM or group @mention and inspect the Zoho handler execution log."],
-      requestObserved ? "agent_policy_or_outbound_reply" : "zoho_handler_or_inbound_webhook",
-    ),
-    correlation: {
-      nonce: outbound.nonce,
-      targetKind: options.targetKind!,
-      requestObserved,
-      replyObserved: false,
-    },
-  };
+      [safeError(err, values)],
+      ["Verify the selected target, required send scope, bot visibility/membership, and OAuth grant."],
+      "cliq_outbound",
+    );
+  }
 }
 
 export async function runCliqDoctor(
@@ -1265,7 +972,7 @@ export async function runCliqDoctor(
     client,
     deps,
     values,
-    Boolean(options.outboundTest || options.roundtrip),
+    Boolean(options.outboundTest),
   ));
   const publicWebhookUrl = readPublicWebhookUrl(cfg, options.accountId);
   stages.push(await buildBotStage(config.account, publicWebhookUrl, client, deps, values));
@@ -1279,18 +986,14 @@ export async function runCliqDoctor(
     Boolean(options.adoptHandlerUrl),
   ));
   stages.push(await buildDiscoveryStage(config.account, client, values));
-  const outbound = await buildOutboundStage(
-    cfg,
+  stages.push(await buildOutboundStage(
     options,
     config.account,
     client,
     deps,
     stages,
     values,
-  );
-  stages.push(outbound.result);
-  const roundtrip = await buildRoundtripStage(options, client, deps, outbound, values);
-  stages.push(roundtrip.result);
+  ));
   const outcome = outcomeOf(stages);
   return {
     schemaVersion: CLIQ_DOCTOR_SCHEMA_VERSION,
@@ -1302,7 +1005,6 @@ export async function runCliqDoctor(
     outcome,
     exitCode: exitCodeOf(outcome),
     readOnly: modeOf(options) === "read_only",
-    ...(roundtrip.correlation ? { correlation: roundtrip.correlation } : {}),
     stages,
   };
 }

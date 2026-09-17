@@ -80,11 +80,10 @@ describe("cliq doctor command (issue #97)", () => {
       {
         cfg,
         accountId: "team",
-        roundtrip: true,
+        outboundTest: true,
         target: "general",
         kind: "group",
         confirm: true,
-        timeout: "45",
       },
       deps({
         runDoctor: async (_cfg, options) => {
@@ -95,11 +94,10 @@ describe("cliq doctor command (issue #97)", () => {
     );
     expect(received[0]).toMatchObject({
       accountId: "team",
-      roundtrip: true,
+      outboundTest: true,
       target: "general",
       targetKind: "group",
       confirmed: true,
-      timeoutMs: 45_000,
     });
   });
 
@@ -118,24 +116,10 @@ describe("cliq doctor command (issue #97)", () => {
     expect(code).toBe(CLIQ_DOCTOR_EXIT.invalid);
   });
 
-  it("passes an unparsable timeout through so the runner rejects it", async () => {
-    const received: CliqDoctorOptions[] = [];
-    await runCliqDoctorCommand(
-      { cfg, roundtrip: true, target: "user-1", kind: "dm", confirm: true, timeout: "abc" },
-      deps({
-        runDoctor: async (_cfg, options) => {
-          received.push(options);
-          return report();
-        },
-      }),
-    );
-    expect(Number.isNaN(received[0]?.timeoutMs)).toBe(true);
-  });
-
   it("passes injected doctor dependencies through", async () => {
     const runDoctor = vi.fn(async () => report());
-    await runCliqDoctorCommand({ cfg }, deps({ runDoctor }), { pollIntervalMs: 5 });
-    expect(runDoctor).toHaveBeenCalledWith(cfg, expect.any(Object), { pollIntervalMs: 5 });
+    await runCliqDoctorCommand({ cfg }, deps({ runDoctor }), { randomUUID: () => "id" });
+    expect(runDoctor).toHaveBeenCalledWith(cfg, expect.any(Object), { randomUUID: expect.any(Function) });
   });
 
   it("forwards --adopt-handler-url as an explicit repair request (issue #172)", async () => {

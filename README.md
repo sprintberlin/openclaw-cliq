@@ -1066,8 +1066,7 @@ openclaw cliq doctor --account <accountId>
 openclaw cliq doctor --json
 openclaw cliq doctor --adopt-handler-url
 openclaw cliq doctor --outbound-test --target <user-id> --kind dm --confirm
-openclaw cliq doctor --roundtrip --target <user-id> --kind dm --confirm
-openclaw cliq doctor --roundtrip --target <channel-unique-name> --kind group --confirm --timeout 180
+openclaw cliq doctor --outbound-test --target <channel-unique-name> --kind group --confirm
 ```
 
 Stages, in order:
@@ -1080,24 +1079,25 @@ Stages, in order:
 6. Public DNS, TLS, route, and webhook-secret enforcement
 7. Read-only user/channel discovery
 8. Optional consented outbound test (`--outbound-test`)
-9. Optional nonce-correlated inbound/agent/reply roundtrip (`--roundtrip`)
 
-Stage 7 is an aid for choosing a target, not a precondition for reaching one: if a directory read fails, the stage warns (the run is `degraded`, exit `1`), target resolution is unavailable, but stages 8 and 9 still run against an explicit `--target`. A failure in any earlier stage does block the consented send.
+Stage 7 is an aid for choosing a target, not a precondition for reaching one: if a directory read fails, the stage warns (the run is `degraded`, exit `1`), target resolution is unavailable, but stage 8 still runs against an explicit `--target`. A failure in any earlier stage does block the consented send.
+
+The doctor deliberately has **no operator-driven inbound roundtrip**. Proving inbound delivery, agent execution, and the outbound reply in one command would require a human to copy an exact challenge back through a real Cliq client while the CLI polls chat history; that protocol is interactive, text-correlated, and nondeterministic, so it produced ambiguous results instead of evidence (#267). Verify the inbound path with the authenticated non-dispatching webhook preflight, the Zoho handler execution log, and the gateway log for a real message instead.
 
 Capability output keeps three kinds of evidence visibly separate: `pass` means a real read-only API call succeeded; `not verified` means no safe non-destructive probe exists; and `reported from the granted scope set, not proven` means the only real probe would mutate Zoho (for example bot creation). A copied scope string or a token response echoing that scope never upgrades either of the last two states to `pass` — Zoho can issue a token whose API call still fails with `oauthtoken_scope_invalid`.
 
-Stage 5 uses the shared read-only bot inspector. It resolves the configured unique name to Zoho's internal `b-…` id, then reports the documented active status, visibility scope (`organization`, `team`, or `personal`), subscriber count, handler-secret/URL consistency, and the literal `payload.put("…")` keys declared by each readable Message/Mention handler. Subscriber membership is read separately and is available only to the bot creator or an organization administrator; when Zoho refuses that read, subscription remains explicitly `unknown` while the bot facts that were readable stay known. Missing `ZohoCliq.Bots.READ`, an unrecognised status/scope value, transport failure, or an incomplete subscriber walk also remains `unknown` and makes the stage warn/degrade — it never becomes `unsubscribed` by inference. A missing or inactive bot, or a known handler conflict, fails the stage. Reply/quote and forwarded-message field declarations are **static-only**: the stage names missing fields as an uncovered shape, but a declared field is still `declared_unexercised`, never live proof. Likewise, the required send scopes (`dm_send`, `channel_send`, `message_edit`) have no safe read-only probe, so a read-only run may still be `degraded` — run with `--outbound-test` or `--roundtrip` to exercise the send path.
+Stage 5 uses the shared read-only bot inspector. It resolves the configured unique name to Zoho's internal `b-…` id, then reports the documented active status, visibility scope (`organization`, `team`, or `personal`), subscriber count, handler-secret/URL consistency, and the literal `payload.put("…")` keys declared by each readable Message/Mention handler. Subscriber membership is read separately and is available only to the bot creator or an organization administrator; when Zoho refuses that read, subscription remains explicitly `unknown` while the bot facts that were readable stay known. Missing `ZohoCliq.Bots.READ`, an unrecognised status/scope value, transport failure, or an incomplete subscriber walk also remains `unknown` and makes the stage warn/degrade — it never becomes `unsubscribed` by inference. A missing or inactive bot, or a known handler conflict, fails the stage. Reply/quote and forwarded-message field declarations are **static-only**: the stage names missing fields as an uncovered shape, but a declared field is still `declared_unexercised`, never live proof. Likewise, the required send scopes (`dm_send`, `channel_send`, `message_edit`) have no safe read-only probe, so a read-only run may still be `degraded` — run with `--outbound-test` to exercise the send path.
 
 Each stage reports `pass`, `warn`, `fail`, or `skipped`, with redacted evidence and actionable remediation. Timeouts and partial failures name the failed boundary.
 
-`openclaw setup` is the guided, resumable path from a freshly installed plugin to a verified roundtrip. It:
+`openclaw setup` is the guided, resumable path from a freshly installed plugin to a verified outbound delivery. It:
 
 1. Checks the installed OpenClaw package against `.github/openclaw-compat.json` and reports `supported`, `unsupported`, or `unknown`.
 2. Asks for the Zoho data center and names the unavoidable Zoho UI actions: create a **Self Client** at that region's API Console, then paste the Deluge Message/Mention handlers.
 3. Collects OAuth credentials and stores newly entered secrets as canonical env-backed SecretRefs (`CLIQ_CLIENT_SECRET`, `CLIQ_WEBHOOK_SECRET`, `CLIQ_REFRESH_TOKEN`). Existing SecretRefs and `$ENV` interpolation are preserved on rerun; literals are never written into `openclaw.json`. Newly entered values are only held for the current setup process: after setup, assign those same values to the listed gateway environment variables before restarting.
 4. Offers idempotent bot/handler provisioning. A dry-run always runs first; creating or repairing a resource needs a separate confirmation that defaults to *no*.
 5. Verifies the public HTTPS webhook, admission policy (including trusted-organization acknowledgement), and generated config against the real OpenClaw schema.
-6. Offers the read-only doctor, names the supported gateway restart (`systemctl --user restart openclaw-gateway.service` or this host's equivalent), and optionally a consented first-contact DM plus a nonce-correlated roundtrip.
+6. Offers the read-only doctor, names the supported gateway restart (`systemctl --user restart openclaw-gateway.service` or this host's equivalent), and optionally a consented first-contact DM.
 7. Prints a machine-readable final report (`schemaVersion: 1`, `command: "cliq setup"`) covering config, OAuth, bot, handlers, lifecycle, webhook, admission, and delivery, plus the next required action when the flow is only partially complete.
 
 Rerunning setup keeps existing credentials and custom handlers unless a change is confirmed. Declining an optional message test is reported as cancelled, not failed. Provide the listed environment variables to the gateway service after setup; the wizard does not print secret values.
@@ -1128,7 +1128,9 @@ OPENCLAW_CLIQ_AUTH_CODE=1000.… openclaw cliq oauth-exchange
 openclaw cliq oauth-exchange --check
 ```
 
-`--outbound-test` and `--roundtrip` both require `--target`, `--kind dm|group`, and `--confirm`. `--roundtrip` posts one clearly labeled, copyable **multi-line** challenge. Its copied body has the nonce, a reserved `example.invalid` email, the fictional NANP number `+1 202-555-0100`, and a quoted string; these exercise newline/quote/entity-like text without asking the operator to send personal data. The report never repeats the body or any message content — it records only that the complete synthetic request was observed. A human sends all lines through the real Cliq bot (a DM, or a group @mention); the agent must answer exactly `OPENCLAW_CLIQ_ROUNDTRIP_REPLY <nonce>`. Seeing the full request proves this text shape reached the inbound webhook; seeing the exact reply proves the agent turn, the configured policy, and the outbound reply all completed. A partial first line or a copied challenge does not count. Native Cliq **replies/quotes and forwards are not synthesizeable through the bot send API**, so they stay explicitly unexercised even when the roundtrip passes: use a real Cliq client to create one of each, and treat handler field declarations as static contract evidence only. Chat text is the only correlation signal a read-only diagnostic has, so to attribute an individual hop, grep the gateway logs for the same nonce. A DM roundtrip additionally needs a chat id from the send response (`apiVersion.dmPost: "v3"` returns one); without it the doctor fails at `roundtrip_correlation` rather than polling blindly.
+`--outbound-test` requires `--target`, `--kind dm|group`, and `--confirm`. It posts exactly one clearly labeled diagnostic message that needs no reply, and proves only the outbound hop: OAuth, the send scope, bot visibility/membership, and target resolution. It never waits for an answer and never starts an agent turn.
+
+Inbound-side shapes stay explicit manual acceptance checks, because no Zoho bot API can synthesize them: use a real Cliq client to send a normal message, a native reply/quote, and a forward, then confirm each one in the Zoho bot execution log and the gateway log. Handler field declarations remain static contract evidence (`declared_unexercised`), never live proof.
 
 The config stage also warns when a multi-user Cliq bot still resolves `session.dmScope` to `main` (shared conversation context and delivery route) and whenever `ackPolicy: "immediate"` is configured (a crash after the ack loses the message; on OpenClaw `>= 2026.8.2` the plugin must reserve detached work with `runDetachedWebhookWork` before responding or the healthy gateway rejects the turn with `GatewayDrainingError`).
 
@@ -1136,7 +1138,7 @@ The config stage also warns when a multi-user Cliq bot still resolves `session.d
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "command": "cliq doctor",
   "mode": "read_only",
   "accountId": "default",
@@ -1157,7 +1159,7 @@ The config stage also warns when a multi-user Cliq bot still resolves `session.d
 }
 ```
 
-`correlation` is present only after a roundtrip attempt (`nonce`, `targetKind`, `requestObserved`, `replyObserved`). `invocationError` is present only for an invalid invocation. `boundary` is present on a stage that named a failed or inconclusive hop.
+`invocationError` is present only for an invalid invocation. `boundary` is present on a stage that named a failed or inconclusive hop. Schema `2` removed the `roundtrip` stage and the optional `correlation` object (#267).
 
 Exit codes:
 

@@ -4,7 +4,6 @@ import { CLIQ_CAPABILITIES } from "./capabilities.js";
 import {
   CLIQ_DOCTOR_EXIT,
   CLIQ_DOCTOR_SCHEMA_VERSION,
-  buildCliqDoctorRoundtripRequestText,
   formatCliqDoctorReport,
   redactCliqDoctorText,
   runCliqDoctor,
@@ -20,7 +19,6 @@ const WEBHOOK_URL = "https://cliq.example.com/cliq/webhook";
 const CLIENT_SECRET = "client-secret-value";
 const WEBHOOK_SECRET = "webhook-secret-value";
 const REFRESH_TOKEN = "refresh-token-value";
-const ROUNDTRIP_REQUEST_TEXT = buildCliqDoctorRoundtripRequestText("nonce-1234");
 
 function cfgWith(section: Record<string, unknown> = {}, extra: Record<string, unknown> = {}): OpenClawConfig {
   return {
@@ -68,15 +66,12 @@ function createClient(overrides: Partial<CliqDoctorClient> = {}): CliqDoctorClie
     listUsers: vi.fn(async () => [{ kind: "user" as const, id: "user-1" }]),
     listChannels: vi.fn(async () => [{ kind: "group" as const, id: "chan-1", handle: "general" }]),
     sendMessage: vi.fn(async () => ({ messageId: "m-1", chatId: "CT_1" })),
-    resolveChannelChatId: vi.fn(async () => "CT_group"),
-    listChatMessages: vi.fn(async () => []),
     ...overrides,
   };
 }
 
 function createDeps(overrides: Partial<CliqDoctorDeps> = {}): Partial<CliqDoctorDeps> {
   const client = overrides.getClient ? undefined : createClient();
-  let nowMs = 0;
   return {
     getClient: () => client!,
     probeStatus: vi.fn(async () => ({ ok: true, reason: "ok" })),
@@ -88,29 +83,9 @@ function createDeps(overrides: Partial<CliqDoctorDeps> = {}): Partial<CliqDoctor
     })),
     runPreflight: vi.fn(async () => passingPreflight()),
     randomUUID: () => "nonce-1234",
-    sleep: async (milliseconds) => {
-      nowMs += milliseconds;
-    },
     now: () => new Date("2026-08-27T10:00:00.000Z"),
-    nowMs: () => nowMs,
-    pollIntervalMs: 1,
     ...overrides,
   };
-}
-
-function observedRoundtripMessages(chatId = "CT_1") {
-  return [
-    { messageId: "m-2", chatId, text: ROUNDTRIP_REQUEST_TEXT },
-    { messageId: "m-3", chatId, text: "OPENCLAW_CLIQ_ROUNDTRIP_REPLY nonce-1234" },
-  ];
-}
-
-function groupObservedRoundtripMessages() {
-  const [first, ...rest] = ROUNDTRIP_REQUEST_TEXT.split("\n");
-  return [
-    { messageId: "m-2", chatId: "CT_group", text: `@OpenClaw ${first}\n${rest.join("\n")}` },
-    { messageId: "m-3", chatId: "CT_group", text: "OPENCLAW_CLIQ_ROUNDTRIP_REPLY nonce-1234" },
-  ];
 }
 
 function stageOf(report: CliqDoctorReport, id: CliqDoctorStageId) {
@@ -136,7 +111,6 @@ const ALL_STAGES: CliqDoctorStageId[] = [
   "public_webhook",
   "discovery",
   "outbound_test",
-  "roundtrip",
 ];
 
 describe("cliq doctor — report contract (issue #97)", () => {
@@ -150,34 +124,20 @@ describe("cliq doctor — report contract (issue #97)", () => {
     }
   });
 
-  it("emits the documented optional keys with their documented shapes", async () => {
+  it("emits only the documented optional invocation error", async () => {
     const invalid = await runDefault(cfgWith(), createDeps(), { outboundTest: true });
     expect(typeof invalid.invocationError).toBe("string");
     expect(invalid).not.toHaveProperty("correlation");
 
-    const client = createClient({ listChatMessages: vi.fn(async () => []) });
-    const roundtrip = await runDefault(cfgWith(), createDeps({ getClient: () => client }), {
-      roundtrip: true,
-      target: "user-1",
-      targetKind: "dm",
-      confirmed: true,
-      timeoutMs: 1_000,
-    });
-    const parsed = JSON.parse(JSON.stringify(roundtrip)) as CliqDoctorReport;
-    expect(Object.keys(parsed.correlation!).sort()).toEqual(
-      ["nonce", "replyObserved", "requestObserved", "targetKind"].sort(),
-    );
-    expect(typeof parsed.correlation!.nonce).toBe("string");
-    expect(parsed.correlation!.targetKind).toBe("dm");
-    expect(typeof parsed.correlation!.requestObserved).toBe("boolean");
-    expect(typeof parsed.correlation!.replyObserved).toBe("boolean");
-    expect(typeof stageOf(parsed, "roundtrip").boundary).toBe("string");
-    expect(parsed).not.toHaveProperty("invocationError");
+    const report = await runDefault();
+    expect(report).not.toHaveProperty("correlation");
+    expect(report.stages.map((item) => item.id)).not.toContain("roundtrip");
   });
 
   it("emits a stable JSON shape for machine consumers", async () => {
     const report = await runDefault();
     const parsed = JSON.parse(JSON.stringify(report)) as CliqDoctorReport;
+    expect(CLIQ_DOCTOR_SCHEMA_VERSION).toBe(2);
     expect(parsed.schemaVersion).toBe(CLIQ_DOCTOR_SCHEMA_VERSION);
     expect(parsed.command).toBe("cliq doctor");
     expect(parsed.mode).toBe("read_only");
@@ -296,17 +256,6 @@ describe("cliq doctor — exit codes", () => {
     expect(probeStatus).not.toHaveBeenCalled();
   });
 
-  it("rejects combining --outbound-test with --roundtrip", async () => {
-    const report = await runDefault(cfgWith(), createDeps(), {
-      outboundTest: true,
-      roundtrip: true,
-      target: "user-1",
-      targetKind: "dm",
-      confirmed: true,
-    });
-    expect(report.invocationError).toContain("not both");
-    expect(report.exitCode).toBe(CLIQ_DOCTOR_EXIT.invalid);
-  });
 
   it("rejects a target or confirmation without a send mode", async () => {
     const report = await runDefault(cfgWith(), createDeps(), { target: "user-1" });
@@ -314,17 +263,7 @@ describe("cliq doctor — exit codes", () => {
     expect(report.exitCode).toBe(CLIQ_DOCTOR_EXIT.invalid);
   });
 
-  it("rejects an out-of-range roundtrip timeout", async () => {
-    const report = await runDefault(cfgWith(), createDeps(), {
-      roundtrip: true,
-      target: "user-1",
-      targetKind: "dm",
-      confirmed: true,
-      timeoutMs: 900_000,
-    });
-    expect(report.invocationError).toContain("--timeout");
-    expect(report.exitCode).toBe(CLIQ_DOCTOR_EXIT.invalid);
-  });
+
 });
 
 describe("cliq doctor — default mode is read-only", () => {
@@ -332,10 +271,8 @@ describe("cliq doctor — default mode is read-only", () => {
     const client = createClient();
     const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }));
     expect(client.sendMessage).not.toHaveBeenCalled();
-    expect(client.listChatMessages).not.toHaveBeenCalled();
     expect(report.readOnly).toBe(true);
     expect(stageOf(report, "outbound_test").status).toBe("skipped");
-    expect(stageOf(report, "roundtrip").status).toBe("skipped");
   });
 
   it("only reads the directory with a minimal read-only page", async () => {
@@ -987,19 +924,6 @@ describe("cliq doctor — a failed directory read does not block an explicit tar
     expect(report.outcome).toBe("degraded");
   });
 
-  it("still completes the consented roundtrip against the explicit target", async () => {
-    const client = brokenDirectoryClient({
-      listChatMessages: vi.fn(async () => observedRoundtripMessages()),
-    });
-    const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), {
-      roundtrip: true,
-      target: "user-1",
-      targetKind: "dm",
-      confirmed: true,
-      timeoutMs: 3_000,
-    });
-    expect(stageOf(report, "roundtrip").status).toBe("pass");
-  });
 
   it("still blocks the send when a mandatory earlier stage failed", async () => {
     const client = brokenDirectoryClient();
@@ -1015,16 +939,7 @@ describe("cliq doctor — a failed directory read does not block an explicit tar
     expect(stageOf(report, "outbound_test").boundary).toBe("outbound_precondition");
   });
 
-  it("still requires a passing public webhook preflight for a roundtrip", async () => {
-    const client = brokenDirectoryClient();
-    const report = await runDefault(
-      cfgWith({ publicWebhookUrl: undefined }),
-      createDeps({ getClient: () => client }),
-      { roundtrip: true, target: "user-1", targetKind: "dm", confirmed: true },
-    );
-    expect(client.sendMessage).not.toHaveBeenCalled();
-    expect(stageOf(report, "roundtrip").status).toBe("skipped");
-  });
+
 });
 
 describe("cliq doctor — stage 8 consented outbound test", () => {
@@ -1075,238 +990,7 @@ describe("cliq doctor — stage 8 consented outbound test", () => {
     expect(JSON.stringify(report)).not.toContain(CLIENT_SECRET);
   });
 
-  it("keeps the roundtrip stage skipped for an outbound-only test", async () => {
-    const report = await runDefault(cfgWith(), createDeps(), sendOptions);
-    expect(stageOf(report, "roundtrip").status).toBe("skipped");
-  });
-});
 
-describe("cliq doctor — stage 9 nonce-correlated roundtrip", () => {
-  const roundtripOptions: CliqDoctorOptions = {
-    roundtrip: true,
-    target: "user-1",
-    targetKind: "dm",
-    confirmed: true,
-    timeoutMs: 3_000,
-  };
-
-  it("passes when the nonce request and the exact nonce reply are both observed", async () => {
-    const client = createClient({
-      listChatMessages: vi.fn(async () => observedRoundtripMessages()),
-    });
-    const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), roundtripOptions);
-    const roundtrip = stageOf(report, "roundtrip");
-    expect(roundtrip.status).toBe("pass");
-    expect(report.correlation).toEqual({
-      nonce: "nonce-1234",
-      targetKind: "dm",
-      requestObserved: true,
-      replyObserved: true,
-    });
-    expect(report.outcome).toBe("degraded");
-  });
-
-  it("blames the inbound boundary when the user request never arrives before timeout", async () => {
-    const client = createClient({ listChatMessages: vi.fn(async () => []) });
-    const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), roundtripOptions);
-    const roundtrip = stageOf(report, "roundtrip");
-    expect(roundtrip.status).toBe("fail");
-    expect(roundtrip.boundary).toBe("zoho_handler_or_inbound_webhook");
-    expect(report.correlation?.requestObserved).toBe(false);
-  });
-
-  it("uses the requested timeout as a deadline instead of rounding it down to the poll interval", async () => {
-    let nowMs = 0;
-    const sleep = vi.fn(async (milliseconds: number) => {
-      nowMs += milliseconds;
-    });
-    const client = createClient({ listChatMessages: vi.fn(async () => []) });
-    await runDefault(
-      cfgWith(),
-      createDeps({
-        getClient: () => client,
-        nowMs: () => nowMs,
-        pollIntervalMs: 2_000,
-        sleep,
-      }),
-      { ...roundtripOptions, timeoutMs: 5_000 },
-    );
-    expect(sleep).toHaveBeenCalledTimes(3);
-    expect(sleep).toHaveBeenNthCalledWith(3, 1_000);
-    expect(nowMs).toBe(5_000);
-  });
-
-  it("puts multiline entity-like text and the reply instruction inside the copied challenge", async () => {
-    const client = createClient({
-      listChatMessages: vi.fn(async () => observedRoundtripMessages()),
-    });
-    await runDefault(cfgWith(), createDeps({ getClient: () => client }), roundtripOptions);
-    const sentText = (client.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][0].text as string;
-    expect(sentText).toContain(ROUNDTRIP_REQUEST_TEXT);
-    expect(sentText).toContain("cliq-doctor-nonce-1234@example.invalid");
-    expect(sentText).toContain("+1 202-555-0100");
-    expect(sentText).toContain('Quoted text: "doctor-safe"');
-    expect(sentText).toContain("OPENCLAW_CLIQ_ROUNDTRIP_REPLY nonce-1234");
-  });
-
-  it("does not accept the copied challenge itself as the agent reply", async () => {
-    const client = createClient({
-      listChatMessages: vi.fn(async () => [
-        {
-          messageId: "m-2",
-          chatId: "CT_1",
-          text: "OPENCLAW_CLIQ_ROUNDTRIP_REQUEST nonce-1234 — reply with exactly this line and nothing else: OPENCLAW_CLIQ_ROUNDTRIP_REPLY nonce-1234",
-        },
-      ]),
-    });
-    const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), roundtripOptions);
-    const roundtrip = stageOf(report, "roundtrip");
-    expect(roundtrip.status).toBe("fail");
-    expect(roundtrip.boundary).toBe("zoho_handler_or_inbound_webhook");
-  });
-
-  it("does not accept a truncated or single-line copy of the multi-line request as delivery evidence", async () => {
-    // A human sending only the first line would previously satisfy the
-    // substring match without ever exercising the newline/entity-bearing
-    // shape the roundtrip exists to cover (issue #225).
-    const client = createClient({
-      listChatMessages: vi.fn(async () => [
-        { messageId: "m-2", chatId: "CT_1", text: "OPENCLAW_CLIQ_ROUNDTRIP_REQUEST nonce-1234" },
-        { messageId: "m-3", chatId: "CT_1", text: "OPENCLAW_CLIQ_ROUNDTRIP_REPLY nonce-1234" },
-      ]),
-    });
-    const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), roundtripOptions);
-    const roundtrip = stageOf(report, "roundtrip");
-    expect(roundtrip.status).toBe("fail");
-    expect(report.correlation?.requestObserved).toBe(false);
-    expect(roundtrip.evidence.join(" ")).toMatch(/complete multi-line user request did not appear/i);
-  });
-
-  it("stops at the deadline when a correlation read hangs", async () => {
-    let nowMs = 0;
-    const client = createClient({
-      listChatMessages: vi.fn(() => new Promise<never>(() => {})),
-    });
-    const report = await runDefault(
-      cfgWith(),
-      createDeps({
-        getClient: () => client,
-        nowMs: () => nowMs,
-        sleep: async (milliseconds: number) => {
-          nowMs += milliseconds;
-        },
-      }),
-      { ...roundtripOptions, timeoutMs: 1_000 },
-    );
-    const roundtrip = stageOf(report, "roundtrip");
-    expect(roundtrip.status).toBe("fail");
-    expect(roundtrip.evidence.join(" ")).toMatch(/did not return before the roundtrip deadline/);
-  });
-
-  it("blames the agent or outbound reply boundary when only the request is seen", async () => {
-    const client = createClient({
-      listChatMessages: vi.fn(async () => [
-        { messageId: "m-2", chatId: "CT_1", text: ROUNDTRIP_REQUEST_TEXT },
-      ]),
-    });
-    const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), roundtripOptions);
-    const roundtrip = stageOf(report, "roundtrip");
-    expect(roundtrip.status).toBe("fail");
-    expect(roundtrip.boundary).toBe("agent_policy_or_outbound_reply");
-    expect(report.correlation).toMatchObject({ requestObserved: true, replyObserved: false });
-  });
-
-  it("does not accept another run's nonce as correlation", async () => {
-    const client = createClient({
-      listChatMessages: vi.fn(async () => [
-        { messageId: "m-9", chatId: "CT_1", text: "OPENCLAW_CLIQ_ROUNDTRIP_REPLY other-nonce" },
-      ]),
-    });
-    const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), roundtripOptions);
-    expect(stageOf(report, "roundtrip").status).toBe("fail");
-  });
-
-  it("fails when correlation reads are rejected", async () => {
-    const client = createClient({
-      listChatMessages: vi.fn(async () => {
-        throw new Error("cliq: GET /api/v2/chats/CT_1/messages failed (401): oauthtoken_scope_invalid");
-      }),
-    });
-    const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), roundtripOptions);
-    const roundtrip = stageOf(report, "roundtrip");
-    expect(roundtrip.status).toBe("fail");
-    expect(roundtrip.boundary).toBe("roundtrip_correlation");
-  });
-
-  it("refuses to send a roundtrip challenge when the public webhook stage did not pass", async () => {
-    const client = createClient();
-    const report = await runDefault(
-      cfgWith({ publicWebhookUrl: undefined }),
-      createDeps({ getClient: () => client }),
-      roundtripOptions,
-    );
-    expect(client.sendMessage).not.toHaveBeenCalled();
-    expect(stageOf(report, "outbound_test").status).toBe("fail");
-    expect(stageOf(report, "roundtrip").status).toBe("skipped");
-  });
-
-  it("skips correlation when a roundtrip send fails", async () => {
-    const client = createClient({
-      sendMessage: vi.fn(async () => {
-        throw new Error("send failed");
-      }),
-    });
-    const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), roundtripOptions);
-    expect(stageOf(report, "outbound_test").status).toBe("fail");
-    expect(stageOf(report, "roundtrip").status).toBe("skipped");
-    expect(client.listChatMessages).not.toHaveBeenCalled();
-  });
-
-  it("resolves a group chat id for a group-mention roundtrip", async () => {
-    const client = createClient({
-      sendMessage: vi.fn(async () => ({ messageId: "m-1" })),
-      listChatMessages: vi.fn(async () => groupObservedRoundtripMessages()),
-    });
-    const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), {
-      ...roundtripOptions,
-      target: "general",
-      targetKind: "group",
-    });
-    expect(client.resolveChannelChatId).toHaveBeenCalledWith("general");
-    expect(stageOf(report, "roundtrip").status).toBe("pass");
-    expect(report.correlation?.targetKind).toBe("group");
-  });
-
-  it("fails when no chat id can be resolved for correlation", async () => {
-    const client = createClient({
-      sendMessage: vi.fn(async () => ({ messageId: "m-1" })),
-      resolveChannelChatId: vi.fn(async () => undefined),
-    });
-    const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), {
-      ...roundtripOptions,
-      target: "general",
-      targetKind: "group",
-    });
-    expect(stageOf(report, "roundtrip").boundary).toBe("roundtrip_correlation");
-  });
-
-  it("names the DM send response as the reason a DM roundtrip cannot correlate", async () => {
-    const client = createClient({ sendMessage: vi.fn(async () => ({ messageId: "m-1" })) });
-    const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), roundtripOptions);
-    const roundtrip = stageOf(report, "roundtrip");
-    expect(roundtrip.status).toBe("fail");
-    expect(roundtrip.evidence.join(" ")).toMatch(/message_details/);
-    expect(client.resolveChannelChatId).not.toHaveBeenCalled();
-  });
-
-  it("reports whether a configured group tool policy applied to the roundtrip turn", async () => {
-    const report = await runDefault(
-      cfgWith({ groups: { general: { requireMention: true } } }),
-      createDeps(),
-      { ...roundtripOptions, target: "general", targetKind: "group" },
-    );
-    expect(stageOf(report, "outbound_test").evidence.join(" ")).toMatch(/tool policy remains active/);
-  });
 });
 
 describe("cliq doctor — redaction", () => {
