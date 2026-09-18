@@ -11,6 +11,8 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-18
+
 ### Fixed
 
 - Inbound Message-handler multipart requests are now recognized from their bounded `payload` part when Zoho Deluge omits or mislabels `Content-Type`, instead of being parsed as form fields and dropped before agent dispatch.
@@ -1576,7 +1578,8 @@ publish workflow extracts the matching section as the release notes (see
   lookup, plugin doctor, interactive setup wizard, SecretRef-backed credentials,
   security audit collector, session binding, multi-account, lifecycle hooks.
 
-[Unreleased]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.1.10...v0.2.0
