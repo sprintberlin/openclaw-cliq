@@ -70,7 +70,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.20.1",
-    "es-module-lexer": "2.3.2",
+    "es-module-lexer": "3.0.2",
     "openclaw": "2026.8.2",
     "typescript": "7.0.2",
     "vitest": "^5.0.0"
