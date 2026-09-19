@@ -48,6 +48,204 @@ const VALUE_START =
 const TAIL_BOUNDARY =
   /"\s*,\s*"(?:user|chat|eventId|event_id|attachments|mentions|channel|thread)"\s*:/g;
 
+/**
+ * Parse a Deluge `Map.toString()` literal (issue #273).
+ *
+ * The attachment branch of the generated Message handler posts
+ * `payload.toString()`. For a map whose values are themselves maps or lists,
+ * Deluge does not emit JSON at all — it emits its own literal form with bare
+ * keys and `=` instead of `"key":`:
+ *
+ * ```text
+ * {handler=message, handlerSchema=v4, message=, user={id=20108735584,
+ *  name=Dominic Offers}, chat={id=CT_dm}, attachments=[voice.wav]}
+ * ```
+ *
+ * `JSON.parse` rejects this outright, and the grammar-keyed quote/newline
+ * repair above does not apply because there are no quotes to rebalance. A
+ * voice note therefore lost its whole request — payload *and* the already
+ * received audio bytes — at the multipart payload part.
+ *
+ * Values stay strings: Deluge erases the original type in `toString()`, and
+ * the inbound contract only requires `user.id` and `chat.id` to be readable.
+ * Nothing is coerced to a number, so an id can never lose precision.
+ */
+export function parseDelugeMapLiteral(raw: string): unknown | undefined {
+  const body = raw.trim();
+  if (!body.startsWith("{") || !body.endsWith("}")) return undefined;
+  // A JSON body is never ours: the caller already tried, and a quoted-key
+  // object must not be re-read by this looser grammar.
+  if (/^\{\s*"/.test(body)) return undefined;
+  if (!body.includes("=")) return undefined;
+
+  let pos = 0;
+
+  const skipSpace = () => {
+    while (pos < body.length && /\s/.test(body[pos] ?? "")) pos += 1;
+  };
+
+  const parseScalar = (): string => {
+    const start = pos;
+    while (pos < body.length && ![",", "}", "]"].includes(body[pos] ?? "")) pos += 1;
+    return body.slice(start, pos).trim();
+  };
+
+  const parseValue = (depth: number): unknown | undefined => {
+    if (depth > 16) return undefined;
+    skipSpace();
+    const char = body[pos];
+    if (char === "{") return parseMap(depth + 1);
+    if (char === "[") return parseList(depth + 1);
+    return parseScalar();
+  };
+
+  const parseList = (depth: number): unknown[] | undefined => {
+    if (body[pos] !== "[") return undefined;
+    pos += 1;
+    const items: unknown[] = [];
+    for (;;) {
+      skipSpace();
+      if (pos >= body.length) return undefined;
+      if (body[pos] === "]") {
+        pos += 1;
+        return items;
+      }
+      const value = parseValue(depth);
+      if (value === undefined) return undefined;
+      items.push(value);
+      skipSpace();
+      if (body[pos] === ",") {
+        pos += 1;
+        continue;
+      }
+      if (body[pos] === "]") {
+        pos += 1;
+        return items;
+      }
+      return undefined;
+    }
+  };
+
+  const parseMap = (depth: number): Record<string, unknown> | undefined => {
+    if (body[pos] !== "{") return undefined;
+    pos += 1;
+    const map: Record<string, unknown> = {};
+    for (;;) {
+      skipSpace();
+      if (pos >= body.length) return undefined;
+      if (body[pos] === "}") {
+        pos += 1;
+        return map;
+      }
+      const keyStart = pos;
+      while (pos < body.length && !["=", ",", "}"].includes(body[pos] ?? "")) pos += 1;
+      if (body[pos] !== "=") return undefined;
+      const key = body.slice(keyStart, pos).trim();
+      if (!key) return undefined;
+      pos += 1;
+      const value = parseValue(depth);
+      if (value === undefined) return undefined;
+      map[key] = value;
+      skipSpace();
+      if (body[pos] === ",") {
+        pos += 1;
+        continue;
+      }
+      if (body[pos] === "}") {
+        pos += 1;
+        return map;
+      }
+      return undefined;
+    }
+  };
+
+  const value = parseMap(0);
+  if (value === undefined) return undefined;
+  skipSpace();
+  if (pos !== body.length) return undefined;
+
+  // Accept only the generated inbound contract, never an arbitrary `a=b`
+  // blob: the payload must carry routable identity, exactly like the
+  // multipart field reconstruction requires.
+  const user = value.user;
+  const chat = value.chat;
+  if (
+    typeof value.message !== "string" ||
+    typeof value.handler !== "string" ||
+    !user ||
+    typeof user !== "object" ||
+    Array.isArray(user) ||
+    typeof (user as Record<string, unknown>).id !== "string" ||
+    !(user as Record<string, unknown>).id ||
+    !chat ||
+    typeof chat !== "object" ||
+    Array.isArray(chat)
+  ) {
+    return undefined;
+  }
+  return value;
+}
+
+/**
+ * Escape raw C0 control characters that appear *inside* JSON string literals.
+ *
+ * Live evidence (2026-09-19 18:50, issue #273): the attachment branch posts a
+ * correctly quoted JSON payload — the masked log shape showed `{"x*":"x*",…}`,
+ * not a Deluge map literal — yet `JSON.parse` still rejected it. JSON forbids
+ * unescaped characters below U+0020 in a string, and Cliq lets raw CR/TAB from
+ * a message or file name through verbatim. The grammar-keyed repair above does
+ * not apply because the quoting itself is balanced.
+ *
+ * Only string interiors are touched, so structural whitespace between tokens
+ * keeps its meaning and a body without such characters is left to the other
+ * repairs.
+ */
+export function repairUnescapedControlChars(raw: string): unknown | undefined {
+  const body = raw.trim();
+  if (!body.startsWith("{") && !body.startsWith("[")) return undefined;
+
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  let changed = false;
+
+  for (const character of body) {
+    if (escaped) {
+      out += character;
+      escaped = false;
+      continue;
+    }
+    if (inString && character === "\\") {
+      out += character;
+      escaped = true;
+      continue;
+    }
+    if (character === '"') {
+      inString = !inString;
+      out += character;
+      continue;
+    }
+    const code = character.codePointAt(0) ?? 0;
+    if (inString && code < 0x20) {
+      changed = true;
+      if (code === 0x0a) out += "\\n";
+      else if (code === 0x0d) out += "\\r";
+      else if (code === 0x09) out += "\\t";
+      else out += `\\u${code.toString(16).padStart(4, "0")}`;
+      continue;
+    }
+    out += character;
+  }
+
+  // An unterminated string means the body is damaged beyond this repair.
+  if (!changed || inString || escaped) return undefined;
+  try {
+    return JSON.parse(out);
+  } catch {
+    return undefined;
+  }
+}
+
 export function repairDelugeUnescapedMessageBody(raw: string): unknown | undefined {
   const body = raw.trim();
   if (!body.startsWith("{") || !body.endsWith("}")) return undefined;

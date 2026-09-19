@@ -1,6 +1,13 @@
+import { mkdirSync, writeFileSync } from "node:fs";
 import type { IncomingMessage } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { normalizeCliqAttachment, type CliqInboundAttachment } from "./attachment-normalization.js";
-import { repairDelugeUnescapedMessageBody } from "./inbound-deluge-repair.js";
+import {
+  parseDelugeMapLiteral,
+  repairDelugeUnescapedMessageBody,
+  repairUnescapedControlChars,
+} from "./inbound-deluge-repair.js";
 
 export type CliqWebhookBodyReadResult =
   | { ok: true; value: unknown; repaired?: boolean; attachments?: CliqInboundAttachment[] }
@@ -160,7 +167,13 @@ function looksLikeGeneratedCliqPayload(raw: string): boolean {
     const record = value as Record<string, unknown>;
     return record.user !== undefined || record.handler !== undefined || record.chat !== undefined;
   } catch {
-    return /"(?:handler|user|chat)"\s*:/.test(trimmed);
+    if (/"(?:handler|user|chat)"\s*:/.test(trimmed)) return true;
+    // Deluge `Map.toString()` of a nested map is not JSON at all (issue #273):
+    // bare keys joined by `=`. The attachment branch posts exactly this shape,
+    // so without recognizing it the payload part is never identified and the
+    // whole request — audio bytes included — is dropped. Matched by grammar
+    // rather than a full parse because callers pass a truncated 4 KiB peek.
+    return /(?:^\{|,)\s*(?:handler|user|chat)\s*=/.test(trimmed);
   }
 }
 
@@ -290,7 +303,17 @@ function parsePayloadJson(raw: string): { value: unknown; repaired?: boolean } |
     return { value: JSON.parse(raw) };
   } catch {
     const repaired = repairDelugeUnescapedMessageBody(raw);
-    return repaired === undefined ? undefined : { value: repaired, repaired: true };
+    if (repaired !== undefined) return { value: repaired, repaired: true };
+    // Correctly quoted JSON carrying a raw control character inside a string
+    // (live attachment DM, 2026-09-19 18:50, issue #273). Runs before the map
+    // literal because the body is real JSON, only illegally escaped.
+    const unescaped = repairUnescapedControlChars(raw);
+    if (unescaped !== undefined) return { value: unescaped, repaired: true };
+    // Deluge `Map.toString()` of a nested map is not JSON-shaped at all
+    // (issue #273): bare keys joined by `=`. A voice note otherwise loses the
+    // whole request, audio bytes included.
+    const literal = parseDelugeMapLiteral(raw);
+    return literal === undefined ? undefined : { value: literal, repaired: true };
   }
 }
 
@@ -385,6 +408,28 @@ function attachMultipartFiles(
   return { value: payload, attachments };
 }
 
+/**
+ * Persist an unparseable payload part for offline inspection.
+ *
+ * The masked log shape proves the framing but deliberately hides the byte that
+ * defeats `JSON.parse` — a raw control character survives masking invisibly.
+ * Without the original bytes each failure costs another guess-and-restart
+ * cycle. The dump stays on the gateway host in an owner-only directory, is
+ * never logged as content and never leaves the machine; only its path is
+ * reported. Failures here must never mask the original parse error.
+ */
+function dumpUnparseablePayloadPart(bytes: Uint8Array): string | undefined {
+  try {
+    const dir = join(tmpdir(), "openclaw-cliq-unparseable");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const path = join(dir, `payload-${Date.now()}.bin`);
+    writeFileSync(path, bytes, { mode: 0o600 });
+    return path;
+  } catch {
+    return undefined;
+  }
+}
+
 function describeBodySyntax(raw: string, maxLen = 96): string {
   const masked = raw
     .replace(/\r/g, "")
@@ -466,7 +511,20 @@ export async function readCliqWebhookBody(
               return value === undefined ? undefined : { value };
             })();
         if (!parsed) {
-          done({ ok: false, error: "multipart payload could not be parsed or reconstructed" });
+          // Name the shape that defeated both paths: without it every unknown
+          // Deluge framing looks identical in the log. Content stays masked.
+          const partNames = parts
+            .map((part) => `${part.name ?? "?"}${part.fileName ? ":file" : ""}`)
+            .join(",");
+          const candidate = parts.find((part) => !part.fileName);
+          const shape = candidate
+            ? describeBodySyntax(Buffer.from(candidate.bytes).toString("utf8"))
+            : "none";
+          const dumpPath = candidate ? dumpUnparseablePayloadPart(candidate.bytes) : undefined;
+          done({
+            ok: false,
+            error: `multipart payload could not be parsed or reconstructed; parts=[${partNames}]; firstTextPart=${shape}${dumpPath ? `; dump=${dumpPath}` : ""}`,
+          });
           return;
         }
         const attached = attachMultipartFiles(parsed.value, parts);
