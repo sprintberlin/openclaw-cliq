@@ -349,9 +349,12 @@ ${JSON.stringify(payload)}
     const pending = readCliqWebhookBody(request as never);
     request.emit("data", body);
     request.emit("end");
+    // The rejection names the observed part shape so an unparseable Deluge
+    // framing is diagnosable from the log alone; content stays masked.
     await expect(pending).resolves.toEqual({
       ok: false,
-      error: "multipart payload could not be parsed or reconstructed",
+      error:
+        "multipart payload could not be parsed or reconstructed; parts=[file:file]; firstTextPart=none",
     });
   });
 
