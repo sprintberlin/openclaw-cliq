@@ -300,6 +300,12 @@
           "type": "string"
         }
       },
+      "ownSenderIds": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
       "selfSenderIds": {
         "type": "array",
         "items": {
@@ -1011,6 +1017,12 @@
               ]
             },
             "allowFrom": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "ownSenderIds": {
               "type": "array",
               "items": {
                 "type": "string"
@@ -1764,6 +1776,12 @@
               "type": "string"
             }
           },
+          "ownSenderIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "selfSenderIds": {
             "type": "array",
             "items": {
@@ -2480,6 +2498,12 @@
                     "type": "string"
                   }
                 },
+                "ownSenderIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
                 "selfSenderIds": {
                   "type": "array",
                   "items": {
@@ -2967,6 +2991,9 @@
         },
         "allowFrom": {
           "label": "Allowed senders (Zoho Cliq user ids)"
+        },
+        "ownSenderIds": {
+          "label": "Additional sender ids belonging to this bot"
         },
         "selfSenderIds": {
           "label": "Bot sender ids to ignore (self / other bots)"

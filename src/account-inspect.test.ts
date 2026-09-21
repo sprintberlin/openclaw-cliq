@@ -25,6 +25,7 @@ describe("inspectCliqAccount", () => {
       groupPolicy: "allowlist",
       trustedOrganization: { acknowledged: true, label: "Pay-Jet" },
       selfSenderIds: ["bot-zuid-1"],
+      ownSenderIds: ["b-this-bot"],
       ackPolicy: "immediate",
     });
     const r = inspectCliqAccount({ cfg }) as InspectedCliqAccount;
@@ -51,6 +52,7 @@ describe("inspectCliqAccount", () => {
       label: "Pay-Jet",
     });
     expect(r.config.selfSenderIds).toEqual(["bot-zuid-1"]);
+    expect(r.config.ownSenderIds).toEqual(["b-this-bot"]);
     expect(r.config.ackPolicy).toBe("immediate");
   });
 
@@ -77,6 +79,7 @@ describe("inspectCliqAccount", () => {
     expect(r.config.webhookSecret).toBe(false);
     expect(r.config.allowFrom).toEqual([]);
     expect(r.config.selfSenderIds).toEqual([]);
+    expect(r.config.ownSenderIds).toEqual([]);
     // ackPolicy always has a default
     expect(r.config.ackPolicy).toBe("after_dispatch");
     expect(r.scopes.length).toBeGreaterThan(0);

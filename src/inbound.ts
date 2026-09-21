@@ -16,6 +16,7 @@ import {
   resolveCliqApiVersion,
 } from "./client.js";
 import { stripCliqMentions } from "./mentions.js";
+import { resolveCliqOwnBotIdentities } from "./self-message.js";
 import { resolveCliqClient } from "./runtime-api.js";
 import { rememberCliqChatId } from "./heartbeat.js";
 import { observeCliqOutboundSends } from "./activity.js";
@@ -400,10 +401,17 @@ export interface ParsedCliqInbound {
   channelUniqueName?: string;
   /** True when the message comes from a channel/group context (not a DM). */
   isGroup: boolean;
-  /** True when the bot was explicitly @mentioned (handler=mention or a bot mention). */
+  /**
+   * True for account-scoped directed signals: this bot's Mention handler,
+   * form submissions, and button responses. Mentions of other bots in a
+   * generic Message/Participation payload stay false here and are compared
+   * later against this account via {@link isCliqExplicitBotMention}.
+   */
   isMention: boolean;
   /** Ids of users/bots mentioned in the message (best-effort). */
   mentionIds: string[];
+  /** Display names of users/bots mentioned in the message (best-effort). */
+  mentionNames?: string[];
   /** File attachments (images / files / voice) parsed from the message, if any. */
   attachments: CliqInboundAttachment[];
   /**
@@ -840,12 +848,16 @@ export function parseCliqWebhookPayload(
   const mentionIds = (payload.mentions ?? [])
     .map((m) => m.id)
     .filter((v): v is string => typeof v === "string" && v.length > 0);
-  const hasBotMention = Boolean(
-    payload.mentions?.some((m) => m.type === "bot"),
-  );
+  const mentionNames = (payload.mentions ?? [])
+    .map((m) => m.name)
+    .filter((v): v is string => typeof v === "string" && v.length > 0);
+  // A mention-handler invocation is already scoped by Zoho to THIS bot.
+  // A generic Message/Participation payload, however, can list a mention of
+  // any other workspace bot. Keep the parser account-neutral and let
+  // isCliqExplicitBotMention compare those ids/names with the resolved
+  // account; treating every `type: bot` entry as ours made `@Paula` wake Zora.
   const isMention =
     handler.includes("mention") ||
-    hasBotMention ||
     Boolean(formSubmission) ||
     Boolean(formResponse.matched) ||
     (isGroup && false);
@@ -897,6 +909,7 @@ export function parseCliqWebhookPayload(
     isGroup,
     isMention,
     mentionIds,
+    mentionNames,
     attachments,
     messageType: extracted.type,
     richText: extracted.richText || undefined,
@@ -964,21 +977,41 @@ export function resolveCliqMentionFacts(
   if (!parsed.isGroup) {
     return { canDetectMention: true, wasMentioned: true, hasAnyMention: true };
   }
-  const botIds = new Set<string>();
-  if (account.botId) botIds.add(account.botId);
-  if (account.botName) botIds.add(account.botName);
-  const mentionsBot =
-    parsed.isMention ||
-    parsed.mentionIds.some((id) => botIds.has(id));
+  const mentionsBot = isCliqExplicitBotMention(parsed, account);
   const implicitKinds: InboundImplicitMentionKind[] = [];
   if (opts.isReplyToBot) implicitKinds.push("reply_to_bot");
   if (opts.isQuoteOfBot) implicitKinds.push("quoted_bot");
   return {
     canDetectMention: true,
     wasMentioned: mentionsBot,
-    hasAnyMention: parsed.isMention || parsed.mentionIds.length > 0,
+    hasAnyMention:
+      parsed.isMention ||
+      parsed.mentionIds.length > 0 ||
+      (parsed.mentionNames?.length ?? 0) > 0,
     implicitMentionKinds: implicitKinds,
   };
+}
+
+/**
+ * Whether this group turn explicitly addresses THIS configured bot.
+ *
+ * `parsed.isMention` is reserved for account-scoped signals (this bot's
+ * Mention handler, forms and button responses). Mentions forwarded by a
+ * generic Message/Participation handler are matched by id OR display name
+ * against the bot's own identities, trimmed and case-insensitively. Other
+ * bots listed only in `selfSenderIds` are deliberately excluded: their posts
+ * are dropped, but `@Paula` must never count as `@Zora`.
+ */
+export function isCliqExplicitBotMention(
+  parsed: Pick<ParsedCliqInbound, "isMention" | "mentionIds" | "mentionNames">,
+  account: Pick<ResolvedCliqAccount, "botId" | "botName" | "ownSenderIds">,
+): boolean {
+  if (parsed.isMention) return true;
+  const own = resolveCliqOwnBotIdentities(account);
+  if (own.size === 0) return false;
+  return [...parsed.mentionIds, ...(parsed.mentionNames ?? [])].some((value) =>
+    own.has(value.trim().toLowerCase()),
+  );
 }
 
 export interface CliqMentionPolicyInput {
@@ -991,7 +1024,7 @@ export interface CliqMentionPolicyInput {
 
 /**
  * Whether the inbound message is a reply to / quote of a message the bot sent
- * (the bot's own `botId` / `botName` / `selfSenderIds`). Used to mark the turn
+ * (this bot's own identities: `botId` / `botName` / `ownSenderIds`). Used to mark the turn
  * as an implicit `reply_to_bot` / `quoted_bot` mention so a group reply to the
  * bot is admitted even without a fresh @mention. Returns false when no quote
  * context was parsed or the quoted sender is not a known bot id.
@@ -1003,12 +1036,7 @@ export function isReplyToBot(
   const senderId = parsed.replyTo?.senderId?.trim();
   const senderName = parsed.replyTo?.senderName?.trim();
   if (!senderId && !senderName) return false;
-  const botIds = new Set<string>();
-  if (account.botId) botIds.add(account.botId.toLowerCase());
-  if (account.botName) botIds.add(account.botName.toLowerCase());
-  for (const id of account.selfSenderIds ?? []) {
-    botIds.add(id.toLowerCase());
-  }
+  const botIds = resolveCliqOwnBotIdentities(account);
   if (senderId && botIds.has(senderId.toLowerCase())) return true;
   if (senderName && botIds.has(senderName.toLowerCase())) return true;
   return false;
@@ -1053,12 +1081,15 @@ export function isCliqUnmentionedGroupTurn(
   account: ResolvedCliqAccount,
 ): boolean {
   if (!parsed.isGroup) return false;
-  if (parsed.isMention) return false;
-  // Control turns are direct interactions with this bot even when Cliq did
-  // not attach an @mention. Keep today's acknowledgement and failure
-  // lifecycle for slash commands, stop intents, and confirm-card callbacks.
+  if (isCliqExplicitBotMention(parsed, account)) return false;
+  // Abort intents and confirm-card callbacks are direct interactions with
+  // this bot even when Cliq did not attach an @mention. Keep today's
+  // acknowledgement and failure lifecycle for stop intents and confirm
+  // callbacks. Slash commands are deliberately NOT listed here (#285): on an
+  // always-on channel, unaddressed "/model" chatter from any room member is
+  // ambient noise, and authorizing it as a native command would let anyone
+  // execute session-level commands without ever addressing the bot.
   const cleanText = stripCliqMentions(parsed.text, account);
-  if (cleanText.startsWith("/")) return false;
   if (isCliqAbortIntent(cleanText, account.botName)) return false;
   if (parsed.confirmAction) return false;
   if (isReplyToBot(parsed, account)) return false;
@@ -1464,7 +1495,8 @@ export async function dispatchCliqInbound(params: {
     SenderUsername: parsed.senderEmail,
     GroupChannel: groupLabel,
     GroupSubject: groupLabel,
-    WasMentioned: parsed.isGroup ? parsed.isMention : undefined,
+    WasMentioned:
+      parsed.isGroup ? isCliqExplicitBotMention(parsed, account) : undefined,
     Provider: "cliq",
     Surface: "cliq",
     // Recovery uses this same inbound model but marks the context so agents
@@ -1515,10 +1547,20 @@ export async function dispatchCliqInbound(params: {
     // binding and routes through the native command handler — the
     // `build*ChannelData` builders produce interactive buttons and the reply
     // flows through `deliver` → `sendCard`.
-    ...(!isAbort && cleanText.startsWith("/") ? {
-      CommandSource: "native" as const,
-      CommandAuthorized: true,
-    } : {}),
+    // #285: authorization is scoped to DIRECTED turns — DMs (where #91
+    // was diagnosed), explicit mentions of this bot, and replies to this
+    // bot. On an always-on group, unaddressed "/model" chatter is ambient
+    // noise and must never execute a session-level command.
+    ...(!isAbort &&
+    cleanText.startsWith("/") &&
+    (!parsed.isGroup ||
+      isCliqExplicitBotMention(parsed, account) ||
+      isReplyToBot(parsed, account))
+      ? {
+          CommandSource: "native" as const,
+          CommandAuthorized: true,
+        }
+      : {}),
     // Issue #283: state the Core silent-turn contract for unmentioned
     // always-on group turns on the official plugin-settable system-prompt
     // field. Core folds `GroupSystemPrompt` into the group turn's extra
@@ -2007,6 +2049,7 @@ export function isCliqSilentDispatchResult(runResult: unknown): boolean {
     queuedFinal?: unknown;
     deferredToActiveRun?: unknown;
     counts?: { tool?: unknown; block?: unknown; final?: unknown };
+    failedCounts?: { tool?: unknown; block?: unknown; final?: unknown };
   };
   // Explicit Core silence marker — the primary signal.
   if (result.deliberateSilentTerminalReply === true) {
@@ -2017,6 +2060,13 @@ export function isCliqSilentDispatchResult(runResult: unknown): boolean {
   }
   const counts = result.counts;
   if (!counts || typeof counts !== "object") return false;
+  const failed = result.failedCounts;
+  if (failed && typeof failed === "object") {
+    const hasFailure = [failed.tool, failed.block, failed.final].some(
+      (value) => typeof value === "number" && value > 0,
+    );
+    if (hasFailure) return false;
+  }
   return [counts.tool, counts.block, counts.final].every(
     (value) => value === 0 || value === undefined,
   );

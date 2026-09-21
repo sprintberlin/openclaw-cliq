@@ -95,7 +95,7 @@ export function parseCliqHistoryMessage(
 export function selectCliqInboundCatchupCandidates(params: {
   history: readonly CliqChatMessageRef[];
   live: ParsedCliqInbound;
-  account: Pick<ResolvedCliqAccount, "botId" | "botName" | "selfSenderIds">;
+  account: Pick<ResolvedCliqAccount, "botId" | "botName" | "ownSenderIds" | "selfSenderIds">;
   cursor?: string;
 }): { candidates: CliqChatMessageRef[]; advanceCursorTo?: string; anchored: boolean } {
   if (params.live.isGroup || !params.live.chatId) {
@@ -114,7 +114,12 @@ export function selectCliqInboundCatchupCandidates(params: {
   }
 
   const self = new Set(
-    [params.account.botId, params.account.botName, ...(params.account.selfSenderIds ?? [])]
+    [
+      params.account.botId,
+      params.account.botName,
+      ...(params.account.ownSenderIds ?? []),
+      ...(params.account.selfSenderIds ?? []),
+    ]
       .filter((value): value is string => Boolean(value?.trim()))
       .map((value) => value.toLowerCase()),
   );
@@ -148,7 +153,7 @@ export function selectCliqInboundCatchupCandidates(params: {
  * affect the already-admitted live turn.
  */
 export async function inspectCliqInboundCatchup(params: {
-  account: Pick<ResolvedCliqAccount, "refreshToken" | "inboundCatchup" | "botId" | "botName" | "selfSenderIds">;
+  account: Pick<ResolvedCliqAccount, "refreshToken" | "inboundCatchup" | "botId" | "botName" | "ownSenderIds" | "selfSenderIds">;
   live: ParsedCliqInbound;
   cursor?: string;
   listChatMessages: (chatId: string, opts?: { limit?: number }) => Promise<CliqChatMessageRef[]>;

@@ -197,12 +197,13 @@ describe("normalizeCliqCompatibilityConfig", () => {
       webhook_secret: "wh",
       refresh_token: "rt",
       allow_from: ["u1"],
+      own_sender_ids: ["b-this"],
       self_sender_ids: ["s1"],
       dm_policy: "open",
       ack_policy: "immediate",
     });
     const result = normalizeCliqCompatibilityConfig({ cfg });
-    expect(result.changes).toHaveLength(10);
+    expect(result.changes).toHaveLength(11);
     const section = (result.config as unknown as { channels: { cliq: Record<string, unknown> } })
       .channels.cliq;
     expect(section).toEqual({
@@ -213,6 +214,7 @@ describe("normalizeCliqCompatibilityConfig", () => {
       webhookSecret: "wh",
       refreshToken: "rt",
       allowFrom: ["u1"],
+      ownSenderIds: ["b-this"],
       selfSenderIds: ["s1"],
       dmPolicy: "open",
       ackPolicy: "immediate",

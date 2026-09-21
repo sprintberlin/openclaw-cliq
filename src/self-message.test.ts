@@ -4,14 +4,16 @@ import type { ResolvedCliqAccount } from "./client.js";
 import {
   isCliqSelfMessage,
   resolveCliqBotIdentities,
+  resolveCliqOwnBotIdentities,
 } from "./self-message.js";
 
 function account(
-  overrides: Partial<Pick<ResolvedCliqAccount, "botId" | "botName" | "selfSenderIds">> = {},
-): Pick<ResolvedCliqAccount, "botId" | "botName" | "selfSenderIds"> {
+  overrides: Partial<Pick<ResolvedCliqAccount, "botId" | "botName" | "ownSenderIds" | "selfSenderIds">> = {},
+): Pick<ResolvedCliqAccount, "botId" | "botName" | "ownSenderIds" | "selfSenderIds"> {
   return {
     botId: "",
     botName: "",
+    ownSenderIds: [],
     selfSenderIds: [],
     ...overrides,
   };
@@ -65,6 +67,18 @@ describe("resolveCliqBotIdentities", () => {
       }),
     );
     expect(ids).toEqual(new Set(["zora"]));
+  });
+
+  it("includes ownSenderIds in the full self/ignore set", () => {
+    const ids = resolveCliqBotIdentities(
+      account({
+        botId: "zora",
+        botName: "Zora",
+        ownSenderIds: ["  b-ZORA "],
+        selfSenderIds: ["b-paula"],
+      }),
+    );
+    expect(ids).toEqual(new Set(["zora", "b-zora", "b-paula"]));
   });
 
   it("returns empty set when nothing is configured", () => {
@@ -168,5 +182,20 @@ describe("isCliqSelfMessage", () => {
     );
     expect(m.self).toBe(true);
     expect(m.matchedField).toBe("senderId");
+  });
+});
+
+describe("resolveCliqOwnBotIdentities", () => {
+  it("includes botId, botName, and ownSenderIds but not selfSenderIds", () => {
+    const ids = resolveCliqOwnBotIdentities(
+      account({
+        botId: "zora",
+        botName: "Zora",
+        ownSenderIds: ["b-56320000003804003"],
+        selfSenderIds: ["b-56320000003817004", "Paula"],
+      }),
+    );
+    expect(ids).toEqual(new Set(["zora", "b-56320000003804003"]));
+    expect(ids.has("paula")).toBe(false);
   });
 });

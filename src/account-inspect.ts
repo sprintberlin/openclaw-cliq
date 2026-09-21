@@ -90,6 +90,8 @@ export interface InspectedCliqAccountConfig {
     acknowledgedAt?: string;
   };
   selfSenderIds: string[];
+  /** Additional identities belonging specifically to this bot. */
+  ownSenderIds: string[];
   ackPolicy: "after_dispatch" | "immediate";
   /** Effective Core-compatible streaming preview mode. */
   streamingMode: ResolvedCliqAccount["streaming"]["mode"];
@@ -288,6 +290,7 @@ export function inspectCliqAccount(params: {
           }
         : undefined,
       selfSenderIds: resolved?.selfSenderIds ?? section?.selfSenderIds ?? [],
+      ownSenderIds: resolved?.ownSenderIds ?? section?.ownSenderIds ?? [],
       ackPolicy: resolved?.ackPolicy ?? "after_dispatch",
       streamingMode: resolved?.streaming.mode ?? "partial",
       streamingPreview: resolved
