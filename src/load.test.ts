@@ -1640,3 +1640,112 @@ describe("Deluge unescaped-message repair over the webhook (#223/#227)", () => {
     expect(lines[0]).toContain("x* !! ..");
   });
 });
+
+describe("always-on group sender gates (issue #283)", () => {
+  beforeEach(() => {
+    resetCliqDedupeForTest();
+  });
+
+  function registration(extra: Record<string, unknown> = {}) {
+    const dispatched: unknown[] = [];
+    const warns: string[] = [];
+    const { webhook, api } = registerCliqPluginForTest({
+      logger: {
+        warn: (m: string) => warns.push(m),
+      },
+    });
+    api.config = createCliqTestConfig({
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+      botName: "openclaw-bot",
+      webhookSecret: "s3cr3t",
+      groups: { devteam: { requireMention: false } },
+      selfSenderIds: ["70000000999"],
+      ...extra,
+    });
+    api.runtime = createTestRuntimeChannel(async (...args: unknown[]) => {
+      dispatched.push(args);
+      return undefined;
+    });
+    return { webhook, dispatched, warns };
+  }
+
+  async function post(
+    webhook: ReturnType<typeof registerCliqPluginForTest>["webhook"],
+    payload: Record<string, unknown>,
+  ) {
+    const res = createMockServerResponse();
+    await webhook.handler(
+      createMockIncomingRequest(
+        "POST",
+        payload,
+        { "x-cliq-webhook-secret": "s3cr3t" },
+      ),
+      res as unknown as any,
+    );
+    return res;
+  }
+
+  function skipLines(warns: string[]): string[] {
+    return warns.filter((line) => line.startsWith("[cliq] inbound skipped:"));
+  }
+
+  function participationPayload(
+    overrides: Record<string, unknown> = {},
+  ): Record<string, unknown> {
+    return {
+      handler: "participation",
+      operation: "message_sent",
+      data: { message: { id: "m-283", text: "Hallo zusammen im Kanal!" } },
+      user: { id: "user-123", name: "Alice" },
+      chat: { id: "chat-1-B", type: "channel" },
+      channel: { unique_name: "devteam" },
+      eventId: "ev-283-1",
+      ...overrides,
+    };
+  }
+
+  it("skips an unmentioned always-on group message from a known other bot before dispatch", async () => {
+    const { webhook, dispatched, warns } = registration();
+    const res = await post(
+      webhook,
+      participationPayload({
+        data: { message: { id: "m-bot", text: "automated status ping" } },
+        user: { id: "70000000999", name: "OtherBot" },
+        eventId: "ev-283-bot",
+      }),
+    );
+    expect(res.statusCode).toBe(200);
+    expect(dispatched).toHaveLength(0);
+    const lines = skipLines(warns);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("self");
+    expect(lines[0]).toContain("matched_field=senderId");
+    // The matched identity display value is user-controlled content and must
+    // never reach the log; the opaque sender id field is part of the #232
+    // vocabulary by design.
+    expect(lines[0]).not.toContain("OtherBot");
+  });
+
+  it("dispatches an unmentioned human message in the always-on group", async () => {
+    const { webhook, dispatched } = registration();
+    const res = await post(webhook, participationPayload());
+    expect(res.statusCode).toBe(200);
+    expect(dispatched).toHaveLength(1);
+  });
+
+  it("still dispatches an explicit mention from a known other bot", async () => {
+    const { webhook, dispatched } = registration();
+    const res = await post(
+      webhook,
+      createMentionDelugePayload({
+        channel: { unique_name: "devteam" },
+        user: { id: "70000000999", name: "OtherBot" },
+        eventId: "ev-283-mention",
+      }),
+    );
+    expect(res.statusCode).toBe(200);
+    expect(dispatched).toHaveLength(1);
+  });
+});

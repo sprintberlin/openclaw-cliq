@@ -547,16 +547,18 @@ export default defineChannelPluginEntry({
           api.logger.warn,
         );
 
-        // Self-message / bot-loop protection: the bot must never answer its
-        // own messages (or those of another Cliq bot the operator marked as
-        // ignorable via `selfSenderIds`). Match case-insensitively across
-        // senderId, senderName, and senderEmail against {botId, botName,
-        // selfSenderIds}. The configured `botId`/`botName` always count as
-        // self; `selfSenderIds` adds the bot's alternate identity (e.g. its
-        // Zoho user id when the webhook delivers a zuid) and any other bots
-        // that must not trigger this agent.
+        // Resolve bot identity with the existing, evidence-backed matching
+        // helper. Cliq does not expose an `is_bot` field, so this is limited
+        // to configured `botId`, `botName`, and `selfSenderIds`; it never
+        // infers bot authorship from a sender shape or name.
         const selfMatch = isCliqSelfMessage(parsed, account);
-        if (selfMatch.self) {
+
+        // Issue #283: a known bot sender is a hard pre-dispatch drop for DMs
+        // and every group turn that lacks an explicit @mention. This prevents
+        // a configured second bot from waking us on participation events or
+        // reply chains and starting a ping-pong loop. Only an explicit
+        // @mention remains an intentional bot-to-bot request.
+        if (selfMatch.self && (!parsed.isGroup || !parsed.isMention)) {
           // Issue #232: promoted from debug. The matched *field name* is a
           // stable qualifier; the matched value is user-controlled content
           // (a display name or email) and must not reach a default-level log.

@@ -11,6 +11,10 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Added
+
+- Always-on Cliq channels (`groups.<uniqueName>.requireMention: false` plus a provisioned `participation_handler`) now honour Core's exact `NO_REPLY` silent-turn contract without leaking a thinking placeholder or rewriting it to `⚠️ Couldn't process that message.` Unmentioned channel chatter posts no eager placeholder or progress draft; the Core `NO_REPLY` guidance is attached via `GroupSystemPrompt`; a resolved zero-count dispatch is treated as benign only on those undirected turns. Directed DMs, `@mentions`, and replies to the bot keep today's placeholder and genuine-failure notice. Known other bots listed in `selfSenderIds` remain dropped before dispatch so a second agent cannot ping-pong on the failure bubble (#283).
+
 ## [0.5.0] - 2026-09-18
 
 ### Fixed
