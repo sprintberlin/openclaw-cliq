@@ -29,6 +29,9 @@ import {
   resolveCliqMentionFacts,
   dispatchCliqInbound,
   isCliqSessionConflictError,
+  isCliqSilentDispatchResult,
+  isCliqUnmentionedGroupTurn,
+  CLIQ_UNMENTIONED_GROUP_PROMPT,
   type CliqWebhookPayload,
   type ParsedCliqInbound,
   type CliqRuntime,
@@ -5715,5 +5718,448 @@ describe("rich, edited and unknown non-text messages (#233)", () => {
     expect(parsed?.attachments).toHaveLength(1);
     expect(parsed?.attachments[0]?.fileId).toBe("f-1");
     expect(parsed?.text).toBe("hier");
+  });
+});
+
+describe("unmentioned always-on group turns (issue #283)", () => {
+  function unmentionedPayload(
+    overrides: Partial<CliqWebhookPayload> = {},
+  ): CliqWebhookPayload {
+    return {
+      handler: "participation",
+      operation: "message_sent",
+      data: { message: "Hallo alle zusammen im Kanal!" },
+      user: { id: "u123", name: "Gregor Sprint" },
+      chat: {
+        id: "CT_channel_123",
+        type: "channel",
+        chat_type: "channel",
+        channel_unique_name: "gregorfinnitest",
+        title: "#GregorFinniTest",
+      },
+      eventId: "ev-part-1",
+      ...overrides,
+    } as CliqWebhookPayload;
+  }
+
+  function placeholderAccount(): ResolvedCliqAccount {
+    return account({
+      thinking: { mode: "placeholder", text: "💭 …", animate: "off" },
+      refreshToken: "rt",
+      blockStreaming: true,
+      streaming: { mode: "partial", progress: {} },
+    });
+  }
+
+  /** Runtime mock that hands the resolved turn (incl. ctxPayload) to the runner. */
+  function makeTurnRuntime(
+    runner: (turn: {
+      ctxPayload: Record<string, unknown>;
+      replyOptions?: GetReplyOptions;
+      delivery: {
+        deliver: (
+          payload: { text?: string },
+          info?: { kind?: string; final?: boolean },
+        ) => Promise<void>;
+      };
+    }) => Promise<unknown>,
+  ): CliqRuntime {
+    return {
+      channel: {
+        routing: {
+          resolveAgentRoute: () => ({
+            agentId: "agent-1",
+            sessionKey: "sess-1",
+            accountId: "default",
+          }),
+        },
+        session: {
+          resolveStorePath: () => "/tmp/store",
+          readSessionUpdatedAt: () => undefined,
+          recordInboundSession: () => undefined,
+        },
+        reply: {
+          resolveEnvelopeFormatOptions: () => ({}),
+          formatAgentEnvelope: (p: Record<string, unknown>) => String(p.body ?? ""),
+          finalizeInboundContext: (fields: Record<string, unknown>) => fields,
+          dispatchReplyWithBufferedBlockDispatcher: async () => undefined,
+        },
+        inbound: {
+          run: async (params) => {
+            const adapter = (params as unknown as {
+              adapter: { resolveTurn: (...args: unknown[]) => unknown };
+            }).adapter;
+            const turn = adapter.resolveTurn({}, {}, {}) as {
+              ctxPayload: Record<string, unknown>;
+              replyOptions?: GetReplyOptions;
+              delivery: {
+                deliver: (
+                  payload: { text?: string },
+                  info?: { kind?: string; final?: boolean },
+                ) => Promise<void>;
+              };
+            };
+            return await runner(turn);
+          },
+        },
+        pairing: {
+          buildPairingReply: () => "",
+          upsertPairingRequest: async () => ({ code: "CODE", created: true }),
+        },
+      },
+    };
+  }
+
+  /** Client mock recording every outbound call in order. */
+  function makeTurnClient() {
+    const calls: Array<{ op: string; messageId: string; text?: string }> = [];
+    const visible = new Map<string, { text: string; deleted: boolean }>();
+    let nextId = 1;
+    const record = (messageId: string, text: string) =>
+      visible.set(messageId, { text, deleted: false });
+    return {
+      calls,
+      visible,
+      sendMessage: async (o: { to: string; text: string; isDm?: boolean }) => {
+        const messageId = `m${nextId++}`;
+        calls.push({ op: "send", messageId, text: o.text });
+        record(messageId, o.text);
+        return o.isDm ? { messageId, chatId: `chat-${o.to}` } : { messageId };
+      },
+      sendMediaMessage: async () => ({ messageId: "media-1" }),
+      sendCard: async (o: { to: string; text?: string; isDm?: boolean }) => {
+        const messageId = `c${nextId++}`;
+        calls.push({ op: "card", messageId, text: o.text });
+        record(messageId, o.text ?? "[card]");
+        return o.isDm ? { messageId, chatId: `chat-${o.to}` } : { messageId };
+      },
+      editMessage: async (o: { chatId: string; messageId: string; text: string }) => {
+        calls.push({ op: "edit", messageId: o.messageId, text: o.text });
+        record(o.messageId, o.text);
+        return { messageId: o.messageId, chatId: o.chatId };
+      },
+      deleteMessage: async (o: { chatId: string; messageId: string }) => {
+        calls.push({ op: "delete", messageId: o.messageId });
+        const existing = visible.get(o.messageId);
+        if (existing) existing.deleted = true;
+        else visible.set(o.messageId, { text: "", deleted: true });
+        return true;
+      },
+      resolveChannelChatId: async () => "CT_resolved",
+      listChatMessages: async () => [],
+      downloadAttachment: async () => {
+        throw new Error("download attachment not mocked");
+      },
+    };
+  }
+
+  function visibleEntries(client: ReturnType<typeof makeTurnClient>) {
+    return [...client.visible.entries()]
+      .filter(([, value]) => !value.deleted)
+      .map(([id, value]) => ({ id, text: value.text }));
+  }
+
+  describe("isCliqUnmentionedGroupTurn", () => {
+    it("classifies an unmentioned participation group turn as unmentioned", () => {
+      const parsed = parseCliqWebhookPayload(unmentionedPayload())!;
+      expect(parsed.isGroup).toBe(true);
+      expect(parsed.isMention).toBe(false);
+      expect(isCliqUnmentionedGroupTurn(parsed, account())).toBe(true);
+    });
+
+    it("keeps a DM directed even without a mention", () => {
+      const parsed = parseCliqWebhookPayload(dmPayload())!;
+      expect(isCliqUnmentionedGroupTurn(parsed, account())).toBe(false);
+    });
+
+    it("keeps an explicit group @mention directed", () => {
+      const parsed = parseCliqWebhookPayload(groupPayload())!;
+      expect(isCliqUnmentionedGroupTurn(parsed, account())).toBe(false);
+    });
+
+    it("keeps an implicit reply-to-bot turn directed", () => {
+      const parsed = parseCliqWebhookPayload(
+        unmentionedPayload({
+          data: {
+            message: {
+              text: "noch eine Frage dazu",
+              reply_to: { id: "m-bot", sender: { id: "bot", name: "Bot" } },
+            },
+          },
+        }),
+      )!;
+      expect(parsed.replyTo?.senderId).toBe("bot");
+      expect(isCliqUnmentionedGroupTurn(parsed, account())).toBe(false);
+    });
+
+    it.each([
+      ["native slash command", "/model"],
+      ["abort intent", "stop"],
+      ["confirm-card callback", "__cliq_confirm__ run the approved action"],
+    ])("keeps a %s directed", (_label, text) => {
+      const parsed = parseCliqWebhookPayload(
+        unmentionedPayload({ data: { message: text } }),
+      )!;
+      expect(isCliqUnmentionedGroupTurn(parsed, account())).toBe(false);
+    });
+  });
+
+  describe("isCliqSilentDispatchResult", () => {
+    it("matches a dispatched zero-count turn", () => {
+      expect(
+        isCliqSilentDispatchResult({
+          admission: { kind: "dispatch" },
+          dispatched: true,
+          dispatchResult: { queuedFinal: false, counts: { tool: 0, block: 0, final: 0 } },
+        }),
+      ).toBe(true);
+    });
+
+    it("rejects undefined, non-dispatched, deferred, and answered turns", () => {
+      expect(isCliqSilentDispatchResult(undefined)).toBe(false);
+      expect(
+        isCliqSilentDispatchResult({ admission: { kind: "drop" }, dispatched: false }),
+      ).toBe(false);
+      expect(
+        isCliqSilentDispatchResult({
+          admission: { kind: "dispatch" },
+          dispatched: true,
+          dispatchResult: { queuedFinal: true, counts: {} },
+        }),
+      ).toBe(false);
+      expect(
+        isCliqSilentDispatchResult({
+          admission: { kind: "dispatch" },
+          dispatched: true,
+          dispatchResult: {
+            queuedFinal: false,
+            deferredToActiveRun: true,
+            counts: {},
+          },
+        }),
+      ).toBe(false);
+      expect(
+        isCliqSilentDispatchResult({
+          admission: { kind: "dispatch" },
+          dispatched: true,
+          dispatchResult: {
+            queuedFinal: false,
+            counts: { tool: 0, block: 0, final: 1 },
+          },
+        }),
+      ).toBe(false);
+    });
+  });
+
+  it("posts nothing for a silent unmentioned participation turn and attaches the NO_REPLY guidance", async () => {
+    const client = makeTurnClient();
+    let ctxPayload: Record<string, unknown> | undefined;
+    const runtime = makeTurnRuntime(async (turn) => {
+      ctxPayload = turn.ctxPayload;
+      // Core silent turn: the dispatcher suppressed an exact NO_REPLY final —
+      // no deliver call, zero counts.
+      return {
+        admission: { kind: "dispatch" },
+        dispatched: true,
+        dispatchResult: { queuedFinal: false, counts: { tool: 0, block: 0, final: 0 } },
+      };
+    });
+
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: placeholderAccount(),
+      parsed: parseCliqWebhookPayload(unmentionedPayload())!,
+      client,
+    });
+
+    // Acceptance: zero Cliq posts/edits for the silent undirected turn.
+    expect(client.calls).toHaveLength(0);
+    expect(visibleEntries(client)).toEqual([]);
+    // The turn still dispatched with full context.
+    expect(ctxPayload?.From).toBe("cliq:group:gregorfinnitest");
+    // Core-contract guidance rides the official system-prompt context field.
+    expect(ctxPayload?.GroupSystemPrompt).toBe(CLIQ_UNMENTIONED_GROUP_PROMPT);
+  });
+
+  it("posts no artifact when an unmentioned turn resolves with zero reply blocks", async () => {
+    const client = makeTurnClient();
+    const runtime = makeTurnRuntime(async () => undefined);
+
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: placeholderAccount(),
+      parsed: parseCliqWebhookPayload(unmentionedPayload())!,
+      client,
+    });
+
+    // No placeholder was gated in, so a block-less turn has nothing to
+    // rewrite — the channel stays completely quiet.
+    expect(client.calls).toHaveLength(0);
+  });
+
+  it("posts no card placeholder or progress draft for silent unmentioned chatter", async () => {
+    const client = makeTurnClient();
+    const runtime = makeTurnRuntime(async (turn) => {
+      await turn.replyOptions?.onToolStart?.({ name: "read" });
+      return {
+        admission: { kind: "dispatch" },
+        dispatched: true,
+        dispatchResult: { queuedFinal: false, counts: { tool: 0, block: 0, final: 0 } },
+      };
+    });
+
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "card", text: "Generating…", animate: "off" },
+        refreshToken: "rt",
+        blockStreaming: true,
+        streaming: { mode: "progress", progress: {} },
+      }),
+      parsed: parseCliqWebhookPayload(unmentionedPayload())!,
+      client,
+    });
+
+    expect(client.calls).toHaveLength(0);
+  });
+
+  it("sends a substantive unmentioned-group answer as one fresh message", async () => {
+    const client = makeTurnClient();
+    const runtime = makeTurnRuntime(async (turn) => {
+      await turn.delivery.deliver({ text: "Relevant team answer" }, { final: true });
+    });
+
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: placeholderAccount(),
+      parsed: parseCliqWebhookPayload(unmentionedPayload())!,
+      client,
+    });
+
+    expect(client.calls).toEqual([
+      { op: "send", messageId: "m1", text: "Relevant team answer" },
+    ]);
+    expect(visibleEntries(client)).toEqual([
+      { id: "m1", text: "Relevant team answer" },
+    ]);
+  });
+
+  it("keeps the placeholder on a mentioned group turn", async () => {
+    const client = makeTurnClient();
+    const runtime = makeTurnRuntime(async (turn) => {
+      await turn.delivery.deliver({ text: "the reply" }, { final: true });
+    });
+
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: placeholderAccount(),
+      parsed: parseCliqWebhookPayload(groupPayload())!,
+      client,
+    });
+
+    const sends = client.calls.filter((c) => c.op === "send");
+    expect(sends).toHaveLength(1);
+    expect(sends[0]?.text).toBe("💭 …");
+    expect(visibleEntries(client)).toEqual([{ id: "m1", text: "the reply" }]);
+  });
+
+  it("keeps the placeholder on a DM turn", async () => {
+    const client = makeTurnClient();
+    const runtime = makeTurnRuntime(async (turn) => {
+      await turn.delivery.deliver({ text: "the reply" }, { final: true });
+    });
+
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: placeholderAccount(),
+      parsed: parseCliqWebhookPayload(dmPayload())!,
+      client,
+    });
+
+    const sends = client.calls.filter((c) => c.op === "send");
+    expect(sends[0]?.text).toBe("💭 …");
+    expect(visibleEntries(client)).toEqual([{ id: "m1", text: "the reply" }]);
+  });
+
+  it("keeps the placeholder on an implicit reply-to-bot turn", async () => {
+    const client = makeTurnClient();
+    const runtime = makeTurnRuntime(async (turn) => {
+      await turn.delivery.deliver({ text: "the reply" }, { final: true });
+    });
+
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: placeholderAccount(),
+      parsed: parseCliqWebhookPayload(
+        unmentionedPayload({
+          data: {
+            message: {
+              text: "noch eine Frage dazu",
+              reply_to: { id: "m-bot", sender: { id: "bot", name: "Bot" } },
+            },
+          },
+        }),
+      )!,
+      client,
+    });
+
+    const sends = client.calls.filter((c) => c.op === "send");
+    expect(sends[0]?.text).toBe("💭 …");
+  });
+
+  it("keeps the failure notice when a DIRECTED turn ends with a zero-block silent dispatch", async () => {
+    const client = makeTurnClient();
+    const runtime = makeTurnRuntime(async () => {
+      // Mentioned/DM turn with the same Core-silent shape: this must stay a
+      // failure (#88 / #91 / #123), never be silenced by the #283 gate. The
+      // durable evt: id keeps this out of the #204 syn:-shaped duplicate
+      // silence so the case is exactly the directedness decision.
+      return {
+        admission: { kind: "dispatch" },
+        dispatched: true,
+        dispatchResult: { queuedFinal: false, counts: { tool: 0, block: 0, final: 0 } },
+      };
+    });
+
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: placeholderAccount(),
+      parsed: parseCliqWebhookPayload(
+        dmPayload({ eventId: "ev-directed-silent" }),
+      )!,
+      client,
+    });
+
+    expect(visibleEntries(client)).toEqual([
+      { id: "m1", text: "⚠️ Couldn't process that message." },
+    ]);
+  });
+
+  it("rethrows a genuine runtime error on an unmentioned turn", async () => {
+    const client = makeTurnClient();
+    const runtime = makeTurnRuntime(async () => {
+      throw new Error("model exploded");
+    });
+
+    await expect(
+      dispatchCliqInbound({
+        runtime,
+        cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+        account: placeholderAccount(),
+        parsed: parseCliqWebhookPayload(unmentionedPayload())!,
+        client,
+      }),
+    ).rejects.toThrow("model exploded");
+    // Silence never swallows a real failure: the error propagates to the
+    // route handler (which reports it) and nothing was posted.
+    expect(client.calls).toHaveLength(0);
   });
 });

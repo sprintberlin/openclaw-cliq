@@ -1015,6 +1015,57 @@ export function isReplyToBot(
 }
 
 /**
+ * System-prompt guidance attached to unmentioned always-on group turns
+ * (issue #283). Core's own group chat context does NOT advertise the silent
+ * token by default (`silentReply` policy `group` defaults to `disallow`), so
+ * an always-on Cliq channel must state the contract itself: a message that
+ * is not directed at the bot is consumed with an exact-`NO_REPLY` payload —
+ * the same Core contract bundled channels use for ambient/heartbeat silence
+ * (`SILENT_REPLY_TOKEN`, suppressed by the reply dispatcher before any
+ * `deliver` call). This is guidance, not a custom Cliq keyword.
+ */
+export const CLIQ_UNMENTIONED_GROUP_PROMPT = [
+  "This Zoho Cliq channel is always-on: you also receive channel chatter that is not addressed to you.",
+  "If the message is not an actionable request or question directed at this bot, your ENTIRE final answer must be exactly NO_REPLY - no greeting, no sentence, no emoji, no punctuation.",
+  "Answer visibly only when the message explicitly @mentions you, replies to one of your messages, or clearly asks you or the team for help or an action.",
+].join(" ");
+
+/**
+ * Whether this inbound is an unmentioned always-on group turn: a group
+ * message that neither explicitly mentions the bot nor is a reply/quote of
+ * one of the bot's messages (issue #283). These turns are admitted by
+ * `requireMention: false` + the participation handler, are woken on chatter
+ * that is not directed at the bot, and therefore get two treatments:
+ *
+ *  1. No eager thinking placeholder / status card is posted before the
+ *     agent runs (the model must be able to complete silently; a placeholder
+ *     would force a visible artifact or a failure notice).
+ *  2. The {@link CLIQ_UNMENTIONED_GROUP_PROMPT} guidance is attached via the
+ *     trusted Core `GroupSystemPrompt` context field so the model can answer
+ *     non-actionable chatter with an exact `NO_REPLY`.
+ *
+ * DMs, explicit @mentions, form/button turns (all marked `isMention`), and
+ * implicit `reply_to_bot` / `quoted_bot` turns are directed and keep today's
+ * placeholder behavior.
+ */
+export function isCliqUnmentionedGroupTurn(
+  parsed: ParsedCliqInbound,
+  account: ResolvedCliqAccount,
+): boolean {
+  if (!parsed.isGroup) return false;
+  if (parsed.isMention) return false;
+  // Control turns are direct interactions with this bot even when Cliq did
+  // not attach an @mention. Keep today's acknowledgement and failure
+  // lifecycle for slash commands, stop intents, and confirm-card callbacks.
+  const cleanText = stripCliqMentions(parsed.text, account);
+  if (cleanText.startsWith("/")) return false;
+  if (isCliqAbortIntent(cleanText, account.botName)) return false;
+  if (parsed.confirmAction) return false;
+  if (isReplyToBot(parsed, account)) return false;
+  return true;
+}
+
+/**
  * Evaluate the inbound mention decision using the shared SDK helper. Returns
  * the decision the webhook handler uses to skip or proceed.
  */
@@ -1468,6 +1519,17 @@ export async function dispatchCliqInbound(params: {
       CommandSource: "native" as const,
       CommandAuthorized: true,
     } : {}),
+    // Issue #283: state the Core silent-turn contract for unmentioned
+    // always-on group turns on the official plugin-settable system-prompt
+    // field. Core folds `GroupSystemPrompt` into the group turn's extra
+    // system prompt; the guidance tells the model to answer non-actionable
+    // chatter with an exact `NO_REPLY` payload, which the Core reply
+    // dispatcher then suppresses before any deliver call. There is no
+    // per-turn plugin prompt hook in the SDK (`agentPrompt` is static), so
+    // this trusted context field is the supported surface.
+    ...(isCliqUnmentionedGroupTurn(parsed, account)
+      ? { GroupSystemPrompt: CLIQ_UNMENTIONED_GROUP_PROMPT }
+      : {}),
   });
   // Instant acknowledgement / "thinking" placeholder (issue #47 / #175):
   // when opted in (`thinking.mode` is `"placeholder"` OR `"card"`) and a
@@ -1494,7 +1556,14 @@ export async function dispatchCliqInbound(params: {
       account.thinking?.mode === "card") &&
     account.refreshToken &&
     !isAbort &&
-    !isLikelyRedelivery
+    !isLikelyRedelivery &&
+    // Issue #283: an unmentioned always-on group turn must be able to end
+    // silently. A placeholder posted before the agent runs would either leak
+    // as a stray `💭 …` or be rewritten into a failure bubble for chatter
+    // that never addressed the bot — exactly the second-bot ping-pong
+    // trigger this ticket removes. DMs, mentions, and implicit replies keep
+    // the placeholder.
+    !isCliqUnmentionedGroupTurn(parsed, account)
   ) {
     try {
       const cardMode = account.thinking?.mode === "card";
@@ -1641,12 +1710,16 @@ export async function dispatchCliqInbound(params: {
     active:
       account.thinking?.mode !== "card" &&
       (Boolean(initialDraft) ||
-        Boolean(
-          account.refreshToken &&
-          (parsed.isGroup
-            ? resolveCliqApiVersion(account.apiVersion, "channelPost") === "v2"
-            : resolveCliqApiVersion(account.apiVersion, "dmPost") === "v3"),
-        )),
+        // Issue #283: without the placeholder gate an unmentioned always-on
+        // group turn in progress mode would create its own draft message —
+        // the same visible artifact the placeholder gate just removed.
+        (!isCliqUnmentionedGroupTurn(parsed, account) &&
+          Boolean(
+            account.refreshToken &&
+            (parsed.isGroup
+              ? resolveCliqApiVersion(account.apiVersion, "channelPost") === "v2"
+              : resolveCliqApiVersion(account.apiVersion, "dmPost") === "v3"),
+          ))),
     reasoningVisible: reasoningLevel === "stream",
     update: async (text, options) => {
       await thinkingAnimation?.stop();
@@ -1857,7 +1930,17 @@ export async function dispatchCliqInbound(params: {
     turnOutcome = {
       skippedBenignly:
         isLikelyRedelivery ||
-        (await isBenignlySkippedTurn(runResult, parsed.messageId)),
+        (await isBenignlySkippedTurn(runResult, parsed.messageId)) ||
+        // Issue #283: an unmentioned always-on group turn whose dispatch
+        // ended in deliberate Core silence (exact `NO_REPLY` suppressed
+        // before any deliver call — the typed `deliberateSilentTerminalReply`
+        // marker, or the zero-count dispatched shape as a fallback) is
+        // benign. The placeholder (if one ever got posted) is deleted
+        // instead of being rewritten to the failure notice. Directed turns
+        // (mention, DM, reply-to-bot) keep today's failure-notice behavior
+        // (#88, #91, #123, #240), and a genuine runtime error still throws.
+        (isCliqUnmentionedGroupTurn(parsed, account) &&
+          isCliqSilentDispatchResult(runResult)),
     };
   } catch (err) {
     progressController.cancel();
@@ -1883,8 +1966,27 @@ const CLIQ_BENIGN_SKIP_REASONS = new Set([
   "deferred",
 ]);
 
-function isCoreSilentSkip(runResult: unknown, messageId: string): boolean {
-  if (!messageId.startsWith("syn:")) return false;
+/**
+ * Whether a plugin-visible `inbound.run` result reports an intentionally
+ * quiet turn (#283). Two signals, strongest first:
+ *
+ *  1. `dispatchResult.deliberateSilentTerminalReply === true` — the typed
+ *     Core contract on `DispatchFromConfigResult` (present on the 2026.8.2
+ *     SDK floor): Core marked the terminal reply as deliberately silent —
+ *     an exact `NO_REPLY` payload suppressed in the reply dispatcher before
+ *     any `deliver` call, or a no-reply terminal Core itself classified as
+ *     deliberate. Genuine crashes/timeouts resolve through `error` and
+ *     never set this flag.
+ *  2. The zero-count dispatched shape (admission dispatch, no queued or
+ *     deferred final, all dispatcher counts zero) — the shape-only fallback
+ *     for runtimes where the marker is absent.
+ *
+ * Neither signal is by itself proof of intent — the caller must scope it by
+ * turn directedness ({@link isCliqUnmentionedGroupTurn}) before treating it
+ * as benign, and a genuine runtime failure still rejects instead of
+ * resolving (#283).
+ */
+export function isCliqSilentDispatchResult(runResult: unknown): boolean {
   if (!runResult || typeof runResult !== "object" || Array.isArray(runResult)) {
     return false;
   }
@@ -1901,10 +2003,15 @@ function isCoreSilentSkip(runResult: unknown, messageId: string): boolean {
     return false;
   }
   const result = dispatchResult as {
+    deliberateSilentTerminalReply?: unknown;
     queuedFinal?: unknown;
     deferredToActiveRun?: unknown;
     counts?: { tool?: unknown; block?: unknown; final?: unknown };
   };
+  // Explicit Core silence marker — the primary signal.
+  if (result.deliberateSilentTerminalReply === true) {
+    return true;
+  }
   if (result.queuedFinal === true || result.deferredToActiveRun === true) {
     return false;
   }
@@ -1913,6 +2020,14 @@ function isCoreSilentSkip(runResult: unknown, messageId: string): boolean {
   return [counts.tool, counts.block, counts.final].every(
     (value) => value === 0 || value === undefined,
   );
+}
+
+function isCoreSilentSkip(runResult: unknown, messageId: string): boolean {
+  // Issue #204 scope: without a durable event id (a content-derived `syn:`
+  // identity) a zero-count dispatch is the documented duplicate-shaped
+  // silence; durable `evt:`/real ids are handled by the readInboundProcessedOutcome
+  // path above and, since #283, by the directedness-scoped silence check.
+  return messageId.startsWith("syn:") && isCliqSilentDispatchResult(runResult);
 }
 
 async function isBenignlySkippedTurn(
