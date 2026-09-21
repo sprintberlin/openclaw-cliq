@@ -64,14 +64,23 @@ export function runCliqPrintHandlersCommand(
     webhookUrl,
     webhookSecret,
   });
+  const participationHandler = buildCliqHandlerScript({
+    handlerType: "participation_handler",
+    webhookUrl,
+    webhookSecret,
+  });
 
   if (options.json) {
-    deps.writeLine(JSON.stringify({ messageHandler, mentionHandler, webhookUrl }, null, 2));
+    deps.writeLine(
+      JSON.stringify({ messageHandler, mentionHandler, participationHandler, webhookUrl }, null, 2),
+    );
   } else {
     deps.writeLine("=== message_handler (DMs) ===");
     deps.writeLine(messageHandler);
     deps.writeLine("=== mention_handler (channels) ===");
     deps.writeLine(mentionHandler);
+    deps.writeLine("=== participation_handler (channels without mention) ===");
+    deps.writeLine(participationHandler);
   }
   return 0;
 }

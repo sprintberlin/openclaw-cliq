@@ -195,7 +195,7 @@ describe("planCliqHandlerProvisioning — read-only", () => {
     const result = await plan();
     expect(result.status).toBe("in_sync");
     expect(result.botId).toBe("b-464329000000074001");
-    expect(result.items.map((item) => item.action)).toEqual(["none", "none"]);
+    expect(result.items.map((item) => item.action)).toEqual(["none", "none", "none"]);
   });
 
   it("plans a Message Handler repair when attachments are serialized but not forwarded as files", async () => {
@@ -415,6 +415,7 @@ describe("planCliqHandlerProvisioning — optional welcome handler", () => {
     expect(result.items.map((item) => item.type)).toEqual([
       "message_handler",
       "mention_handler",
+      "participation_handler",
     ]);
   });
 
