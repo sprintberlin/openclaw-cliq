@@ -1735,7 +1735,7 @@ describe("always-on group sender gates (issue #283)", () => {
     expect(dispatched).toHaveLength(1);
   });
 
-  it("still dispatches an explicit mention from a known other bot", async () => {
+  it("still dispatches an explicit mention from a known other bot when it mentions THIS bot", async () => {
     const { webhook, dispatched } = registration();
     const res = await post(
       webhook,
@@ -1747,5 +1747,42 @@ describe("always-on group sender gates (issue #283)", () => {
     );
     expect(res.statusCode).toBe(200);
     expect(dispatched).toHaveLength(1);
+  });
+
+  it("drops an other-bot message whose only bot mention is of ANOTHER bot (issue #285)", async () => {
+    const { webhook, dispatched, warns } = registration();
+    const res = await post(
+      webhook,
+      participationPayload({
+        data: { message: { id: "m-paula-mention", text: "@Paula bitte prüfen" } },
+        mentions: [{ id: "b-paula", name: "Paula", type: "bot" }],
+        user: { id: "70000000999", name: "OtherBot" },
+        eventId: "ev-285-other-mention",
+      }),
+    );
+    expect(res.statusCode).toBe(200);
+    expect(dispatched).toHaveLength(0);
+    const lines = skipLines(warns);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("self");
+    expect(lines[0]).not.toContain("Paula");
+    expect(lines[0]).not.toContain("OtherBot");
+  });
+
+  it("dispatches human chatter that @mentions another bot as an unmentioned silent turn (issue #285)", async () => {
+    const { webhook, dispatched, warns } = registration();
+    const res = await post(
+      webhook,
+      participationPayload({
+        data: { message: { id: "m-human-paula", text: "@Paula was meinst du?" } },
+        mentions: [{ id: "b-paula", name: "Paula", type: "bot" }],
+        user: { id: "user-777", name: "Gregor" },
+        eventId: "ev-285-human-other-mention",
+      }),
+    );
+    expect(res.statusCode).toBe(200);
+    expect(dispatched).toHaveLength(1);
+    const lines = skipLines(warns);
+    expect(lines).toHaveLength(0);
   });
 });

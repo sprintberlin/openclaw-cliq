@@ -31,6 +31,7 @@ import {
   isCliqSessionConflictError,
   isCliqSilentDispatchResult,
   isCliqUnmentionedGroupTurn,
+  isCliqExplicitBotMention,
   CLIQ_UNMENTIONED_GROUP_PROMPT,
   type CliqWebhookPayload,
   type ParsedCliqInbound,
@@ -1735,6 +1736,28 @@ describe("dispatchCliqInbound — native slash command authorization (issue #91)
     });
     expect(capture.ctxPayload?.CommandSource).toBe("native");
     expect(capture.ctxPayload?.CommandAuthorized).toBe(true);
+  });
+
+  it("does NOT authorize an unmentioned always-on group /model as a native command (#285)", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload(
+      groupPayload({
+        handler: "participation",
+        mentions: undefined,
+        message: "/model sonnet",
+      }),
+    )!;
+    expect(parsed.isMention).toBe(false);
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account(),
+      parsed,
+      client: makeClient(),
+    });
+    expect(capture.ctxPayload?.CommandSource).toBeUndefined();
+    expect(capture.ctxPayload?.CommandAuthorized).toBeUndefined();
+    expect(capture.ctxPayload?.GroupSystemPrompt).toBe(CLIQ_UNMENTIONED_GROUP_PROMPT);
   });
 
   it("does NOT mark a normal conversational DM as a native command", async () => {
@@ -5721,6 +5744,7 @@ describe("rich, edited and unknown non-text messages (#233)", () => {
   });
 });
 
+
 describe("unmentioned always-on group turns (issue #283)", () => {
   function unmentionedPayload(
     overrides: Partial<CliqWebhookPayload> = {},
@@ -5893,7 +5917,6 @@ describe("unmentioned always-on group turns (issue #283)", () => {
     });
 
     it.each([
-      ["native slash command", "/model"],
       ["abort intent", "stop"],
       ["confirm-card callback", "__cliq_confirm__ run the approved action"],
     ])("keeps a %s directed", (_label, text) => {
@@ -5901,6 +5924,13 @@ describe("unmentioned always-on group turns (issue #283)", () => {
         unmentionedPayload({ data: { message: text } }),
       )!;
       expect(isCliqUnmentionedGroupTurn(parsed, account())).toBe(false);
+    });
+
+    it("treats unaddressed slash chatter as unmentioned, not as a native command", () => {
+      const parsed = parseCliqWebhookPayload(
+        unmentionedPayload({ data: { message: "/model sonnet" } }),
+      )!;
+      expect(isCliqUnmentionedGroupTurn(parsed, account())).toBe(true);
     });
   });
 
@@ -5913,6 +5943,20 @@ describe("unmentioned always-on group turns (issue #283)", () => {
           dispatchResult: { queuedFinal: false, counts: { tool: 0, block: 0, final: 0 } },
         }),
       ).toBe(true);
+    });
+
+    it("rejects a zero-count turn that still reports failedCounts", () => {
+      expect(
+        isCliqSilentDispatchResult({
+          admission: { kind: "dispatch" },
+          dispatched: true,
+          dispatchResult: {
+            queuedFinal: false,
+            counts: { tool: 0, block: 0, final: 0 },
+            failedCounts: { final: 1 },
+          },
+        }),
+      ).toBe(false);
     });
 
     it("rejects undefined, non-dispatched, deferred, and answered turns", () => {
@@ -6161,5 +6205,69 @@ describe("unmentioned always-on group turns (issue #283)", () => {
     // Silence never swallows a real failure: the error propagates to the
     // route handler (which reports it) and nothing was posted.
     expect(client.calls).toHaveLength(0);
+  });
+});
+
+describe("isCliqExplicitBotMention (issue #285)", () => {
+  it("does not treat a participation mention of another bot as ours", () => {
+    const parsed = parseCliqWebhookPayload(
+      groupPayload({
+        handler: "participation",
+        mentions: [{ id: "b-paula", name: "Paula", type: "bot" }],
+        message: { text: "@Paula please check CRM" },
+      }),
+    )!;
+    expect(parsed.isMention).toBe(false);
+    expect(parsed.mentionIds).toEqual(["b-paula"]);
+    expect(parsed.mentionNames).toEqual(["Paula"]);
+    expect(isCliqExplicitBotMention(parsed, account())).toBe(false);
+    expect(isCliqUnmentionedGroupTurn(parsed, account())).toBe(true);
+    const decision = resolveCliqMentionDecision(parsed, account(), {
+      requireMention: true,
+    });
+    expect(decision.shouldSkip).toBe(true);
+  });
+
+  it("treats a participation mention of this bot as directed, including the internal b- id", () => {
+    const parsed = parseCliqWebhookPayload(
+      groupPayload({
+        handler: "participation",
+        mentions: [{ id: "b-zora", name: "Zora", type: "bot" }],
+        message: { text: "@Zora bitte Status" },
+      }),
+    )!;
+    const ours = account({
+      botId: "zora",
+      botName: "Zora",
+      ownSenderIds: ["b-zora"],
+      selfSenderIds: ["b-paula"],
+    });
+    expect(parsed.isMention).toBe(false);
+    expect(isCliqExplicitBotMention(parsed, ours)).toBe(true);
+    expect(isCliqUnmentionedGroupTurn(parsed, ours)).toBe(false);
+  });
+
+  it("matches mention ids case-insensitively and does not confuse selfSenderIds with own ids", () => {
+    const parsed = parseCliqWebhookPayload(
+      groupPayload({
+        handler: "participation",
+        mentions: [{ id: "B-PAULA", name: "PAULA", type: "bot" }],
+        message: { text: "@Paula ping" },
+      }),
+    )!;
+    const ours = account({
+      botId: "zora",
+      botName: "Zora",
+      ownSenderIds: ["b-zora"],
+      selfSenderIds: ["b-paula", "Paula"],
+    });
+    expect(isCliqExplicitBotMention(parsed, ours)).toBe(false);
+    expect(isCliqUnmentionedGroupTurn(parsed, ours)).toBe(true);
+  });
+
+  it("keeps this bot's mention-handler payload directed", () => {
+    const parsed = parseCliqWebhookPayload(groupPayload())!;
+    expect(parsed.isMention).toBe(true);
+    expect(isCliqExplicitBotMention(parsed, account())).toBe(true);
   });
 });

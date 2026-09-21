@@ -49,6 +49,7 @@ const CLIQ_SNAKE_CASE_CONFIG_KEYS: ReadonlyArray<{
   { snake: "webhook_secret", camel: "webhookSecret" },
   { snake: "refresh_token", camel: "refreshToken" },
   { snake: "allow_from", camel: "allowFrom" },
+  { snake: "own_sender_ids", camel: "ownSenderIds" },
   { snake: "self_sender_ids", camel: "selfSenderIds" },
   { snake: "dm_policy", camel: "dmPolicy" },
   { snake: "ack_policy", camel: "ackPolicy" },

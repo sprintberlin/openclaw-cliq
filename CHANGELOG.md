@@ -11,6 +11,10 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Fixed
+
+- A group `@mention` of **another** workspace bot is no longer treated as a mention of this bot. Participation/Message payloads can list any bot in `mentions[]`; only this bot's Mention handler, forms/buttons, and mentions matching `botId` / `botName` / `ownSenderIds` count as directed. `selfSenderIds` still drops other bots as senders, but no longer makes a reply to Paula look like a reply to Zora. Unaddressed `/model` chatter on an always-on channel is no longer authorized as a native command. The silent-dispatch fallback ignores Core `failedCounts` so a delivery error is not classified as `NO_REPLY` (#285).
+
 ### Added
 
 - Always-on Cliq channels (`groups.<uniqueName>.requireMention: false` plus a provisioned `participation_handler`) now honour Core's exact `NO_REPLY` silent-turn contract without leaking a thinking placeholder or rewriting it to `⚠️ Couldn't process that message.` Unmentioned channel chatter posts no eager placeholder or progress draft; the Core `NO_REPLY` guidance is attached via `GroupSystemPrompt`; a resolved zero-count dispatch is treated as benign only on those undirected turns. Directed DMs, `@mentions`, and replies to the bot keep today's placeholder and genuine-failure notice. Known other bots listed in `selfSenderIds` remain dropped before dispatch so a second agent cannot ping-pong on the failure bubble (#283).

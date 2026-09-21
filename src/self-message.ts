@@ -11,34 +11,64 @@ export interface CliqSelfMessageMatch {
   matchedIdentity?: string;
 }
 
+type CliqBotIdentityConfig = Pick<
+  ResolvedCliqAccount,
+  "botId" | "botName" | "ownSenderIds" | "selfSenderIds"
+>;
+
+function addNormalizedIdentity(ids: Set<string>, value?: string): void {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (normalized) ids.add(normalized);
+}
+
+/**
+ * Build the identities that belong specifically to THIS configured bot:
+ * `botId`, `botName`, and the additional `ownSenderIds` (most importantly
+ * Cliq's internal `b-…` id reported on bot-authored channel messages).
+ *
+ * This set is intentionally NARROWER than the full self/ignore set built by
+ * {@link resolveCliqBotIdentities}: `selfSenderIds` may also list OTHER
+ * workspace bots whose posts must be dropped as senders, but a reply to or
+ * @mention of one of those bots is not directed at this bot. Use this
+ * resolver for directedness checks (mention of the bot, reply-to-the-bot).
+ */
+export function resolveCliqOwnBotIdentities(
+  account: Pick<ResolvedCliqAccount, "botId" | "botName" | "ownSenderIds">,
+): Set<string> {
+  const ids = new Set<string>();
+  addNormalizedIdentity(ids, account.botId);
+  addNormalizedIdentity(ids, account.botName);
+  for (const extra of account.ownSenderIds ?? []) {
+    addNormalizedIdentity(ids, extra);
+  }
+  return ids;
+}
+
 /**
  * Build the set of sender identities (lowercased, trimmed, non-empty) that
  * should be treated as the bot itself — its own messages must never re-enter
  * the agent pipeline (otherwise the bot answers itself, looping).
  *
  * The set always includes the configured `botId` (bot unique name used in the
- * Cliq API URL) and `botName` (display name). Operators can add extra ids via
- * `selfSenderIds` for two cases:
+ * Cliq API URL), `botName` (display name), and every `ownSenderIds` entry.
+ * Operators can add extra ids via `selfSenderIds` for two cases:
  *   1. The webhook delivers the bot's *user id* (zuid) rather than its
  *      unique name — e.g. a Deluge handler that fires on the bot's own
  *      outgoing messages and reports `user.id` as a zuid that differs from
- *      `botId`. Add that zuid here so it is recognised as self.
+ *      `botId`. Add that zuid here (or to `ownSenderIds`) so it is
+ *      recognised as self.
  *   2. Other Cliq bots in the same workspace whose messages should never
  *      trigger this agent (bot-to-bot loop prevention). Cliq does not expose
  *      a reliable `is_bot` flag on the sender, so an explicit id list is the
  *      only robust signal.
  */
 export function resolveCliqBotIdentities(
-  account: Pick<ResolvedCliqAccount, "botId" | "botName" | "selfSenderIds">,
+  account: CliqBotIdentityConfig,
 ): Set<string> {
-  const ids = new Set<string>();
-  const add = (v?: string) => {
-    const s = (v ?? "").trim().toLowerCase();
-    if (s) ids.add(s);
-  };
-  add(account.botId);
-  add(account.botName);
-  for (const extra of account.selfSenderIds ?? []) add(extra);
+  const ids = resolveCliqOwnBotIdentities(account);
+  for (const extra of account.selfSenderIds ?? []) {
+    addNormalizedIdentity(ids, extra);
+  }
   return ids;
 }
 
@@ -57,7 +87,7 @@ export function isCliqSelfMessage(
     ParsedCliqInbound,
     "senderId" | "senderName" | "senderEmail"
   >,
-  account: Pick<ResolvedCliqAccount, "botId" | "botName" | "selfSenderIds">,
+  account: CliqBotIdentityConfig,
 ): CliqSelfMessageMatch {
   const identities = resolveCliqBotIdentities(account);
   if (identities.size === 0) return { self: false };

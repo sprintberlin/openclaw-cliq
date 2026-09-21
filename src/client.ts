@@ -246,6 +246,17 @@ export interface CliqChannelConfig {
   botId?: string;
   botName?: string;
   /**
+   * Additional sender identities that belong to THIS bot (for example the
+   * internal `b-…` id Cliq reports on bot-authored channel messages). These
+   * identities count as self for loop prevention and as this bot when
+   * resolving reply/quote or mentions-array context.
+   *
+   * Keep other workspace bots out of this list. Put those in
+   * `selfSenderIds`, where they are ignored as senders but never mistaken for
+   * this bot in mention/reply directedness checks.
+   */
+  ownSenderIds?: string[];
+  /**
    * Shared secret used to verify `x-cliq-webhook-secret` on inbound delivery.
    * Plaintext or SecretRef (resolved at runtime). Required for inbound
    * delivery; when unset or when a configured ref cannot be resolved, the
@@ -705,6 +716,8 @@ export interface ResolvedCliqAccount {
   clientSecret: string;
   botId: string;
   botName?: string;
+  /** Additional identities belonging specifically to this bot. */
+  ownSenderIds?: string[];
   webhookSecret?: string;
   allowFrom: string[];
   dmPolicy: string | undefined;
@@ -856,6 +869,7 @@ export function resolveCliqConfig(
     clientSecret,
     botId,
     botName: section?.botName,
+    ownSenderIds: section?.ownSenderIds ?? [],
     webhookSecret: webhookSecret || undefined,
      allowFrom: section?.allowFrom ?? [],
      dmPolicy: section?.dmPolicy,
@@ -984,8 +998,8 @@ function readTopLevelCliqSection(
  *  - `accountId` null/undefined/`"default"` → top-level section verbatim
  *    (the single-account convention; backward compatible).
  *  - Non-default `accountId` with an `accounts.<accountId>` entry → that
- *    entry's fields override the top-level ones (shallow merge; `allowFrom`
- *    and `selfSenderIds` are REPLACED when present in the override, matching
+ *    entry's fields override the top-level ones (shallow merge; `allowFrom`,
+ *    `ownSenderIds` and `selfSenderIds` are REPLACED when present in the override, matching
  *    the bundled-channel convention).
  *  - Non-default `accountId` with NO matching `accounts` entry → top-level
  *    section (preserves the prior behavior so a stray accountId never breaks

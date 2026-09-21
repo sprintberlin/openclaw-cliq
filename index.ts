@@ -11,6 +11,7 @@ import {
 } from "./src/pairing.js";
 import {
   dispatchCliqInbound,
+  isCliqExplicitBotMention,
   isCliqSessionConflictError,
   parseCliqWebhookPayload,
   describeCliqPayloadRejection,
@@ -558,7 +559,14 @@ export default defineChannelPluginEntry({
         // a configured second bot from waking us on participation events or
         // reply chains and starting a ping-pong loop. Only an explicit
         // @mention remains an intentional bot-to-bot request.
-        if (selfMatch.self && (!parsed.isGroup || !parsed.isMention)) {
+        // A bot listed in selfSenderIds is dropped unless the message
+        // explicitly addresses THIS bot (mention of our id/name, this bot's
+        // Mention handler, or a form/button response). A mention of any
+        // OTHER bot must not revive the drop (#285).
+        if (
+          selfMatch.self &&
+          (!parsed.isGroup || !isCliqExplicitBotMention(parsed, account))
+        ) {
           // Issue #232: promoted from debug. The matched *field name* is a
           // stable qualifier; the matched value is user-controlled content
           // (a display name or email) and must not reach a default-level log.

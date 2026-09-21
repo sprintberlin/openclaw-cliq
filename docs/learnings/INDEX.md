@@ -157,3 +157,4 @@ One line per durable learning; full fact + tags in the linked file. `rg` this fo
 - [Deluge multipart framing may use LF-only separators](154-deluge-multipart-framing-may-use-lf-only-separators.md)
 - [Deluge multipart may omit the blank line after part headers](155-deluge-multipart-may-omit-the-blank-line-after-part.md)  — files: src/inbound-webhook-body.ts  — files: src/inbound-webhook-body.ts · apis: invokeUrl,files,multipart/form-data,CRLF,LF
 - [Always-on channel silence is a placeholder lifecycle, not a Deluge keyword](157-always-on-channel-silence-is-a-placeholder-lifecycle.md)  — files: src/inbound.ts,src/self-message.ts · apis: participation_handler,GroupSystemPrompt,NO_REPLY,inbound.run,selfSenderIds
+- [A bot mention is not this bot until matched](158-a-bot-mention-is-not-this-bot-until-matched.md)  — files: src/inbound.ts,src/self-message.ts · apis: mentions,participation_handler,ownSenderIds,selfSenderIds,CommandAuthorized

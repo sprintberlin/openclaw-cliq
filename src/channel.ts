@@ -273,6 +273,7 @@ function applyAccountConfig(params: {
   writeField("webhookSecret");
   writeField("refreshToken");
   if (Array.isArray(input.allowFrom)) target["allowFrom"] = input.allowFrom;
+  if (Array.isArray(input.ownSenderIds)) target["ownSenderIds"] = input.ownSenderIds;
   if (Array.isArray(input.selfSenderIds)) target["selfSenderIds"] = input.selfSenderIds;
   if (input.streaming !== undefined) target["streaming"] = input.streaming;
   if (input.thinking !== undefined) target["thinking"] = input.thinking;
