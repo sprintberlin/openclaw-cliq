@@ -4,6 +4,7 @@ import { cliqPlugin } from "./src/channel.js";
 import { resolveCliqConfig } from "./src/client.js";
 import { getCliqClientRegistry } from "./src/runtime-api.js";
 import { resolveCliqDmAdmission, resolveCliqGroupAdmission } from "./src/admission.js";
+import { resolveCliqGroupRequireMention } from "./src/group-policy.js";
 import {
   handleCliqPairingApprovalAction,
   issueCliqPairingChallenge,
@@ -615,8 +616,19 @@ export default defineChannelPluginEntry({
           return true;
         }
 
+        const requireMention = parsed.isGroup
+          ? (resolveCliqGroupRequireMention({
+              cfg,
+              groupId: parsed.channelUniqueName ?? parsed.channelId ?? parsed.chatId,
+              groupChannel: parsed.channelName,
+              accountId: account.accountId,
+              senderId: parsed.senderId,
+              senderName: parsed.senderName,
+            }) ?? true)
+          : false;
+
         const decision = resolveCliqMentionDecision(parsed, account, {
-          requireMention: parsed.isGroup,
+          requireMention,
           allowTextCommands: false,
         });
         if (decision.shouldSkip) {
