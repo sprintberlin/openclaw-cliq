@@ -75,7 +75,7 @@ describe("provisionCliqBotAndHandlers", () => {
     });
     const result = await run({ service: api, dryRun: false, confirmed: true });
     expect(api.createBot).toHaveBeenCalledWith("Franzi");
-    expect(api.createHandler).toHaveBeenCalledTimes(2);
+    expect(api.createHandler).toHaveBeenCalledTimes(3);
     expect(result.createdBot).toBe(true);
     expect(result.apply?.ok).toBe(true);
   });

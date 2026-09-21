@@ -28,10 +28,11 @@ function script(
   return `webhookUrl = "${url}";\nwebhookSecret = "${secret}";\n${extra}\npayload = Map();`;
 }
 
-function handlers(messageScript: string, mentionScript = messageScript) {
+function handlers(messageScript: string, mentionScript = messageScript, participationScript = messageScript) {
   return [
     { type: "message_handler", script: messageScript },
     { type: "mention_handler", script: mentionScript },
+    { type: "participation_handler", script: participationScript },
   ];
 }
 
@@ -289,7 +290,7 @@ describe("checkCliqHandlerConsistency (issue #124)", () => {
     const second = await reader!();
     expect(first.every((record) => typeof record.script === "string")).toBe(true);
     expect(second.every((record) => typeof record.script === "string")).toBe(true);
-    expect(readHandlerScript).toHaveBeenCalledTimes(4);
+    expect(readHandlerScript).toHaveBeenCalledTimes(6);
     for (const call of readHandlerScript.mock.calls) {
       expect(call[1]).toBe("b-464329000000074001");
     }
@@ -322,7 +323,7 @@ describe("checkCliqHandlerConsistency (issue #124)", () => {
 
     const records = await reader!();
     expect(readHandlerScript).not.toHaveBeenCalled();
-    expect(records).toHaveLength(2);
+    expect(records).toHaveLength(3);
     expect(records[0].error).toMatch(/unique name/i);
     const diagnostic = checkCliqHandlerConsistency({
       handlers: records,
@@ -394,7 +395,7 @@ describe("checkCliqHandlerConsistency (issue #124)", () => {
     });
 
     const result = await reader!();
-    expect(readHandlerScript).toHaveBeenCalledTimes(2);
+    expect(readHandlerScript).toHaveBeenCalledTimes(3);
     expect(result[0]).toEqual({ type: "message_handler", script: script(), error: undefined });
     expect(result[1]).toEqual({
       type: "mention_handler",

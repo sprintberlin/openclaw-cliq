@@ -138,6 +138,37 @@ export function buildCliqHandlerScript(params: {
   webhookUrl: string;
   webhookSecret: string;
 }): string {
+  if (params.handlerType === "participation_handler") {
+    return [
+      `webhookUrl = "${params.webhookUrl}";`,
+      `webhookSecret = "${params.webhookSecret}";`,
+      "response = Map();",
+      'if (operation == "message_sent")',
+      "{",
+      "    payload = Map();",
+      '    payload.put("handler", "participation");',
+      `    payload.put("${CLIQ_HANDLER_SCHEMA_FIELD}", "${CLIQ_HANDLER_SCHEMA_VERSION}");`,
+      '    payload.put("message", data.get("message"));',
+      '    payload.put("user", user);',
+      '    payload.put("chat", chat);',
+      '    eventId = zoho.currenttime.toString("yyyyMMddHHmmss") + "-" + randomNumber(100000,999999) + randomNumber(100000,999999);',
+      '    payload.put("eventId", eventId);',
+      "    headers = Map();",
+      '    headers.put("Content-Type", "application/json");',
+      '    headers.put("x-cliq-webhook-secret", webhookSecret);',
+      "    invokeUrl",
+      "    [",
+      "        url    : webhookUrl",
+      "        type   : POST",
+      "        body   : payload",
+      "        headers: headers",
+      "    ];",
+      '    response.put("eventId", eventId);',
+      "}",
+      "return response;",
+      "",
+    ].join("\n");
+  }
   const discriminator = params.handlerType === "message_handler"
     ? "message"
     : params.handlerType === "mention_handler"

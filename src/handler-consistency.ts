@@ -38,7 +38,11 @@ import {
 export type CliqHandlerConsistencyStatus = "pass" | "fail" | "skipped";
 
 /** The bot handler types that forward inbound messages to the webhook. */
-export const CLIQ_INBOUND_HANDLER_TYPES = ["message_handler", "mention_handler"] as const;
+export const CLIQ_INBOUND_HANDLER_TYPES = [
+  "message_handler",
+  "mention_handler",
+  "participation_handler",
+] as const;
 
 export type CliqInboundHandlerType = (typeof CLIQ_INBOUND_HANDLER_TYPES)[number];
 
