@@ -4,6 +4,7 @@ import { cliqPlugin } from "./src/channel.js";
 import { resolveCliqConfig } from "./src/client.js";
 import { getCliqClientRegistry } from "./src/runtime-api.js";
 import { resolveCliqDmAdmission, resolveCliqGroupAdmission } from "./src/admission.js";
+import { resolveCliqGroupRequireMention } from "./src/group-policy.js";
 import {
   handleCliqPairingApprovalAction,
   issueCliqPairingChallenge,
@@ -45,6 +46,10 @@ import {
   handleCliqWelcome,
   buildCliqWelcomeInbound,
 } from "./src/welcome.js";
+import {
+  isCliqParticipationPayload,
+  isCliqParticipationMessage,
+} from "./src/participation.js";
 import { resolveCliqClient } from "./src/runtime-api.js";
 import {
   buildCliqProbeResponse,
@@ -479,6 +484,16 @@ export default defineChannelPluginEntry({
           return true;
         }
 
+        // Non-message participation events (issue #279):
+        // When Zoho fires the participation_handler for control events like
+        // "bot_added", "bot_removed", or "message_deleted", acknowledge
+        // immediately with 200 OK so Zoho does not re-try.
+        if (isCliqParticipationPayload(body.value) && !isCliqParticipationMessage(body.value)) {
+          res.statusCode = 200;
+          res.end("ok");
+          return true;
+        }
+
         const parsed = parseCliqWebhookPayload(body.value);
         if (!parsed) {
           // Issue #224: a rejected payload used to leave no trace, so a
@@ -615,8 +630,19 @@ export default defineChannelPluginEntry({
           return true;
         }
 
+        const requireMention = parsed.isGroup
+          ? (resolveCliqGroupRequireMention({
+              cfg,
+              groupId: parsed.channelUniqueName ?? parsed.channelId ?? parsed.chatId,
+              groupChannel: parsed.channelName,
+              accountId: account.accountId,
+              senderId: parsed.senderId,
+              senderName: parsed.senderName,
+            }) ?? true)
+          : false;
+
         const decision = resolveCliqMentionDecision(parsed, account, {
-          requireMention: parsed.isGroup,
+          requireMention,
           allowTextCommands: false,
         });
         if (decision.shouldSkip) {

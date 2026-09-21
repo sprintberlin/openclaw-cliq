@@ -452,6 +452,68 @@ describe("parseCliqWebhookPayload", () => {
     });
   });
 
+  describe("Bot Participation Handler (issue #279)", () => {
+    it("parses a participation_handler message_sent payload with message in data", () => {
+      const parsed = parseCliqWebhookPayload({
+        handler: "participation",
+        operation: "message_sent",
+        data: {
+          message: "Hallo alle zusammen im Kanal!",
+        },
+        user: { id: "u123", name: "Gregor Sprint" },
+        chat: {
+          id: "CT_channel_123",
+          type: "channel",
+          chat_type: "channel",
+          channel_unique_name: "gregorfinnitest",
+          title: "#GregorFinniTest",
+        },
+        eventId: "ev-part-1",
+      } as CliqWebhookPayload);
+
+      expect(parsed).not.toBeNull();
+      expect(parsed!.text).toBe("Hallo alle zusammen im Kanal!");
+      expect(parsed!.senderId).toBe("u123");
+      expect(parsed!.senderName).toBe("Gregor Sprint");
+      expect(parsed!.isGroup).toBe(true);
+      expect(parsed!.channelUniqueName).toBe("gregorfinnitest");
+      expect(parsed!.channelName).toBe("GregorFinniTest");
+      expect(parsed!.handler).toBe("participation");
+      expect(parsed!.isMention).toBe(false);
+      expect(parsed!.messageId).toBe("evt:ev-part-1");
+    });
+
+    it("parses a participation_handler payload when message is at top-level", () => {
+      const parsed = parseCliqWebhookPayload({
+        handler: "participation",
+        operation: "message_sent",
+        message: "Direkte Nachricht im Root",
+        user: { id: "u123", name: "Gregor Sprint" },
+        chat: {
+          id: "CT_channel_123",
+          type: "channel",
+          channel_unique_name: "gregorfinnitest",
+        },
+      } as CliqWebhookPayload);
+
+      expect(parsed).not.toBeNull();
+      expect(parsed!.text).toBe("Direkte Nachricht im Root");
+      expect(parsed!.isGroup).toBe(true);
+      expect(parsed!.handler).toBe("participation");
+    });
+
+    it("returns null for non-message participation operations (e.g. bot_added)", () => {
+      const parsed = parseCliqWebhookPayload({
+        handler: "participation",
+        operation: "bot_added",
+        user: { id: "u123", name: "Gregor Sprint" },
+        chat: { id: "CT_channel_123" },
+      } as CliqWebhookPayload);
+
+      expect(parsed).toBeNull();
+    });
+  });
+
   describe("Agent-rendered form button-click response (Phase 3, sub-part c)", () => {
     it("parses a __cliq_form__ sentinel payload into structured FormValues", () => {
       const parsed = parseCliqWebhookPayload({

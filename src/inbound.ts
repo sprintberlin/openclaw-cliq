@@ -285,6 +285,40 @@ export interface CliqWebhookPayload {
   form_data?: Record<string, unknown>;
   formvalues?: Record<string, unknown>;
   form_name?: string;
+  /**
+   * Participation Handler payload fields (issue #279).
+   *
+   * A bot Participation Handler Deluge script forwards `operation` ("message_sent",
+   * "bot_added", etc.) and `data` (which holds `message` among other event fields).
+   */
+  operation?: string;
+  data?: {
+    message?:
+      | string
+      | {
+          text?: string;
+          id?: string;
+          time?: string;
+          type?: string;
+          message_type?: string;
+          rte?: unknown;
+          content?: CliqMessageContent | string;
+          description?: string;
+          reply_to?: string | Record<string, unknown>;
+          parent?: Record<string, unknown>;
+          parent_message?: Record<string, unknown>;
+          quoted?: Record<string, unknown>;
+          quoted_message?: Record<string, unknown>;
+          reply_to_message?: Record<string, unknown>;
+          revision?: string | number;
+          is_edited?: boolean;
+          edited?: boolean;
+          isEdited?: boolean;
+          attachments?: unknown;
+          file?: unknown;
+        };
+    [key: string]: unknown;
+  };
   params?: {
     message?: {
       text?: string;
@@ -669,6 +703,20 @@ export function parseCliqWebhookPayload(
       content: payload.params.content ?? payload.content,
       file: payload.params.file ?? payload.file,
     };
+  }
+
+  // Participation Handler payload unwrapping (issue #279):
+  // When Zoho calls the participation_handler, it delivers `operation`
+  // (e.g. "message_sent") and `data` (which holds `message` among other fields).
+  // If `message` is present on `data`, lift it to payload.message if payload.message is unset.
+  if (payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)) {
+    const dataMessage = payload.data.message;
+    if (dataMessage !== undefined && payload.message === undefined) {
+      payload = {
+        ...payload,
+        message: dataMessage,
+      };
+    }
   }
 
   const extracted = extractMessageText(payload);
