@@ -46,6 +46,10 @@ import {
   handleCliqWelcome,
   buildCliqWelcomeInbound,
 } from "./src/welcome.js";
+import {
+  isCliqParticipationPayload,
+  isCliqParticipationMessage,
+} from "./src/participation.js";
 import { resolveCliqClient } from "./src/runtime-api.js";
 import {
   buildCliqProbeResponse,
@@ -475,6 +479,16 @@ export default defineChannelPluginEntry({
               `[cliq] welcome greeting to ${welcome.senderId} failed: ${String(err)}`,
             );
           }
+          res.statusCode = 200;
+          res.end("ok");
+          return true;
+        }
+
+        // Non-message participation events (issue #279):
+        // When Zoho fires the participation_handler for control events like
+        // "bot_added", "bot_removed", or "message_deleted", acknowledge
+        // immediately with 200 OK so Zoho does not re-try.
+        if (isCliqParticipationPayload(body.value) && !isCliqParticipationMessage(body.value)) {
           res.statusCode = 200;
           res.end("ok");
           return true;
