@@ -20,11 +20,12 @@ export const CLIQ_HANDLER_SCHEMA_FIELD = "handlerSchema";
  * serializing Message-handler attachments into JSON. `v3` sends those Deluge
  * FILE objects as multipart data, so bytes survive even when no downloadable
  * file id is exposed to the JSON webhook payload. `v4` posts the text-only
- * Map itself to `invokeUrl body:` so Zoho owns JSON escaping; the Message
- * Handler multipart branch still serializes its `stringPart` with
- * `payload.toString()` until that path is proven separately.
+ * Map itself to `invokeUrl body:` so Zoho owns JSON escaping. `v5` replaces
+ * the multipart attachment branch's single ambiguous `payload.toString()`
+ * stringPart with one flat scalar stringPart per payload field, so no Deluge
+ * serialization of nested structures ever reaches the wire (#275).
  */
-export const CLIQ_HANDLER_SCHEMA_VERSION = "v4";
+export const CLIQ_HANDLER_SCHEMA_VERSION = "v5";
 
 export type CliqHandlerSchemaCompatibility = "current" | "missing" | "unsupported";
 

@@ -112,16 +112,16 @@ describe("checkCliqHandlerConsistency (issue #124)", () => {
       `webhookSecret = "${SECRET}";`,
       'payload = Map();',
       'payload.put("handler","message");',
-      'payload.put("handlerSchema","v4");',
+      'payload.put("handlerSchema","v5");',
       'payload.put("eventId",eventId);',
       'response = Map();',
       'response.put("eventId",eventId);',
-      'payloadPart = Map();',
-      'payloadPart.put("stringPart","true");',
-      'payloadPart.put("paramName","payload");',
-      'payloadPart.put("content",payload.toString());',
+      'partHandler = Map();',
+      'partHandler.put("stringPart","true");',
+      'partHandler.put("paramName","handler");',
+      'partHandler.put("content","message");',
       'requestFiles = List();',
-      'requestFiles.add(payloadPart);',
+      'requestFiles.add(partHandler);',
       'invokeurl',
       '[',
       '\turl :webhookUrl',
@@ -189,7 +189,7 @@ describe("checkCliqHandlerConsistency (issue #124)", () => {
 
     expect(result.status).toBe("fail");
     expect(result.detail).toMatch(/no recognisable handlerSchema literal/i);
-    expect(result.detail).toMatch(/expected handlerSchema "v4"/i);
+    expect(result.detail).toMatch(new RegExp(`expected handlerSchema "${CLIQ_HANDLER_SCHEMA_VERSION}"`));
     expect(result.detail).toMatch(/openclaw setup|confirmation-gated handler repair/i);
     expect(result.detail).not.toContain(SECRET);
   });
@@ -203,7 +203,7 @@ describe("checkCliqHandlerConsistency (issue #124)", () => {
 
     expect(result.status).toBe("fail");
     expect(result.detail).toContain('handlerSchema "v999"');
-    expect(result.detail).toContain('handlerSchema "v4"');
+    expect(result.detail).toContain(`handlerSchema "${CLIQ_HANDLER_SCHEMA_VERSION}"`);
     expect(result.detail).not.toContain(SECRET);
   });
 

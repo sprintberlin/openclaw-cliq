@@ -42,6 +42,13 @@ const CLIQ_GENERATED_MULTIPART_FIELDS = new Set([
   "mentions",
   "channel",
   "thread",
+  // Flat scalar fields of the v5 generated multipart attachment branch
+  // (issue #275): one stringPart per payload field instead of one ambiguous
+  // `payload.toString()` map literal.
+  "userId",
+  "userName",
+  "chatId",
+  "chatType",
 ]);
 
 const CLIQ_GENERATED_MULTIPART_JSON_FIELDS = new Set([
@@ -353,8 +360,33 @@ function reconstructCliqPayloadFromFieldParts(parts: MultipartPart[]): unknown |
     }
   }
 
-  const user = value.user;
-  const chat = value.chat;
+  let user = value.user;
+  let chat = value.chat;
+
+  // v5 flat scalar parts support: reconstruct `user` and `chat` objects
+  // if they arrived as flat parts (userId/userName, chatId/chatType)
+  if (!user && typeof value.userId === "string" && value.userId.trim()) {
+    const userObj: Record<string, unknown> = { id: value.userId.trim() };
+    if (typeof value.userName === "string" && value.userName.trim()) {
+      userObj.name = value.userName.trim();
+    }
+    value.user = userObj;
+    user = userObj;
+    delete value.userId;
+    delete value.userName;
+  }
+
+  if (!chat && typeof value.chatId === "string" && value.chatId.trim()) {
+    const chatObj: Record<string, unknown> = { id: value.chatId.trim() };
+    if (typeof value.chatType === "string" && value.chatType.trim()) {
+      chatObj.type = value.chatType.trim();
+    }
+    value.chat = chatObj;
+    chat = chatObj;
+    delete value.chatId;
+    delete value.chatType;
+  }
+
   if (
     typeof value.message !== "string" ||
     !user ||

@@ -90,8 +90,10 @@ export interface CliqProvisioningReader {
  * transient error. Text-only payloads pass the Deluge Map itself to `body:`
  * so Zoho owns JSON serialization and escaping; `parameters:` would
  * form-encode the payload and break the webhook. The multipart attachment
- * branch still needs a TEXT `stringPart`, so it retains `payload.toString()`
- * until that wire shape is tested separately.
+ * branch cannot safely serialize the nested payload Map: `Map.toString()` is
+ * a Deluge map literal whose unquoted scalars make commas and brackets in user
+ * text ambiguous. It therefore emits one flat TEXT `stringPart` per required
+ * scalar field and sends the original FILE objects beside them (#275).
  */
 /**
  * Build the Deluge body for one provisioned bot handler.
@@ -233,13 +235,52 @@ export function buildCliqHandlerScript(params: {
           "else",
           "{",
           "    requestFiles = List();",
-          "    payloadPart = Map();",
-          '    payloadPart.put("stringPart", "true");',
-          '    payloadPart.put("paramName", "payload");',
-          "    payloadPart.put(\"content\", payload.toString());",
-          '    payloadPart.put("contentType", "application/json");',
-          '    payloadPart.put("encodingType", "UTF-8");',
-          "    requestFiles.add(payloadPart);",
+          "    partHandler = Map();",
+          '    partHandler.put("stringPart", "true");',
+          '    partHandler.put("paramName", "handler");',
+          '    partHandler.put("content", "message");',
+          "    requestFiles.add(partHandler);",
+          "    partSchema = Map();",
+          '    partSchema.put("stringPart", "true");',
+          '    partSchema.put("paramName", "handlerSchema");',
+          `    partSchema.put("content", "${CLIQ_HANDLER_SCHEMA_VERSION}");`,
+          "    requestFiles.add(partSchema);",
+          "    partMessage = Map();",
+          '    partMessage.put("stringPart", "true");',
+          '    partMessage.put("paramName", "message");',
+          '    partMessage.put("content", "" + message);',
+          "    requestFiles.add(partMessage);",
+          "    partEvent = Map();",
+          '    partEvent.put("stringPart", "true");',
+          '    partEvent.put("paramName", "eventId");',
+          '    partEvent.put("content", "" + eventId);',
+          "    requestFiles.add(partEvent);",
+          "    partUserId = Map();",
+          '    partUserId.put("stringPart", "true");',
+          '    partUserId.put("paramName", "userId");',
+          '    partUserId.put("content", "" + user.get("id"));',
+          "    requestFiles.add(partUserId);",
+          "    if (user.get(\"name\") != null)",
+          "    {",
+          "        partUserName = Map();",
+          '        partUserName.put("stringPart", "true");',
+          '        partUserName.put("paramName", "userName");',
+          '        partUserName.put("content", "" + user.get("name"));',
+          "        requestFiles.add(partUserName);",
+          "    }",
+          "    partChatId = Map();",
+          '    partChatId.put("stringPart", "true");',
+          '    partChatId.put("paramName", "chatId");',
+          '    partChatId.put("content", "" + chat.get("id"));',
+          "    requestFiles.add(partChatId);",
+          "    if (chat.get(\"type\") != null)",
+          "    {",
+          "        partChatType = Map();",
+          '        partChatType.put("stringPart", "true");',
+          '        partChatType.put("paramName", "chatType");',
+          '        partChatType.put("content", "" + chat.get("type"));',
+          "        requestFiles.add(partChatType);",
+          "    }",
           "    for each attachment in attachmentFiles",
           "    {",
           "        requestFiles.add(attachment);",

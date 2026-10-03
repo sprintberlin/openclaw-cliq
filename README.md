@@ -657,17 +657,17 @@ webhookSecret = "<the same secret you set as webhookSecret in openclaw.json>";
 // Cliq provides `message`, `user`, and `chat` in the Message/Mention handler
 // scope. The plugin's parser accepts these Cliq objects as-is (it tolerates the
 // different chat/channel key variants), so just forward them directly.
-// Cliq passes `attachments` as Deluge FILE objects. `payload.toString()` turns
-// those into names and discards the bytes, which leaves voice notes at the
-// gateway as e.g. `voice-message-…wav` with no downloadable id. Keep a JSON
-// name list for matching/diagnostics, and send the actual FILE objects as
-// multipart parts so the gateway can stage them locally. Text-only messages
-// keep the raw-JSON path below.
+// Cliq passes `attachments` as Deluge FILE objects. Send the actual FILE
+// objects as multipart parts so the gateway can stage them locally. Metadata
+// on that branch is one flat scalar stringPart per field (v5): a nested
+// `payload.toString()` part is a Deluge map literal whose unquoted grammar
+// makes commas/brackets in captions ambiguous. Text-only messages keep the
+// raw-JSON path below.
 payload = Map();
 payload.put("handler", "message");   // <-- use "mention" in the Mention Handler
 // Generated-handler payload contract marker (issue #228). Keep this literal:
 // `openclaw cliq doctor` reads it back to identify a stale Zoho-held script.
-payload.put("handlerSchema", "v4");
+payload.put("handlerSchema", "v5");
 payload.put("message", message);
 payload.put("user", user);
 payload.put("chat", chat);
@@ -697,14 +697,15 @@ headers.put("Content-Type", "application/json");
 headers.put("x-cliq-webhook-secret", webhookSecret);
 
 // POST text-only events by passing the Deluge Map directly so Zoho owns JSON
-// escaping. For attachments, add the JSON payload as
-// a string multipart part plus every Deluge FILE object; invokeUrl creates the
-// multipart Content-Type/boundary itself, so only the secret header is set on
-// that branch. Some Deluge executions omit or mislabel that generated
+// escaping. For attachments, send one flat scalar stringPart per metadata
+// field (handler, handlerSchema, message, eventId, userId, userName, chatId,
+// chatType) plus every Deluge FILE object; invokeUrl creates the multipart
+// Content-Type/boundary itself, so only the secret header is set on that
+// branch. Some Deluge executions omit or mislabel that generated
 // Content-Type, may serialize disposition parameters without double quotes,
 // may use LF-only framing, and may omit the blank line between part headers
-// and content; the gateway recognizes this bounded canonical `payload` part
-// from the body before parsing the attached FILE parts.
+// and content; the gateway recognizes the bounded generated field parts from
+// the body before parsing the attached FILE parts.
 attachmentFiles = List();
 if (attachments != null)
 {
@@ -726,13 +727,52 @@ if (attachmentFiles.size() == 0)
 else
 {
     requestFiles = List();
-    payloadPart = Map();
-    payloadPart.put("stringPart", "true");
-    payloadPart.put("paramName", "payload");
-    payloadPart.put("content", payload.toString());
-    payloadPart.put("contentType", "application/json");
-    payloadPart.put("encodingType", "UTF-8");
-    requestFiles.add(payloadPart);
+    partHandler = Map();
+    partHandler.put("stringPart", "true");
+    partHandler.put("paramName", "handler");
+    partHandler.put("content", "message");
+    requestFiles.add(partHandler);
+    partSchema = Map();
+    partSchema.put("stringPart", "true");
+    partSchema.put("paramName", "handlerSchema");
+    partSchema.put("content", "v5");
+    requestFiles.add(partSchema);
+    partMessage = Map();
+    partMessage.put("stringPart", "true");
+    partMessage.put("paramName", "message");
+    partMessage.put("content", "" + message);
+    requestFiles.add(partMessage);
+    partEvent = Map();
+    partEvent.put("stringPart", "true");
+    partEvent.put("paramName", "eventId");
+    partEvent.put("content", "" + eventId);
+    requestFiles.add(partEvent);
+    partUserId = Map();
+    partUserId.put("stringPart", "true");
+    partUserId.put("paramName", "userId");
+    partUserId.put("content", "" + user.get("id"));
+    requestFiles.add(partUserId);
+    if (user.get("name") != null)
+    {
+        partUserName = Map();
+        partUserName.put("stringPart", "true");
+        partUserName.put("paramName", "userName");
+        partUserName.put("content", "" + user.get("name"));
+        requestFiles.add(partUserName);
+    }
+    partChatId = Map();
+    partChatId.put("stringPart", "true");
+    partChatId.put("paramName", "chatId");
+    partChatId.put("content", "" + chat.get("id"));
+    requestFiles.add(partChatId);
+    if (chat.get("type") != null)
+    {
+        partChatType = Map();
+        partChatType.put("stringPart", "true");
+        partChatType.put("paramName", "chatType");
+        partChatType.put("content", "" + chat.get("type"));
+        requestFiles.add(partChatType);
+    }
     for each attachment in attachmentFiles
     {
         requestFiles.add(attachment);
