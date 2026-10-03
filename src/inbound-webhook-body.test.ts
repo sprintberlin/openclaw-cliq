@@ -405,3 +405,89 @@ ${JSON.stringify(payload)}
     expect(result.attachments?.[0]?.bytes?.byteLength).toBe(file.length);
   });
 });
+
+describe("Deluge map-literal multipart payload (issue #275)", () => {
+  const boundary = "MapLiteralBoundary";
+  const file = Buffer.from([0x52, 0x49, 0x46, 0x46, 0, 1, 2, 3]);
+
+  function mapLiteralBody(literal: string, fileBytes = file): Buffer {
+    return Buffer.concat([
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="payload"\r\nContent-Type: text/plain\r\n\r\n`,
+      ),
+      Buffer.from(literal),
+      Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="voice-note.wav"\r\nContent-Type: audio/wav\r\n\r\n`),
+      fileBytes,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]);
+  }
+
+  it("keeps a map-literal payload and its binary voice bytes together", async () => {
+    const literal =
+      "{handler=message, handlerSchema=v4, message=, user={id=10000000001, name=Example User}, chat={id=CT_example, type=dm}, eventId=20260919185000-123456789012, attachments=[voice-note.wav]}";
+    const request = new FakeRequest({
+      "content-type": `multipart/form-data; boundary=${boundary}`,
+    });
+    const pending = readCliqWebhookBody(request as never);
+    request.emit("data", mapLiteralBody(literal));
+    request.emit("end");
+    const result = await pending;
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toEqual({
+      handler: "message",
+      handlerSchema: "v4",
+      message: "",
+      user: { id: "10000000001", name: "Example User" },
+      chat: { id: "CT_example", type: "dm" },
+      eventId: "20260919185000-123456789012",
+      attachments: ["voice-note.wav"],
+    });
+    expect(Buffer.from(result.attachments?.[0]?.bytes ?? [])).toEqual(file);
+    expect(result.attachments?.[0]?.fileName).toBe("voice-note.wav");
+  });
+
+  it("rejects an ambiguous map-literal payload without exposing payload or file contents", async () => {
+    // A caption comma re-splits into an unknown top-level key; the request
+    // must fail closed and the error must contain neither text nor bytes.
+    const literal =
+      "{handler=message, message=alpha, beta, user={id=42}, chat={id=CT_1}}";
+    const request = new FakeRequest({
+      "content-type": `multipart/form-data; boundary=${boundary}`,
+    });
+    const pending = readCliqWebhookBody(request as never);
+    request.emit("data", mapLiteralBody(literal, Buffer.from("voice-bytes")));
+    request.emit("end");
+    const result = await pending;
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).not.toContain("alpha");
+    expect(result.error).not.toContain("beta");
+    expect(result.error).not.toContain("voice-bytes");
+  });
+
+  it("keeps ordinary JSON multipart behavior unchanged", async () => {
+    const payload = {
+      handler: "message",
+      handlerSchema: "v4",
+      message: "hello",
+      user: { id: "u1" },
+      chat: { id: "CT_dm" },
+      attachments: ["voice-note.wav"],
+    };
+    const request = new FakeRequest({
+      "content-type": `multipart/form-data; boundary=${boundary}`,
+    });
+    const pending = readCliqWebhookBody(request as never);
+    request.emit("data", multipartBody(boundary, payload, file, 'name="payload"', 'filename="voice-note.wav"'));
+    request.emit("end");
+    const result = await pending;
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toEqual(payload);
+    expect(Buffer.from(result.attachments?.[0]?.bytes ?? [])).toEqual(file);
+  });
+});
