@@ -307,7 +307,11 @@ export function extractDelugeStringAssignment(
  */
 export function hasDelugeMultipartFiles(script: string): boolean {
   const hasFilesParam = /\bfiles\s*:\s*requestFiles\b/i.test(script);
-  const hasPayloadPart = /payloadPart\.put\(\s*["']paramName["']\s*,\s*["']payload["']\s*\)/.test(script);
+  // v5 generated scripts put each payload field in its own `paramName` part
+  // (e.g. `paramName "message"`, `paramName "userId"`); v4 and earlier use
+  // a single `paramName "payload"` part serialized with `payload.toString()`.
+  const hasPayloadPart = /payloadPart\.put\(\s*["']paramName["']\s*,\s*["']payload["']\s*\)/.test(script)
+    || /[A-Za-z][A-Za-z0-9]*\.put\(\s*["']paramName["']\s*,\s*["'](?:handler|message|userId)["']\s*\)/.test(script);
   return hasFilesParam && hasPayloadPart;
 }
 

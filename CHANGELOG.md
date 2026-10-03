@@ -11,9 +11,13 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Added
+
+- The generated Message Handler attachment branch now uses **schema v5**, which replaces the single ambiguous `payload.toString()` stringPart with flat scalar stringParts (`handler`, `handlerSchema`, `message`, `eventId`, `userId`, `userName`, `chatId`, `chatType`) sent alongside the original Deluge FILE objects. Every part value is a flat string or scalar `.get()`, so Deluge never serializes nested Maps or Lists on the wire. Commas, brackets, braces, equals signs, quotes, and line breaks in user captions are transmitted unambiguously within their own multipart boundary without requiring any Deluge-side JSON escaping or custom string routines (#275).
+
 ### Fixed
 
-- The Deluge `Map.toString()` fallback parser for the multipart attachment `stringPart` is now narrow and fail-closed instead of a general heuristic: it accepts only the generated handler envelope in generated insertion order, enforces byte, nesting, key and list limits, rejects duplicate and prototype-pollution keys at every depth, and treats ambiguous delimiter-bearing user text (commas, braces, brackets) as a rejection rather than silently reinterpreting it as payload structure. Unambiguous `=`, quotes and newlines inside a scalar stay part of the message. Generated multipart wire format is unchanged until a deterministic Deluge stringPart encoding is proven live on an isolated bot (#275).
+- The legacy Deluge `Map.toString()` fallback parser (`src/inbound-deluge-repair.ts`) is retained for stale v4 and earlier handlers as a narrow, fail-closed compatibility layer: it accepts only the generated handler envelope in strictly monotonic insertion rank, enforces byte, nesting, and key limits, rejects duplicate and prototype-pollution keys at every depth, and rejects ambiguous delimiter-bearing user text rather than silently restructuring it (#275).
 
 ### Fixed
 

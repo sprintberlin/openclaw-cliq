@@ -491,3 +491,82 @@ describe("Deluge map-literal multipart payload (issue #275)", () => {
     expect(Buffer.from(result.attachments?.[0]?.bytes ?? [])).toEqual(file);
   });
 });
+
+describe("v5 flat scalar field parts (issue #275)", () => {
+  const flatFieldsBody = (fields: Array<[string, string]>, file: Buffer, boundary = "v5flat") =>
+    Buffer.concat([
+      Buffer.from(
+        fields
+          .map(
+            ([name, value]) =>
+              `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
+          )
+          .join(""),
+      ),
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="quittung-ok.png"\r\nContent-Type: image/png\r\n\r\n`,
+      ),
+      file,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]);
+
+  it("reconstructs a payload from flat scalar parts with commas, brackets, quotes and newlines in the caption", async () => {
+    const file = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const caption = 'Hier die Quittung, bitte abheften; Liste: [a, b] {x=y} "so" und\nZeile zwei';
+    const fields: Array<[string, string]> = [
+      ["handler", "message"],
+      ["handlerSchema", "v5"],
+      ["message", caption],
+      ["eventId", "20261003160100-123456789012"],
+      ["userId", "10000000001"],
+      ["userName", "Gregor Sprint"],
+      ["chatId", "CT_flat_dm"],
+      ["chatType", "single"],
+    ];
+    const body = flatFieldsBody(fields, file);
+    const request = new FakeRequest({ "content-type": "multipart/form-data; boundary=v5flat" });
+    const pending = readCliqWebhookBody(request as never);
+    request.emit("data", body);
+    request.emit("end");
+    const result = await pending;
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toEqual({
+      handler: "message",
+      handlerSchema: "v5",
+      message: caption,
+      eventId: "20261003160100-123456789012",
+      user: { id: "10000000001", name: "Gregor Sprint" },
+      chat: { id: "CT_flat_dm", type: "single" },
+      attachments: ["quittung-ok.png"],
+    });
+    expect(result.attachments).toHaveLength(1);
+    expect(result.attachments?.[0]).toMatchObject({
+      fileName: "quittung-ok.png",
+      mimeType: "image/png",
+    });
+    expect(Buffer.from(result.attachments?.[0]?.bytes ?? [])).toEqual(file);
+  });
+
+  it("rejects flat parts when userId or chatId is missing", async () => {
+    const file = Buffer.from("x");
+    const body = flatFieldsBody(
+      [
+        ["handler", "message"],
+        ["handlerSchema", "v5"],
+        ["message", "hi"],
+        ["userId", "10000000001"],
+      ],
+      file,
+    );
+    const request = new FakeRequest({ "content-type": "multipart/form-data; boundary=v5flat" });
+    const pending = readCliqWebhookBody(request as never);
+    request.emit("data", body);
+    request.emit("end");
+    const result = await pending;
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).not.toContain("hi");
+  });
+});

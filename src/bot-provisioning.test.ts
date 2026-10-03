@@ -53,12 +53,18 @@ describe("buildCliqHandlerScript", () => {
     expect(body).toContain("attachments");
     expect(body).toContain("attachment.getFileName()");
     expect(body).toContain("files  : requestFiles");
-    expect(body).toContain('payloadPart.put("paramName", "payload")');
     expect(body).toContain("body   : payload");
     expect(body).not.toContain("body   : payload.toString()");
-    // Multipart still requires a TEXT stringPart; that transport is a
-    // separate live experiment from the KEY-VALUE `body:` path.
-    expect(body).toContain('payloadPart.put("content", payload.toString())');
+    // v5: the multipart branch sends one flat scalar stringPart per payload
+    // field instead of one ambiguous payload.toString() map literal.
+    expect(body).toContain('partHandler.put("paramName", "handler")');
+    expect(body).toContain('partSchema.put("paramName", "handlerSchema")');
+    expect(body).toContain('partMessage.put("paramName", "message")');
+    expect(body).toContain('partMessage.put("content", "" + message)');
+    expect(body).toContain('partUserId.put("paramName", "userId")');
+    expect(body).toContain('partUserId.put("content", "" + user.get("id"))');
+    expect(body).toContain('partChatId.put("paramName", "chatId")');
+    expect(body).not.toContain("payload.toString()");
     expect(body).toContain('headers.put("Content-Type", "application/json")');
     expect(body).not.toContain("parameters");
     expect(body).toContain('eventId = zoho.currenttime.toString("yyyyMMddHHmmss") + "-" + randomNumber(100000,999999) + randomNumber(100000,999999)');
@@ -259,7 +265,7 @@ describe("planCliqHandlerProvisioning — read-only", () => {
       expect(item.action).toBe("repair");
       expect(item.conflict).toBe("stale_script");
       expect(item.requiresConfirmation).toBe(true);
-      expect(item.reason).toMatch(/handlerSchema v4/i);
+      expect(item.reason).toMatch(new RegExp(`handlerSchema ${CLIQ_HANDLER_SCHEMA_VERSION}`, "i"));
       expect(item.reason).toMatch(/restart does not update/i);
     }
   });
