@@ -6,6 +6,9 @@
   ],
   "name": "Zoho Cliq",
   "description": "Native Zoho Cliq channel for OpenClaw — reply to DMs and channel @mentions as a bot, with streaming previews, cards, and message actions.",
+  "skills": [
+    "./skills"
+  ],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
