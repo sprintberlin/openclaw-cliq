@@ -41,7 +41,10 @@
     "assets",
     ".github/openclaw-compat.json",
     "README.md",
-    "openclaw.plugin.json"
+    "openclaw.plugin.json",
+    "skills",
+    "!skills/**/__pycache__",
+    "!skills/**/*.py[cod]"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
