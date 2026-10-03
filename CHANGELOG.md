@@ -13,7 +13,7 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
-- The plugin package now bundles a `cliq` companion skill for setup, provisioning, diagnostics, and defect reporting. OpenClaw publishes it to `~/.openclaw/plugin-skills/cliq/` for both ClawHub installs and linked local checkouts; its helper searches for existing reports and redacts credential patterns before creating a GitHub issue (#274).
+- The plugin package now bundles a `cliq` companion skill for setup, provisioning, diagnostics, and defect reporting. OpenClaw publishes it to `~/.openclaw/plugin-skills/cliq/` for both ClawHub installs and linked local checkouts; the skill defines an explicit agent protocol for searching and filing issues via native `gh` without wrapper scripts (#274).
 - Always-on Cliq channels (`groups.<uniqueName>.requireMention: false` plus a provisioned `participation_handler`) now honour Core's exact `NO_REPLY` silent-turn contract without leaking a thinking placeholder or rewriting it to `⚠️ Couldn't process that message.` Unmentioned channel chatter posts no eager placeholder or progress draft; the Core `NO_REPLY` guidance is attached via `GroupSystemPrompt`; a resolved zero-count dispatch is treated as benign only on those undirected turns. Directed DMs, `@mentions`, and replies to the bot keep today's placeholder and genuine-failure notice. Known other bots listed in `selfSenderIds` remain dropped before dispatch so a second agent cannot ping-pong on the failure bubble (#283).
 
 ### Fixed

@@ -131,33 +131,23 @@ When an agent or automated worker interacts with Zoho Cliq and encounters an une
 
 ### How to File an Issue
 
-A helper script is bundled with this skill to automatically scrub sensitive patterns (tokens, secrets, email addresses, IDs) and search for existing reports before filing:
+Contributions are explicitly welcome from humans and agents. Filing and linking every reproducible plugin defect is part of the task's Definition of Done. Use the native GitHub CLI; no wrapper script is required:
 
 ```bash
-# When installed via ClawHub or running from another working directory:
-python3 ~/.openclaw/plugin-skills/cliq/scripts/report_plugin_issue.py \
-  --kind "parser-bug" \
-  --title "Inbound multipart parser drops Deluge requests with custom boundary format" \
-  --expected "Deluge message body parsed and dispatched to agent" \
-  --actual "HTTP 400 parser_rejected returned to Deluge" \
-  --repro "Send message with specific multipart framing observed in logs"
-
-# Or from inside a local git clone of sprintberlin/openclaw-cliq:
-python3 skills/cliq/scripts/report_plugin_issue.py ...
-```
-
-Supported `--kind` values:
-- `parser-bug`: Inbound webhook body, multipart, or header parsing issues.
-- `api-error`: Outbound Zoho REST API client failures or unhandled status codes.
-- `cli-bug`: Issues with `openclaw cliq` subcommands (`doctor`, `provision`, etc.).
-- `doc-mismatch`: Inaccuracies in setup instructions or Deluge templates.
-
-If the Python helper is unavailable, file directly via GitHub CLI after verifying all secrets are removed:
-
-```bash
+REPO=sprintberlin/openclaw-cliq
+gh issue list --repo "$REPO" --state open --search "<terms>"   # check for duplicates first
 gh issue create \
-  --repo sprintberlin/openclaw-cliq \
+  --repo "$REPO" \
   --label "bug" \
   --title "bug(inbound): <short description>" \
-  --body "### What happened\n...\n### Steps to reproduce\n...\n### Version\n..."
+  --body-file /tmp/issue.md   # What happened / Steps to reproduce / Expected / Actual / Version (`openclaw cliq doctor --json` schemaVersion)
 ```
+
+Redaction is the filer's responsibility before running `gh issue create`. Never include:
+- `clientSecret`, `refreshToken`, `webhookSecret`, OAuth codes, or any token
+- message text, file names, file bytes, or attachment content
+- user IDs, chat IDs, email addresses, or customer data
+
+Masked evidence is enough: content type, multipart part names, payload syntax fingerprint (`describeBodySyntax` output), parser outcome, and the `handlerSchema` marker. When in doubt, redact more.
+
+Prefix conventions: `bug(inbound)`, `bug(outbound)`, `bug(cli)`, `bug(doctor)`, `doc(...)`.
