@@ -66,12 +66,48 @@ const TAIL_BOUNDARY =
  * voice note therefore lost its whole request — payload *and* the already
  * received audio bytes — at the multipart payload part.
  *
+ * This is compatibility handling for already-installed handlers, not the
+ * canonical wire protocol. The grammar is deliberately bounded and
+ * fail-closed: only the generated top-level envelope in generated insertion
+ * order is accepted; size, nesting, key and list limits are enforced; duplicate
+ * and prototype-pollution keys reject the whole value. Delimiter-bearing
+ * user text is either kept as one scalar (`=`, quotes, newlines) or rejected
+ * rather than silently reinterpreted as structure (commas, braces, brackets).
+ *
  * Values stay strings: Deluge erases the original type in `toString()`, and
  * the inbound contract only requires `user.id` and `chat.id` to be readable.
  * Nothing is coerced to a number, so an id can never lose precision.
  */
+const MAP_LITERAL_MAX_BYTES = 64 * 1024;
+const MAP_LITERAL_MAX_KEYS = 128;
+const MAP_LITERAL_MAX_DEPTH = 16;
+
+/**
+ * Generated Message-handler insertion order. A scalar comma is ambiguous in
+ * Deluge's unquoted syntax; requiring this envelope order makes it fail closed
+ * instead of silently turning caption text into another field.
+ */
+const MAP_LITERAL_TOP_LEVEL_RANK = new Map<string, number>([
+  ["handler", 0],
+  ["handlerSchema", 1],
+  ["message", 2],
+  ["user", 3],
+  ["chat", 4],
+  ["eventId", 5],
+  ["event_id", 5],
+  ["attachments", 6],
+  ["mentions", 7],
+  ["channel", 8],
+  ["thread", 9],
+]);
+
+const FORBIDDEN_PROTO_KEYS = new Set(["__proto__", "prototype", "constructor"]);
+
 export function parseDelugeMapLiteral(raw: string): unknown | undefined {
   const body = raw.trim();
+  if (body.length === 0 || Buffer.byteLength(body, "utf8") > MAP_LITERAL_MAX_BYTES) {
+    return undefined;
+  }
   if (!body.startsWith("{") || !body.endsWith("}")) return undefined;
   // A JSON body is never ours: the caller already tried, and a quoted-key
   // object must not be re-read by this looser grammar.
@@ -79,6 +115,7 @@ export function parseDelugeMapLiteral(raw: string): unknown | undefined {
   if (!body.includes("=")) return undefined;
 
   let pos = 0;
+  let keys = 0;
 
   const skipSpace = () => {
     while (pos < body.length && /\s/.test(body[pos] ?? "")) pos += 1;
@@ -91,7 +128,7 @@ export function parseDelugeMapLiteral(raw: string): unknown | undefined {
   };
 
   const parseValue = (depth: number): unknown | undefined => {
-    if (depth > 16) return undefined;
+    if (depth > MAP_LITERAL_MAX_DEPTH) return undefined;
     skipSpace();
     const char = body[pos];
     if (char === "{") return parseMap(depth + 1);
@@ -110,6 +147,7 @@ export function parseDelugeMapLiteral(raw: string): unknown | undefined {
         pos += 1;
         return items;
       }
+      if (items.length >= MAP_LITERAL_MAX_KEYS) return undefined;
       const value = parseValue(depth);
       if (value === undefined) return undefined;
       items.push(value);
@@ -126,10 +164,13 @@ export function parseDelugeMapLiteral(raw: string): unknown | undefined {
     }
   };
 
-  const parseMap = (depth: number): Record<string, unknown> | undefined => {
+  const parseMap = (depth: number, top = false): Record<string, unknown> | undefined => {
     if (body[pos] !== "{") return undefined;
     pos += 1;
-    const map: Record<string, unknown> = {};
+    const map = Object.create(null) as Record<string, unknown>;
+    const seen = new Set<string>();
+    const seenTopLevelRanks = new Set<number>();
+    let previousTopLevelRank = -1;
     for (;;) {
       skipSpace();
       if (pos >= body.length) return undefined;
@@ -137,11 +178,35 @@ export function parseDelugeMapLiteral(raw: string): unknown | undefined {
         pos += 1;
         return map;
       }
+      if (seen.size >= MAP_LITERAL_MAX_KEYS) return undefined;
       const keyStart = pos;
       while (pos < body.length && !["=", ",", "}"].includes(body[pos] ?? "")) pos += 1;
       if (body[pos] !== "=") return undefined;
       const key = body.slice(keyStart, pos).trim();
       if (!key) return undefined;
+      // Prototype-pollution keys are rejected outright at every depth.
+      if (FORBIDDEN_PROTO_KEYS.has(key)) return undefined;
+      // Duplicate keys never occur in a genuine Deluge Map.toString(); their
+      // presence means user text was reinterpreted as structure — fail closed.
+      if (seen.has(key)) return undefined;
+      // Only the generated envelope is accepted, in generated insertion order.
+      // An unknown or out-of-order top-level key is either a hand-written
+      // handler or punctuation inside user text reinterpreted as structure.
+      if (top) {
+        const rank = MAP_LITERAL_TOP_LEVEL_RANK.get(key);
+        if (
+          rank === undefined ||
+          rank <= previousTopLevelRank ||
+          seenTopLevelRanks.has(rank)
+        ) {
+          return undefined;
+        }
+        previousTopLevelRank = rank;
+        seenTopLevelRanks.add(rank);
+      }
+      seen.add(key);
+      keys += 1;
+      if (keys > MAP_LITERAL_MAX_KEYS) return undefined;
       pos += 1;
       const value = parseValue(depth);
       if (value === undefined) return undefined;
@@ -159,7 +224,7 @@ export function parseDelugeMapLiteral(raw: string): unknown | undefined {
     }
   };
 
-  const value = parseMap(0);
+  const value = parseMap(0, true);
   if (value === undefined) return undefined;
   skipSpace();
   if (pos !== body.length) return undefined;
@@ -171,7 +236,7 @@ export function parseDelugeMapLiteral(raw: string): unknown | undefined {
   const chat = value.chat;
   if (
     typeof value.message !== "string" ||
-    typeof value.handler !== "string" ||
+    value.handler !== "message" ||
     !user ||
     typeof user !== "object" ||
     Array.isArray(user) ||
@@ -179,7 +244,9 @@ export function parseDelugeMapLiteral(raw: string): unknown | undefined {
     !(user as Record<string, unknown>).id ||
     !chat ||
     typeof chat !== "object" ||
-    Array.isArray(chat)
+    Array.isArray(chat) ||
+    typeof (chat as Record<string, unknown>).id !== "string" ||
+    !(chat as Record<string, unknown>).id
   ) {
     return undefined;
   }
