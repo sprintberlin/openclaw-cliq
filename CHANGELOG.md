@@ -18,6 +18,10 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- The Deluge `Map.toString()` fallback parser for the multipart attachment `stringPart` is now narrow and fail-closed instead of a general heuristic: it accepts only the generated handler envelope in generated insertion order, enforces byte, nesting, key and list limits, rejects duplicate and prototype-pollution keys at every depth, and treats ambiguous delimiter-bearing user text (commas, braces, brackets) as a rejection rather than silently reinterpreting it as payload structure. Unambiguous `=`, quotes and newlines inside a scalar stay part of the message. Generated multipart wire format is unchanged until a deterministic Deluge stringPart encoding is proven live on an isolated bot (#275).
+
+### Fixed
+
 - A group `@mention` of **another** workspace bot is no longer treated as a mention of this bot. Participation/Message payloads can list any bot in `mentions[]`; only this bot's Mention handler, forms/buttons, and mentions matching `botId` / `botName` / `ownSenderIds` count as directed. `selfSenderIds` still drops other bots as senders, but no longer makes a reply to Paula look like a reply to Zora. Unaddressed `/model` chatter on an always-on channel is no longer authorized as a native command. The silent-dispatch fallback ignores Core `failedCounts` so a delivery error is not classified as `NO_REPLY` (#285).
 
 ## [0.5.0] - 2026-09-18

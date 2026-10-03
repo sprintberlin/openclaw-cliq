@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   describeDelugeBodySyntax,
+  parseDelugeMapLiteral,
   repairDelugeUnescapedMessageBody,
 } from "./inbound-deluge-repair.js";
 
@@ -166,5 +167,155 @@ describe("repair survives added flat handler fields (#228 regression)", () => {
     const raw =
       '{"handler":"message","handlerSchema":"v"2","message":"hi","user":{"id":"u-3"},"chat":{"id":"c-3"},"eventId":"evt-3"}';
     expect(repairDelugeUnescapedMessageBody(raw)).toBeUndefined();
+  });
+});
+
+// --- parseDelugeMapLiteral hardening (issue #275) ---
+describe("parseDelugeMapLiteral (issue #275 — narrow, fail-closed)", () => {
+  const voiceLiteral =
+    "{handler=message, handlerSchema=v4, message=, user={id=10000000001, name=Example User}, chat={id=CT_example, type=dm}, eventId=20260919185000-123456789012, attachments=[voice-message.wav]}";
+
+  it("parses the representative voice-note map literal with empty message=", () => {
+    const value = parseDelugeMapLiteral(voiceLiteral) as Record<string, unknown>;
+    expect(value).toBeDefined();
+    expect(value.message).toBe("");
+    expect(value.handler).toBe("message");
+    expect((value.user as Record<string, unknown>).id).toBe("10000000001");
+    expect((value.chat as Record<string, unknown>).id).toBe("CT_example");
+    expect(value.attachments).toEqual(["voice-message.wav"]);
+  });
+
+  it("parses a file attachment with a simple caption", () => {
+    const value = parseDelugeMapLiteral(
+      "{handler=message, message=rechnung mai, user={id=42}, chat={id=CT_1}, attachments=[rechnung.pdf]}",
+    ) as Record<string, unknown>;
+    expect(value.message).toBe("rechnung mai");
+  });
+
+  it("preserves equals signs in unambiguous scalar text", () => {
+    const value = parseDelugeMapLiteral(
+      "{handler=message, message=a=b, user={id=42}, chat={id=CT_1}}",
+    ) as Record<string, unknown>;
+    expect(value.message).toBe("a=b");
+  });
+
+  it("preserves quotes and newlines when they do not act as delimiters", () => {
+    const value = parseDelugeMapLiteral(
+      '{handler=message, message=first line\n"quoted" second line, user={id=42}, chat={id=CT_1}}',
+    ) as Record<string, unknown>;
+    expect(value.message).toBe('first line\n"quoted" second line');
+  });
+
+  it("keeps large numeric-looking ids as strings", () => {
+    const value = parseDelugeMapLiteral(
+      "{handler=message, message=, user={id=20098819618}, chat={id=CT_1295679149497452729_20098818989}}",
+    ) as Record<string, unknown>;
+    expect((value.user as Record<string, unknown>).id).toBe("20098819618");
+    expect((value.chat as Record<string, unknown>).id).toBe("CT_1295679149497452729_20098818989");
+  });
+
+  it("rejects a caption whose comma is ambiguous — fails closed instead of silently resplitting", () => {
+    // `alpha, beta` inside message= splits into `message=alpha` + `beta=…`:
+    // the resulting unknown top-level key must reject the whole parse.
+    expect(
+      parseDelugeMapLiteral(
+        "{handler=message, message=alpha, beta, user={id=42}, chat={id=CT_1}}",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("rejects bracket/brace-bearing captions rather than reinterpreting them as structure", () => {
+    expect(
+      parseDelugeMapLiteral(
+        "{handler=message, message={draft}, user={id=42}, chat={id=CT_1}}",
+      ),
+    ).toBeUndefined();
+    expect(
+      parseDelugeMapLiteral(
+        "{handler=message, message=[draft], user={id=42}, chat={id=CT_1}}",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("rejects malformed and unclosed maps and lists", () => {
+    expect(parseDelugeMapLiteral("{handler=message, user={id=42")).toBeUndefined();
+    expect(parseDelugeMapLiteral("{handler=message, attachments=[a, b}")).toBeUndefined();
+    expect(parseDelugeMapLiteral("{no equals at all}")).toBeUndefined();
+  });
+
+  it("rejects trailing garbage after a complete map", () => {
+    expect(
+      parseDelugeMapLiteral("{handler=message, user={id=42}, chat={id=CT_1}} trailing"),
+    ).toBeUndefined();
+  });
+
+  it("rejects duplicate keys", () => {
+    expect(
+      parseDelugeMapLiteral(
+        "{handler=message, handler=mention, user={id=42}, chat={id=CT_1}}",
+      ),
+    ).toBeUndefined();
+    expect(
+      parseDelugeMapLiteral(
+        "{handler=message, user={id=42, id=43}, chat={id=CT_1}}",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("rejects prototype-pollution keys at every depth", () => {
+    expect(
+      parseDelugeMapLiteral(
+        '{handler=message, __proto__={x=1}, user={id=42}, chat={id=CT_1}}',
+      ),
+    ).toBeUndefined();
+    expect(
+      parseDelugeMapLiteral(
+        "{handler=message, user={id=42, constructor=1}, chat={id=CT_1}}",
+      ),
+    ).toBeUndefined();
+    expect(
+      parseDelugeMapLiteral(
+        "{handler=message, user={id=42, prototype=1}, chat={id=CT_1}}",
+      ),
+    ).toBeUndefined();
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+
+  it("rejects unknown top-level keys — only the generated envelope is accepted", () => {
+    expect(
+      parseDelugeMapLiteral("{handler=message, evil=1, user={id=42}, chat={id=CT_1}}"),
+    ).toBeUndefined();
+  });
+
+  it("rejects excessive input size, nesting and key counts", () => {
+    expect(parseDelugeMapLiteral("{" + "x".repeat(70 * 1024) + "=1}")).toBeUndefined();
+    const deeplyNested = `${"{x=".repeat(18)}value${"}".repeat(18)}`;
+    expect(
+      parseDelugeMapLiteral(
+        `{handler=message, message=, user={id=42, nested=${deeplyNested}}, chat={id=CT_1}}`,
+      ),
+    ).toBeUndefined();
+    const manyNestedKeys = Array.from({ length: 130 }, (_, i) => `k${i}=v`).join(", ");
+    expect(
+      parseDelugeMapLiteral(
+        `{handler=message, message=, user={id=42, ${manyNestedKeys}}, chat={id=CT_1}}`,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("requires handler, message, user.id and chat.id strings", () => {
+    expect(parseDelugeMapLiteral("{handler=mention, message=hi}")).toBeUndefined();
+    expect(
+      parseDelugeMapLiteral("{handler=message, message=hi, user={id=42}}"),
+    ).toBeUndefined();
+    expect(
+      parseDelugeMapLiteral("{handler=message, message=hi, chat={id=CT_1}}"),
+    ).toBeUndefined();
+  });
+
+  it("does not enter for JSON-shaped or plain a=b bodies", () => {
+    expect(parseDelugeMapLiteral('{"handler":"message"}')).toBeUndefined();
+    expect(parseDelugeMapLiteral("a=b")).toBeUndefined();
+    expect(parseDelugeMapLiteral("just text")).toBeUndefined();
   });
 });
