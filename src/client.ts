@@ -1334,17 +1334,28 @@ function readCliqChannelName(rec: CliqChannelRecord): string | undefined {
 
 /**
  * Pull a chat id (`CT_xxx`) from a Cliq channel record. The channelsbyname
- * GET returns the channel as a top-level object OR wrapped under a
- * `channel` key (varies by API version); we tolerate both, plus the
- * `id` / `channel_id` / `chat_id` field-name variance.
+ * GET returns the channel as a top-level object, wrapped under a `channel`
+ * key, or — verified live 2026-10-03 on cliq.zoho.eu — as an envelope
+ * `{ url, type, data: { … } }` whose `data` object carries `chat_id`
+ * alongside the channel's `channel_id`; we tolerate all three shapes, plus
+ * the `id` / `channel_id` / `chat_id` field-name variance (#290).
  */
 function readCliqChannelChatId(data: unknown): string | undefined {
   if (!data || typeof data !== "object") return undefined;
   const obj = data as Record<string, unknown>;
-  const rec = (obj.channel && typeof obj.channel === "object"
-    ? (obj.channel as CliqChannelRecord)
-    : (obj as CliqChannelRecord));
-  return rec.chat_id ?? rec.id ?? rec.channel_id ?? undefined;
+  // Prefer explicit envelope records over envelope-level metadata, but keep
+  // field precedence global: a wrapped `chat_id` must beat a different
+  // record's generic `id` / `channel_id`.
+  const records = [obj.channel, obj.data, obj].filter(
+    (rec): rec is Record<string, unknown> => Boolean(rec && typeof rec === "object"),
+  );
+  for (const field of ["chat_id", "id", "channel_id"] as const) {
+    for (const rec of records) {
+      const value = rec[field];
+      if (typeof value === "string" && value) return value;
+    }
+  }
+  return undefined;
 }
 
 /** A normalized reference to a chat message (the editable id pair). */
@@ -1678,6 +1689,18 @@ export class CliqClient {
    * channel unique name (which the edit endpoint rejects).
    */
   private readonly channelChatIdCache = new Map<string, string>();
+  /**
+   * Negative cache for resolveChannelChatId: unique name → timestamp (ms)
+   * of the last attempt that returned a record with no resolvable chat id.
+   * A missing id is usually persistent (endpoint/shape limitation), but the
+   * failure must be retried eventually — a channel record can gain a usable
+   * `chat_id` after creation, and a plugin upgrade may learn new shapes —
+   * so negative entries expire after a bounded TTL instead of being pinned
+   * forever (#290).
+   */
+  private readonly channelChatIdMissCache = new Map<string, number>();
+  /** Lifetime of a negative resolution entry (5 minutes). */
+  private static readonly CHANNEL_CHAT_ID_MISS_TTL_MS = 5 * 60_000;
 
   /**
    * Cache key under which the user-context (refresh-token) access token is
@@ -2528,11 +2551,22 @@ export class CliqClient {
    * (live-edit) treats that as "no editable chat id" and degrades to a new
    * message per block. Never throws so a directory/resolve failure cannot
    * break an agent turn.
+   *
+   * A record without a resolvable chat id is negatively cached for a bounded
+   * TTL (#290): within the window, repeat resolutions return `undefined`
+   * without a new GET (stopping the one-wasted-call-plus-warning-per-send
+   * pattern), and after the window the next call retries the endpoint so a
+   * channel that gains a usable id later still recovers. Transport errors
+   * are NOT negatively cached — they stay per-call transient failures.
    */
   async resolveChannelChatId(channelUniqueName: string): Promise<string | undefined> {
     const key = channelUniqueName;
     const cached = this.channelChatIdCache.get(key);
     if (cached) return cached;
+    const missedAt = this.channelChatIdMissCache.get(key);
+    if (missedAt !== undefined && Date.now() - missedAt < CliqClient.CHANNEL_CHAT_ID_MISS_TTL_MS) {
+      return undefined;
+    }
     const path = `/api/v2/channelsbyname/${encodeURIComponent(channelUniqueName)}`;
     let data: unknown;
     try {
@@ -2546,10 +2580,12 @@ export class CliqClient {
     const chatId = readCliqChannelChatId(data);
     if (chatId) {
       this.channelChatIdCache.set(key, chatId);
+      this.channelChatIdMissCache.delete(key);
       this.logger.debug?.(
         `[cliq] resolveChannelChatId: ${channelUniqueName} -> ${chatId}`,
       );
     } else {
+      this.channelChatIdMissCache.set(key, Date.now());
       this.logger.warn?.(
         `[cliq] resolveChannelChatId: no chat id in record for ${channelUniqueName}`,
       );
