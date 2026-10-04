@@ -88,11 +88,115 @@ describe("CliqClient.resolveChannelChatId — channel unique name → chat id", 
     expect(await client.resolveChannelChatId("nope")).toBeUndefined();
   });
 
-  it("returns undefined when the record carries no resolvable id", async () => {
+  it("resolves a channel wrapped under { data: { chat_id: ... } } (issue #290)", async () => {
+    const { CliqClient } = await import("./client.js");
+    installFetch({
+      channelBody: {
+        url: "/api/v2/channelsbyname/dev-team",
+        type: "channel",
+        id: "envelope-metadata-must-not-win",
+        data: {
+          chat_id: "CT_from_data",
+          channel_id: "channel-id-123",
+          unique_name: "dev-team",
+        },
+      },
+    });
+    const client = new CliqClient("id", "secret", "bot");
+    expect(await client.resolveChannelChatId("dev-team")).toBe("CT_from_data");
+  });
+
+  it("negatively caches an unresolvable record for a bounded TTL (issue #290)", async () => {
     const { CliqClient } = await import("./client.js");
     installFetch({ channelBody: { unique_name: "dev-team" } });
     const client = new CliqClient("id", "secret", "bot");
+
+    // First call: GET performed, returns undefined, negatively cached.
     expect(await client.resolveChannelChatId("dev-team")).toBeUndefined();
+    const getsAfterFirst = requests.filter((r) => r.url.includes("/api/v2/channelsbyname/"));
+    expect(getsAfterFirst).toHaveLength(1);
+
+    // Second call within TTL: no GET performed.
+    expect(await client.resolveChannelChatId("dev-team")).toBeUndefined();
+    const getsAfterSecond = requests.filter((r) => r.url.includes("/api/v2/channelsbyname/"));
+    expect(getsAfterSecond).toHaveLength(1);
+  });
+
+  it("retries after negative-cache TTL expiry and recovers when id appears (issue #290)", async () => {
+    const { CliqClient } = await import("./client.js");
+    let currentBody: unknown = { unique_name: "dev-team" };
+    globalThis.fetch = (async (input: URL | string, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const auth = (init?.headers as Record<string, string> | undefined)?.["Authorization"];
+      requests.push({ url, auth });
+      if (url.includes("/oauth/v2/token")) {
+        return new Response(JSON.stringify({ access_token: "tok", expires_in: 3600 }), {
+          status: 200,
+        });
+      }
+      if (url.includes("/api/v2/channelsbyname/")) {
+        return new Response(JSON.stringify(currentBody), { status: 200 });
+      }
+      return new Response("", { status: 404 });
+    }) as typeof fetch;
+
+    const originalNow = Date.now;
+    let nowMs = 1_700_000_000_000;
+    Date.now = () => nowMs;
+
+    try {
+      const client = new CliqClient("id", "secret", "bot");
+      expect(await client.resolveChannelChatId("dev-team")).toBeUndefined();
+      expect(requests.filter((r) => r.url.includes("/api/v2/channelsbyname/"))).toHaveLength(1);
+
+      // Within TTL: cached undefined, no new GET.
+      nowMs += 60_000;
+      expect(await client.resolveChannelChatId("dev-team")).toBeUndefined();
+      expect(requests.filter((r) => r.url.includes("/api/v2/channelsbyname/"))).toHaveLength(1);
+
+      // Past 5-minute TTL: retried. Channel now exposes chat_id -> resolves and clears miss entry.
+      nowMs += 5 * 60_000;
+      currentBody = { data: { chat_id: "CT_recovered" } };
+      expect(await client.resolveChannelChatId("dev-team")).toBe("CT_recovered");
+      expect(requests.filter((r) => r.url.includes("/api/v2/channelsbyname/"))).toHaveLength(2);
+
+      // Follow-up call: positive cache serves immediately.
+      expect(await client.resolveChannelChatId("dev-team")).toBe("CT_recovered");
+      expect(requests.filter((r) => r.url.includes("/api/v2/channelsbyname/"))).toHaveLength(2);
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  it("does not negatively cache transient transport/API errors (issue #290)", async () => {
+    const { CliqClient } = await import("./client.js");
+    let shouldFail = true;
+    globalThis.fetch = (async (input: URL | string, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const auth = (init?.headers as Record<string, string> | undefined)?.["Authorization"];
+      requests.push({ url, auth });
+      if (url.includes("/oauth/v2/token")) {
+        return new Response(JSON.stringify({ access_token: "tok", expires_in: 3600 }), {
+          status: 200,
+        });
+      }
+      if (url.includes("/api/v2/channelsbyname/")) {
+        if (shouldFail) {
+          return new Response("server error", { status: 500 });
+        }
+        return new Response(JSON.stringify({ data: { chat_id: "CT_healthy" } }), { status: 200 });
+      }
+      return new Response("", { status: 404 });
+    }) as typeof fetch;
+
+    const client = new CliqClient("id", "secret", "bot");
+    expect(await client.resolveChannelChatId("dev-team")).toBeUndefined();
+    expect(requests.filter((r) => r.url.includes("/api/v2/channelsbyname/"))).toHaveLength(1);
+
+    // Transport error was not recorded as a miss -> immediate retry allowed
+    shouldFail = false;
+    expect(await client.resolveChannelChatId("dev-team")).toBe("CT_healthy");
+    expect(requests.filter((r) => r.url.includes("/api/v2/channelsbyname/"))).toHaveLength(2);
   });
 });
 

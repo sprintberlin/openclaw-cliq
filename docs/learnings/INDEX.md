@@ -82,7 +82,7 @@ One line per durable learning; full fact + tags in the linked file. `rg` this fo
 - [Cliq bot-message buttons payload](078-cliq-bot-message-buttons-payload.md)  — apis: /api/v2/bots/{botId}/message,/api/v2/channelsbyname/{name}/message,ZohoCliq.Channels.UPDATE
 - [Bold-before-italic pitfall](079-bold-before-italic-pitfall.md)
 - [Cliq reactions API](080-cliq-reactions-api.md)  — apis: /api/v2/chats/{chatId}/messages/{messageId}/reactions,ZohoCliq.messageactions.CREATE,ZohoCliq.messageactions.READ
-- [Group/channel chat-id resolution for live-edit (issue #28)](081-group-channel-chat-id-resolution-for-live-edit.md)  — apis: /api/v2/channelsbyname/{name},/api/v2/channelsbyname/{name}/message,/api/v2/chats/dev-team/messages/...
+- [Group/channel chat-id resolution for live-edit (issues #28, #290)](081-group-channel-chat-id-resolution-for-live-edit.md)  — apis: /api/v2/channelsbyname/{name},/api/v2/channelsbyname/{name}/message,/api/v2/chats/dev-team/messages/...
 - [Deluge payload is inconsistent](082-deluge-payload-is-inconsistent.md)
 - [Deluge webhook must POST the payload Map with `body: payload` + `Content-Type: application/json`](083-deluge-webhook-must-post-raw-json-with-body.md)
 - [Multi-data-center + `api_domain` self-correction (issue #46)](084-multi-data-center-api-domain-self-correction-issue.md)  — files: src/region.ts
