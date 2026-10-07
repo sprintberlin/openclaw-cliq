@@ -39,7 +39,7 @@ function botRecord(overrides: Partial<CliqBotRecord> = {}): CliqBotRecord {
 function handlerScript(
   secret: string,
   url = "https://cliq.example.com/cliq/webhook",
-  extra = 'payload.put("handlerSchema", "v5");\npayload.put("eventId", eventId);\nresponse.put("eventId", eventId);',
+  extra = 'payload.put("handlerSchema", "v6");\npayload.put("eventId", eventId);\nresponse.put("eventId", eventId);\ndelivery = invokeUrl [url: webhookUrl type: POST body: payload headers: headers detailed: true];\nif (delivery.get("responseCode") < 200 || delivery.get("responseCode") > 299)\n{\n    response = Map();\n    response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");\n}\ntry\n{\n}\ncatch (e)\n{\n    response = Map();\n    response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");\n}',
 ): string {
   return [
     'webhookUrl = "' + url + '";',

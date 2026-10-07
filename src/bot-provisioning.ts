@@ -4,6 +4,7 @@ import {
   extractDelugeStringAssignment,
   fingerprintCliqSecret,
   hasDelugeMultipartFiles,
+  hasCliqDeliveryFailureFallback,
   type CliqInboundHandlerType,
 } from "./handler-consistency.js";
 import {
@@ -95,6 +96,14 @@ export interface CliqProvisioningReader {
  * text ambiguous. It therefore emits one flat TEXT `stringPart` per required
  * scalar field and sends the original FILE objects beside them (#275).
  */
+/*
+ * Deluge source snippet, not a value: joined with the per-execution eventId
+ * in Zoho so the fallback stays content-free (no status, no exception, no
+ * request detail) while still giving the user a correlation reference (#260).
+ */
+const CLIQ_DELIVERY_FAILURE_TEXT =
+  '"Your message could not be processed (Ref " + eventId + "). Please send it again."';
+
 /**
  * Build the Deluge body for one provisioned bot handler.
  *
@@ -112,13 +121,16 @@ export interface CliqProvisioningReader {
  * with the gateway's own `evt:` identity, which turns "did this execution
  * become a turn?" into a lookup instead of a guess.
  *
- * Deliberately NOT captured here: the `invokeUrl` HTTP status. Assigning the
- * invoke result would introduce a new Deluge construct into both handlers,
- * and an invalid symbol fails validation with `execution_handler_update_failed`
- * — which is permanent and not safely retryable (see
- * {@link CLIQ_SCRIPT_VALIDITY_FAILURE}; the Mention Handler already proved
- * this with `attachments`). `eventId` is already declared and used in every
- * variant, so echoing it adds no new symbol and cannot fail validation.
+ * Since #260 the Message and Mention handlers capture the `invokeUrl`
+ * result (`detailed: true`, reading `responseCode`, wrapped in
+ * `try`/`catch`) and return one generic, content-free fallback `text` beside
+ * the `eventId` when the status is outside 2xx or the call throws. A
+ * successful 2xx stays silent. There is no retry here. `detailed`,
+ * `responseCode` and `try`/`catch` are Deluge constructs that fail handler
+ * validation permanently when Zoho rejects them, so an isolated bot must
+ * accept the generated script before a production handler is repaired.
+ * Welcome and Participation keep the fire-and-forget post: no user message
+ * thread waits on their echo.
  *
  * ## Versioned payload contract (issue #228)
  *
@@ -132,8 +144,9 @@ export interface CliqProvisioningReader {
  * Mention contract remains the existing `message` string plus `user`, `chat`,
  * `eventId`, and Message-only `attachments`.
  *
- * The payload and the response never carry the message text, the webhook
- * secret or any token.
+ * Neither the response nor its generic fallback text carries the message
+ * text, the webhook secret, HTTP response bodies, exception details, or any
+ * token.
  */
 export function buildCliqHandlerScript(params: {
   handlerType: CliqProvisionedHandlerType;
@@ -224,13 +237,19 @@ export function buildCliqHandlerScript(params: {
           "}",
           "if (attachmentFiles.size() == 0)",
           "{",
-          "    invokeUrl",
+          "    delivery = invokeUrl",
           "    [",
           "        url    : webhookUrl",
           "        type   : POST",
           "        body   : payload",
           "        headers: headers",
+          "        detailed: true",
           "    ];",
+          "    if (delivery.get(\"responseCode\") < 200 || delivery.get(\"responseCode\") > 299)",
+          "    {",
+          "        response = Map();",
+          "        response.put(\"text\", " + CLIQ_DELIVERY_FAILURE_TEXT + ");",
+          "    }",
           "}",
           "else",
           "{",
@@ -285,23 +304,35 @@ export function buildCliqHandlerScript(params: {
           "    {",
           "        requestFiles.add(attachment);",
           "    }",
-          "    invokeUrl",
+          "    delivery = invokeUrl",
           "    [",
           "        url    : webhookUrl",
           "        type   : POST",
           "        files  : requestFiles",
           '        headers: {"x-cliq-webhook-secret":webhookSecret}',
+          "        detailed: true",
           "    ];",
+          "    if (delivery.get(\"responseCode\") < 200 || delivery.get(\"responseCode\") > 299)",
+          "    {",
+          "        response = Map();",
+          "        response.put(\"text\", " + CLIQ_DELIVERY_FAILURE_TEXT + ");",
+          "    }",
           "}",
         ].join("\n")
       : [
-          "invokeUrl",
+          "delivery = invokeUrl",
           "[",
           "    url    : webhookUrl",
           "    type   : POST",
           "    body   : payload",
           "    headers: headers",
+          "    detailed: true",
           "];",
+          "if (delivery.get(\"responseCode\") < 200 || delivery.get(\"responseCode\") > 299)",
+          "{",
+          "    response = Map();",
+          "    response.put(\"text\", " + CLIQ_DELIVERY_FAILURE_TEXT + ");",
+          "}",
         ].join("\n");
   return [
     `webhookUrl = "${params.webhookUrl}";`,
@@ -320,10 +351,17 @@ export function buildCliqHandlerScript(params: {
     'headers.put("Content-Type", "application/json");',
     'headers.put("x-cliq-webhook-secret", webhookSecret);',
     "",
-    requestPayload,
-    "",
     "response = Map();",
     'response.put("eventId", eventId);',
+    "try",
+    "{",
+    ...requestPayload.split("\n").map((line) => (line.length > 0 ? `    ${line}` : line)),
+    "}",
+    "catch (e)",
+    "{",
+    "    response = Map();",
+    "    response.put(\"text\", " + CLIQ_DELIVERY_FAILURE_TEXT + ");",
+    "}",
     "return response;",
     "",
   ].join("\n");
@@ -507,6 +545,15 @@ function classifyHandler(params: {
       action: "repair",
       conflict: "stale_script",
       reason: `${name} carries ${observed}; it must post handlerSchema ${CLIQ_HANDLER_SCHEMA_VERSION} so the gateway can identify the Zoho-held payload contract. Run the confirmation-gated handler repair; a plugin upgrade or gateway restart does not update Zoho's stored script`,
+      requiresConfirmation: true,
+    };
+  }
+  if (!hasCliqDeliveryFailureFallback(read.script, params.type)) {
+    return {
+      type: params.type,
+      action: "repair",
+      conflict: "stale_script",
+      reason: `${name} lacks the v6 webhook status/exception fallback, so a rejected or unreachable webhook leaves the user in silence. Run the confirmation-gated handler repair; a plugin upgrade or gateway restart does not update Zoho's stored script`,
       requiresConfirmation: true,
     };
   }
@@ -715,7 +762,8 @@ export async function applyCliqHandlerProvisioning(params: {
       storedSecret !== null &&
       sameWebhookUrl(storedUrl, url) &&
       storedSecret === secret &&
-      storedSchema === CLIQ_HANDLER_SCHEMA_VERSION;
+      storedSchema === CLIQ_HANDLER_SCHEMA_VERSION &&
+      (readBack.script ? hasCliqDeliveryFailureFallback(readBack.script, item.type) : false);
     results.push({
       type: item.type,
       outcome,

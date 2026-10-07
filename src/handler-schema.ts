@@ -23,9 +23,13 @@ export const CLIQ_HANDLER_SCHEMA_FIELD = "handlerSchema";
  * Map itself to `invokeUrl body:` so Zoho owns JSON escaping. `v5` replaces
  * the multipart attachment branch's single ambiguous `payload.toString()`
  * stringPart with one flat scalar stringPart per payload field, so no Deluge
- * serialization of nested structures ever reaches the wire (#275).
+ * serialization of nested structures ever reaches the wire (#275). `v6` adds
+ * the #260 delivery fallback: Message and Mention handlers wrap `invokeUrl`
+ * in `try`/`catch` with `detailed: true`, and a non-`2xx` status or caught
+ * exception returns one generic content-free fallback `text` beside the
+ * `eventId` so the user is never left in silence.
  */
-export const CLIQ_HANDLER_SCHEMA_VERSION = "v5";
+export const CLIQ_HANDLER_SCHEMA_VERSION = "v6";
 
 export type CliqHandlerSchemaCompatibility = "current" | "missing" | "unsupported";
 
