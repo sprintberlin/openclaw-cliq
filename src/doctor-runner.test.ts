@@ -639,7 +639,7 @@ describe("cliq doctor — adopt a verified handler URL (issue #172)", () => {
   const HANDLER_URL = "https://agent.example.com/cliq/webhook";
 
   function handlerScript(url = HANDLER_URL, secret = WEBHOOK_SECRET): string {
-    return `webhookUrl = "${url}";\nwebhookSecret = "${secret}";\npayload.put("handlerSchema", "v5");\npayload.put("eventId", eventId);\nresponse.put("eventId", eventId);\npayload = Map();`;
+    return `webhookUrl = "${url}";\nwebhookSecret = "${secret}";\npayload.put("handlerSchema", "v6");\npayload.put("eventId", eventId);\nresponse.put("eventId", eventId);\npayload = Map();\ndelivery = invokeUrl [url: webhookUrl type: POST body: payload headers: headers detailed: true];\nif (delivery.get("responseCode") < 200 || delivery.get("responseCode") > 299)\n{\n    response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");\n}\ntry\n{\n}\ncatch (e)\n{\n    response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");\n}`;
   }
 
   function handlerClient(scriptBody: string = handlerScript()): CliqDoctorClient {

@@ -16,7 +16,7 @@ const SECRET = "config-secret";
 function script(
   secret = SECRET,
   url = URL_OK,
-  extra = `payload.put("${CLIQ_HANDLER_SCHEMA_FIELD}", "${CLIQ_HANDLER_SCHEMA_VERSION}");\npayload.put("eventId", eventId);\nresponse.put("eventId", eventId);\npayload.put("attachments", attachments);\nfiles  : requestFiles\npayloadPart.put("paramName", "payload");`,
+  extra = `payload.put("${CLIQ_HANDLER_SCHEMA_FIELD}", "${CLIQ_HANDLER_SCHEMA_VERSION}");\npayload.put("eventId", eventId);\nresponse.put("eventId", eventId);\npayload.put("attachments", attachments);\nfiles  : requestFiles\npayloadPart.put("paramName", "payload");\ndelivery = invokeUrl [url: webhookUrl type: POST body: payload headers: headers detailed: true];\nif (delivery.get("responseCode") < 200 || delivery.get("responseCode") > 299)\n{\n    response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");\n}\ntry\n{\n}\ncatch (e)\n{\n    response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");\n}`,
 ): string {
   return `webhookUrl = "${url}";\nwebhookSecret = "${secret}";\npayload = Map();\n${extra}`;
 }
@@ -114,33 +114,27 @@ describe("buildCliqHandlerScript", () => {
     });
 
     it.each(handlerTypes)(
-      "%s echoes only the eventId — never the secret, payload, or message",
+      "%s returns the eventId without echoing a message or secret",
       (handlerType) => {
-        const body = buildCliqHandlerScript({
-          handlerType,
-          webhookUrl: URL_OK,
-          webhookSecret: SECRET,
-        });
-        const responseLines = body
-          .split("\n")
-          .filter((line) => line.startsWith("response.put("));
-        expect(responseLines).toEqual(['response.put("eventId", eventId);']);
+        const body = buildCliqHandlerScript({ handlerType, webhookUrl: URL_OK, webhookSecret: SECRET });
+        expect(body).toContain('response.put("eventId", eventId);');
+        expect(body).not.toContain('response.put("message"');
+        expect(body).not.toContain('response.put("secret"');
+        const expectedFallback = handlerType !== "welcome_handler";
+        expect(body.includes('response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");')).toBe(expectedFallback);
       },
     );
 
-    it("introduces no new Deluge symbol beyond the already-used eventId", () => {
-      // `execution_handler_update_failed` is permanent and not safely
-      // retryable, so the echo must reuse a variable every handler already
-      // declares rather than capturing the invokeUrl result.
+    it("keeps the Welcome handler fire-and-forget while Message/Mention capture delivery status", () => {
       for (const handlerType of handlerTypes) {
-        const body = buildCliqHandlerScript({
-          handlerType,
-          webhookUrl: URL_OK,
-          webhookSecret: SECRET,
-        });
+        const body = buildCliqHandlerScript({ handlerType, webhookUrl: URL_OK, webhookSecret: SECRET });
         expect(body).toContain("eventId = zoho.currenttime");
-        expect(body).not.toMatch(/=\s*invokeUrl/);
-        expect(body).not.toContain("statusCode");
+        if (handlerType === "welcome_handler") {
+          expect(body).not.toMatch(/=\s*invokeUrl/);
+        } else {
+          expect(body).toContain("delivery = invokeUrl");
+          expect(body).toContain("detailed: true");
+        }
       }
     });
   });

@@ -23,7 +23,7 @@ const SECRET = "configured-secret-value";
 function script(
   secret = SECRET,
   url = HOOK_URL,
-  extra = `payload.put("${CLIQ_HANDLER_SCHEMA_FIELD}", "${CLIQ_HANDLER_SCHEMA_VERSION}");\npayload.put("eventId", eventId);\nresponse.put("eventId", eventId);`,
+  extra = `payload.put("${CLIQ_HANDLER_SCHEMA_FIELD}", "${CLIQ_HANDLER_SCHEMA_VERSION}");\npayload.put("eventId", eventId);\nresponse.put("eventId", eventId);\ndelivery = invokeUrl [url: webhookUrl type: POST body: payload headers: headers detailed: true];\nif (delivery.get("responseCode") < 200 || delivery.get("responseCode") > 299)\n{\n    response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");\n}\ntry\n{\n}\ncatch (e)\n{\n    response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");\n}`,
 ): string {
   return `webhookUrl = "${url}";\nwebhookSecret = "${secret}";\n${extra}\npayload = Map();`;
 }
@@ -112,7 +112,7 @@ describe("checkCliqHandlerConsistency (issue #124)", () => {
       `webhookSecret = "${SECRET}";`,
       'payload = Map();',
       'payload.put("handler","message");',
-      'payload.put("handlerSchema","v5");',
+      'payload.put("handlerSchema","v6");',
       'payload.put("eventId",eventId);',
       'response = Map();',
       'response.put("eventId",eventId);',
@@ -129,6 +129,9 @@ describe("checkCliqHandlerConsistency (issue #124)", () => {
       '\theaders:{"x-cliq-webhook-secret":webhookSecret}',
       '\tfiles:requestFiles',
       ']',
+      'delivery = invokeUrl [url: webhookUrl type: POST files: requestFiles headers: headers detailed: true];',
+      'if (delivery.get("responseCode") < 200 || delivery.get("responseCode") > 299) { response.put("text", "Ref " + eventId); }',
+      'try { } catch (e) { response.put("text", "Ref " + eventId); }',
       'return response;',
     ].join("\n");
     const result = checkCliqHandlerConsistency({

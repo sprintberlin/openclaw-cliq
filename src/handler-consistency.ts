@@ -315,6 +315,20 @@ export function hasDelugeMultipartFiles(script: string): boolean {
   return hasFilesParam && hasPayloadPart;
 }
 
+
+/** Recognise the v6 Message/Mention delivery fallback in a Zoho-held script.
+ * The marker alone is not proof that the handler checks webhook failures.
+ * Accept Zoho whitespace/case formatting, but not a comment-only marker.
+ */
+export function hasCliqDeliveryFailureFallback(script: string, type: string): boolean {
+  if (type !== "message_handler" && type !== "mention_handler") return true;
+  const source = script.replace(/^\s*\/\/[^\n]*/gm, "");
+  return /\bdelivery\s*=\s*invokeUrl\b[\s\S]*?\bdetailed\s*:\s*true\b/i.test(source) &&
+    /\bdelivery\s*\.\s*get\s*\(\s*["']responseCode["']\s*\)/i.test(source) &&
+    /\bresponse\s*\.\s*put\s*\(\s*["']text["']\s*,[^\n]*\beventId\b[^\n]*\)/i.test(source) &&
+    /\btry\s*\{/.test(source) && /\bcatch\s*\(\s*\w+\s*\)\s*\{/.test(source);
+}
+
 /** Compare two URLs for delivery equivalence (trailing slash / case-insensitive host). */
 function sameWebhookUrl(a: string, b: string): boolean {
   const normalize = (raw: string): string => {
@@ -426,6 +440,13 @@ export function checkCliqHandlerConsistency(
           `${label} carries ${observed}; expected handlerSchema "${CLIQ_HANDLER_SCHEMA_VERSION}". The Zoho-held script is stale even if the plugin was upgraded or the gateway restarted; run openclaw setup or the confirmation-gated handler repair to update it`,
         );
       }
+    }
+
+
+    if (handlerSecret !== null &&
+      extractDelugePayloadPutStringLiteral(handler.script, CLIQ_HANDLER_SCHEMA_FIELD) === CLIQ_HANDLER_SCHEMA_VERSION &&
+      !hasCliqDeliveryFailureFallback(handler.script, handler.type)) {
+      failures.push(`${label} lacks the v6 webhook status/exception fallback; run openclaw setup or the confirmation-gated handler repair to update it`);
     }
 
     if (

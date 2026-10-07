@@ -18,7 +18,7 @@ function writer(overrides: Partial<CliqProvisioningWriter> = {}): CliqProvisioni
     createHandler: vi.fn(async () => ({ ok: true as const })),
     updateHandler: vi.fn(async () => ({ ok: true as const })),
     readHandlerScript: vi.fn(async () => ({
-      script: `webhookUrl = "${URL_OK}";\nwebhookSecret = "${SECRET}";\npayload.put("${CLIQ_HANDLER_SCHEMA_FIELD}", "${CLIQ_HANDLER_SCHEMA_VERSION}");`,
+      script: `webhookUrl = "${URL_OK}";\nwebhookSecret = "${SECRET}";\npayload.put("${CLIQ_HANDLER_SCHEMA_FIELD}", "${CLIQ_HANDLER_SCHEMA_VERSION}");\ndelivery = invokeUrl [url: webhookUrl type: POST body: payload headers: headers detailed: true];\nif (delivery.get("responseCode") < 200 || delivery.get("responseCode") > 299) { response.put("text", "Ref " + eventId); }\ntry { } catch (e) { response.put("text", "Ref " + eventId); }`
     })),
     ...overrides,
   };

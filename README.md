@@ -667,7 +667,7 @@ payload = Map();
 payload.put("handler", "message");   // <-- use "mention" in the Mention Handler
 // Generated-handler payload contract marker (issue #228). Keep this literal:
 // `openclaw cliq doctor` reads it back to identify a stale Zoho-held script.
-payload.put("handlerSchema", "v5");
+payload.put("handlerSchema", "v6");
 payload.put("message", message);
 payload.put("user", user);
 payload.put("chat", chat);
@@ -716,13 +716,18 @@ if (attachments != null)
 }
 if (attachmentFiles.size() == 0)
 {
-    invokeUrl
+    delivery = invokeUrl
     [
         url    : webhookUrl
         type   : POST
         body   : payload
         headers: headers
+        detailed: true
     ];
+    if (delivery.get("responseCode") < 200 || delivery.get("responseCode") > 299)
+    {
+        response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");
+    }
 }
 else
 {
@@ -735,7 +740,7 @@ else
     partSchema = Map();
     partSchema.put("stringPart", "true");
     partSchema.put("paramName", "handlerSchema");
-    partSchema.put("content", "v5");
+    partSchema.put("content", "v6");
     requestFiles.add(partSchema);
     partMessage = Map();
     partMessage.put("stringPart", "true");
@@ -777,13 +782,18 @@ else
     {
         requestFiles.add(attachment);
     }
-    invokeUrl
+    delivery = invokeUrl
     [
         url    : webhookUrl
         type   : POST
         files  : requestFiles
         headers: {"x-cliq-webhook-secret":webhookSecret}
+        detailed: true
     ];
+    if (delivery.get("responseCode") < 200 || delivery.get("responseCode") > 299)
+    {
+        response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");
+    }
 }
 
 // The reply is delivered by the OpenClaw gateway via the Cliq bot API. Echo
@@ -792,6 +802,18 @@ else
 // (issue #231). Do not return the payload, the message, or the secret.
 response = Map();
 response.put("eventId", eventId);
+// #260: wrap the delivery section above in `try { ... } catch (e) { ... }` and
+// set the same generic text in the catch block. A 2xx stays silent; there is
+// no retry. The fallback carries only the eventId reference, never the status,
+// exception, URL, secret, or user content.
+try
+{
+    // ... the payload build and both invokeUrl branches above
+}
+catch (e)
+{
+    response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");
+}
 return response;
 ```
 

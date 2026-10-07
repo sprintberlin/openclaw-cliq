@@ -17,7 +17,7 @@ function service(overrides: Partial<CliqBotProvisioningService> = {}): CliqBotPr
       bot: { id: "b-1", unique_name: "franzi", name: "Franzi" },
     })),
     readHandlerScript: vi.fn(async () => ({
-      script: `webhookUrl = "${URL_OK}";\nwebhookSecret = "${SECRET}";\npayload.put("handlerSchema", "v5");\npayload.put("eventId", eventId);\nresponse.put("eventId", eventId);\npayload.put("attachments", attachments);\nfiles  : requestFiles\npayloadPart.put("paramName", "payload");`,
+      script: `webhookUrl = "${URL_OK}";\nwebhookSecret = "${SECRET}";\npayload.put("handlerSchema", "v6");\npayload.put("eventId", eventId);\nresponse.put("eventId", eventId);\npayload.put("attachments", attachments);\nfiles  : requestFiles\npayloadPart.put("paramName", "payload");\ndelivery = invokeUrl [url: webhookUrl type: POST body: payload headers: headers detailed: true];\nif (delivery.get("responseCode") < 200 || delivery.get("responseCode") > 299)\n{\n    response.put("text", "x (Ref " + eventId + ").");\n}\ntry\n{\n    delivery = invokeUrl [url: webhookUrl type: POST files: requestFiles headers: headers detailed: true];\n}\ncatch (e)\n{\n    response.put("text", "y (Ref " + eventId + ").");\n}`,
     })),
     createHandler: vi.fn(async () => ({ ok: true as const })),
     updateHandler: vi.fn(async () => ({ ok: true as const })),
