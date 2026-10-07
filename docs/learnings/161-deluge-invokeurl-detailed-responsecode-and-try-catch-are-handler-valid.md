@@ -1,4 +1,4 @@
-# Deluge invokeUrl detailed/responseCode + try/catch are handler-valid and give the user a visible fallback
+# Deluge fallback syntax is accepted by isolated Message and Mention handlers
 
 ## Fact
 
@@ -8,12 +8,10 @@
   and returns `response.put("text", ...)` beside `response.put("eventId", ...)`.
   Verified live on an isolated test bot: both handler types saved and
   re-read the script (saving runs Zoho script validation).
-- `detailed: true` returns a KEY-VALUE map whose `responseCode` compares
-  numerically (`< 200 || > 299` covers the failure classes).
-- `catch` runs on transport errors such as unresolvable hosts, so a network
-  failure can return the same generic fallback as an HTTP error status.
-- Returning `text` in the response map renders as a visible bot message in
-  the originating chat; returning only `eventId` renders nothing extra.
+- Save/read-back proves syntax acceptance, not execution or user-visible delivery.
+  The isolated test did not establish the runtime shape of `responseCode`, the
+  caught timeout path, or whether the returned `text` renders in the originating
+  chat. Those remain a live gate before merging or repairing a production bot.
 
 ## Consequence
 
