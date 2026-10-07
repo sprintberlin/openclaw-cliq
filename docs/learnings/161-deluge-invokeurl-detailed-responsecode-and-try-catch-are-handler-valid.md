@@ -17,6 +17,19 @@
   and produced one visible reply (`T260DM-15`, Ref `20261007110555-678404`).
   Thus failure must replace the success eventId Map with a text-only Map; merely
   adding `text` to the success Map does not satisfy the user-visible fallback.
+- After replacing the failure Map, isolated Message-handler DMs were sent through
+  a real Cliq client. With the `detailed: true` status check, 200 and 204
+  generated no additional reply; 400, 401, 405, 413, 500, and 503 each
+  generated exactly one visible generic reply with a numeric event reference.
+  A refused connection produced one identical generic reply via `catch (e)`.
+  An actual channel mention selected from Cliq autocomplete triggered the
+  isolated Mention handler at 400 and produced one visible generic reply
+  (Ref `20261007113527-833732`). This proves the native handler response
+  shape, not a direct bot-send API response. The full v6 Message and Mention
+  scripts were also saved and read back on the isolated bot (HTTP 204/200),
+  with the text-only branches and v6 marker present. A separate permission
+  prompt for that full-script external API prevented a full-generator runtime
+  trigger; do not claim that part was executed end to end.
 
 ## Consequence
 
