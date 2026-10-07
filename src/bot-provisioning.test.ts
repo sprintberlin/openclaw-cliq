@@ -151,6 +151,30 @@ describe("buildCliqHandlerScript", () => {
     }
   });
 
+  it("keeps failure visibility deterministic for every delivery status", () => {
+    const statuses = [200, 204, 400, 401, 405, 413, 500, 503];
+    for (const handlerType of ["message_handler", "mention_handler"] as const) {
+      const body = buildCliqHandlerScript({
+        handlerType,
+        webhookUrl: URL_OK,
+        webhookSecret: SECRET,
+      });
+      expect(body.match(/delivery = invokeUrl/g)).toHaveLength(handlerType === "message_handler" ? 2 : 1);
+      expect(body.match(/\btry\b/g)).toHaveLength(1);
+      expect(body.match(/\bcatch \(e\)/g)).toHaveLength(1);
+      const fallback = 'response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");';
+      expect(body.split(fallback)).toHaveLength((handlerType === "message_handler" ? 2 : 1) + 2);
+      const predicate = body.match(/if \(delivery\.get\("responseCode"\) < 200 \|\| delivery\.get\("responseCode"\) > 299\)/g) ?? [];
+      expect(predicate).toHaveLength(handlerType === "message_handler" ? 2 : 1);
+      for (const status of statuses) {
+        const visible = status < 200 || status > 299;
+        expect(visible).toBe(![200, 204].includes(status));
+      }
+      expect(body).not.toContain("responseText");
+      if (handlerType === "mention_handler") expect(body).not.toContain("attachments");
+    }
+  });
+
   it("omits attachments from the mention handler, which Zoho does not provide", () => {
     const body = buildCliqHandlerScript({
       handlerType: "mention_handler",

@@ -142,6 +142,18 @@ describe("checkCliqHandlerConsistency (issue #124)", () => {
     expect(result.status).toBe("pass");
   });
 
+  it("fails a generated handler whose v6 marker lacks the delivery fallback", () => {
+    const noFallback = script().split("\ndelivery = invokeUrl")[0]!;
+    const result = checkCliqHandlerConsistency({
+      handlers: handlers(noFallback),
+      configSecret: SECRET,
+      expectedWebhookUrl: HOOK_URL,
+    });
+    expect(result.status).toBe("fail");
+    expect(result.detail).toMatch(/lacks the v6 webhook status\/exception fallback/i);
+    expect(result.detail).not.toContain(SECRET);
+  });
+
   it("fails and names the handler when config and handler secrets differ", () => {
     const handlerSecret = "zoho-held-different-secret";
     const result = checkCliqHandlerConsistency({
