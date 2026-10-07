@@ -706,109 +706,102 @@ headers.put("x-cliq-webhook-secret", webhookSecret);
 // may use LF-only framing, and may omit the blank line between part headers
 // and content; the gateway recognizes the bounded generated field parts from
 // the body before parsing the attached FILE parts.
-attachmentFiles = List();
-if (attachments != null)
-{
-    for each attachment in attachments
-    {
-        attachmentFiles.add(attachment);
-    }
-}
-if (attachmentFiles.size() == 0)
-{
-    delivery = invokeUrl
-    [
-        url    : webhookUrl
-        type   : POST
-        body   : payload
-        headers: headers
-        detailed: true
-    ];
-    if (delivery.get("responseCode") < 200 || delivery.get("responseCode") > 299)
-    {
-        response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");
-    }
-}
-else
-{
-    requestFiles = List();
-    partHandler = Map();
-    partHandler.put("stringPart", "true");
-    partHandler.put("paramName", "handler");
-    partHandler.put("content", "message");
-    requestFiles.add(partHandler);
-    partSchema = Map();
-    partSchema.put("stringPart", "true");
-    partSchema.put("paramName", "handlerSchema");
-    partSchema.put("content", "v6");
-    requestFiles.add(partSchema);
-    partMessage = Map();
-    partMessage.put("stringPart", "true");
-    partMessage.put("paramName", "message");
-    partMessage.put("content", "" + message);
-    requestFiles.add(partMessage);
-    partEvent = Map();
-    partEvent.put("stringPart", "true");
-    partEvent.put("paramName", "eventId");
-    partEvent.put("content", "" + eventId);
-    requestFiles.add(partEvent);
-    partUserId = Map();
-    partUserId.put("stringPart", "true");
-    partUserId.put("paramName", "userId");
-    partUserId.put("content", "" + user.get("id"));
-    requestFiles.add(partUserId);
-    if (user.get("name") != null)
-    {
-        partUserName = Map();
-        partUserName.put("stringPart", "true");
-        partUserName.put("paramName", "userName");
-        partUserName.put("content", "" + user.get("name"));
-        requestFiles.add(partUserName);
-    }
-    partChatId = Map();
-    partChatId.put("stringPart", "true");
-    partChatId.put("paramName", "chatId");
-    partChatId.put("content", "" + chat.get("id"));
-    requestFiles.add(partChatId);
-    if (chat.get("type") != null)
-    {
-        partChatType = Map();
-        partChatType.put("stringPart", "true");
-        partChatType.put("paramName", "chatType");
-        partChatType.put("content", "" + chat.get("type"));
-        requestFiles.add(partChatType);
-    }
-    for each attachment in attachmentFiles
-    {
-        requestFiles.add(attachment);
-    }
-    delivery = invokeUrl
-    [
-        url    : webhookUrl
-        type   : POST
-        files  : requestFiles
-        headers: {"x-cliq-webhook-secret":webhookSecret}
-        detailed: true
-    ];
-    if (delivery.get("responseCode") < 200 || delivery.get("responseCode") > 299)
-    {
-        response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");
-    }
-}
-
-// The reply is delivered by the OpenClaw gateway via the Cliq bot API. Echo
-// the eventId so the Zoho Bot execution log is correlatable with gateway
-// `evt:` identities instead of reading `output: "{}"` for every run
-// (issue #231). Do not return the payload, the message, or the secret.
+// A 2xx returns only eventId; non-2xx or a caught transport error returns
+// exactly one generic, eventId-only text. No retry or second Cliq API call.
 response = Map();
 response.put("eventId", eventId);
-// #260: wrap the delivery section above in `try { ... } catch (e) { ... }` and
-// set the same generic text in the catch block. A 2xx stays silent; there is
-// no retry. The fallback carries only the eventId reference, never the status,
-// exception, URL, secret, or user content.
 try
 {
-    // ... the payload build and both invokeUrl branches above
+    attachmentFiles = List();
+    if (attachments != null)
+    {
+        for each attachment in attachments
+        {
+            attachmentFiles.add(attachment);
+        }
+    }
+    if (attachmentFiles.size() == 0)
+    {
+        delivery = invokeUrl
+        [
+            url    : webhookUrl
+            type   : POST
+            body   : payload
+            headers: headers
+            detailed: true
+        ];
+        if (delivery.get("responseCode") < 200 || delivery.get("responseCode") > 299)
+        {
+            response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");
+        }
+    }
+    else
+    {
+        requestFiles = List();
+        partHandler = Map();
+        partHandler.put("stringPart", "true");
+        partHandler.put("paramName", "handler");
+        partHandler.put("content", "message");
+        requestFiles.add(partHandler);
+        partSchema = Map();
+        partSchema.put("stringPart", "true");
+        partSchema.put("paramName", "handlerSchema");
+        partSchema.put("content", "v6");
+        requestFiles.add(partSchema);
+        partMessage = Map();
+        partMessage.put("stringPart", "true");
+        partMessage.put("paramName", "message");
+        partMessage.put("content", "" + message);
+        requestFiles.add(partMessage);
+        partEvent = Map();
+        partEvent.put("stringPart", "true");
+        partEvent.put("paramName", "eventId");
+        partEvent.put("content", "" + eventId);
+        requestFiles.add(partEvent);
+        partUserId = Map();
+        partUserId.put("stringPart", "true");
+        partUserId.put("paramName", "userId");
+        partUserId.put("content", "" + user.get("id"));
+        requestFiles.add(partUserId);
+        if (user.get("name") != null)
+        {
+            partUserName = Map();
+            partUserName.put("stringPart", "true");
+            partUserName.put("paramName", "userName");
+            partUserName.put("content", "" + user.get("name"));
+            requestFiles.add(partUserName);
+        }
+        partChatId = Map();
+        partChatId.put("stringPart", "true");
+        partChatId.put("paramName", "chatId");
+        partChatId.put("content", "" + chat.get("id"));
+        requestFiles.add(partChatId);
+        if (chat.get("type") != null)
+        {
+            partChatType = Map();
+            partChatType.put("stringPart", "true");
+            partChatType.put("paramName", "chatType");
+            partChatType.put("content", "" + chat.get("type"));
+            requestFiles.add(partChatType);
+        }
+        for each attachment in attachmentFiles
+        {
+            requestFiles.add(attachment);
+        }
+        delivery = invokeUrl
+        [
+            url    : webhookUrl
+            type   : POST
+            files  : requestFiles
+            headers: {"x-cliq-webhook-secret":webhookSecret}
+            detailed: true
+        ];
+        if (delivery.get("responseCode") < 200 || delivery.get("responseCode") > 299)
+        {
+            response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");
+        }
+    }
+
 }
 catch (e)
 {
