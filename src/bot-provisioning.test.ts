@@ -385,6 +385,34 @@ describe("planCliqHandlerProvisioning — read-only", () => {
     expect(result.items[0].requiresConfirmation).toBe(true);
   });
 
+  it("plans creation for Zoho's HTTP 400 execution_handler_not_found code", async () => {
+    const result = await plan({
+      reader: reader({
+        readHandlerScript: vi.fn(async () => ({
+          error: "Zoho answered HTTP 400",
+          errorCode: "execution_handler_not_found",
+        })),
+      }),
+    });
+    expect(result.status).toBe("changes_required");
+    expect(result.items[0].action).toBe("create");
+    expect(result.items[0].conflict).toBe("missing");
+  });
+
+  it("does not treat an unrelated HTTP 400 as an absent handler", async () => {
+    const result = await plan({
+      reader: reader({
+        readHandlerScript: vi.fn(async () => ({
+          error: "Zoho answered HTTP 400",
+          errorCode: "request_url_invalid",
+        })),
+      }),
+    });
+    expect(result.status).toBe("blocked");
+    expect(result.items[0].action).toBe("blocked");
+    expect(result.items[0].conflict).toBe("unreadable");
+  });
+
   it("blocks instead of guessing when the handler cannot be read at all", async () => {
     const result = await plan({
       reader: reader({

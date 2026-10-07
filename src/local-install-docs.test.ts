@@ -9,7 +9,7 @@ const contributing = readFileSync(join(ROOT, "CONTRIBUTING.md"), "utf8");
 describe("local checkout install documentation (issue #126)", () => {
   it("documents the supported install command for the Beta 3 minimum runtime", () => {
     expect(readme).toContain(
-      "openclaw plugins install --link --force ~/github_repos/openclaw-cliq",
+      "openclaw plugins install --link --force --accept-capabilities ~/github_repos/openclaw-cliq",
     );
     expect(readme).toMatch(/2026\.8\.1-beta\.3[\s\S]*outside ClawHub review and trust metadata/i);
     expect(readme).toMatch(/Older OpenClaw runtimes are no longer supported/i);

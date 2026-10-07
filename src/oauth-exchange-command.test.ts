@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   CLIQ_AUTH_CODE_ENV,
+  CLIQ_CLIENT_ID_ENV,
+  CLIQ_CLIENT_SECRET_ENV,
   runCliqOAuthExchangeCommand,
   type CliqOAuthExchangeCommandDeps,
 } from "./oauth-exchange-command.js";
@@ -147,7 +149,37 @@ describe("cliq oauth-exchange command (issue #248)", () => {
     const { deps, errors } = createDeps();
     const code = await runCliqOAuthExchangeCommand({ cfg: { channels: { cliq: {} } } as never }, deps);
     expect(code).toBe(2);
-    expect(errors.join("\n")).toContain("Missing required inputs: clientId, clientSecret, authorization code");
+    expect(errors.join("\n")).toContain(
+      "Missing required inputs: clientId (--client-id or $CLIQ_CLIENT_ID), clientSecret ($CLIQ_CLIENT_SECRET), authorization code",
+    );
+  });
+
+  it("accepts client credentials from the environment before any Cliq config exists", async () => {
+    const originalId = process.env[CLIQ_CLIENT_ID_ENV];
+    const originalSecret = process.env[CLIQ_CLIENT_SECRET_ENV];
+    process.env[CLIQ_CLIENT_ID_ENV] = "env-client-id";
+    process.env[CLIQ_CLIENT_SECRET_ENV] = "env-client-secret";
+    try {
+      const fetchMock = vi.fn(async (url: URL | Parameters<typeof fetch>[0]) => {
+        const text = url.toString();
+        expect(text).toContain("client_id=env-client-id");
+        expect(text).toContain("client_secret=env-client-secret");
+        return new Response(JSON.stringify({ refresh_token: TOKEN_VAL, scope: FULL_SCOPE_STRING }), { status: 200 });
+      });
+      const { deps, errors } = createDeps({ fetch: fetchMock as never });
+      const code = await runCliqOAuthExchangeCommand(
+        { cfg: { channels: { cliq: {} } } as never, code: "fresh-code" },
+        deps,
+      );
+      expect(code).toBe(0);
+      expect(errors).toEqual([]);
+      expect(fetchMock).toHaveBeenCalled();
+    } finally {
+      if (originalId === undefined) delete process.env[CLIQ_CLIENT_ID_ENV];
+      else process.env[CLIQ_CLIENT_ID_ENV] = originalId;
+      if (originalSecret === undefined) delete process.env[CLIQ_CLIENT_SECRET_ENV];
+      else process.env[CLIQ_CLIENT_SECRET_ENV] = originalSecret;
+    }
   });
 
   it("leaves the previous config intact when atomic mutation fails", async () => {

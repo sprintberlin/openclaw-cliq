@@ -11,6 +11,10 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+- Fresh-host setup accepts `CLIQ_CLIENT_ID` and `CLIQ_CLIENT_SECRET` for `openclaw cliq oauth-exchange` before Cliq config exists, and the local checkout install documents `--accept-capabilities` (#257).
+- Handler provisioning treats Zoho HTTP 400 `execution_handler_not_found` as an absent handler that can be created, while unrelated HTTP 400 codes remain blocked (#257).
+- Document that a direct REST bot create with `scope: "organization"` can read back as `personal` and requires a visibility change in Bots & Tools; no REST correction is verified (#257).
+
 ### Added
 
 - Generated Message and Mention handlers now use **schema v6**: `invokeUrl` runs with `detailed: true` inside `try`/`catch`, reads `responseCode`, and returns exactly one generic content-free fallback `text` ("Your message could not be processed (Ref <eventId>). Please send it again.") when the webhook answers a non-2xx status or the call throws (timeout/transport). A 2xx keeps the eventId-only Map and stays silent; failure replaces it with a text-only Map with the eventId reference embedded in the message. Zoho silently discards `text` when `eventId` is another key in that Map, confirmed on an isolated test bot. There is no retry (durable retry belongs to #261) and no status text, exception details, URLs, or user content. The constructs were live-validated on an isolated Zoho test bot (both handler types accepted the script) before the generator changed. Welcome and Participation handlers keep the fire-and-forget post. Read-back and the confirmation-gated repair mark pre-v6 scripts and v6 scripts without the fallback as `stale_script` (#260).

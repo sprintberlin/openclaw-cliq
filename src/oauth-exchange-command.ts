@@ -4,6 +4,8 @@ import { evaluateCliqScopeSet, FULL_SCOPE_STRING } from "./capabilities.js";
 import { appendCliqDataCenterHint } from "./region.js";
 
 export const CLIQ_AUTH_CODE_ENV = "OPENCLAW_CLIQ_AUTH_CODE";
+export const CLIQ_CLIENT_ID_ENV = "CLIQ_CLIENT_ID";
+export const CLIQ_CLIENT_SECRET_ENV = "CLIQ_CLIENT_SECRET";
 
 type CliqSection = Record<string, unknown>;
 
@@ -130,15 +132,19 @@ export async function runCliqOAuthExchangeCommand(
   deps: CliqOAuthExchangeCommandDeps = defaultDeps,
 ): Promise<number> {
   const section = sectionFor(options.cfg, options.accountId);
-  const clientId = options.clientId?.trim() || stringValue(section.clientId);
-  const clientSecret = options.clientSecret?.trim() || stringValue(section.clientSecret);
+  const clientId = options.clientId?.trim()
+    || stringValue(process.env[CLIQ_CLIENT_ID_ENV])
+    || stringValue(section.clientId);
+  const clientSecret = options.clientSecret?.trim()
+    || stringValue(process.env[CLIQ_CLIENT_SECRET_ENV])
+    || stringValue(section.clientSecret);
   const oauthBase = stringValue(section.oauthBase) ?? "https://accounts.zoho.eu";
   const refreshToken = stringValue(section.refreshToken);
   const code = options.code?.trim() || stringValue(process.env[CLIQ_AUTH_CODE_ENV]);
 
   const missing = [
-    !clientId ? "clientId" : undefined,
-    !clientSecret ? "clientSecret" : undefined,
+    !clientId ? `clientId (--client-id or $${CLIQ_CLIENT_ID_ENV})` : undefined,
+    !clientSecret ? `clientSecret ($${CLIQ_CLIENT_SECRET_ENV})` : undefined,
     options.check ? (!refreshToken ? "refreshToken" : undefined) : (!code ? `authorization code (stdin or $${CLIQ_AUTH_CODE_ENV})` : undefined),
   ].filter((value): value is string => Boolean(value));
   if (missing.length) {
