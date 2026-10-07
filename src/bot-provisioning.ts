@@ -78,7 +78,7 @@ export interface CliqProvisioningReader {
   readHandlerScript(
     handlerType: string,
     botId?: string,
-  ): Promise<{ script?: string; error?: string }>;
+  ): Promise<{ script?: string; error?: string; errorCode?: string }>;
 }
 
 /**
@@ -454,17 +454,19 @@ function label(type: string): string {
 }
 
 function classifyHandler(params: {
-  type: CliqProvisionedHandlerType;  read: { script?: string; error?: string };
+  type: CliqProvisionedHandlerType;
+  read: { script?: string; error?: string; errorCode?: string };
   configSecret: string;
   expectedUrl: string;
 }): CliqHandlerPlanItem {
   const name = label(params.type);
   const { read } = params;
   if (read.error || typeof read.script !== "string" || read.script.length === 0) {
-    // A 404 is the one read failure that genuinely means "not provisioned";
-    // every other failure leaves the handler state unknown, and unknown must
-    // never authorise a write.
-    const missing = /404|not[ _]found/i.test(read.error ?? "");
+    // HTTP 404 and Zoho's stable execution_handler_not_found code both mean
+    // the handler is absent. A bare HTTP 400 does not: other 400 codes leave
+    // the stored state unknown and must not authorise a write.
+    const missing = read.errorCode?.trim().toLowerCase() === "execution_handler_not_found"
+      || /404|not[ _]found/i.test(read.error ?? "");
     return missing
       ? {
           type: params.type,

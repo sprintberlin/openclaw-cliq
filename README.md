@@ -92,7 +92,7 @@ Open the bot builder: click your **profile picture** (top-right in Zoho Cliq) �
 
    Cliq assigns the **unique name** itself from the display name; it is not a field you fill in. Read it back from the created bot — that assigned value is the `botId` you put in the plugin config.
 
-   Creating the same bot over the API (or the Zoho MCP server's `ZohoCliq_create_bot`) uses different field names than this form: `name`, `description`, `scope` (`organization` | `team` | `personal`, required), `execution_type` (`deluge` | `webhook`), and `channel_participation`. There is no `bot_unique_name` or `bot_type` field — both are rejected as `extra_key_found`, and `unique_name` comes back in the response.
+   Creating the same bot over the API (or the Zoho MCP server's `ZohoCliq_create_bot`) uses different field names than this form: `name`, `description`, `scope` (`organization` | `team` | `personal`, required), `execution_type` (`deluge` | `webhook`), and `channel_participation`. There is no `bot_unique_name` or `bot_type` field — both are rejected as `extra_key_found`, and `unique_name` comes back in the response. A verified direct REST create with `scope: "organization"` can still read back as `personal`; the API does not provide a proven scope-update correction. Open the bot in **Bots & Tools** and change its visibility there. The Zoho MCP create wrapper can also reject this valid body with `input_pattern_mismatch`, so use the direct REST contract or the Cliq UI rather than treating MCP as reliable provisioning.
 4. Set the bot's **Functional Handlers**:
    - **Mention Handler** — fired when the bot is @mentioned in a channel.
    - **Message Handler** — fired when a user DMs the bot directly.
@@ -1187,7 +1187,7 @@ openclaw cliq print-handlers --webhook-url https://host.example.com/cliq/webhook
 `openclaw cliq oauth-exchange` converts a self-client authorization code into `channels.cliq.refreshToken`. The token is written atomically and never printed — there is no `--print` escape hatch, so output masking and scrollback cannot lose it. Prefer `$OPENCLAW_CLIQ_AUTH_CODE` over `--code` to keep the single-use code out of shell history. The command reports the granted scopes and warns when the combined profile from [§3b](#3b-oauth-scopes) is incomplete. `--check` verifies an already-configured token and writes nothing.
 
 ```bash
-OPENCLAW_CLIQ_AUTH_CODE=1000.… openclaw cliq oauth-exchange
+CLIQ_CLIENT_ID=1000.… CLIQ_CLIENT_SECRET=...… OPENCLAW_CLIQ_AUTH_CODE=1000.… openclaw cliq oauth-exchange
 openclaw cliq oauth-exchange --check
 ```
 
@@ -1345,7 +1345,7 @@ npx tsc --noEmit && npm test && npm run build
 Then install. On the supported runtime (**OpenClaw `2026.8.2` and later**) a local path is outside ClawHub review and trust metadata, so a non-interactive install is cancelled unless you pass `--force`. That flag is the documented acknowledgement of the warning, not a way to skip a real safety check.
 
 ```bash
-openclaw plugins install --link --force ~/github_repos/openclaw-cliq
+openclaw plugins install --link --force --accept-capabilities ~/github_repos/openclaw-cliq
 ```
 
 Older OpenClaw runtimes are no longer supported or tested by this plugin; on those versions `--force` meant "overwrite an existing install" and was rejected together with `--link`.

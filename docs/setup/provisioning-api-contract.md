@@ -26,6 +26,7 @@ The request must include:
 - `description` is required and must be non-empty; omitting it returns `param_missing`.
 - Do not send `unique_name`; Zoho derives it from `name` (`Laura` produced `unique_name: laura`).
 - Bot creation requires `ZohoCliq.Bots.CREATE`.
+- A live EU create with `scope: "organization"` was accepted, but its read-back scope was `personal`. No REST update has been verified to correct that result. Change the visibility in **Bots & Tools** and read the bot back before treating it as organization-visible.
 - `POST /api/v2/bots` is not a valid create route and returns `request_method_invalid`.
 
 ### Read a bot

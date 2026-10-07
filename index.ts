@@ -295,6 +295,7 @@ export default defineChannelPluginEntry({
               cfg: api.config as OpenClawConfig,
               accountId: opts.account,
               clientId: opts.clientId,
+              clientSecret: process.env.CLIQ_CLIENT_SECRET,
               code: opts.code,
               check: opts.check,
             });

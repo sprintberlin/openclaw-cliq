@@ -44,7 +44,7 @@ ZohoCliq.Webhooks.CREATE,ZohoCliq.Channels.UPDATE,ZohoCliq.Messages.UPDATE,ZohoC
 Exchange the authorization code for a persistent refresh token:
 
 ```bash
-OPENCLAW_CLIQ_AUTH_CODE="1000.xxxx..." openclaw cliq oauth-exchange
+CLIQ_CLIENT_ID="1000.xxxx..." CLIQ_CLIENT_SECRET="xxxx..." OPENCLAW_CLIQ_AUTH_CODE="1000.xxxx..." openclaw cliq oauth-exchange
 # Verify existing token:
 openclaw cliq oauth-exchange --check
 ```
