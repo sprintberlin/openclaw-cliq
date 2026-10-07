@@ -9,9 +9,14 @@
   Verified live on an isolated test bot: both handler types saved and
   re-read the script (saving runs Zoho script validation).
 - Save/read-back proves syntax acceptance, not execution or user-visible delivery.
-  The isolated test did not establish the runtime shape of `responseCode`, the
-  caught timeout path, or whether the returned `text` renders in the originating
-  chat. Those remain a live gate before merging or repairing a production bot.
+  The isolated test did not establish the runtime shape of `responseCode` or the
+  caught timeout path. Those remain a live gate before merging or repairing a production bot.
+- A real isolated DM with a static script returning both `text` and `eventId` in
+  the same Map produced no visible bot reply (`T260DM-14`). A subsequent static
+  script returned only `text`, with a generated reference embedded in its value,
+  and produced one visible reply (`T260DM-15`, Ref `20261007110555-678404`).
+  Thus failure must replace the success eventId Map with a text-only Map; merely
+  adding `text` to the success Map does not satisfy the user-visible fallback.
 
 ## Consequence
 

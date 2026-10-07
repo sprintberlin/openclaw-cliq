@@ -706,8 +706,10 @@ headers.put("x-cliq-webhook-secret", webhookSecret);
 // may use LF-only framing, and may omit the blank line between part headers
 // and content; the gateway recognizes the bounded generated field parts from
 // the body before parsing the attached FILE parts.
-// A 2xx returns only eventId; non-2xx or a caught transport error returns
-// exactly one generic, eventId-only text. No retry or second Cliq API call.
+// A 2xx returns only eventId; non-2xx or a caught transport error replaces
+// the response with a text-only Map containing the reference in the text.
+// Zoho does not render text when the same response Map also has an eventId key.
+// No retry or second Cliq API call.
 response = Map();
 response.put("eventId", eventId);
 try
@@ -732,6 +734,7 @@ try
         ];
         if (delivery.get("responseCode") < 200 || delivery.get("responseCode") > 299)
         {
+            response = Map();
             response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");
         }
     }
@@ -798,6 +801,7 @@ try
         ];
         if (delivery.get("responseCode") < 200 || delivery.get("responseCode") > 299)
         {
+            response = Map();
             response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");
         }
     }
@@ -805,6 +809,7 @@ try
 }
 catch (e)
 {
+    response = Map();
     response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");
 }
 return response;

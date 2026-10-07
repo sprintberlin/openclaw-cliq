@@ -325,7 +325,14 @@ export function hasCliqDeliveryFailureFallback(script: string, type: string): bo
   const source = script.replace(/^\s*\/\/[^\n]*/gm, "");
   return /\bdelivery\s*=\s*invokeUrl\b[\s\S]*?\bdetailed\s*:\s*true\b/i.test(source) &&
     /\bdelivery\s*\.\s*get\s*\(\s*["']responseCode["']\s*\)/i.test(source) &&
-    /\bresponse\s*\.\s*put\s*\(\s*["']text["']\s*,[^\n]*\beventId\b[^\n]*\)/i.test(source) &&
+    (() => {
+      // Zoho silently discards a visible text reply if the same Map also
+      // contains eventId. Every failure branch must replace the success Map
+      // with a text-only Map; the reference remains inside the text itself.
+      const textPuts = source.match(/\bresponse\s*\.\s*put\s*\(\s*["']text["']\s*,[^\n]*\beventId\b[^\n]*\)/gi) ?? [];
+      const textOnlyPuts = source.match(/\bresponse\s*=\s*Map\s*\(\s*\)\s*;\s*response\s*\.\s*put\s*\(\s*["']text["']\s*,[^\n]*\beventId\b[^\n]*\)/gi) ?? [];
+      return textPuts.length > 0 && textPuts.length === textOnlyPuts.length;
+    })() &&
     /\btry\s*\{/.test(source) && /\bcatch\s*\(\s*\w+\s*\)\s*\{/.test(source);
 }
 

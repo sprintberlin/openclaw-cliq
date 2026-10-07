@@ -16,7 +16,7 @@ const SECRET = "config-secret";
 function script(
   secret = SECRET,
   url = URL_OK,
-  extra = `payload.put("${CLIQ_HANDLER_SCHEMA_FIELD}", "${CLIQ_HANDLER_SCHEMA_VERSION}");\npayload.put("eventId", eventId);\nresponse.put("eventId", eventId);\npayload.put("attachments", attachments);\nfiles  : requestFiles\npayloadPart.put("paramName", "payload");\ndelivery = invokeUrl [url: webhookUrl type: POST body: payload headers: headers detailed: true];\nif (delivery.get("responseCode") < 200 || delivery.get("responseCode") > 299)\n{\n    response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");\n}\ntry\n{\n}\ncatch (e)\n{\n    response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");\n}`,
+  extra = `payload.put("${CLIQ_HANDLER_SCHEMA_FIELD}", "${CLIQ_HANDLER_SCHEMA_VERSION}");\npayload.put("eventId", eventId);\nresponse.put("eventId", eventId);\npayload.put("attachments", attachments);\nfiles  : requestFiles\npayloadPart.put("paramName", "payload");\ndelivery = invokeUrl [url: webhookUrl type: POST body: payload headers: headers detailed: true];\nif (delivery.get("responseCode") < 200 || delivery.get("responseCode") > 299)\n{\n    response = Map();\n    response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");\n}\ntry\n{\n}\ncatch (e)\n{\n    response = Map();\n    response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");\n}`,
 ): string {
   return `webhookUrl = "${url}";\nwebhookSecret = "${secret}";\npayload = Map();\n${extra}`;
 }
@@ -164,6 +164,12 @@ describe("buildCliqHandlerScript", () => {
       expect(body.match(/\bcatch \(e\)/g)).toHaveLength(1);
       const fallback = 'response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");';
       expect(body.split(fallback)).toHaveLength((handlerType === "message_handler" ? 2 : 1) + 2);
+      // Zoho silently discards text if eventId is another key in the same
+      // response map. Success keeps its log-only eventId, failure replaces the
+      // map and includes the reference only in the visible generic text.
+      expect(body.match(/response = Map\(\);\s*response\.put\("text", "Your message could not be processed \(Ref " \+ eventId \+ "\)\. Please send it again\."\);/g))
+        .toHaveLength(handlerType === "message_handler" ? 3 : 2);
+      expect(body).toMatch(/response = Map\(\);\s*response\.put\("eventId", eventId\);\s*try/);
       const predicate = body.match(/if \(delivery\.get\("responseCode"\) < 200 \|\| delivery\.get\("responseCode"\) > 299\)/g) ?? [];
       expect(predicate).toHaveLength(handlerType === "message_handler" ? 2 : 1);
       for (const status of statuses) {
