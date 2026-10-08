@@ -1639,6 +1639,32 @@ describe("Deluge unescaped-message repair over the webhook (#223/#227)", () => {
     // punctuation skeleton stays.
     expect(lines[0]).toContain("x* !! ..");
   });
+
+  it("keeps one corrupt event isolated from the next valid event (#262)", async () => {
+    const { webhook, warns, dispatches } = registrationWithLogs({
+      extra: { dmPolicy: "open" },
+    });
+    // The generated-field suffix is complete, but unescaped quote/newline
+    // content in both message and user.name defeats the bounded repair.
+    const corrupt =
+      '{"handler":"message","message":"line one\n"quoted" <strong>line</strong>","user":{"id":"user-123","name":"Alice "unescaped""},"chat":{"id":"chat-1-B","type":"single"},"eventId":"evt:corrupt"}';
+    const rejected = await postRaw(webhook, corrupt);
+    const accepted = await postRaw(
+      webhook,
+      JSON.stringify(createDmDelugePayload({
+        message: { text: "healthy follow-up", id: "healthy-after-corrupt" },
+      })),
+    );
+
+    expect(rejected.statusCode).toBe(400);
+    expect(accepted.statusCode).toBe(200);
+    expect(dispatches()).toBe(1);
+    const skipped = warns.filter((line) => line.startsWith("[cliq] inbound skipped:"));
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]).toContain("empty_body");
+    expect(skipped[0]).not.toContain("quoted");
+    expect(skipped[0]).not.toContain("healthy follow-up");
+  });
 });
 
 describe("always-on group sender gates (issue #283)", () => {

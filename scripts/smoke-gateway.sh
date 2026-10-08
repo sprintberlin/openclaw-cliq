@@ -584,10 +584,39 @@ if [ -f "$MODEL_REQUESTS_LOG" ] && [ -s "$MODEL_REQUESTS_LOG" ]; then
 fi
 echo "OK: rejected and invalid ingress produced no model turn"
 
+# Issue #262: use the same live gateway, account, and DM lane for an
+# unrecoverable Deluge body followed immediately by a valid event. The
+# generated-field suffix is complete, but free-text quotes and a newline in
+# both the message and user map defeat the bounded legacy repair. This is a
+# synthetic structural reproducer, never a copy of a customer's request.
+CORRUPT_BODY="$SMOKE_HOME/corrupt-event.body"
+rejects_before="$(grep -Ec '\[cliq\] inbound skipped: (empty_body|parser_rejected)' "$GW_LOG" || true)"
+cat > "$CORRUPT_BODY" <<'CORRUPT'
+{"handler":"message","handlerSchema":"v6","message":"neverlog-this-content
+"quoted" <strong>text</strong>","user":{"id":"user-alice","name":"Alice "unescaped""},"chat":{"id":"CT_smoke_dm","type":"single"},"eventId":"evt:corrupt-smoke"}
+CORRUPT
+code="$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 -X POST "$WEBHOOK_URL" \
+  -H "x-cliq-webhook-secret: smoke-webhook-secret" \
+  -H "content-type: application/json" --data-binary "@$CORRUPT_BODY")"
+assert_status "unrepairable complete Deluge body" 400 "$code"
+rejects="$(grep -Ec '\[cliq\] inbound skipped: (empty_body|parser_rejected)' "$GW_LOG" || true)"
+if [ "$rejects" -ne "$((rejects_before + 1))" ] || \
+   ! grep -q '\[cliq\] inbound skipped: empty_body' "$GW_LOG" || \
+   grep -Fq 'neverlog-this-content' "$GW_LOG"; then
+  # The new event must add exactly one content-free diagnostic.
+  echo "FAIL: corrupt event did not emit exactly one new redacted skip line" >&2
+  exit 1
+fi
+if [ -s "$MODEL_REQUESTS_LOG" ] || [ -s "$SENDS_LOG" ]; then
+  echo "FAIL: corrupt event reached model or outbound send" >&2
+  exit 1
+fi
+echo "OK: corrupt event rejected once, no model turn or reply, content redacted"
+
 echo "==> [11/12] POSTing a DM and asserting the agent reply lands at the mock"
 # A unique inbound text so we can match the round-trip in the mock's send log.
 ROUNDTRIP_MARKER="stage4b-roundtrip-$$"
-DM_PAYLOAD_4B='{"message":{"text":"'"$ROUNDTRIP_MARKER"'","id":"dm-4b"},"user":{"id":"user-alice","name":"Alice"}}'
+DM_PAYLOAD_4B='{"message":{"text":"'"$ROUNDTRIP_MARKER"'","id":"dm-4b"},"user":{"id":"user-alice","name":"Alice"},"chat":{"id":"CT_smoke_dm","type":"single"}}'
 resp="$(curl -s -w "\n%{http_code}" --max-time 60 -X POST "$WEBHOOK_URL" \
   -H "x-cliq-webhook-secret: smoke-webhook-secret" \
   -H "content-type: application/json" \
