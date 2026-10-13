@@ -14,6 +14,7 @@ publish workflow extracts the matching section as the release notes (see
 ### Fixed
 
 - Load on OpenClaw 2026.10.2: `openclaw/plugin-sdk/infra-runtime`, `channel-message`, and `config-runtime` are no longer exported there, so the channel activity, passive gateway lifecycle, and reply-mode imports moved to `channel-activity-runtime`, `channel-outbound`, and `config-contracts`. The 2026.8.2 build floor is unchanged; one artifact is verified across 2026.8.2, 2026.9.3, and 2026.10.2.
+- Gateway smoke installs a private copy of the plugin on OpenClaw 2026.10+ (a linked checkout fails startup there with "Plugin entry is outside its captured source package"), tolerates the 2026.10.2 package-ownership install warning only for that case, and its stub model ignores the new `OpenClaw runtime context:` message.
 
 - Fresh-host setup accepts `CLIQ_CLIENT_ID` and `CLIQ_CLIENT_SECRET` for `openclaw cliq oauth-exchange` before Cliq config exists, and the local checkout install documents `--accept-capabilities` (#257).
 - Handler provisioning treats Zoho HTTP 400 `execution_handler_not_found` as an absent handler that can be created, while unrelated HTTP 400 codes remain blocked (#257).
