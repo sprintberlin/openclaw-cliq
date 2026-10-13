@@ -11,6 +11,10 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Changed
+
+- Compatibility matrix now smoke-tests the production runtime 2026.9.8 as well (2026.8.2, 2026.9.3, 2026.9.8, 2026.10.2). `check:sdk-compat` rejects unknown es-module-lexer record shapes and has negative tests (missing subpath, missing symbol, zero imports). A nightly, non-blocking run smokes the newest stable OpenClaw (#301).
+
 ### Fixed
 
 - Load on OpenClaw 2026.10.2: `openclaw/plugin-sdk/infra-runtime`, `channel-message`, and `config-runtime` are no longer exported there, so the channel activity, passive gateway lifecycle, and reply-mode imports moved to `channel-activity-runtime`, `channel-outbound`, and `config-contracts`. The 2026.8.2 build floor is unchanged; one artifact is verified across 2026.8.2, 2026.9.3, and 2026.10.2.

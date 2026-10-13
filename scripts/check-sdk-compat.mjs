@@ -35,12 +35,20 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { init, parse } from "es-module-lexer";
+import { readStaticSdkImport } from "./sdk-import-record.mjs";
 
 await init;
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const DIST = join(ROOT, "dist");
+// Test-only overrides (used by src/check-sdk-compat.test.ts). Production and CI
+// runs use the defaults: ./dist, the shared manifest, and published tarballs.
+const DIST = process.env.OPENCLAW_COMPAT_DIST
+  ? resolve(process.env.OPENCLAW_COMPAT_DIST)
+  : join(ROOT, "dist");
 const COMPAT_MANIFEST = join(ROOT, ".github", "openclaw-compat.json");
+const LOCAL_PACKAGE = process.env.OPENCLAW_COMPAT_LOCAL_PACKAGE
+  ? resolve(process.env.OPENCLAW_COMPAT_LOCAL_PACKAGE)
+  : null;
 const JSON_OUTPUT = process.argv.includes("--json");
 
 /**
@@ -55,6 +63,9 @@ function fail(message) {
 }
 
 function readSupportedVersions() {
+  if (process.env.OPENCLAW_COMPAT_VERSIONS) {
+    return process.env.OPENCLAW_COMPAT_VERSIONS.split(",").filter(Boolean);
+  }
   let manifest;
   try {
     manifest = JSON.parse(readFileSync(COMPAT_MANIFEST, "utf8"));
@@ -104,18 +115,15 @@ function collectImports(file) {
   }
   const found = [];
   for (const entry of imports) {
-    // es-module-lexer 2.x used n/d/ss/se; 3.x uses specifier/type/
-    // importStart/importEnd. Both shapes must be inspected (never silently
-    // accept an empty scan after a dependency upgrade).
-    const module = entry.specifier ?? entry.n;
-    const isStatic = entry.type !== undefined
-      ? (entry.type === "static" || entry.type === "reexport-star")
-      : entry.d === -1;
-    if (!isStatic || !module?.startsWith("openclaw/plugin-sdk/")) continue;
-    const rawStatement = source.slice(
-      entry.importStart ?? entry.ss,
-      entry.importEnd ?? entry.se,
-    );
+    let parsed;
+    try {
+      parsed = readStaticSdkImport(entry);
+    } catch (err) {
+      fail(`${relative(ROOT, file)}: ${String(err)}`);
+    }
+    if (!parsed || !parsed.module.startsWith("openclaw/plugin-sdk/")) continue;
+    const { module } = parsed;
+    const rawStatement = source.slice(parsed.start, parsed.end);
     // The lexer has already isolated an import declaration (whose grammar
     // cannot contain regex literals), so removing comments here is safe and
     // prevents explanatory comments inside `{ ... }` from becoming symbols.
@@ -148,6 +156,7 @@ function collectImports(file) {
 
 /** Download one published OpenClaw tarball and return its unpacked root. */
 function materializeVersion(version, workDir) {
+  if (LOCAL_PACKAGE) return LOCAL_PACKAGE;
   const dir = join(workDir, version.replace(/[^\w.-]/g, "_"));
   mkdirSync(dir, { recursive: true });
   try {
@@ -194,7 +203,10 @@ function readModuleExports(file) {
   if (/(^|[;\s])export\s*\*\s*from\s*["']/.test(source)) return null;
   const names = new Set();
   for (const entry of exports) {
-    if (entry.name ?? entry.n) names.add(entry.name ?? entry.n);
+    if (entry.type === "reexport-all") return null;
+    const name = entry.name ?? entry.n;
+    if (typeof name !== "string") return null;
+    names.add(name);
   }
   return names.size > 0 ? names : null;
 }

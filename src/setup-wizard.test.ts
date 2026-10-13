@@ -1047,6 +1047,6 @@ describe("guided setup integration (issue #92)", () => {
 
   it("reads the supported OpenClaw versions from the shared compat matrix", () => {
     const versions = readSupportedOpenClawVersions();
-    expect(versions).toEqual(["2026.8.2", "2026.9.3", "2026.10.2"]);
+    expect(versions).toEqual(["2026.8.2", "2026.9.3", "2026.9.8", "2026.10.2"]);
   });
 });

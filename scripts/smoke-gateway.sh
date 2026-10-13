@@ -106,14 +106,14 @@ else
 fi
 
 echo "==> [2/12] Installing plugin into isolated profile '$PROFILE'"
-# 2026.10.2 captures plugin source packages during startup. A linked worktree
-# passes CLI inspect but can fail gateway startup with "Plugin entry is outside
-# its captured source package"; install a private copy for 10.x and later.
-# Earlier runtimes use the faster link path. The matrix verifies the original
-# dist digest before each smoke; neither path rebuilds it.
+# 2026.9.8+ captures plugin source packages during startup. A linked checkout
+# passes CLI inspect but can fail gateway startup after the first request;
+# install a private copy on these versions. Earlier runtimes use the faster
+# link path. The matrix verifies the original dist digest before each smoke;
+# neither path rebuilds it.
 INSTALL_ARGS=(plugins install .)
 SMOKE_VERSION="$("${OC[@]}" --version)"
-SMOKE_COPY_INSTALL="$(node -e 'const m = process.argv[1].match(/OpenClaw (\d+)\.(\d+)\.(\d+)/); if (!m) process.exit(1); console.log(Number(m[1]) > 2026 || (Number(m[1]) === 2026 && Number(m[2]) >= 10) ? "1" : "0")' "$SMOKE_VERSION")"
+SMOKE_COPY_INSTALL="$(node -e 'const m = process.argv[1].match(/OpenClaw (\d+)\.(\d+)\.(\d+)/); if (!m) process.exit(1); console.log(Number(m[1]) > 2026 || (Number(m[1]) === 2026 && (Number(m[2]) > 9 || (Number(m[2]) === 9 && Number(m[3]) >= 8))) ? "1" : "0")' "$SMOKE_VERSION")"
 if [ "$SMOKE_COPY_INSTALL" = "1" ]; then
   echo "    Using copied install for $SMOKE_VERSION"
 else
@@ -131,12 +131,11 @@ if [ "$install_rc" -ne 0 ] && echo "$INSTALL_OUT" | grep -qi -- "--force"; then
   FORCE_OUT="$(run_oc "${INSTALL_ARGS[@]}" --force 2>&1)" && force_rc=0 || force_rc=$?
   echo "$FORCE_OUT"
   if [ "$force_rc" -ne 0 ]; then
-    # OpenClaw 2026.10.2 can report package-ownership conflicts even for
-    # copied installs with a manifest id different from the npm name, but
-    # still saves the install. Only tolerate this exact case in the isolated
-    # 10.x smoke; step 3 and the gateway run verify actual loading.
-    if [ "$SMOKE_COPY_INSTALL" = "1" ] && \
-       echo "$FORCE_OUT" | grep -q 'installation is saved' && \
+    # OpenClaw 2026.9.8+ reports a package-ownership conflict for a plugin
+    # whose manifest id differs from the npm name, but still saves the
+    # install. Tolerate exactly that message; step 3 and the gateway run
+    # verify actual loading, so a genuine failure still fails the smoke.
+    if echo "$FORCE_OUT" | grep -q 'installation is saved' && \
        echo "$FORCE_OUT" | grep -q 'conflicting child rows'; then
       echo "    NOTE: install reported a package-ownership warning; verifying load in step 3"
     else
