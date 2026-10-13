@@ -58,7 +58,11 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 # --- Resolve the openclaw CLI (installed as a devDependency via npm ci) --------
-if [ -x "$ROOT/node_modules/.bin/openclaw" ]; then
+# Optional explicit CLI for testing the same built artifact against a host
+# runtime without replacing the pinned build-floor devDependency.
+if [ -n "${OPENCLAW_SMOKE_CLI:-}" ]; then
+  OC=("$OPENCLAW_SMOKE_CLI")
+elif [ -x "$ROOT/node_modules/.bin/openclaw" ]; then
   OC=("$ROOT/node_modules/.bin/openclaw")
 elif [ -f "$ROOT/node_modules/openclaw/openclaw.mjs" ]; then
   OC=(node "$ROOT/node_modules/openclaw/openclaw.mjs")
@@ -101,19 +105,48 @@ else
   npm run build --silent
 fi
 
-echo "==> [2/12] Linking plugin into isolated profile '$PROFILE'"
-# Plugin-install flags differ across supported OpenClaw versions. Build the
-# argument list from the CLI's own help so one smoke works across the matrix.
-INSTALL_ARGS=(plugins install . --link)
+echo "==> [2/12] Installing plugin into isolated profile '$PROFILE'"
+# 2026.10.2 captures plugin source packages during startup. A linked worktree
+# passes CLI inspect but can fail gateway startup with "Plugin entry is outside
+# its captured source package"; install a private copy for 10.x and later.
+# Earlier runtimes use the faster link path. The matrix verifies the original
+# dist digest before each smoke; neither path rebuilds it.
+INSTALL_ARGS=(plugins install .)
+SMOKE_VERSION="$("${OC[@]}" --version)"
+SMOKE_COPY_INSTALL="$(node -e 'const m = process.argv[1].match(/OpenClaw (\d+)\.(\d+)\.(\d+)/); if (!m) process.exit(1); console.log(Number(m[1]) > 2026 || (Number(m[1]) === 2026 && Number(m[2]) >= 10) ? "1" : "0")' "$SMOKE_VERSION")"
+if [ "$SMOKE_COPY_INSTALL" = "1" ]; then
+  echo "    Using copied install for $SMOKE_VERSION"
+else
+  INSTALL_ARGS+=(--link)
+fi
+# Plugin-install flags differ across supported OpenClaw versions.
 if run_oc plugins install --help 2>&1 | grep -q -- "--accept-capabilities"; then
   INSTALL_ARGS+=(--accept-capabilities)
 fi
 
-INSTALL_OUT="$(run_oc "${INSTALL_ARGS[@]}" 2>&1 || true)"
+INSTALL_OUT="$(run_oc "${INSTALL_ARGS[@]}" 2>&1)" && install_rc=0 || install_rc=$?
 echo "$INSTALL_OUT"
-if echo "$INSTALL_OUT" | grep -qi -- "--force"; then
+if [ "$install_rc" -ne 0 ] && echo "$INSTALL_OUT" | grep -qi -- "--force"; then
   echo "    Retrying install with --force (newer CLI requires explicit trust)"
-  run_oc "${INSTALL_ARGS[@]}" --force
+  FORCE_OUT="$(run_oc "${INSTALL_ARGS[@]}" --force 2>&1)" && force_rc=0 || force_rc=$?
+  echo "$FORCE_OUT"
+  if [ "$force_rc" -ne 0 ]; then
+    # OpenClaw 2026.10.2 can report package-ownership conflicts even for
+    # copied installs with a manifest id different from the npm name, but
+    # still saves the install. Only tolerate this exact case in the isolated
+    # 10.x smoke; step 3 and the gateway run verify actual loading.
+    if [ "$SMOKE_COPY_INSTALL" = "1" ] && \
+       echo "$FORCE_OUT" | grep -q 'installation is saved' && \
+       echo "$FORCE_OUT" | grep -q 'conflicting child rows'; then
+      echo "    NOTE: install reported a package-ownership warning; verifying load in step 3"
+    else
+      echo "FAIL: plugin install failed (exit $force_rc)" >&2
+      exit "$force_rc"
+    fi
+  fi
+elif [ "$install_rc" -ne 0 ]; then
+  echo "FAIL: plugin install failed (exit $install_rc)" >&2
+  exit "$install_rc"
 fi
 
 echo "==> [3/12] Loading plugin runtime and asserting it registered"

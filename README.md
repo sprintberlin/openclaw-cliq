@@ -71,7 +71,7 @@ Everything that must be configured **on the Zoho side** so the `cliq` channel pl
 
 ### Prerequisites
 
-- OpenClaw `2026.8.2` or later. The plugin is typechecked and built against the pinned minimum version (`2026.8.2`), then that exact built artifact is loaded by a real gateway smoke test on every supported version. CI also checks every static runtime SDK import against each version's published export table.
+- OpenClaw `2026.8.2` minimum. The plugin is typechecked and built against `2026.8.2`, then the same artifact is smoke-tested on the exact versions in [`.github/openclaw-compat.json`](.github/openclaw-compat.json). CI also checks runtime SDK imports against each published version's export table. A newer release is not considered verified until it is added to that matrix.
 - A Zoho account with access to **Zoho Cliq** and the **Zoho API Console**.
 - A running OpenClaw gateway reachable from the public internet (so Zoho can call the webhook). A reverse proxy, Cloudflare Tunnel, or `ngrok` all work — see [Expose the webhook publicly](https://github.com/sprintberlin/openclaw-cliq/blob/main/docs/setup/public-webhook.md).
 - The bot owner must be able to create a bot in Cliq (admin / developer permission).

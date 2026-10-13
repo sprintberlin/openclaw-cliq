@@ -2,7 +2,7 @@ import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-core";
 import {
   createAccountStatusSink,
   runPassiveAccountLifecycle,
-} from "openclaw/plugin-sdk/channel-message";
+} from "openclaw/plugin-sdk/channel-outbound";
 import type { ResolvedCliqAccount } from "./client.js";
 import { resolveChannelReadyPatch } from "./sdk-compat.js";
 import { cliqTransportStatusFields } from "./webhook-account.js";

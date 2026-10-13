@@ -119,7 +119,8 @@ const server = createServer(async (req, res) => {
       const messages = Array.isArray(payload.messages) ? payload.messages : [];
       const isInternalContext = (text) =>
         text.includes("<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>") ||
-        text.startsWith("OpenClaw runtime context for the immediately preceding");
+        text.startsWith("OpenClaw runtime context for the immediately preceding") ||
+        text.startsWith("OpenClaw runtime context:");
       const textOf = (m) =>
         typeof m?.content === "string"
           ? m.content

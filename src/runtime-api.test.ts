@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { getChannelActivity } from "openclaw/plugin-sdk/infra-runtime";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { getChannelActivity } from "./test-activity.js";
 import {
   CliqClientRegistry,
   getCliqClientRegistry,
@@ -7,6 +7,8 @@ import {
   setCliqClientRegistry,
 } from "./runtime-api.js";
 import type { ResolvedCliqAccount } from "./client.js";
+
+vi.mock("openclaw/plugin-sdk/channel-activity-runtime", () => import("./test-activity.js"));
 
 function account(over: Partial<ResolvedCliqAccount> = {}): ResolvedCliqAccount {
   return {

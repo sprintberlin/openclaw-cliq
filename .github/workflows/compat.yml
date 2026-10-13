@@ -5,7 +5,7 @@ name: OpenClaw compatibility
 # The declared build floor is the exact OpenClaw version used for install,
 # typecheck, and build. The resulting artifact must then load on every version
 # in the supported matrix. The current matrix keeps 2026.8.2 as the build
-# floor and also verifies the production-validated 2026.9.3 runtime.
+# floor and also verifies the 2026.9.3 and 2026.10.2 runtimes.
 #
 # The strategy is therefore:
 #   - typecheck + BUILD against the floor version (`build` in
@@ -112,7 +112,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Node 24 is accepted by both supported runtimes. OpenClaw 2026.9.3 no
+      # Node 24 is accepted by all supported runtimes. OpenClaw 2026.9.3+ no
       # longer installs on Node 22 (requires >=24.16.0 <25 or >=26.1.0).
       - uses: actions/setup-node@v7
         with:
