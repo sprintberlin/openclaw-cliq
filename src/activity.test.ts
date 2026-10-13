@@ -1,11 +1,13 @@
-import { describe, expect, it } from "vitest";
-import { getChannelActivity } from "openclaw/plugin-sdk/infra-runtime";
+import { describe, expect, it, vi } from "vitest";
+import { getChannelActivity } from "./test-activity.js";
 import {
   observeCliqOutboundSends,
   recordCliqActivity,
   trackCliqOutboundActivity,
   type CliqOutboundSendEvent,
 } from "./activity.js";
+
+vi.mock("openclaw/plugin-sdk/channel-activity-runtime", () => import("./test-activity.js"));
 
 describe("recordCliqActivity", () => {
   it("records inbound under the default account when accountId is null", () => {

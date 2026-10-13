@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getChannelActivity } from "openclaw/plugin-sdk/infra-runtime";
+import { getChannelActivity } from "./test-activity.js";
 import cliqEntry from "../index.js";
 import { cliqPlugin } from "./channel.js";
 import { resetCliqDedupeForTest } from "./dedupe.js";
@@ -19,6 +19,8 @@ import {
   createMentionDelugePayload,
   createDmDelugePayload,
 } from "./test-api.js";
+
+vi.mock("openclaw/plugin-sdk/channel-activity-runtime", () => import("./test-activity.js"));
 
 describe("plugin entry load + /cliq/webhook smoke", () => {
   beforeEach(() => {

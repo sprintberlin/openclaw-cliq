@@ -46,7 +46,7 @@ import type {
   ChannelThreadingToolContext,
 } from "openclaw/plugin-sdk/channel-contract";
 import type { ChannelPlugin, OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
-import type { ReplyToMode } from "openclaw/plugin-sdk/config-runtime";
+import type { ReplyToMode } from "openclaw/plugin-sdk/config-contracts";
 
 type ChannelThreadingAdapter = NonNullable<ChannelPlugin["threading"]>;
 type ChannelReplyTransport = NonNullable<

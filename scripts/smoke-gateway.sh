@@ -58,7 +58,11 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 # --- Resolve the openclaw CLI (installed as a devDependency via npm ci) --------
-if [ -x "$ROOT/node_modules/.bin/openclaw" ]; then
+# Optional explicit CLI for testing the same built artifact against a host
+# runtime without replacing the pinned build-floor devDependency.
+if [ -n "${OPENCLAW_SMOKE_CLI:-}" ]; then
+  OC=("$OPENCLAW_SMOKE_CLI")
+elif [ -x "$ROOT/node_modules/.bin/openclaw" ]; then
   OC=("$ROOT/node_modules/.bin/openclaw")
 elif [ -f "$ROOT/node_modules/openclaw/openclaw.mjs" ]; then
   OC=(node "$ROOT/node_modules/openclaw/openclaw.mjs")

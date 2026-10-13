@@ -11,6 +11,10 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Fixed
+
+- Load on OpenClaw 2026.10.2: `openclaw/plugin-sdk/infra-runtime`, `channel-message`, and `config-runtime` are no longer exported there, so the channel activity, passive gateway lifecycle, and reply-mode imports moved to `channel-activity-runtime`, `channel-outbound`, and `config-contracts`. The 2026.8.2 build floor is unchanged; one artifact is verified across 2026.8.2, 2026.9.3, and 2026.10.2.
+
 - Fresh-host setup accepts `CLIQ_CLIENT_ID` and `CLIQ_CLIENT_SECRET` for `openclaw cliq oauth-exchange` before Cliq config exists, and the local checkout install documents `--accept-capabilities` (#257).
 - Handler provisioning treats Zoho HTTP 400 `execution_handler_not_found` as an absent handler that can be created, while unrelated HTTP 400 codes remain blocked (#257).
 - Document that a direct REST bot create with `scope: "organization"` can read back as `personal` and requires a visibility change in Bots & Tools; no REST correction is verified (#257).

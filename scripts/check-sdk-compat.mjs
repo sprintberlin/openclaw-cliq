@@ -104,15 +104,24 @@ function collectImports(file) {
   }
   const found = [];
   for (const entry of imports) {
-    if (entry.d >= 0 || !entry.n?.startsWith("openclaw/plugin-sdk/")) continue;
-    const rawStatement = source.slice(entry.ss, entry.se);
+    // es-module-lexer 2.x used n/d/ss/se; 3.x uses specifier/type/
+    // importStart/importEnd. Both shapes must be inspected (never silently
+    // accept an empty scan after a dependency upgrade).
+    const module = entry.specifier ?? entry.n;
+    const isStatic = entry.type !== undefined
+      ? (entry.type === "static" || entry.type === "reexport-star")
+      : entry.d === -1;
+    if (!isStatic || !module?.startsWith("openclaw/plugin-sdk/")) continue;
+    const rawStatement = source.slice(
+      entry.importStart ?? entry.ss,
+      entry.importEnd ?? entry.se,
+    );
     // The lexer has already isolated an import declaration (whose grammar
     // cannot contain regex literals), so removing comments here is safe and
     // prevents explanatory comments inside `{ ... }` from becoming symbols.
     const statement = rawStatement
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/\/\/[^\n\r]*/g, "");
-    const module = entry.n;
 
     // `import { a, b as c } from` / `export { a, b as c } from`.
     const named = statement.match(/\{([\s\S]*?)\}/);
@@ -185,7 +194,7 @@ function readModuleExports(file) {
   if (/(^|[;\s])export\s*\*\s*from\s*["']/.test(source)) return null;
   const names = new Set();
   for (const entry of exports) {
-    if (entry.n) names.add(entry.n);
+    if (entry.name ?? entry.n) names.add(entry.name ?? entry.n);
   }
   return names.size > 0 ? names : null;
 }
@@ -259,6 +268,9 @@ async function main() {
   const checked = [...unique.values()].sort(
     (a, b) => a.module.localeCompare(b.module) || a.symbol.localeCompare(b.symbol),
   );
+  if (checked.length === 0) {
+    fail("no runtime SDK imports found in dist; refusing a vacuous compatibility pass");
+  }
 
   const workDir = mkdtempSync(join(tmpdir(), "openclaw-compat-"));
   const tables = new Map();
