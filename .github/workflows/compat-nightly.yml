@@ -1,0 +1,71 @@
+name: OpenClaw compatibility (nightly latest)
+
+# Early warning only. Resolves the newest published stable `openclaw`, loads the
+# artifact built against the floor version on it, and runs the real gateway
+# smoke. It never edits .github/openclaw-compat.json: a red run means "look at
+# this release", and adding the version to `supported` stays a deliberate PR.
+# Scheduled runs are not required checks, so they cannot block merges.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compat-nightly
+  cancel-in-progress: true
+
+jobs:
+  latest:
+    name: smoke latest stable
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Use an npm that can install the runtime tarball
+        run: npm i -g npm@11
+
+      - run: npm ci
+
+      # Typecheck and build against the pinned floor, exactly like the matrix.
+      - run: npm run typecheck
+      - run: npm run build
+
+      - name: Resolve the newest stable OpenClaw release
+        id: latest
+        run: |
+          set -euo pipefail
+          version="$(npm view openclaw dist-tags.latest)"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]{4}\.[0-9]+\.[0-9]+$'; then
+            echo "::error::latest dist-tag is not a stable version: $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "newest stable openclaw: $version"
+
+      - name: Install it after verifying registry integrity
+        run: |
+          set -euo pipefail
+          v="${{ steps.latest.outputs.version }}"
+          expected="$(npm view "openclaw@$v" dist.integrity)"
+          work="$(mktemp -d)"
+          npm pack "openclaw@$v" --pack-destination "$work" --silent >/dev/null
+          tarball="$(find "$work" -name '*.tgz' -print -quit)"
+          actual="sha512-$(sha512sum "$tarball" | cut -d' ' -f1 | xxd -r -p | base64 -w0)"
+          [ "$actual" = "$expected" ] || { echo "::error::integrity mismatch for openclaw@$v"; exit 1; }
+          npm install --no-save --package-lock=false "$tarball"
+          rm -rf "$work"
+          test "$(node -p 'require("./node_modules/openclaw/package.json").version')" = "$v"
+
+      - name: Real gateway load + ingress smoke on the newest release
+        env:
+          OPENCLAW_SMOKE_SKIP_BUILD: "1"
+        run: npm run smoke:gateway

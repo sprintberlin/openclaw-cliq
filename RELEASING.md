@@ -55,6 +55,20 @@ auto-bumps, because that would require CI to push to protected `main`).
 > The next release after `0.1.0` is `0.1.1` — `v0.1.0` is already published and
 > a version cannot be published twice.
 
+## Adding an OpenClaw version to the compatibility matrix
+
+Edit **only** `.github/openclaw-compat.json`: append the exact version to
+`supported`. `build` stays the floor and must equal `devDependencies.openclaw`.
+The `compat` workflow then runs a `smoke <version>` leg for it, and
+`npm run check:sdk-compat` checks every runtime SDK import against its export
+table. Update the expected list in `src/setup-wizard.test.ts`
+(`readSupportedOpenClawVersions`) in the same PR. Before a release, the matrix
+must contain the versions production hosts actually run.
+
+A nightly run (`compat-nightly`, also manually dispatchable) smokes the newest
+published stable `openclaw` as a non-blocking early warning. It never changes
+`supported`.
+
 ## Dry run (preview without publishing)
 
 Run the **Publish ClawHub** workflow via **Actions → Publish ClawHub → Run
