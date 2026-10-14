@@ -729,3 +729,188 @@ describe("CliqClient directory list follows next_token cursors", () => {
     expect(seen.filter((u) => u.includes("/api/v2/")).every((u) => !u.includes("from="))).toBe(true);
   });
 });
+
+/**
+ * Response-envelope compatibility (issue #299).
+ *
+ * `GET /api/v2/users` has been observed live (EU data center) returning
+ * `{ url: string, has_more: boolean, data: [user, ...] }` while earlier
+ * deployments and the documented legacy form use `{ users: [...] }`.
+ * Reading only `users` silently decoded the live shape as an EMPTY page,
+ * which made the directory lookup return no peers and the doctor report a
+ * "passing" directory read with 0 entries. These tests pin every accepted
+ * envelope so neither form can regress:
+ *  - the live `{ data: [...] }` envelope (ids/first+last names normalized)
+ *  - the legacy `{ users: [...] }` envelope
+ *  - a bare JSON array
+ *  - empty and malformed envelopes must yield zero entries, never throw
+ */
+describe("CliqClient directory list envelope compatibility (issue #299)", () => {
+  beforeEach(() => setCliqClientRegistry(null));
+  afterEach(() => setCliqClientRegistry(null));
+
+  function installEnvelopeFetch(
+    usersBody: () => unknown,
+  ): { restore: () => void; seen: string[] } {
+    const original = globalThis.fetch;
+    const seen: string[] = [];
+    globalThis.fetch = (async (url: URL | string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      seen.push(urlStr);
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(
+          JSON.stringify({ access_token: "tok", expires_in: 3600 }),
+          { status: 200 },
+        );
+      }
+      if (urlStr.includes("/api/v2/users")) {
+        return new Response(JSON.stringify(usersBody()), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("", { status: 404 });
+    }) as typeof fetch;
+    return {
+      restore: () => {
+        globalThis.fetch = original;
+      },
+      seen,
+    };
+  }
+
+  it("unwraps the live { data: [...] } envelope (has_more/url present)", async () => {
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient("id", "secret", "bot");
+    const mock = installEnvelopeFetch(() => ({
+      url: "https://cliq.zoho.eu/api/v2/users?limit=100",
+      has_more: false,
+      data: [
+        { user_id: "u-1", first_name: "Ada", last_name: "Lovelace" },
+        { user_id: "u-2", display_name: "Grace Hopper" },
+      ],
+    }));
+    let peers;
+    try {
+      peers = await client.listUsers(10);
+    } finally {
+      mock.restore();
+    }
+    expect(peers).toHaveLength(2);
+    expect(peers[0]).toMatchObject({
+      kind: "user",
+      id: "u-1",
+      name: "Ada Lovelace",
+    });
+    expect(peers[1]).toMatchObject({
+      kind: "user",
+      id: "u-2",
+      name: "Grace Hopper",
+    });
+    // The request stays on the documented query-param allowlist (issue #146).
+    const usersCall = mock.seen.find((u) => u.includes("/api/v2/users"));
+    expect(usersCall).toBeDefined();
+    expect(usersCall).not.toContain("from=");
+  });
+
+  it("still unwraps the legacy { users: [...] } envelope", async () => {
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient("id", "secret", "bot");
+    const mock = installEnvelopeFetch(() => ({
+      users: [{ id: "u-legacy", name: "Legacy User" }],
+    }));
+    let peers;
+    try {
+      peers = await client.listUsers(10);
+    } finally {
+      mock.restore();
+    }
+    expect(peers).toHaveLength(1);
+    expect(peers[0]).toMatchObject({ kind: "user", id: "u-legacy", name: "Legacy User" });
+  });
+
+  it("accepts a bare JSON array", async () => {
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient("id", "secret", "bot");
+    const mock = installEnvelopeFetch(() => [{ id: "u-arr", name: "Array User" }]);
+    let peers;
+    try {
+      peers = await client.listUsers(10);
+    } finally {
+      mock.restore();
+    }
+    expect(peers).toHaveLength(1);
+    expect(peers[0]).toMatchObject({ id: "u-arr" });
+  });
+
+  it("reads the next_token cursor from the live { data: [...] } envelope", async () => {
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient("id", "secret", "bot");
+    const original = globalThis.fetch;
+    let call = 0;
+    const seen: string[] = [];
+    globalThis.fetch = (async (url: URL | string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      seen.push(urlStr);
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(
+          JSON.stringify({ access_token: "tok", expires_in: 3600 }),
+          { status: 200 },
+        );
+      }
+      if (urlStr.includes("/api/v2/users")) {
+        call++;
+        if (call === 1) {
+          return new Response(
+            JSON.stringify({
+              url: "https://cliq.zoho.eu/api/v2/users?limit=100",
+              has_more: true,
+              data: [{ id: "u1", name: "U1" }],
+              next_token: "cursor-live",
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            url: "https://cliq.zoho.eu/api/v2/users?limit=100",
+            has_more: false,
+            data: [{ id: "u2", name: "U2" }],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("", { status: 404 });
+    }) as typeof fetch;
+    let peers;
+    try {
+      peers = await client.listUsers(500);
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(peers).toHaveLength(2);
+    expect(seen.filter((u) => u.includes("/api/v2/users"))).toHaveLength(2);
+    expect(seen[2]).toContain("next_token=cursor-live");
+  });
+
+  it.each([
+    ["empty { data: [] }", { url: "x", has_more: false, data: [] }],
+    ["empty { users: [] }", { users: [] }],
+    ["empty object", {}],
+    ["null body", null],
+    ["data is not an array", { data: { nope: true }, has_more: false }],
+    ["neither key present", { url: "x", has_more: true }],
+    ["records without ids are skipped", { data: [{ first_name: "NoId" }] }],
+  ])("yields zero entries for %s without throwing", async (_label, body) => {
+    const { CliqClient } = await import("./client.js");
+    const client = new CliqClient("id", "secret", "bot");
+    const mock = installEnvelopeFetch(() => body);
+    let peers;
+    try {
+      peers = await client.listUsers(10);
+    } finally {
+      mock.restore();
+    }
+    expect(peers).toEqual([]);
+  });
+});
