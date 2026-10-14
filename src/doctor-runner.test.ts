@@ -860,9 +860,16 @@ describe("cliq doctor — adopt a verified handler URL (issue #172)", () => {
 });
 
 describe("cliq doctor — stage 7 discovery", () => {
-  it("passes when read-only user and channel discovery succeed", async () => {
+  it("passes and reports the nonzero entry count when directory reads succeed", async () => {
     const report = await runDefault();
-    expect(stageOf(report, "discovery").status).toBe("pass");
+    const discovery = stageOf(report, "discovery");
+    expect(discovery.status).toBe("pass");
+    // Issue #299: the live `{ data: [...] }` envelope decoded as an empty page
+    // made the doctor call a 0-entry read a pass. The count must reflect the
+    // entries the client actually returned.
+    const evidence = discovery.evidence.join(" ");
+    expect(evidence).toContain("returned 1 entry in the one-item diagnostic page");
+    expect(evidence).not.toContain("returned 0 entry");
   });
 
   it("warns and names the discovery boundary when a directory read fails", async () => {

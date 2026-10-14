@@ -1322,6 +1322,29 @@ function readCliqUserName(rec: CliqUserRecord): string | undefined {
   return rec.display_name ?? rec.name ?? rec.email ?? undefined;
 }
 
+/**
+ * Extract the record array from a v2 directory list envelope (issue #299).
+ *
+ * The `/api/v2/users` and `/api/v2/channels` endpoints have answered with two
+ * different envelopes over time: the documented legacy form
+ * `{ users: [...] }` / `{ channels: [...] }`, and a `{ url, has_more, data: [...] }`
+ * envelope a live EU deployment returns for `GET /api/v2/users` (same
+ * `data`-carrier convention the v3 endpoints use). A bare JSON array is
+ * accepted as well. Anything else — a missing key, a `data` field that is not
+ * an array, a null body — yields an empty page so pagination stops instead of
+ * throwing; callers must never see a malformed page crash the directory walk.
+ */
+function readDirectoryPageItems<T>(json: unknown, legacyKey: "users" | "channels"): T[] {
+  if (Array.isArray(json)) return json as T[];
+  if (!json || typeof json !== "object") return [];
+  const record = json as Record<string, unknown>;
+  const legacy = record[legacyKey];
+  if (Array.isArray(legacy)) return legacy as T[];
+  const data = record.data;
+  if (Array.isArray(data)) return data as T[];
+  return [];
+}
+
 /** Pull a string id from a Cliq channel record (tolerates `id` / `channel_id`). */
 function readCliqChannelId(rec: CliqChannelRecord): string | undefined {
   return rec.id ?? rec.channel_id ?? undefined;
@@ -3177,9 +3200,15 @@ export class CliqClient {
         const path = `/api/v2/users?${buildDirectoryQuery(limit, nextToken)}`;
         const json = (await this.getJson(path, "ZohoCliq.Users.READ")) as {
           users?: CliqUserRecord[];
+          data?: CliqUserRecord[];
+          has_more?: unknown;
+          url?: unknown;
           next_token?: string;
         } | CliqUserRecord[];
-        const items = Array.isArray(json) ? json : (json?.users ?? []);
+        // Both legacy (`{ users: [...] }`) and live (`{ data: [...], has_more, url }`)
+        // envelopes unwrap to the same record list — see readDirectoryPageItems
+        // for the full shape list (issue #299).
+        const items = readDirectoryPageItems<CliqUserRecord>(json, "users");
         const token =
           !Array.isArray(json) && typeof json?.next_token === "string"
             ? json.next_token
@@ -3216,9 +3245,14 @@ export class CliqClient {
         const path = `/api/v2/channels?${buildDirectoryQuery(limit, nextToken)}`;
         const json = (await this.getJson(path, "ZohoCliq.Channels.READ")) as {
           channels?: CliqChannelRecord[];
+          data?: CliqChannelRecord[];
+          has_more?: unknown;
+          url?: unknown;
           next_token?: string;
         } | CliqChannelRecord[];
-        const items = Array.isArray(json) ? json : (json?.channels ?? []);
+        // Symmetric with listUsers: accept the documented `{ channels: [...] }`
+        // envelope AND the `{ data: [...] }` shape a live deployment serves.
+        const items = readDirectoryPageItems<CliqChannelRecord>(json, "channels");
         const token =
           !Array.isArray(json) && typeof json?.next_token === "string"
             ? json.next_token
