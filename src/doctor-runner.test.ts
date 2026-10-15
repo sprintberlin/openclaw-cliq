@@ -210,7 +210,7 @@ describe("cliq doctor — exit codes", () => {
     expect(report.exitCode).toBe(CLIQ_DOCTOR_EXIT.healthy);
   });
 
-  it("returns degraded in default read-only mode because the send scopes stay unverified", async () => {
+  it("returns degraded in default read-only mode when the token reports no scopes", async () => {
     const report = await runDefault(
       cfgWith(),
       createDeps({
@@ -219,6 +219,30 @@ describe("cliq doctor — exit codes", () => {
     );
     expect(report.outcome).toBe("degraded");
     expect(stageOf(report, "capabilities").status).toBe("warn");
+  });
+
+  it("returns healthy in read-only mode when Zoho reports the required send scopes", async () => {
+    const client = createClient({
+      getGrantedScopes: (grant, scope) => grant === "refresh_token"
+        ? ["ZohoCliq.Channels.UPDATE", "ZohoCliq.Messages.UPDATE", "ZohoCliq.Chats.UPDATE"]
+        : scope === "ZohoCliq.Webhooks.CREATE" ? ["ZohoCliq.Webhooks.CREATE"] : [],
+    });
+    const report = await runDefault(
+      cfgWith(),
+      createDeps({
+        getClient: () => client,
+        inspectBot: vi.fn(async () => ({ status: "pass" as const, evidence: ["bot and handlers verified"] })),
+      }),
+    );
+    const capabilities = stageOf(report, "capabilities");
+    expect(capabilities.status).toBe("pass");
+    expect(capabilities.evidence.join(" ")).toMatch(/dm_send=granted/);
+    expect(capabilities.evidence.join(" ")).toMatch(/channel_send=granted/);
+    expect(capabilities.evidence.join(" ")).toMatch(/message_edit=granted/);
+    expect(capabilities.evidence.join(" ")).not.toMatch(/dm_send=pass|channel_send=pass|message_edit=pass/);
+    expect(client.sendMessage).not.toHaveBeenCalled();
+    expect(report.outcome).toBe("healthy");
+    expect(report.exitCode).toBe(CLIQ_DOCTOR_EXIT.healthy);
   });
 
   it("returns degraded while bot/handler inspection is unavailable", async () => {
@@ -477,12 +501,28 @@ describe("cliq doctor — stage 4 capability probes", () => {
     expect(stageOf(report, "capabilities").status).toBe("warn");
   });
 
-  it("warns rather than passing while required send scopes have no read-only probe", async () => {
+  it("warns rather than passing while required send scopes are not reported by the token", async () => {
     const report = await runDefault();
     const capabilities = stageOf(report, "capabilities");
     expect(capabilities.status).toBe("warn");
     expect(capabilities.evidence.join(" ")).toMatch(/REQUIRED capabilities have no safe read-only API probe/);
     expect(capabilities.remediation.join(" ")).toMatch(/--outbound-test/);
+  });
+
+  it("fails when a required send scope is missing from the scope set Zoho reported", async () => {
+    const client = createClient({
+      getGrantedScopes: (grant) => grant === "refresh_token"
+        ? ["ZohoCliq.Channels.UPDATE", "ZohoCliq.Chats.UPDATE"]
+        : ["ZohoCliq.Webhooks.CREATE"],
+    });
+    const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }));
+    const capabilities = stageOf(report, "capabilities");
+    expect(capabilities.status).toBe("fail");
+    expect(capabilities.boundary).toBe("api_capability");
+    expect(capabilities.evidence.join(" ")).toMatch(/message_edit=fail/);
+    expect(capabilities.evidence.join(" ")).toMatch(/ZohoCliq.Messages.UPDATE/);
+    expect(capabilities.remediation.join(" ")).toMatch(/ZohoCliq.Messages.UPDATE/);
+    expect(client.sendMessage).not.toHaveBeenCalled();
   });
 
   it("reports which capabilities have no safe read-only probe", async () => {

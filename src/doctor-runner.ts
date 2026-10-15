@@ -100,6 +100,11 @@ export interface CliqDoctorBotInspectionResult {
 export interface CliqDoctorClient {
   getAccessToken(scope?: string): Promise<string>;
   getRefreshedAccessToken(): Promise<string>;
+  /** Scopes Zoho reported when minting the token (diagnostic, not a probe). */
+  getGrantedScopes?(
+    grant: "client_credentials" | "refresh_token",
+    scope?: string,
+  ): string[] | undefined;
   getApiBase(): string;
   listUsers(maxItems?: number): Promise<CliqDirectoryEntry[]>;
   listChannels(maxItems?: number): Promise<CliqDirectoryEntry[]>;
@@ -519,6 +524,31 @@ async function buildOAuthStage(
   }
 }
 
+/**
+ * Scopes Zoho reported for the token the plugin sends with, or `undefined`
+ * when they cannot be read (no refresh token, mint failure, client without
+ * scope reporting, or Zoho reported none). Failures are reported by the OAuth
+ * stage; here they only mean "not verified".
+ */
+async function readGrantedScopes(
+  client: CliqDoctorClient,
+  capability: CliqCapability,
+  hasRefreshToken: boolean,
+): Promise<string[] | undefined> {
+  if (!client.getGrantedScopes) return undefined;
+  try {
+    if (capability.grantType === "refresh_token") {
+      if (!hasRefreshToken) return undefined;
+      await client.getRefreshedAccessToken();
+      return client.getGrantedScopes("refresh_token");
+    }
+    await client.getAccessToken(capability.scope);
+    return client.getGrantedScopes("client_credentials", capability.scope);
+  } catch {
+    return undefined;
+  }
+}
+
 async function buildCapabilitiesStage(
   account: ResolvedCliqAccount | null,
   client: CliqDoctorClient | null,
@@ -568,8 +598,41 @@ async function buildCapabilitiesStage(
       else failed = true;
     }
   }
-  const unprobeableRequired = unprobeable.filter((capability) => !capability.optional);
+  const unprobeableAll = unprobeable.filter((capability) => !capability.optional);
   const unprobeableOptional = unprobeable.filter((capability) => capability.optional);
+  // Required runtime capabilities without a read-only API probe (the send
+  // scopes) are checked against the scope set Zoho reports for the token the
+  // plugin actually sends with. A scope that is absent there is a real,
+  // actionable failure; a scope that is present is reported as `granted`, never
+  // as a probe pass. Setup/provisioning scopes are not a runtime health
+  // concern and are listed as information only.
+  const unprobeableRequired: CliqCapability[] = [];
+  const setupOnly: CliqCapability[] = [];
+  for (const capability of unprobeableAll) {
+    if (capability.profile !== "runtime") {
+      setupOnly.push(capability);
+      continue;
+    }
+    const granted = await readGrantedScopes(client, capability, Boolean(account.refreshToken));
+    if (!granted) {
+      unprobeableRequired.push(capability);
+    } else if (granted.includes(capability.scope)) {
+      evidence.push(
+        `${capability.id}=granted (${capability.scope} is in the scope set Zoho reported for the ${capability.grantType} token; not exercised by a send)`,
+      );
+    } else {
+      evidence.push(
+        `${capability.id}=fail (${capability.scope} is missing from the scope set Zoho reported for the ${capability.grantType} token)`,
+      );
+      remediation.push(capability.missingHint);
+      failed = true;
+    }
+  }
+  if (setupOnly.length > 0) {
+    evidence.push(
+      `${setupOnly.length} setup/provisioning capabilities are not runtime checks and were not exercised: ${setupOnly.map((capability) => capability.id).join(", ")}`,
+    );
+  }
   if (unprobeableRequired.length > 0) {
     evidence.push(
       sendExercised
