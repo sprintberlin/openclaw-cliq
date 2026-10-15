@@ -1733,6 +1733,32 @@ export class CliqClient {
    */
   private static readonly REFRESH_TOKEN_KEY = "__refresh_token__";
 
+  /**
+   * Scope sets Zoho reported in the token responses this client minted, keyed
+   * like `tokens`. Read-only diagnostic data (doctor): it says what Zoho says
+   * was granted, not that an API call with it succeeds (learning 070).
+   */
+  private readonly grantedScopes = new Map<string, string[]>();
+
+  private recordGrantedScopes(key: string, raw: unknown): void {
+    if (typeof raw !== "string") return;
+    const scopes = raw.split(/[\s,]+/).map((value) => value.trim()).filter(Boolean);
+    if (scopes.length > 0) this.grantedScopes.set(key, scopes);
+  }
+
+  /**
+   * Scopes Zoho reported when it minted the token for this grant, or
+   * `undefined` when no token was minted yet or Zoho reported none.
+   * `client_credentials` is keyed by the requested scope.
+   */
+  getGrantedScopes(
+    grant: "client_credentials" | "refresh_token",
+    scope?: string,
+  ): string[] | undefined {
+    const key = grant === "refresh_token" ? CliqClient.REFRESH_TOKEN_KEY : scope;
+    return key ? this.grantedScopes.get(key) : undefined;
+  }
+
   constructor(
     private readonly clientId: string,
     private readonly clientSecret: string,
@@ -1831,6 +1857,7 @@ export class CliqClient {
       throw new Error("cliq: OAuth response did not include access_token");
     }
     this.maybeCorrectApiBaseFromApiDomain(data.api_domain);
+    this.recordGrantedScopes(scope, (data as { scope?: unknown }).scope);
     this.tokens.set(scope, {
       token: data.access_token,
       expiresAt: now + (data.expires_in ?? 3600) * 1000,
@@ -1890,6 +1917,7 @@ export class CliqClient {
       throw new Error("cliq: OAuth refresh response did not include access_token");
     }
     this.maybeCorrectApiBaseFromApiDomain(data.api_domain);
+    this.recordGrantedScopes(CliqClient.REFRESH_TOKEN_KEY, (data as { scope?: unknown }).scope);
     this.tokens.set(CliqClient.REFRESH_TOKEN_KEY, {
       token: data.access_token,
       expiresAt: now + (data.expires_in ?? 3600) * 1000,

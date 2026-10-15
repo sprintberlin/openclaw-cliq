@@ -44,6 +44,8 @@ describe("CliqClient refresh-token grant (issue #27)", () => {
     expires_in?: number;
     sendStatus?: number;
     sendBody?: string;
+    ccScope?: string;
+    refreshScope?: string;
   }): void {
     const original = globalThis.fetch;
     const ccToken = opts.ccToken ?? "CC_TOKEN_VALUE";
@@ -58,12 +60,20 @@ describe("CliqClient refresh-token grant (issue #27)", () => {
       if (urlStr.includes("/oauth/v2/token")) {
         if (urlStr.includes("grant_type=refresh_token")) {
           return new Response(
-            JSON.stringify({ access_token: refreshTokenVal, expires_in: expiresIn }),
+            JSON.stringify({
+              access_token: refreshTokenVal,
+              expires_in: expiresIn,
+              ...(opts.refreshScope ? { scope: opts.refreshScope } : {}),
+            }),
             { status: 200 },
           );
         }
         return new Response(
-          JSON.stringify({ access_token: ccToken, expires_in: expiresIn }),
+          JSON.stringify({
+            access_token: ccToken,
+            expires_in: expiresIn,
+            ...(opts.ccScope ? { scope: opts.ccScope } : {}),
+          }),
           { status: 200 },
         );
       }
@@ -178,6 +188,32 @@ describe("CliqClient refresh-token grant (issue #27)", () => {
     await client.sendMessage({ to: "engineering", isDm: false, text: "hi" });
     expect(fetchCount("client_credentials")).toBe(1);
     expect(fetchCount("refresh_token")).toBe(0);
+  });
+
+  it("records the scopes Zoho reports for a minted token and not the token itself", async () => {
+    mockFetch({
+      ccScope: "ZohoCliq.Webhooks.CREATE",
+      refreshScope: "ZohoCliq.Channels.UPDATE ZohoCliq.Messages.UPDATE",
+    });
+    const client = new CliqClient(
+      "id",
+      "secret",
+      "bot",
+      undefined,
+      undefined,
+      { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1, sleep: async () => {}, random: () => 0 },
+      undefined,
+      "rt-secret",
+    );
+    await client.getAccessToken("ZohoCliq.Webhooks.CREATE");
+    await client.getRefreshedAccessToken();
+    expect(client.getGrantedScopes("client_credentials", "ZohoCliq.Webhooks.CREATE"))
+      .toEqual(["ZohoCliq.Webhooks.CREATE"]);
+    expect(client.getGrantedScopes("refresh_token"))
+      .toEqual(["ZohoCliq.Channels.UPDATE", "ZohoCliq.Messages.UPDATE"]);
+    expect(JSON.stringify(client.getGrantedScopes("refresh_token"))).not.toContain("REFRESH_TOKEN_VALUE");
+    // A client_credentials scope that was never minted has nothing recorded.
+    expect(client.getGrantedScopes("client_credentials", "ZohoCliq.Users.READ")).toBeUndefined();
   });
 
   it("getRefreshedAccessToken throws when no refreshToken is configured", async () => {
