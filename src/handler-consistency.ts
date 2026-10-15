@@ -131,6 +131,7 @@ function mostSpecificHandlerReadProblem(
  * consume. A real client must create those native relationships.
  */
 export type CliqHandlerContentShapeCoverageStatus =
+  | "recovered_from_history"
   | "declared_unexercised"
   | "uncovered"
   | "unknown";
@@ -196,6 +197,7 @@ function describeDeclaredFields(keys: Set<string>, fields: readonly string[]): s
  */
 export function inspectCliqHandlerContentShapeCoverage(
   handlers: readonly CliqHandlerScriptRecord[],
+  options: { historyRecovery?: boolean } = {},
 ): CliqHandlerContentShapeCoverage {
   if (handlers.length === 0) {
     return {
@@ -249,6 +251,17 @@ export function inspectCliqHandlerContentShapeCoverage(
   const everyShapeDeclared = declarations.length > 0 && declarations.every(
     (item) => item.hasReply && item.hasForward,
   );
+  // The handler payload is not the only source: with replyContextRecovery the
+  // plugin reads `replied_to` / `forward_info` from Cliq's own chat history
+  // (issues #223 / #230), so a handler that omits the fields is a supported
+  // configuration, not a gap. The gate mirrors the runtime gate exactly
+  // (flag enabled AND a user-context refresh token).
+  if (options.historyRecovery) {
+    return {
+      status: "recovered_from_history",
+      detail: `${detail}. Reply/quote and forwarded-message context is recovered from Cliq chat history (channels.cliq.replyContextRecovery with a user-context refresh token), so the handler does not need to forward it`,
+    };
+  }
   if (everyShapeDeclared) {
     return {
       status: "declared_unexercised",

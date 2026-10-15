@@ -17,6 +17,7 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- `cliq doctor` can reach `pass` for bot/handler inspection again. Before, every possible reply/forward coverage status (`unknown`, `uncovered`, `declared_unexercised`) forced `warn`, so the stage was permanently degraded on every install. With `channels.cliq.replyContextRecovery.enabled=true` and a user-context `refreshToken`, the plugin recovers reply/quote and forward context from Cliq chat history at runtime, and the stage now reports `recovered_from_history` and passes (the gate mirrors the runtime gate). Without recovery the stage still warns, and the remediation now names `replyContextRecovery` instead of the misleading "re-consent `ZohoCliq.Bots.READ`" hint, which is kept only for genuinely unreadable bot/handler facts.
 - Load on OpenClaw 2026.10.2: `openclaw/plugin-sdk/infra-runtime`, `channel-message`, and `config-runtime` are no longer exported there, so the channel activity, passive gateway lifecycle, and reply-mode imports moved to `channel-activity-runtime`, `channel-outbound`, and `config-contracts`. The 2026.8.2 build floor is unchanged; one artifact is verified across 2026.8.2, 2026.9.3, and 2026.10.2.
 - Gateway smoke installs a private copy of the plugin on OpenClaw 2026.10+ (a linked checkout fails startup there with "Plugin entry is outside its captured source package"), tolerates the 2026.10.2 package-ownership install warning only for that case, and its stub model ignores the new `OpenClaw runtime context:` message.
 
