@@ -154,7 +154,8 @@ async function readHandlers(
 }
 
 export async function inspectCliqBot(params: {
-  account: Pick<ResolvedCliqAccount, "botId" | "botName" | "webhookSecret">;
+  account: Pick<ResolvedCliqAccount, "botId" | "botName" | "webhookSecret"> &
+    Partial<Pick<ResolvedCliqAccount, "replyContextRecovery" | "refreshToken">>;
   publicWebhookUrl?: string;
   reader: CliqBotReader;
 }): Promise<CliqBotInspection> {
@@ -202,7 +203,10 @@ export async function inspectCliqBot(params: {
     configSecret: params.account.webhookSecret,
     expectedWebhookUrl: params.publicWebhookUrl,
   });
-  const handlerContentShapes = inspectCliqHandlerContentShapeCoverage(handlers);
+  const handlerContentShapes = inspectCliqHandlerContentShapeCoverage(handlers, {
+    historyRecovery:
+      params.account.replyContextRecovery?.enabled === true && Boolean(params.account.refreshToken),
+  });
   const handlerTypes = Array.isArray(record.handlers)
     ? known(
         record.handlers
@@ -294,23 +298,33 @@ export function toCliqDoctorBotInspection(
   const narrowerScope =
     inspection.visibility.state === "known" && inspection.visibility.value !== "organization";
   // The normal bot send API cannot create a native reply/quote or forward,
-  // so even a static declaration is not live proof. Keep the stage visibly
-  // degraded rather than letting a secret/URL check imply shape coverage.
+  // so a static declaration is not live proof. Without a delivery path for
+  // those shapes (handler fields are not enough, history recovery is) the
+  // stage stays visibly degraded rather than implying shape coverage.
+  const shapeGap = inspection.handlerContentShapes.status === "unknown" ||
+    inspection.handlerContentShapes.status === "uncovered" ||
+    inspection.handlerContentShapes.status === "declared_unexercised";
   if (
     unknownFacet ||
     narrowerScope ||
     inspection.handlerConsistency.status === "skipped" ||
-    inspection.handlerContentShapes.status === "unknown" ||
-    inspection.handlerContentShapes.status === "uncovered" ||
-    inspection.handlerContentShapes.status === "declared_unexercised"
+    shapeGap
   ) {
+    const readOrFacetProblem = unknownFacet ||
+      narrowerScope ||
+      inspection.handlerConsistency.status === "skipped" ||
+      inspection.handlerContentShapes.status === "unknown";
     const handlerRemediation = inspection.handlerConsistency.readProblem === "handler_not_provisioned"
       ? [
           "Provision the Message and Mention handlers with the provisioning stage in `openclaw setup`, or paste the manual §5 Deluge handlers / use the direct REST contract in docs/setup/provisioning-api-contract.md. This new-bot state is not a ZohoCliq.Bots.READ consent failure.",
         ]
-      : [
-          "Grant and re-consent ZohoCliq.Bots.READ; subscriber details additionally require the bot creator or an organization administrator. Use a real Cliq client to send one native reply/quote and one forwarded message: the bot send API cannot synthesize either relationship, and static field declarations are not live delivery proof.",
-        ];
+      : readOrFacetProblem
+        ? [
+            "Grant and re-consent ZohoCliq.Bots.READ; subscriber details additionally require the bot creator or an organization administrator.",
+          ]
+        : [
+            "Reply/quote and forwarded-message context does not reach the agent. Set channels.cliq.replyContextRecovery.enabled=true (needs a user-context refreshToken with ZohoCliq.Messages.READ) so the plugin recovers both from Cliq chat history, then restart the gateway. Alternatively forward the fields from a verified Deluge handler.",
+          ];
     return {
       status: "warn",
       evidence,

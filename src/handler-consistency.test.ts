@@ -66,6 +66,22 @@ describe("inspectCliqHandlerContentShapeCoverage (issue #225)", () => {
     expect(result.detail).toMatch(/does not claim native reply\/quote or forward delivery/i);
   });
 
+  it("reports recovered_from_history only when history recovery is requested and every handler was read", () => {
+    const recovered = inspectCliqHandlerContentShapeCoverage(handlers(script()), { historyRecovery: true });
+    expect(recovered.status).toBe("recovered_from_history");
+    expect(recovered.detail).toContain("reply/quote fields [none]");
+    expect(recovered.detail).not.toContain(SECRET);
+
+    const unreadable = inspectCliqHandlerContentShapeCoverage(
+      [
+        { type: "message_handler", script: script() },
+        { type: "mention_handler", error: "HTTP 403" },
+      ],
+      { historyRecovery: true },
+    );
+    expect(unreadable.status).toBe("unknown");
+  });
+
   it("keeps content-shape coverage unknown when a handler cannot be read", () => {
     const result = inspectCliqHandlerContentShapeCoverage([
       { type: "message_handler", script: script() },

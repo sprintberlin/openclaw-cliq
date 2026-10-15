@@ -138,6 +138,63 @@ describe("inspectCliqBot — organization-visible, not subscribed", () => {
   });
 });
 
+describe("inspectCliqBot — reply/forward context via history recovery", () => {
+  const url = "https://cliq.example.com/cliq/webhook";
+
+  it("passes when replyContextRecovery is enabled with a user-context refresh token", async () => {
+    const result = await inspectCliqBot({
+      account: account({ replyContextRecovery: { enabled: true }, refreshToken: "refresh-token-value" }),
+      publicWebhookUrl: url,
+      reader: reader(),
+    });
+    expect(result.handlerContentShapes.status).toBe("recovered_from_history");
+    const doctor = toCliqDoctorBotInspection(result);
+    expect(doctor.status).toBe("pass");
+    expect(doctor.evidence.join(" ")).toMatch(/recovered from Cliq chat history/i);
+    expect(JSON.stringify(doctor)).not.toContain("refresh-token-value");
+  });
+
+  it("stays degraded when recovery is enabled but no refresh token exists (runtime gate would be off)", async () => {
+    const result = await inspectCliqBot({
+      account: account({ replyContextRecovery: { enabled: true } }),
+      publicWebhookUrl: url,
+      reader: reader(),
+    });
+    expect(result.handlerContentShapes.status).toBe("uncovered");
+    expect(toCliqDoctorBotInspection(result).status).toBe("warn");
+  });
+
+  it("stays degraded when recovery is not enabled and points at replyContextRecovery, not Bots.READ", async () => {
+    const result = await inspectCliqBot({
+      account: account(),
+      publicWebhookUrl: url,
+      reader: reader(),
+    });
+    const doctor = toCliqDoctorBotInspection(result);
+    expect(doctor.status).toBe("warn");
+    const remediation = doctor.remediation?.join(" ") ?? "";
+    expect(remediation).toMatch(/replyContextRecovery/);
+    expect(remediation).not.toMatch(/ZohoCliq\.Bots\.READ/);
+  });
+
+  it("does not let recovery hide a real handler failure or an unreadable handler", async () => {
+    const mismatch = await inspectCliqBot({
+      account: account({ replyContextRecovery: { enabled: true }, refreshToken: "t" }),
+      publicWebhookUrl: url,
+      reader: reader({ readHandlerScript: vi.fn(async () => ({ script: handlerScript("a-different-secret") })) }),
+    });
+    expect(toCliqDoctorBotInspection(mismatch).status).toBe("fail");
+
+    const unreadable = await inspectCliqBot({
+      account: account({ replyContextRecovery: { enabled: true }, refreshToken: "t" }),
+      publicWebhookUrl: url,
+      reader: reader({ readHandlerScript: vi.fn(async () => ({ error: "HTTP 403", errorStatus: 403 })) }),
+    });
+    expect(unreadable.handlerContentShapes.status).toBe("unknown");
+    expect(toCliqDoctorBotInspection(unreadable).status).toBe("warn");
+  });
+});
+
 describe("inspectCliqBot — unknown subscription state", () => {
   it("keeps bot state known while subscription is unknown when Zoho refuses the subscriber list", async () => {
     const result = await inspectCliqBot({
