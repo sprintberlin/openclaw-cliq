@@ -11,20 +11,7 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
-### Changed
-
-- Compatibility matrix now smoke-tests the production runtime 2026.9.8 as well (2026.8.2, 2026.9.3, 2026.9.8, 2026.10.2). `check:sdk-compat` rejects unknown es-module-lexer record shapes and has negative tests (missing subpath, missing symbol, zero imports). A nightly, non-blocking run smokes the newest stable OpenClaw (#301).
-
-### Fixed
-
-- `cliq doctor` checks required send scopes (`dm_send`, `channel_send`, `message_edit`, native typing) against the scope set Zoho reports when it mints the token, instead of warning on every read-only run. A missing scope fails the stage. A reported scope is `granted`, not a probe pass, because Zoho can still reject it at call time. A token response with no scope list stays unverified and still warns. `--outbound-test` remains the optional live send and is no longer required for a green doctor.
-- `cliq doctor` can reach `pass` for bot/handler inspection again. Before, every possible reply/forward coverage status (`unknown`, `uncovered`, `declared_unexercised`) forced `warn`, so the stage was permanently degraded on every install. With `channels.cliq.replyContextRecovery.enabled=true` and a user-context `refreshToken`, the plugin recovers reply/quote and forward context from Cliq chat history at runtime, and the stage now reports `recovered_from_history` and passes (the gate mirrors the runtime gate). Known limit: a forward with no caption arrives with an empty `message` and is rejected by the parser before recovery runs (logged as `parser_rejected`). Without recovery the stage still warns, and the remediation now names `replyContextRecovery` instead of the misleading "re-consent `ZohoCliq.Bots.READ`" hint, which is kept only for genuinely unreadable bot/handler facts.
-- Load on OpenClaw 2026.10.2: `openclaw/plugin-sdk/infra-runtime`, `channel-message`, and `config-runtime` are no longer exported there, so the channel activity, passive gateway lifecycle, and reply-mode imports moved to `channel-activity-runtime`, `channel-outbound`, and `config-contracts`. The 2026.8.2 build floor is unchanged; one artifact is verified across 2026.8.2, 2026.9.3, and 2026.10.2.
-- Gateway smoke installs a private copy of the plugin on OpenClaw 2026.10+ (a linked checkout fails startup there with "Plugin entry is outside its captured source package"), tolerates the 2026.10.2 package-ownership install warning only for that case, and its stub model ignores the new `OpenClaw runtime context:` message.
-
-- Fresh-host setup accepts `CLIQ_CLIENT_ID` and `CLIQ_CLIENT_SECRET` for `openclaw cliq oauth-exchange` before Cliq config exists, and the local checkout install documents `--accept-capabilities` (#257).
-- Handler provisioning treats Zoho HTTP 400 `execution_handler_not_found` as an absent handler that can be created, while unrelated HTTP 400 codes remain blocked (#257).
-- Document that a direct REST bot create with `scope: "organization"` can read back as `personal` and requires a visibility change in Bots & Tools; no REST correction is verified (#257).
+## [0.6.0] - 2026-10-16
 
 ### Added
 
@@ -33,11 +20,23 @@ publish workflow extracts the matching section as the release notes (see
 - Always-on Cliq channels (`groups.<uniqueName>.requireMention: false` plus a provisioned `participation_handler`) now honour Core's exact `NO_REPLY` silent-turn contract without leaking a thinking placeholder or rewriting it to `⚠️ Couldn't process that message.` Unmentioned channel chatter posts no eager placeholder or progress draft; the Core `NO_REPLY` guidance is attached via `GroupSystemPrompt`; a resolved zero-count dispatch is treated as benign only on those undirected turns. Directed DMs, `@mentions`, and replies to the bot keep today's placeholder and genuine-failure notice. Known other bots listed in `selfSenderIds` remain dropped before dispatch so a second agent cannot ping-pong on the failure bubble (#283).
 - The generated Message Handler attachment branch now uses **schema v5**, which replaces the single ambiguous `payload.toString()` stringPart with flat scalar stringParts (`handler`, `handlerSchema`, `message`, `eventId`, `userId`, `userName`, `chatId`, `chatType`) sent alongside the original Deluge FILE objects. Every part value is a flat string or scalar `.get()`, so Deluge never serializes nested Maps or Lists on the wire. Commas, brackets, braces, equals signs, quotes, and line breaks in user captions are transmitted unambiguously within their own multipart boundary without requiring any Deluge-side JSON escaping or custom string routines (#275).
 
+### Changed
+
+- Compatibility matrix now smoke-tests the production runtime 2026.9.8 as well (2026.8.2, 2026.9.3, 2026.9.8, 2026.10.2). `check:sdk-compat` rejects unknown es-module-lexer record shapes and has negative tests (missing subpath, missing symbol, zero imports). A nightly, non-blocking run smokes the newest stable OpenClaw (#301).
+
 ### Fixed
 
+- `cliq doctor` checks required send scopes (`dm_send`, `channel_send`, `message_edit`, native typing) against the scope set Zoho reports when it mints the token, instead of warning on every read-only run. A missing scope fails the stage. A reported scope is `granted`, not a probe pass, because Zoho can still reject it at call time. A token response with no scope list stays unverified and still warns. `--outbound-test` remains the optional live send and is no longer required for a green doctor (#306).
+- `cliq doctor` can reach `pass` for bot/handler inspection again. Before, every possible reply/forward coverage status (`unknown`, `uncovered`, `declared_unexercised`) forced `warn`, so the stage was permanently degraded on every install. With `channels.cliq.replyContextRecovery.enabled=true` and a user-context `refreshToken`, the plugin recovers reply/quote and forward context from Cliq chat history at runtime, and the stage now reports `recovered_from_history` and passes (the gate mirrors the runtime gate). Known limit: a forward with no caption arrives with an empty `message` and is rejected by the parser before recovery runs (logged as `parser_rejected`). Without recovery the stage still warns, and the remediation now names `replyContextRecovery` instead of the misleading "re-consent `ZohoCliq.Bots.READ`" hint, which is kept only for genuinely unreadable bot/handler facts (#305).
+- Load on OpenClaw 2026.10.2: `openclaw/plugin-sdk/infra-runtime`, `channel-message`, and `config-runtime` are no longer exported there, so the channel activity, passive gateway lifecycle, and reply-mode imports moved to `channel-activity-runtime`, `channel-outbound`, and `config-contracts`. The 2026.8.2 build floor is unchanged; one artifact is verified across 2026.8.2, 2026.9.3, and 2026.10.2 (#302).
+- Gateway smoke installs a private copy of the plugin on OpenClaw 2026.10+ (a linked checkout fails startup there with "Plugin entry is outside its captured source package"), tolerates the 2026.10.2 package-ownership install warning only for that case, and its stub model ignores the new `OpenClaw runtime context:` message (#303).
 - Channel live-edit now recognizes the live Zoho v2 channel lookup envelope `{ url, type, data: { chat_id, channel_id, ... } }` returned by `GET /api/v2/channelsbyname/{name}`. Previously the resolver only inspected the top level or a `channel` wrapper, so valid channel metadata was reported as having no chat id, every channel turn repeated the lookup and warning, and streaming could not edit its draft in place. Truly id-less records are now negative-cached for five minutes before retrying; HTTP/OAuth failures remain immediately retryable (#290).
+- Directory user and channel lookups unwrap the live `{ data: [...] }` envelope; `listUsers` and `listChannels` previously missed it, so the directory search returned no users (#299).
+- One corrupt inbound event is isolated from the next valid DM; a malformed event no longer poisons the queue for the following message (#295).
+- Fresh-host setup accepts `CLIQ_CLIENT_ID` and `CLIQ_CLIENT_SECRET` for `openclaw cliq oauth-exchange` before Cliq config exists, and the local checkout install documents `--accept-capabilities` (#257).
+- Handler provisioning treats Zoho HTTP 400 `execution_handler_not_found` as an absent handler that can be created, while unrelated HTTP 400 codes remain blocked (#257).
+- Document that a direct REST bot create with `scope: "organization"` can read back as `personal` and requires a visibility change in Bots & Tools; no REST correction is verified (#257).
 - The legacy Deluge `Map.toString()` fallback parser (`src/inbound-deluge-repair.ts`) is retained for stale v4 and earlier handlers as a narrow, fail-closed compatibility layer: it accepts only the generated handler envelope in strictly monotonic insertion rank, enforces byte, nesting, and key limits, rejects duplicate and prototype-pollution keys at every depth, and rejects ambiguous delimiter-bearing user text rather than silently restructuring it (#275).
-
 - A group `@mention` of **another** workspace bot is no longer treated as a mention of this bot. Participation/Message payloads can list any bot in `mentions[]`; only this bot's Mention handler, forms/buttons, and mentions matching `botId` / `botName` / `ownSenderIds` count as directed. `selfSenderIds` still drops other bots as senders, but no longer makes a reply to Paula look like a reply to Zora. Unaddressed `/model` chatter on an always-on channel is no longer authorized as a native command. The silent-dispatch fallback ignores Core `failedCounts` so a delivery error is not classified as `NO_REPLY` (#285).
 
 ## [0.5.0] - 2026-09-18
@@ -1610,7 +1609,8 @@ publish workflow extracts the matching section as the release notes (see
   lookup, plugin doctor, interactive setup wizard, SecretRef-backed credentials,
   security audit collector, session binding, multi-account, lifecycle hooks.
 
-[Unreleased]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.2.0...v0.3.0
