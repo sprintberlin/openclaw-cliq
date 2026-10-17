@@ -342,10 +342,11 @@
       "ackPolicy": {
         "type": "string",
         "enum": [
+          "after_receive_record",
           "after_dispatch",
           "immediate"
         ],
-        "default": "after_dispatch"
+        "default": "after_receive_record"
       },
       "replyToMode": {
         "type": "string",
@@ -1064,10 +1065,11 @@
             "ackPolicy": {
               "type": "string",
               "enum": [
+                "after_receive_record",
                 "after_dispatch",
                 "immediate"
               ],
-              "default": "after_dispatch"
+              "default": "after_receive_record"
             },
             "replyToMode": {
               "type": "string",
@@ -1818,10 +1820,11 @@
           "ackPolicy": {
             "type": "string",
             "enum": [
+              "after_receive_record",
               "after_dispatch",
               "immediate"
             ],
-            "default": "after_dispatch"
+            "default": "after_receive_record"
           },
           "replyToMode": {
             "type": "string",
@@ -2540,10 +2543,11 @@
                 "ackPolicy": {
                   "type": "string",
                   "enum": [
+                    "after_receive_record",
                     "after_dispatch",
                     "immediate"
                   ],
-                  "default": "after_dispatch"
+                  "default": "after_receive_record"
                 },
                 "replyToMode": {
                   "type": "string",
@@ -3013,6 +3017,7 @@
         "ackPolicy": {
           "label": "Webhook ack timing",
           "options": [
+            "after_receive_record",
             "after_dispatch",
             "immediate"
           ]

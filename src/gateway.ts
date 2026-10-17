@@ -6,6 +6,7 @@ import {
 import type { ResolvedCliqAccount } from "./client.js";
 import { resolveChannelReadyPatch } from "./sdk-compat.js";
 import { cliqTransportStatusFields } from "./webhook-account.js";
+import { getCliqIngressMonitorRegistry } from "./ingress-runtime.js";
 
 type ChannelGatewayAdapter<ResolvedAccount = unknown> = NonNullable<
   ChannelPlugin<ResolvedAccount>["gateway"]
@@ -49,6 +50,12 @@ async function buildReadyStatusPatch(): Promise<Record<string, unknown>> {
  * monitor restarts a channel whose webhook is actually healthy (issue #98).
  * Waiting for the lifecycle abort signal models the event-driven transport
  * honestly and lets OpenClaw maintain `running` until shutdown.
+ *
+ * Durable ingress (issue #261): this lifecycle also OWNS the account's
+ * `createChannelIngressMonitor` instance — create + start on startAccount,
+ * stop + unregister on stop. The HTTP route only ever calls `admit`; a
+ * request that arrives before this monitor is running is answered `503`
+ * rather than dispatching unrecorded work.
  */
 export const cliqGatewayAdapter: ChannelGatewayAdapter<ResolvedCliqAccount> = {
   startAccount: async ({ abortSignal, accountId, setStatus, log }) => {
@@ -56,12 +63,28 @@ export const cliqGatewayAdapter: ChannelGatewayAdapter<ResolvedCliqAccount> = {
     log?.info?.(
       `[${accountId}] starting passive webhook transport (/cliq/webhook)`,
     );
+    const ingress = getCliqIngressMonitorRegistry();
+    const ingressStart = await ingress.startAccount(accountId, {
+      abortSignal,
+    });
+    if (ingressStart === "unavailable") {
+      // The registry already logged the one actionable diagnostic; keep
+      // the account running so an unauthorized/path install never crash
+      // loops — the webhook simply uses its pre-queue behaviour.
+      log?.warn?.(
+        `[${accountId}] durable ingress queue unavailable — webhook keeps the pre-queue behaviour (see the earlier [cliq] ingress diagnostic)`,
+      );
+    }
     await runPassiveAccountLifecycle({
       abortSignal,
       start: async () => {
         statusSink(await buildReadyStatusPatch());
       },
       onStop: async () => {
+        // Stop + unregister the monitor the same way the account started
+        // it, so stop/start cycles (config reload, health restart) never
+        // leak a second monitor for the same account.
+        await ingress.stopAccount(accountId);
         // Report the stop that actually happened. Without this the last
         // published state stays "ready" after shutdown, which would be a
         // different flavor of the same lie this fix removes.

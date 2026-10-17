@@ -11,6 +11,10 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Added
+
+- Durable-before-ack ingest via OpenClaw Core's public channel-ingress queue (`runtime.state.openChannelIngressQueue` + `createChannelIngressMonitor`, #261): the webhook records the parsed event BEFORE the HTTP 200, drains through the Core monitor with the turn-adoption lifecycle threaded into the reply options, and relies on queue tombstones for replay protection. New default `ackPolicy: "after_receive_record"`; `after_dispatch` stays as the explicit blocking compatibility mode; legacy `immediate` is a deprecated alias with a one-time Doctor migration warning. Account lifecycle owns monitor start/stop; the route answers 503 on append failure or missing monitor readiness; installs without the durable surface keep the pre-queue behaviour with one diagnostic. `inboundCatchup` admits recovered candidates through the same queue so catch-up, redelivery, and queued events cannot produce two turns (#258).
+
 ## [0.6.1] - 2026-10-17
 
 ### Added

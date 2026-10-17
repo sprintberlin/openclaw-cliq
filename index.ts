@@ -1,7 +1,7 @@
 import { defineChannelPluginEntry } from "openclaw/plugin-sdk/channel-core";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { cliqPlugin } from "./src/channel.js";
-import { resolveCliqConfig } from "./src/client.js";
+import { CLIQ_DEFAULT_ACCOUNT_ID, resolveCliqConfig } from "./src/client.js";
 import { getCliqClientRegistry } from "./src/runtime-api.js";
 import { resolveCliqDmAdmission, resolveCliqGroupAdmission } from "./src/admission.js";
 import { resolveCliqGroupRequireMention } from "./src/group-policy.js";
@@ -17,6 +17,8 @@ import {
   describeCliqPayloadRejection,
   resolveCliqMentionDecision,
   type CliqRuntime,
+  type CliqTurnAdoptionLifecycle,
+  type ParsedCliqInbound,
 } from "./src/inbound.js";
 import { readCliqWebhookBody } from "./src/inbound-webhook-body.js";
 import {
@@ -58,6 +60,7 @@ import {
 } from "./src/webhook-probe.js";
 import { recordCliqActivity } from "./src/activity.js";
 import { resolveCliqDetachedWebhookWork } from "./src/detached-dispatch.js";
+import { admitCliqEvent, configureCliqIngress, setCliqIngressDeliveryCallback } from "./src/ingress-runtime.js";
 import {
   createCliqHandlerScriptReader,
   type CliqHandlerScriptRecord,
@@ -320,6 +323,53 @@ export default defineChannelPluginEntry({
     // creates; the outbound sendText / inbound deliver paths resolve their
     // client through the registry, so all sends flow through this sink.
     getCliqClientRegistry().setLogger(api.logger);
+    // Durable Core ingress (issue #261): bind the account-keyed monitor
+    // registry to this process's runtime so the webhook route and the
+    // gateway lifecycle share one instance. Unavailable installs keep the
+    // pre-queue path with one actionable diagnostic.
+    configureCliqIngress({
+      runtime: (api as unknown as { runtime: CliqRuntime }).runtime,
+      config: () => api.config as OpenClawConfig,
+      logger: api.logger,
+    });
+    // Delivery seam used by the monitor's drain when it claims a queued
+    // event: dispatch through the existing pipeline with the Core
+    // turn-adoption lifecycle bound into the reply options, so the durable
+    // claim completes exactly when the turn is durably adopted.
+    setCliqIngressDeliveryCallback(async (
+      raw: { parsed: ParsedCliqInbound; accountId: string; receivedAt: number },
+      turnAdoptionLifecycle: CliqTurnAdoptionLifecycle,
+    ) => {
+      try {
+        // Re-resolve the account at dispatch time so a config edit between
+        // admission and delivery is picked up.
+        const liveAccount = resolveCliqConfig(
+          api.config as OpenClawConfig,
+          raw.accountId === CLIQ_DEFAULT_ACCOUNT_ID ? null : raw.accountId,
+        );
+        await dispatchCliqInbound({
+          runtime: (api as unknown as { runtime: CliqRuntime }).runtime,
+          cfg: api.config as OpenClawConfig,
+          account: liveAccount,
+          parsed: raw.parsed,
+          onError: (err, info) => {
+            api.logger.error?.(`[cliq] ${info.kind} failed: ${String(err)}`);
+          },
+          turnAdoptionLifecycle,
+        });
+        return { kind: "completed" } as const;
+      } catch (err) {
+        // Reported to the Core monitor as retryable: the Core drain's
+        // bounded retry / dead-letter policy owns replays (no Cliq-local
+        // retry counter, issue #261).
+        if (isCliqSessionConflictError(err)) {
+          api.logger.warn?.(
+            `[cliq] inbound dispatch conflicted (session init) — letting the Core queue retry the claim: ${String(err)}`,
+          );
+        }
+        return { kind: "failed", error: err } as const;
+      }
+    });
     // Contribute Cliq-specific findings to `openclaw security audit`:
     // missing webhook secret (critical), wildcard allowFrom (critical), open
     // DM policy (warn), and plaintext secret storage (warn). The collector
@@ -745,73 +795,8 @@ export default defineChannelPluginEntry({
           return true;
         }
 
-        // Idempotency / de-dup: claim the message before dispatching so a
-        // Cliq redelivery of an already-processed (or in-flight) `messageId`
-        // is acknowledged without re-running the agent + side effects. On
-        // successful dispatch we `commit` (record the tombstone); on a
-        // retryable failure we `release` so the next redelivery can retry.
-        const claim = await claimCliqMessage(parsed, account);
-        if (claim && claim.kind !== "claimed") {
-          // Issue #232: a dedupe hit is the single most confusing silent 200 —
-          // it is exactly what a lost message looks like from the Zoho side.
-          api.logger.warn?.(
-            formatCliqInboundSkip({
-              reason: cliqDedupeSkipReason(claim.kind) ?? "duplicate",
-              messageId: parsed.messageId,
-              senderId: parsed.senderId,
-            }),
-          );
-          res.statusCode = 200;
-          res.end("ok");
-          return true;
-        }
-
-        // Liveness: this is the only real inbound signal a webhook channel
-        // has. Record after the accept gates (secret, self, mention,
-        // admission, dedupe) so rejected or replayed deliveries do not look
-        // like traffic, and before dispatch so a later agent/outbound
-        // failure still shows that Cliq reached us (issue #98).
-        recordCliqActivity({
-          accountId: account.accountId,
-          direction: "inbound",
-        });
-
-        // Durable-before-ack: by default await the inbound pipeline before
-        // acknowledging Cliq so a crash mid-dispatch triggers redelivery
-        // instead of a lost message. `ackPolicy: "immediate"` opts out
-        // (legacy fire-and-forget) for setups whose Cliq/Deluge timeout is
-        // tighter than the agent round-trip.
-        //
-        // Ack-first work must be detached from the request admission BEFORE
-        // the 200 is written (issue #122): starting with `2026.8.1-beta.3`, the
-        // continuation of an inherited, already-released admission is refused
-        // as if the gateway were draining, so every post-ack turn died with
-        // `GatewayDrainingError`. Resolve the helper first — it must be
-        // invoked synchronously while the request is still admitted.
-        const runDetached =
-          account.ackPolicy === "immediate"
-            ? await resolveCliqDetachedWebhookWork()
-            : null;
-
-        let dispatchPromise: Promise<void> | undefined;
         const onInboundError = (err: unknown, info: { kind: string }) => {
           api.logger.error?.(`[cliq] ${info.kind} failed: ${String(err)}`);
-        };
-        const dispatch = (): Promise<void> => {
-          dispatchPromise ??= dispatchCliqInbound({
-            runtime,
-            cfg,
-            account,
-            parsed,
-            onError: onInboundError,
-          }).then((result) => {
-            void commitCliqMessage(claim?.key ?? null);
-            return result;
-          }, (err) => {
-            releaseCliqMessage(claim?.key ?? null, err);
-            throw err;
-          });
-          return dispatchPromise;
         };
 
         // A bounded safety net for messages that existed in Cliq but never
@@ -821,7 +806,7 @@ export default defineChannelPluginEntry({
         // before each recovered dispatch, so live and recovered paths cannot
         // double-run a tool turn. A history read failure only logs and leaves
         // this live webhook turn unchanged.
-        const catchUpAfterLiveDispatch = async (): Promise<void> => {
+        const catchUpAfterLiveDispatch = async (viaQueue: boolean): Promise<void> => {
           if (
             parsed.handler === "catchup" ||
             parsed.isGroup ||
@@ -865,6 +850,31 @@ export default defineChannelPluginEntry({
           for (const record of inspected.candidates) {
             const recoveredParsed = parseCliqHistoryMessage(record, parsed);
             if (!recoveredParsed) continue;
+            if (viaQueue) {
+              // Durable path: the queue tombstone is the replay source of
+              // truth. An already-queued/processed candidate comes back
+              // `duplicate` and is skipped; only a fresh admission counts
+              // as recovered (the drain dispatches it).
+              try {
+                const candidateAdmission = await admitCliqEvent(
+                  account.accountId ?? CLIQ_DEFAULT_ACCOUNT_ID,
+                  recoveredParsed,
+                );
+                if (candidateAdmission.kind === "admitted") recovered++;
+                if (
+                  candidateAdmission.kind === "unavailable" ||
+                  candidateAdmission.kind === "not_ready"
+                ) {
+                  // Durable surface went away mid-run: stop before the
+                  // cursor moves so the next live inbound retries safely.
+                  return;
+                }
+              } catch (err) {
+                onInboundError(err, { kind: "inbound-catchup-admission" });
+                return;
+              }
+              continue;
+            }
             const recoveredClaim = await claimCliqMessage(recoveredParsed, account);
             if (!recoveredClaim || recoveredClaim.kind !== "claimed") continue;
             try {
@@ -907,7 +917,158 @@ export default defineChannelPluginEntry({
           });
         };
 
-        if (account.ackPolicy === "immediate") {
+        // Durable admission before ack (issue #261): the default
+        // `after_receive_record` policy (and its deprecated `immediate`
+        // alias) records the parsed event in the Core ingress queue BEFORE
+        // the HTTP 200 is written. The drain then dispatches through
+        // `createChannelIngressMonitor` with the turn-adoption lifecycle
+        // bound into the reply options, so a crash between ack and durable
+        // turn adoption re-dispatches exactly once after restart.
+        //
+        // `after_dispatch` stays available as the explicit blocking
+        // compatibility mode and skips this branch entirely. When the
+        // install exposes no durable queue surface, the registry reports
+        // `unavailable`, logs ONE actionable diagnostic, and the request
+        // falls through to the pre-queue flow below — never a crash loop.
+        if (account.ackPolicy !== "after_dispatch") {
+          let admission: Awaited<ReturnType<typeof admitCliqEvent>>;
+          try {
+            admission = await admitCliqEvent(
+              account.accountId ?? CLIQ_DEFAULT_ACCOUNT_ID,
+              parsed,
+            );
+          } catch (err) {
+            // Append failure: the event was NOT recorded, so it must never
+            // be acknowledged — 503 makes Zoho redeliver instead.
+            api.logger.error?.(
+              `[cliq] durable ingress admission failed: ${String(err)}`,
+            );
+            res.statusCode = 503;
+            res.end("ingress admission failed");
+            return true;
+          }
+          if (admission.kind === "not_ready") {
+            // Durable surface exists but the account lifecycle has not
+            // started the monitor yet: fail closed with 503 rather than
+            // falling back to unsafe ack-first dispatch.
+            api.logger.warn?.(
+              "[cliq] webhook received before the ingress monitor was ready (account lifecycle still starting) — answering 503 so Cliq redelivers",
+            );
+            res.statusCode = 503;
+            res.setHeader("Retry-After", "5");
+            res.end("ingress not ready");
+            return true;
+          }
+          if (admission.kind === "admitted" || admission.kind === "duplicate") {
+            if (admission.kind === "duplicate") {
+              // Issue #232: a queue-tombstone hit is the durable replay guard.
+              api.logger.warn?.(
+                formatCliqInboundSkip({
+                  reason: "duplicate",
+                  messageId: parsed.messageId,
+                  senderId: parsed.senderId,
+                  detail: `queue_${admission.queueKind}`,
+                }),
+              );
+            }
+            // Liveness: record after the accept gates and a successful
+            // durable admission (issue #98); queue duplicates stay out of
+            // the traffic counters, matching the legacy dedupe path.
+            if (admission.kind === "admitted") {
+              recordCliqActivity({
+                accountId: account.accountId,
+                direction: "inbound",
+              });
+            }
+            // Catch-up continuation must be reserved while the request is
+            // still admitted (issue #122) — resolve before writing the 200.
+            const runDetachedCatchup = await resolveCliqDetachedWebhookWork();
+            res.statusCode = 200;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ status: "received" }));
+            const catchupWork = () => catchUpAfterLiveDispatch(true);
+            void (runDetachedCatchup
+              ? runDetachedCatchup(catchupWork)
+              : catchupWork()
+            ).catch((err) => onInboundError(err, { kind: "inbound-catchup" }));
+            return true;
+          }
+          // `unavailable` → pre-queue fallback below. `ignored` → no stable
+          // event identity: the in-memory content-derived claim protects it.
+        }
+
+        // Idempotency / de-dup: claim the message before dispatching so a
+        // Cliq redelivery of an already-processed (or in-flight) `messageId`
+        // is acknowledged without re-running the agent + side effects. On
+        // successful dispatch we `commit` (record the tombstone); on a
+        // retryable failure we `release` so the next redelivery can retry.
+        // Kept for the explicit `after_dispatch` mode and the pre-queue /
+        // no-stable-identity fallbacks only — the durable path above uses the
+        // queue tombstones as the replay source of truth (issue #261).
+        const claim = await claimCliqMessage(parsed, account);
+        if (claim && claim.kind !== "claimed") {
+          // Issue #232: a dedupe hit is the single most confusing silent 200 —
+          // it is exactly what a lost message looks like from the Zoho side.
+          api.logger.warn?.(
+            formatCliqInboundSkip({
+              reason: cliqDedupeSkipReason(claim.kind) ?? "duplicate",
+              messageId: parsed.messageId,
+              senderId: parsed.senderId,
+            }),
+          );
+          res.statusCode = 200;
+          res.end("ok");
+          return true;
+        }
+
+        // Liveness: this is the only real inbound signal a webhook channel
+        // has. Record after the accept gates (secret, self, mention,
+        // admission, dedupe) so rejected or replayed deliveries do not look
+        // like traffic, and before dispatch so a later agent/outbound
+        // failure still shows that Cliq reached us (issue #98).
+        recordCliqActivity({
+          accountId: account.accountId,
+          direction: "inbound",
+        });
+
+        // Durable-before-ack: by default await the inbound pipeline before
+        // acknowledging Cliq so a crash mid-dispatch triggers redelivery
+        // instead of a lost message. `ackPolicy: "immediate"` opts out
+        // (legacy fire-and-forget) for setups whose Cliq/Deluge timeout is
+        // tighter than the agent round-trip.
+        //
+        // Ack-first work must be detached from the request admission BEFORE
+        // the 200 is written (issue #122): starting with `2026.8.1-beta.3`, the
+        // continuation of an inherited, already-released admission is refused
+        // as if the gateway were draining, so every post-ack turn died with
+        // `GatewayDrainingError`. Resolve the helper first — it must be
+        // invoked synchronously while the request is still admitted.
+        // Pre-queue fallback only: a configured legacy `immediate` keeps its
+        // ack-first behaviour on installs without the durable queue surface.
+        const legacyImmediate = account.ackPolicyLegacyImmediate === true;
+        const runDetached = legacyImmediate
+          ? await resolveCliqDetachedWebhookWork()
+          : null;
+
+        let dispatchPromise: Promise<void> | undefined;
+        const dispatch = (): Promise<void> => {
+          dispatchPromise ??= dispatchCliqInbound({
+            runtime,
+            cfg,
+            account,
+            parsed,
+            onError: onInboundError,
+          }).then((result) => {
+            void commitCliqMessage(claim?.key ?? null);
+            return result;
+          }, (err) => {
+            releaseCliqMessage(claim?.key ?? null, err);
+            throw err;
+          });
+          return dispatchPromise;
+        };
+
+        if (legacyImmediate) {
           // Reserve the independent admission root synchronously, while the
           // request is still admitted, and only then write the 200. Calling
           // it after `res.end` would be too late — that is the entire point
@@ -919,16 +1080,16 @@ export default defineChannelPluginEntry({
             detached = runDetached
               ? runDetached(async () => {
                   await dispatch();
-                  await catchUpAfterLiveDispatch();
+                  await catchUpAfterLiveDispatch(false);
                 })
-              : dispatch().then(catchUpAfterLiveDispatch);
+              : dispatch().then(() => catchUpAfterLiveDispatch(false));
           } catch (err) {
             // A failing helper must never cost Cliq its acknowledgement: fall
             // back to the inherited chain (the pre-beta.3 behaviour).
             api.logger.warn?.(
               `[cliq] detached webhook work unavailable, dispatching on the inherited admission: ${String(err)}`,
             );
-            detached = dispatch().then(catchUpAfterLiveDispatch);
+            detached = dispatch().then(() => catchUpAfterLiveDispatch(false));
           }
           detached.catch((err) => {
             // A "reply session initialization conflicted" error is transient
@@ -953,7 +1114,7 @@ export default defineChannelPluginEntry({
 
         try {
           await dispatch();
-          await catchUpAfterLiveDispatch();
+          await catchUpAfterLiveDispatch(false);
           res.statusCode = 200;
           res.setHeader("Content-Type", "application/json");
           res.end(JSON.stringify({ status: "received" }));

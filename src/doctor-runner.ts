@@ -226,7 +226,12 @@ function collectOperationalWarnings(cfg: OpenClawConfig, accountId?: string): st
   }
   if (effective?.ackPolicy === "immediate") {
     warnings.push(
-      "ackPolicy is immediate: a crash after acknowledgement loses the message; on OpenClaw >= 2026.8.2 post-ack work must be wrapped in runDetachedWebhookWork before responding or the healthy gateway refuses it with GatewayDrainingError (this plugin version applies that wrapper dynamically when available)",
+      "ackPolicy is immediate (deprecated alias): it now resolves to after_receive_record, which records the event in the Core durable ingress queue before acknowledging; remove the key or set after_receive_record explicitly",
+    );
+  }
+  if (effective?.ackPolicy === "after_dispatch") {
+    warnings.push(
+      "ackPolicy is after_dispatch (blocking compatibility mode): turns longer than Zoho's ~40 s Deluge timeout are redelivered while the original turn still runs; prefer after_receive_record",
     );
   }
   return warnings;

@@ -297,7 +297,7 @@ describe("collectCliqPreviewWarnings", () => {
     expect(warnings[0]).toMatch(/allowFrom is empty/);
   });
 
-  it("warns about ackPolicy immediate", () => {
+  it("warns that ackPolicy immediate is a deprecated alias of after_receive_record", () => {
     const warnings = collectCliqPreviewWarnings({
       cfg: cfgWith({
         clientId: "id",
@@ -312,9 +312,9 @@ describe("collectCliqPreviewWarnings", () => {
       doctorFixCommand: DOCTOR_FIX,
     });
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toMatch(/ackPolicy is "immediate"/);
-    expect(warnings[0]).toMatch(/GatewayDrainingError/);
-    expect(warnings[0]).toMatch(/runDetachedWebhookWork/);
+    expect(warnings[0]).toMatch(/ackPolicy is "immediate" \(deprecated alias\)/);
+    expect(warnings[0]).toMatch(/after_receive_record/);
+    expect(warnings[0]).toMatch(/re-dispatches exactly once/);
   });
 
   it("emits no warnings for a clean, locked-down config", () => {

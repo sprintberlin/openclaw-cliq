@@ -53,7 +53,8 @@ describe("inspectCliqAccount", () => {
     });
     expect(r.config.selfSenderIds).toEqual(["bot-zuid-1"]);
     expect(r.config.ownSenderIds).toEqual(["b-this-bot"]);
-    expect(r.config.ackPolicy).toBe("immediate");
+    // legacy "immediate" is a deprecated alias of the durable default (#261)
+    expect(r.config.ackPolicy).toBe("after_receive_record");
   });
 
   it("reports an explicitly disabled configured account as disabled", () => {
@@ -81,7 +82,7 @@ describe("inspectCliqAccount", () => {
     expect(r.config.selfSenderIds).toEqual([]);
     expect(r.config.ownSenderIds).toEqual([]);
     // ackPolicy always has a default
-    expect(r.config.ackPolicy).toBe("after_dispatch");
+    expect(r.config.ackPolicy).toBe("after_receive_record");
     expect(r.scopes.length).toBeGreaterThan(0);
   });
 
@@ -127,13 +128,13 @@ describe("inspectCliqAccount", () => {
     expect(r.config.webhookSecret).toBe(true);
   });
 
-  it("defaults ackPolicy to after_dispatch when unset", () => {
+  it("defaults ackPolicy to after_receive_record when unset", () => {
     const cfg = cfgWith({
       clientId: "id",
       clientSecret: "s",
       botId: "b",
     });
-    expect(inspectCliqAccount({ cfg }).config.ackPolicy).toBe("after_dispatch");
+    expect(inspectCliqAccount({ cfg }).config.ackPolicy).toBe("after_receive_record");
   });
 
   it("exposes the EU endpoints and OAuth scopes", () => {

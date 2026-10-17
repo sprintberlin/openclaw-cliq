@@ -139,7 +139,12 @@ function collectCliqPreviewWarnings(params: {
   }
   if (section.ackPolicy === "immediate") {
     warnings.push(
-      `- channels.cliq: ackPolicy is "immediate". A crash between ack and dispatch loses the inbound message. On OpenClaw >= 2026.8.2, post-ack work must be wrapped in runDetachedWebhookWork before responding or the healthy gateway refuses it with GatewayDrainingError; this plugin version applies that wrapper dynamically when available. Use immediate only when the Deluge invokeUrl timeout is tighter than the agent round-trip.`,
+      `- channels.cliq: ackPolicy is "immediate" (deprecated alias). It now resolves to "after_receive_record": the Core durable ingress queue records the event BEFORE the HTTP 200, so a crash between ack and turn adoption re-dispatches exactly once instead of losing the message. Remove the deprecated key (or set "after_receive_record" explicitly) to silence this warning.`,
+    );
+  }
+  if (section.ackPolicy === "after_dispatch") {
+    warnings.push(
+      `- channels.cliq: ackPolicy is "after_dispatch" (blocking compatibility mode). The HTTP 200 waits for the full dispatch; a turn longer than Zoho's ~40 s Deluge invokeUrl timeout will be redelivered while the original turn is still running. Prefer "after_receive_record" (the default), which acks after the durable record instead.`,
     );
   }
   // Data-center validation: warn when only one of `oauthBase` / `apiBase` is
