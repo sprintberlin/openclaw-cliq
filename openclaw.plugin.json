@@ -467,6 +467,13 @@
                   }
                 }
               }
+            },
+            "thinkingUnmentioned": {
+              "type": "string",
+              "enum": [
+                "silent",
+                "allowlist"
+              ]
             }
           }
         }
@@ -633,6 +640,13 @@
           },
           "animateIntervalMs": {
             "type": "number"
+          },
+          "unmentioned": {
+            "type": "string",
+            "enum": [
+              "silent",
+              "allowlist"
+            ]
           }
         }
       },
@@ -1190,6 +1204,13 @@
                         }
                       }
                     }
+                  },
+                  "thinkingUnmentioned": {
+                    "type": "string",
+                    "enum": [
+                      "silent",
+                      "allowlist"
+                    ]
                   }
                 }
               }
@@ -1356,6 +1377,13 @@
                 },
                 "animateIntervalMs": {
                   "type": "number"
+                },
+                "unmentioned": {
+                  "type": "string",
+                  "enum": [
+                    "silent",
+                    "allowlist"
+                  ]
                 }
               }
             },
@@ -1945,6 +1973,13 @@
                       }
                     }
                   }
+                },
+                "thinkingUnmentioned": {
+                  "type": "string",
+                  "enum": [
+                    "silent",
+                    "allowlist"
+                  ]
                 }
               }
             }
@@ -2111,6 +2146,13 @@
               },
               "animateIntervalMs": {
                 "type": "number"
+              },
+              "unmentioned": {
+                "type": "string",
+                "enum": [
+                  "silent",
+                  "allowlist"
+                ]
               }
             }
           },
@@ -2668,6 +2710,13 @@
                             }
                           }
                         }
+                      },
+                      "thinkingUnmentioned": {
+                        "type": "string",
+                        "enum": [
+                          "silent",
+                          "allowlist"
+                        ]
                       }
                     }
                   }
@@ -2834,6 +2883,13 @@
                     },
                     "animateIntervalMs": {
                       "type": "number"
+                    },
+                    "unmentioned": {
+                      "type": "string",
+                      "enum": [
+                        "silent",
+                        "allowlist"
+                      ]
                     }
                   }
                 },
