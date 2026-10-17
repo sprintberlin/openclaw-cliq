@@ -17,7 +17,8 @@ import {
   resolveCliqApiVersion,
 } from "./client.js";
 import { stripCliqMentions } from "./mentions.js";
-import { resolveCliqOwnBotIdentities } from "./self-message.js";
+import { isCliqSelfMessage, resolveCliqOwnBotIdentities } from "./self-message.js";
+import { isCliqSenderAllowed, isCliqSenderApproved } from "./admission.js";
 import { resolveCliqClient } from "./runtime-api.js";
 import { rememberCliqChatId } from "./heartbeat.js";
 import { observeCliqOutboundSends } from "./activity.js";
@@ -1126,6 +1127,61 @@ export function isCliqUnmentionedGroupTurn(
 }
 
 /**
+ * Whether the thinking placeholder (and progress draft) may be posted for an
+ * unmentioned always-on group turn (issue #311).
+ *
+ * `thinking.unmentioned: "allowlist"` re-admits the placeholder only for a
+ * trusted HUMAN sender: on `allowFrom` (incl. `*`), the SDK allow-from
+ * store, or pairing-approved. Bot senders never qualify: the full
+ * self/ignore set (`botId` / `botName` / `ownSenderIds` / `selfSenderIds`)
+ * is checked first and always stays silent (#283 / #285 ping-pong guard).
+ * The default `"silent"` keeps today's #283 behavior: nothing is posted for
+ * ANY unmentioned turn. Callers keep the benign-silent lifecycle either way:
+ * a Core `NO_REPLY` completion deletes a posted placeholder instead of
+ * rewriting it to the failure notice.
+ */
+export function resolveCliqThinkingUnmentioned(
+  parsed: Pick<ParsedCliqInbound, "channelUniqueName" | "channelId" | "chatId">,
+  account: Pick<ResolvedCliqAccount, "groups" | "thinking">,
+): "silent" | "allowlist" {
+  const groups = account.groups ?? {};
+  const wanted = (
+    parsed.channelUniqueName ?? parsed.channelId ?? parsed.chatId ?? ""
+  )
+    .trim()
+    .toLowerCase();
+  const entryFor = (key: string): Record<string, unknown> | undefined => {
+    const hit = Object.keys(groups).find((k) => k.trim().toLowerCase() === key);
+    const value = hit === undefined ? undefined : groups[hit];
+    return value && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : undefined;
+  };
+  const override =
+    (wanted ? entryFor(wanted)?.thinkingUnmentioned : undefined) ??
+    entryFor("*")?.thinkingUnmentioned;
+  if (override === "allowlist" || override === "silent") return override;
+  return account.thinking?.unmentioned === "allowlist" ? "allowlist" : "silent";
+}
+
+export function cliqUnmentionedPlaceholderAdmitted(
+  parsed: ParsedCliqInbound,
+  account: ResolvedCliqAccount,
+  options?: { sdkAllowFrom?: Array<string | number> },
+): boolean {
+  if (!isCliqUnmentionedGroupTurn(parsed, account)) return false;
+  if (resolveCliqThinkingUnmentioned(parsed, account) !== "allowlist") return false;
+  // A bot sender never gets a placeholder, regardless of any allowlist hit
+  // (a listed other bot stays ambient noise; this bot stays silent).
+  if (isCliqSelfMessage(parsed, account).self) return false;
+  return (
+    isCliqSenderAllowed(parsed.senderId, account.allowFrom) ||
+    isCliqSenderAllowed(parsed.senderId, options?.sdkAllowFrom) ||
+    isCliqSenderApproved(parsed.senderId, account)
+  );
+}
+
+/**
  * Evaluate the inbound mention decision using the shared SDK helper. Returns
  * the decision the webhook handler uses to skip or proceed.
  */
@@ -1627,6 +1683,32 @@ export async function dispatchCliqInbound(params: {
   // and the no-reply cleanup can stop a late frame edit before the final
   // edit-into-reply. `null` when no animation is running.
   let thinkingAnimation: ThinkingAnimation | null = null;
+  // Issue #311: trusted-human re-admission for unmentioned always-on turns.
+  // The SDK allow-from store (CLI pairing approvals) is only read when the
+  // option is on and the turn is actually unmentioned, so ordinary traffic
+  // pays nothing.
+  let unmentionedPlaceholderAdmitted = false;
+  if (
+    parsed.isGroup &&
+    resolveCliqThinkingUnmentioned(parsed, account) === "allowlist" &&
+    isCliqUnmentionedGroupTurn(parsed, account)
+  ) {
+    let sdkAllowFrom: string[] = [];
+    try {
+      sdkAllowFrom =
+        (await runtime.channel.pairing?.readAllowFromStore?.({
+          channel: "cliq",
+          accountId: account.accountId ?? "",
+        })) ?? [];
+    } catch (err) {
+      onError?.(err, { kind: "thinking-unmentioned-allowfrom" });
+    }
+    unmentionedPlaceholderAdmitted = cliqUnmentionedPlaceholderAdmitted(
+      parsed,
+      account,
+      { sdkAllowFrom },
+    );
+  }
   const contentTurn = beginCliqContentTurn(parsed, account);
   const isLikelyRedelivery = contentTurn?.hadInFlightTurn ?? false;
   if (
@@ -1641,7 +1723,13 @@ export async function dispatchCliqInbound(params: {
     // that never addressed the bot — exactly the second-bot ping-pong
     // trigger this ticket removes. DMs, mentions, and implicit replies keep
     // the placeholder.
-    !isCliqUnmentionedGroupTurn(parsed, account)
+    // Issue #311: `thinking.unmentioned: "allowlist"` re-admits the
+    // placeholder for trusted HUMAN senders only (allowFrom /
+    // pairing-approved); bot senders and unlisted chatter stay silent.
+    // A re-admitted placeholder keeps the benign-silent lifecycle below
+    // (delete on NO_REPLY, never the failure notice).
+    (!isCliqUnmentionedGroupTurn(parsed, account) ||
+      unmentionedPlaceholderAdmitted)
   ) {
     try {
       const cardMode = account.thinking?.mode === "card";
@@ -1791,7 +1879,8 @@ export async function dispatchCliqInbound(params: {
         // Issue #283: without the placeholder gate an unmentioned always-on
         // group turn in progress mode would create its own draft message —
         // the same visible artifact the placeholder gate just removed.
-        (!isCliqUnmentionedGroupTurn(parsed, account) &&
+        ((!isCliqUnmentionedGroupTurn(parsed, account) ||
+          unmentionedPlaceholderAdmitted) &&
           Boolean(
             account.refreshToken &&
             (parsed.isGroup

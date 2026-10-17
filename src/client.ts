@@ -539,6 +539,20 @@ export type CliqThinkingConfig = {
   mode?: "off" | "placeholder" | "card";
   text?: string;
   /**
+   * Placeholder policy for UNMENTIONED always-on group turns (issue #311).
+   * - `"silent"` (default): today's #283 behavior — unmentioned turns post
+   *   no thinking placeholder / progress draft, so ambient chatter and bot
+   *   noise stay completely quiet.
+   * - `"allowlist"`: re-admit the placeholder only when the sender is a
+   *   trusted human — on `allowFrom` (incl. `*`) or pairing-approved — so
+   *   team members writing naturally (no @mention) still get the
+   *   "is working" cue. Bot senders (`botId` / `botName` / `ownSenderIds` /
+   *   `selfSenderIds`) never get a placeholder in any mode, and a Core
+   *   `NO_REPLY` silent completion still deletes the placeholder.
+   * Per-channel override: `groups.<ch>.thinkingUnmentioned`.
+   */
+  unmentioned?: "silent" | "allowlist";
+  /**
    * The initial "thinking" phase title for a `thinking.mode === "card"`
    * status card (posted the moment a message is admitted), before it is
    * edited into the "generating" phase title (`text`) right before the
@@ -833,6 +847,8 @@ export interface ResolvedCliqAccount {
     */
   thinking: {
     mode: "off" | "placeholder" | "card";
+    /** Resolved #311 policy for unmentioned always-on group turns. */
+    unmentioned?: "silent" | "allowlist";
     text: string;
     thinkingText?: string;
     failureText?: string;
@@ -958,6 +974,8 @@ export function resolveCliqConfig(
         section?.thinking?.mode === "card"
           ? (section?.thinking?.thinkingText || DEFAULT_CLIQ_THINKING_CARD_THINKING_TEXT)
           : undefined,
+      unmentioned:
+        section?.thinking?.unmentioned === "allowlist" ? "allowlist" : "silent",
       failureText: section?.thinking?.failureText || undefined,
       confirm:
         section?.thinking?.confirm === "sensitive"

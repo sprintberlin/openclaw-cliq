@@ -32,6 +32,8 @@ import {
   isCliqSilentDispatchResult,
   isCliqUnmentionedGroupTurn,
   isCliqExplicitBotMention,
+  resolveCliqThinkingUnmentioned,
+  cliqUnmentionedPlaceholderAdmitted,
   CLIQ_UNMENTIONED_GROUP_PROMPT,
   type CliqWebhookPayload,
   type ParsedCliqInbound,
@@ -5934,6 +5936,68 @@ describe("unmentioned always-on group turns (issue #283)", () => {
     });
   });
 
+  describe("resolveCliqThinkingUnmentioned / cliqUnmentionedPlaceholderAdmitted (#311)", () => {
+    it("defaults to silent and reads the account-level allowlist option", () => {
+      const parsed = parseCliqWebhookPayload(unmentionedPayload())!;
+      expect(resolveCliqThinkingUnmentioned(parsed, account())).toBe("silent");
+      expect(
+        resolveCliqThinkingUnmentioned(parsed, account({
+          thinking: { mode: "placeholder", text: "💭 …", unmentioned: "allowlist" },
+        })),
+      ).toBe("allowlist");
+    });
+
+    it("a per-channel override wins over the account level (with * fallback)", () => {
+      const parsed = parseCliqWebhookPayload(unmentionedPayload())!;
+      expect(
+        resolveCliqThinkingUnmentioned(parsed, account({
+          groups: { gregorfinnitest: { thinkingUnmentioned: "allowlist" } },
+        })),
+      ).toBe("allowlist");
+      expect(
+        resolveCliqThinkingUnmentioned(parsed, account({
+          groups: { otherchannel: { thinkingUnmentioned: "allowlist" } },
+        })),
+      ).toBe("silent");
+      expect(
+        resolveCliqThinkingUnmentioned(parsed, account({
+          groups: { "*": { thinkingUnmentioned: "allowlist" } },
+        })),
+      ).toBe("allowlist");
+      expect(
+        resolveCliqThinkingUnmentioned(parsed, account({
+          groups: { gregorfinnitest: { thinkingUnmentioned: "silent" } },
+          thinking: { mode: "placeholder", text: "💭 …", unmentioned: "allowlist" },
+        })),
+      ).toBe("silent");
+    });
+
+    it("admits only trusted human senders and never bot identities", () => {
+      const parsed = parseCliqWebhookPayload(unmentionedPayload())!;
+      const acct = account({
+        thinking: { mode: "placeholder", text: "💭 …", unmentioned: "allowlist" },
+        allowFrom: ["u123"],
+      });
+      expect(cliqUnmentionedPlaceholderAdmitted(parsed, acct)).toBe(true);
+      expect(
+        cliqUnmentionedPlaceholderAdmitted(parsed, account({
+          thinking: { mode: "placeholder", text: "💭 …", unmentioned: "allowlist" },
+          allowFrom: [],
+        })),
+      ).toBe(false);
+      expect(
+        cliqUnmentionedPlaceholderAdmitted(
+          parseCliqWebhookPayload(unmentionedPayload({ user: { id: "b-paula", name: "Paula" } }))!,
+          account({
+            thinking: { mode: "placeholder", text: "💭 …", unmentioned: "allowlist" },
+            allowFrom: ["*"],
+            selfSenderIds: ["b-paula"],
+          }),
+        ),
+      ).toBe(false);
+    });
+  });
+
   describe("isCliqSilentDispatchResult", () => {
     it("matches a dispatched zero-count turn", () => {
       expect(
@@ -6040,6 +6104,103 @@ describe("unmentioned always-on group turns (issue #283)", () => {
 
     // No placeholder was gated in, so a block-less turn has nothing to
     // rewrite — the channel stays completely quiet.
+    expect(client.calls).toHaveLength(0);
+  });
+
+  it("posts the placeholder for an unmentioned allowlisted human and deletes it on NO_REPLY (#311)", async () => {
+    const client = makeTurnClient();
+    const runtime = makeTurnRuntime(async () => {
+      return {
+        admission: { kind: "dispatch" },
+        dispatched: true,
+        dispatchResult: { queuedFinal: false, counts: { tool: 0, block: 0, final: 0 } },
+      };
+    });
+
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "💭 …", animate: "off", unmentioned: "allowlist" },
+        allowFrom: ["u123"],
+        refreshToken: "rt",
+        blockStreaming: true,
+        streaming: { mode: "partial", progress: {} },
+      }),
+      parsed: parseCliqWebhookPayload(unmentionedPayload())!,
+      client,
+    });
+
+    const sends = client.calls.filter((c) => c.op === "send");
+    expect(sends).toHaveLength(1);
+    expect(sends[0]?.text).toBe("💭 …");
+    // Silent completion deleted the placeholder; no failure notice.
+    const edits = client.calls.filter((c) => c.op === "edit");
+    expect(edits.some((e) => e.text?.includes("Couldn't process"))).toBe(false);
+    expect(visibleEntries(client)).toEqual([]);
+  });
+
+  it("keeps silence for an unlisted human sender even with unmentioned: allowlist (#311)", async () => {
+    const client = makeTurnClient();
+    const runtime = makeTurnRuntime(async () => undefined);
+
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "💭 …", animate: "off", unmentioned: "allowlist" },
+        allowFrom: ["someone-else"],
+        refreshToken: "rt",
+        blockStreaming: true,
+        streaming: { mode: "partial", progress: {} },
+      }),
+      parsed: parseCliqWebhookPayload(unmentionedPayload())!,
+      client,
+    });
+
+    expect(client.calls).toHaveLength(0);
+  });
+
+  it("never posts a placeholder for a bot sender on an unmentioned allowlist turn (#311)", async () => {
+    const client = makeTurnClient();
+    const runtime = makeTurnRuntime(async () => undefined);
+
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "💭 …", animate: "off", unmentioned: "allowlist" },
+        allowFrom: ["*"],
+        selfSenderIds: ["b-paula"],
+        refreshToken: "rt",
+        blockStreaming: true,
+        streaming: { mode: "partial", progress: {} },
+      }),
+      parsed: parseCliqWebhookPayload(unmentionedPayload({ user: { id: "b-paula", name: "Paula" } }))!,
+      client,
+    });
+
+    expect(client.calls).toHaveLength(0);
+  });
+
+  it("default silent policy is unchanged for allowlisted humans (regression #283)", async () => {
+    const client = makeTurnClient();
+    const runtime = makeTurnRuntime(async () => undefined);
+
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "💭 …", animate: "off" },
+        allowFrom: ["*"],
+        refreshToken: "rt",
+        blockStreaming: true,
+        streaming: { mode: "partial", progress: {} },
+      }),
+      parsed: parseCliqWebhookPayload(unmentionedPayload())!,
+      client,
+    });
+
     expect(client.calls).toHaveLength(0);
   });
 
