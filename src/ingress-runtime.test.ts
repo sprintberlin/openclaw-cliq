@@ -138,6 +138,19 @@ describe("cliq ingress monitor registry (issue #261)", () => {
     expect(registry.isReady("default")).toBe(false);
   });
 
+  it("treats an account whose queue cannot open as unavailable, not not_ready", async () => {
+    const registry = new CliqIngressMonitorRegistry({
+      isAvailable: () => true,
+      openQueue: () => undefined,
+    });
+    const err = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(await registry.startAccount("default", {})).toBe("unavailable");
+    expect(await registry.admitEvent("default", fakeParsed())).toEqual({
+      kind: "unavailable",
+    });
+    err.mockRestore();
+  });
+
   it("admitCliqEvent routes through the process registry", async () => {
     const registry = new CliqIngressMonitorRegistry(null);
     setCliqIngressGlobalsForTest({ registry });

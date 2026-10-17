@@ -372,6 +372,8 @@ interface CliqIngressStartOptions {
 export class CliqIngressMonitorRegistry {
   private readonly monitors = new Map<string, CliqIngressMonitor>();
   private readonly delivers = new Map<string, CliqIngressDeliverFn>();
+  /** Accounts whose queue opener exists but failed to open (e.g. a runtime that still gates the queue to trusted installs). */
+  private readonly unavailableAccounts = new Set<string>();
   private loggedFallback = false;
 
   constructor(private readonly surface: CliqIngressRuntimeSurface | null) {}
@@ -408,11 +410,13 @@ export class CliqIngressMonitorRegistry {
     }
     const queue = this.surface.openQueue(accountId);
     if (!queue) {
+      this.unavailableAccounts.add(accountId);
       this.logFallbackOnce(
         `openChannelIngressQueue returned no queue for account ${accountId}`,
       );
       return "unavailable";
     }
+    this.unavailableAccounts.delete(accountId);
     const codec = createCliqIngressPayloadCodec();
     const deliver = options.deliver ?? resolveDeliveryCallback();
     const monitor = createChannelIngressMonitor<
@@ -505,6 +509,12 @@ export class CliqIngressMonitorRegistry {
       );
       return { kind: "unavailable" };
     }
+    if (this.unavailableAccounts.has(accountId)) {
+      // The opener exists but cannot open this account's queue (older
+      // runtime that still gates the queue): treat like a missing surface so
+      // the route keeps the pre-queue behaviour instead of failing 503.
+      return { kind: "unavailable" };
+    }
     const monitor = this.monitors.get(accountId);
     if (!monitor || monitor.isStopped()) return { kind: "not_ready" };
     const raw: CliqIngressRawEvent = {
@@ -539,6 +549,7 @@ export class CliqIngressMonitorRegistry {
   resetForTest(): void {
     this.monitors.clear();
     this.delivers.clear();
+    this.unavailableAccounts.clear();
     this.loggedFallback = false;
   }
 
