@@ -123,9 +123,9 @@ describe("cliq ingress monitor registry (issue #261)", () => {
       openQueue: () => ({}) as never,
     });
     expect(registry.isReady("default")).toBe(false);
-    expect(await registry.admitEvent("default", fakeParsed())).toEqual({
-      kind: "not_ready",
-    });
+    expect(
+      await registry.admitEvent("default", fakeParsed(), { waitReadyMs: 0 }),
+    ).toEqual({ kind: "not_ready" });
     const err = vi.spyOn(console, "warn").mockImplementation(() => {});
     // startAccount will fail creating a real monitor from an empty queue
     // object; both acceptable outcomes below keep the fallback contract.
@@ -136,6 +136,22 @@ describe("cliq ingress monitor registry (issue #261)", () => {
     err.mockRestore();
     await registry.stopAccount("default");
     expect(registry.isReady("default")).toBe(false);
+  });
+
+  it("waits for a still-starting monitor instead of answering not_ready", async () => {
+    const registry = new CliqIngressMonitorRegistry({
+      isAvailable: () => true,
+      openQueue: () => ({}) as never,
+    });
+    const monitor = fakeRegistryMonitor(async () => ({
+      kind: "durable",
+      queueResult: { kind: "accepted", duplicate: false, record: { id: "m-durable-1" } },
+    }));
+    setTimeout(() => registry.setForAccount("default", monitor), 120);
+    const result = await registry.admitEvent("default", fakeParsed(), {
+      waitReadyMs: 2000,
+    });
+    expect(result.kind).toBe("admitted");
   });
 
   it("treats an account whose queue cannot open as unavailable, not not_ready", async () => {
@@ -180,6 +196,7 @@ describe("webhook durable admission before ack (issue #261)", () => {
     const registry = new CliqIngressMonitorRegistry(
       hasSurface ? { isAvailable: () => true, openQueue: () => ({}) as never } : null,
     );
+    registry.setReadyWaitMs(0);
     if (monitor) registry.setForAccount("default", monitor);
     const { webhook } = registerCliqPluginForTest({
       config: createCliqTestConfig({

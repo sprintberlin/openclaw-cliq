@@ -375,6 +375,13 @@ export class CliqIngressMonitorRegistry {
   /** Accounts whose queue opener exists but failed to open (e.g. a runtime that still gates the queue to trusted installs). */
   private readonly unavailableAccounts = new Set<string>();
   private loggedFallback = false;
+  /** Bounded wait for a still-starting monitor before answering not_ready. */
+  private readyWaitMs = 5000;
+
+  /** Override the readiness wait (tests; 0 disables waiting). */
+  setReadyWaitMs(ms: number): void {
+    this.readyWaitMs = Math.max(0, ms);
+  }
 
   constructor(private readonly surface: CliqIngressRuntimeSurface | null) {}
 
@@ -496,6 +503,7 @@ export class CliqIngressMonitorRegistry {
   async admitEvent(
     accountId: string,
     parsed: ParsedCliqInbound,
+    options?: { waitReadyMs?: number },
   ): Promise<
     | { kind: "admitted"; outcome: CliqIngressAdmitOutcome }
     | { kind: "duplicate"; queueKind: string }
@@ -515,8 +523,21 @@ export class CliqIngressMonitorRegistry {
       // the route keeps the pre-queue behaviour instead of failing 503.
       return { kind: "unavailable" };
     }
-    const monitor = this.monitors.get(accountId);
-    if (!monitor || monitor.isStopped()) return { kind: "not_ready" };
+    let monitor = this.monitors.get(accountId);
+    if (!monitor || monitor.isStopped()) {
+      // The HTTP route can serve before the account lifecycle finishes
+      // `startAccount` (the gateway reports ready as soon as the port
+      // answers). Cliq's own webhook timeout is far larger, so wait a
+      // bounded window for the monitor instead of bouncing the delivery
+      // with a 503 that costs a redelivery.
+      const deadline = Date.now() + (options?.waitReadyMs ?? this.readyWaitMs);
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        monitor = this.monitors.get(accountId);
+        if (monitor && !monitor.isStopped()) break;
+      }
+      if (!monitor || monitor.isStopped()) return { kind: "not_ready" };
+    }
     const raw: CliqIngressRawEvent = {
       parsed,
       accountId,
