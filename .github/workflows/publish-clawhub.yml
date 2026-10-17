@@ -274,3 +274,51 @@ jobs:
               --notes-file /tmp/notes.md \
               sprintcx-openclaw-cliq-*.tgz
           fi
+
+  publish-npm:
+    name: publish (npm)
+    # The official OpenClaw catalog pins an exact npm version plus its
+    # integrity hash, so the same tarball must also exist on npmjs.com.
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing (OIDC) + provenance
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Update npm (trusted publishing needs npm >= 11.5.1)
+        run: npm i -g npm@latest
+
+      - name: Download tarball
+        uses: actions/download-artifact@v8
+        with:
+          name: clawpack
+
+      - name: Publish to npm (idempotent)
+        env:
+          # Optional until a trusted publisher is configured on npmjs.com for
+          # this package. With OIDC configured, npm ignores the token.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.verify.outputs.version }}"
+          PKG_NAME="$(node -p "require('./package.json').name")"
+          DRY=""
+          if [ "${{ needs.verify.outputs.dry_run }}" = "true" ]; then
+            DRY="--dry-run"
+            echo "[npm] DRY RUN — no upload"
+          fi
+          if [ -z "$DRY" ] && npm view "$PKG_NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "[npm] $PKG_NAME@$VERSION already on npm ✓"
+            exit 0
+          fi
+          npm publish sprintcx-openclaw-cliq-*.tgz --access public --provenance $DRY
+          if [ -z "$DRY" ]; then
+            echo "[npm] integrity: $(npm view "$PKG_NAME@$VERSION" dist.integrity)"
+          fi

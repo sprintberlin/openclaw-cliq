@@ -13,6 +13,14 @@ Add a repository secret so CI can authenticate to ClawHub:
   then add it under **Settings → Secrets and variables → Actions → New
   repository secret**.
 
+- **npm** (needed for the official OpenClaw catalog, which pins an exact npm
+  version with its integrity hash): the `publish (npm)` job publishes the same
+  tarball to npmjs.com with provenance. First publish of a package name cannot
+  use OIDC, so set an `NPM_TOKEN` repo secret (granular token, read+write on
+  `@sprintcx/openclaw-cliq` only). After the first publish, add this repo and
+  `publish-clawhub.yml` as trusted publisher under the package's npm settings,
+  then delete `NPM_TOKEN`.
+
 > Once ClawHub exposes trusted-publisher (OIDC) configuration for this package,
 > the workflow's OIDC path takes over and the token becomes a no-op — no
 > workflow change needed. The `id-token: write` permission is already set.
