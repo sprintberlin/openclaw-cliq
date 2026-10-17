@@ -4,6 +4,7 @@ import {
   readEffectiveCliqSection,
   resolveCliqConfig,
   resolveCliqApiVersion,
+  type CliqAckPolicy,
   type CliqApiFamily,
   type CliqApiVersion,
   type CliqChannelConfig,
@@ -92,7 +93,7 @@ export interface InspectedCliqAccountConfig {
   selfSenderIds: string[];
   /** Additional identities belonging specifically to this bot. */
   ownSenderIds: string[];
-  ackPolicy: "after_dispatch" | "immediate";
+  ackPolicy: CliqAckPolicy;
   /** Effective Core-compatible streaming preview mode. */
   streamingMode: ResolvedCliqAccount["streaming"]["mode"];
   /** Backward-compatible on/off summary for older status consumers. */
@@ -291,7 +292,7 @@ export function inspectCliqAccount(params: {
         : undefined,
       selfSenderIds: resolved?.selfSenderIds ?? section?.selfSenderIds ?? [],
       ownSenderIds: resolved?.ownSenderIds ?? section?.ownSenderIds ?? [],
-      ackPolicy: resolved?.ackPolicy ?? "after_dispatch",
+      ackPolicy: resolved?.ackPolicy ?? "after_receive_record",
       streamingMode: resolved?.streaming.mode ?? "partial",
       streamingPreview: resolved
         ? (resolved.blockStreaming ? "on" : "off")

@@ -356,11 +356,18 @@ describe("cliq doctor — stage 1 config and secret resolution", () => {
     expect(stageOf(report, "config").evidence.join(" ")).not.toMatch(/session\.dmScope resolves to main/);
   });
 
-  it("warns that ackPolicy immediate risks lost messages and the beta draining failure (issue #122)", async () => {
+  it("reports ackPolicy immediate as a deprecated alias of after_receive_record (issue #261)", async () => {
     const report = await runDefault(cfgWith({ ackPolicy: "immediate" }), createDeps());
     const evidence = stageOf(report, "config").evidence.join(" ");
-    expect(evidence).toMatch(/GatewayDrainingError/);
-    expect(evidence).toMatch(/runDetachedWebhookWork/);
+    expect(evidence).toMatch(/deprecated alias/);
+    expect(evidence).toMatch(/after_receive_record/);
+  });
+
+  it("explains that after_dispatch redelivers turns over Zoho's 40 s timeout (issue #261)", async () => {
+    const report = await runDefault(cfgWith({ ackPolicy: "after_dispatch" }), createDeps());
+    const evidence = stageOf(report, "config").evidence.join(" ");
+    expect(evidence).toMatch(/blocking compatibility mode/);
+    expect(evidence).toMatch(/40 s/);
   });
 
   it("scopes config warnings to the selected account rather than the top-level section", async () => {

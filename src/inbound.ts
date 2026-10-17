@@ -4,6 +4,7 @@ import {
   type InboundMentionFacts,
   type InboundImplicitMentionKind,
 } from "openclaw/plugin-sdk/channel-inbound";
+import type { bindIngressLifecycleToReplyOptions, ChannelIngressQueue } from "openclaw/plugin-sdk/channel-outbound";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import type { IncomingMessage } from "node:http";
 import { resolveAgentConfig } from "openclaw/plugin-sdk/agent-scope-runtime";
@@ -73,6 +74,17 @@ import {
   type CliqHandlerSchemaCompatibility,
   classifyCliqHandlerSchema,
 } from "./handler-schema.js";
+
+/**
+ * Canonical turn-adoption lifecycle handed from the durable ingress monitor
+ * into the reply options. `TurnAdoptionLifecycle` itself is not exported by
+ * any `openclaw/plugin-sdk/*` subpath, so — exactly like the bundled LINE
+ * channel — the type is reached through the public
+ * `bindIngressLifecycleToReplyOptions` return type.
+ */
+export type CliqTurnAdoptionLifecycle = ReturnType<
+  typeof bindIngressLifecycleToReplyOptions
+>["turnAdoptionLifecycle"];
 
 /**
  * Minimal slice of `api.runtime` that the inbound dispatch path needs. Kept
@@ -147,6 +159,23 @@ export interface CliqRuntime {
         env?: NodeJS.ProcessEnv;
       }) => Promise<string[]>;
     };
+  };
+  /**
+   * Durable plugin-state surface (issue #261). `openChannelIngressQueue`
+   * is the Core queue opener, mirrored from `PluginRuntime.state` with its
+   * real generic signature (no `unknown` cast at the call site). It is
+   * optional because older/unauthorized installs do not expose it — the
+   * ingress registry degrades to the pre-queue webhook behaviour with one
+   * diagnostic instead of crashing.
+   */
+  state?: {
+    openChannelIngressQueue?: <
+      TPayload,
+      TMetadata = unknown,
+      TCompletedMetadata = unknown,
+    >(
+      options?: { accountId?: string; stateDir?: string },
+    ) => ChannelIngressQueue<TPayload, TMetadata, TCompletedMetadata>;
   };
 }
 
@@ -1177,6 +1206,13 @@ export async function dispatchCliqInbound(params: {
   parsed: ParsedCliqInbound;
   onError?: (err: unknown, info: { kind: string }) => void;
   /**
+   * Durable-ingress adoption lifecycle (issue #261). When present it is
+   * threaded into the reply options so the claim the Core monitor holds is
+   * completed exactly when the turn is durably adopted (never merely when
+   * this function returns). Absent on the pre-queue fallback paths.
+   */
+  turnAdoptionLifecycle?: CliqTurnAdoptionLifecycle;
+  /**
    * Optional client override (tests). Production callers resolve the client
    * through {@link resolveCliqClient} from the shared registry so the OAuth
    * token cache is reused across requests.
@@ -1193,7 +1229,7 @@ export async function dispatchCliqInbound(params: {
      | "downloadAttachment"
     > & Partial<Pick<CliqClient, "downloadAttachmentUrl">>;
 }): Promise<void> {
-  const { runtime, cfg, account, parsed, onError } = params;
+  const { runtime, cfg, account, parsed, onError, turnAdoptionLifecycle } = params;
   const peerKind = parsed.isGroup ? "group" : "dm";
   const peerId = parsed.isGroup
     ? (parsed.channelUniqueName ?? parsed.chatId)
@@ -1919,6 +1955,10 @@ export async function dispatchCliqInbound(params: {
             disableBlockStreaming:
               account.streaming.mode === "progress" || !account.blockStreaming,
             ...progressReplyOptions,
+            // Durable-ingress adoption (issue #261): the Core monitor's
+            // claim completes on durable turn adoption, not when dispatch
+            // returns. Absent on the pre-queue fallback path.
+            ...(turnAdoptionLifecycle ? { turnAdoptionLifecycle } : {}),
           },
           delivery: {
             deliver: async (

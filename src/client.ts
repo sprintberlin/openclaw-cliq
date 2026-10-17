@@ -75,6 +75,40 @@ export type CliqStreamingProgressConfig = ChannelStreamingProgressConfig;
 export type CliqHeartbeatTypingMode = "off" | "dm" | "all";
 
 /**
+ * Effective webhook ack timing (issue #261).
+ *
+ * - `"after_receive_record"` — durable-before-ack: the Core ingress queue
+ *   records the parsed event BEFORE the HTTP 200 is written. A crash between
+ *   ack and turn adoption re-dispatches exactly once on restart.
+ * - `"after_dispatch"` — blocking compatibility mode: HTTP 200 waits for
+ *   full dispatch. Useful while operators work around the 40 s Deluge
+ *   invokeUrl timeout (#123), but turns longer than the timeout redeliver.
+ * - `"immediate"` — legacy alias kept for readability; resolved to
+ *   `after_receive_record` after a single Doctor migration warning. The
+ *   plugin never bypasses the durable append any more.
+ */
+export type CliqAckPolicy =
+  | "after_receive_record"
+  | "after_dispatch"
+  | "immediate";
+
+/** Default ack policy when `channels.cliq.ackPolicy` is unset. */
+export const CLIQ_DEFAULT_ACK_POLICY: CliqAckPolicy = "after_receive_record";
+
+/** True when the literal legacy `"immediate"` value was used (Doctor hint). */
+export function normalizeCliqAckPolicy(value: unknown): {
+  policy: CliqAckPolicy;
+  legacyImmediate: boolean;
+} {
+  if (value === "after_dispatch") return { policy: "after_dispatch", legacyImmediate: false };
+  if (value === "after_receive_record")
+    return { policy: "after_receive_record", legacyImmediate: false };
+  if (value === "immediate")
+    return { policy: "after_receive_record", legacyImmediate: true };
+  return { policy: CLIQ_DEFAULT_ACK_POLICY, legacyImmediate: false };
+}
+
+/**
  * Effective Cliq default preview mode when neither `streaming.mode` nor the
  * legacy `streaming.preview` is set. `"partial"` preserves today's
  * answer-preview behavior; progress mode stays an explicit opt-in until the
@@ -323,17 +357,24 @@ export interface CliqChannelConfig {
    */
   selfSenderIds?: string[];
   /**
-   * When the webhook acknowledges Cliq relative to the inbound dispatch.
-   * - `"after_dispatch"` (default): await `runtime.channel.inbound.run`
-   *   before sending HTTP 200. A crash mid-dispatch means Cliq never sees
-   *   the 200 and redelivers (no lost message). On dispatch error the
-   *   webhook returns 500 so Cliq redelivers.
-   * - `"immediate"`: fire-and-forget (legacy behavior). Faster, but a
-   *   crash between ack and dispatch completion loses the message. Use only
-   *   when the Cliq/Deluge `invokeUrl` timeout is tighter than the agent
-   *   round-trip and you accept the lost-message risk.
+   * When the webhook acknowledges Cliq relative to the inbound dispatch
+   * (issue #261).
+   * - `"after_receive_record"` (default): the Core durable ingress queue
+   *   records the parsed event BEFORE the HTTP 200 is written, so a crash
+   *   between ack and turn adoption re-dispatches exactly once on
+   *   restart. Supported on OpenClaw `>= 2026.8.2` (the public
+   *   `runtime.state.openChannelIngressQueue` API is the only source of
+   *   durable-before-ack ingestion; older installs keep the in-memory
+   *   fallback).
+   * - `"after_dispatch"` (legacy / explicit): the plugin's HTTP 200 is
+   *   written only after the full agent dispatch resolves — Cliq's 40 s
+   *   `invokeUrl` timeout can force a redelivery on slow turns.
+   * - `"immediate"` (deprecated alias of `after_receive_record`): kept
+   *   readable for legacy configs. Doctor emits a one-shot migration
+   *   warning the first time it sees it; the route no longer bypasses
+   *   the durable append.
    */
-  ackPolicy?: "after_dispatch" | "immediate";
+  ackPolicy?: CliqAckPolicy;
   /**
    * Streaming preview configuration, Core-compatible (issue #207).
    * - `mode` is the OpenClaw preview-streaming mode: `"off"`, `"partial"`,
@@ -724,8 +765,10 @@ export interface ResolvedCliqAccount {
   groupPolicy?: string;
   groups?: Record<string, unknown>;
   trustedOrganization?: CliqTrustedOrganizationConfig;
-  ackPolicy: "after_dispatch" | "immediate";
   selfSenderIds: string[];
+  ackPolicy: CliqAckPolicy;
+  /** True when the literal deprecated "immediate" value was configured (Doctor hint, #261). */
+  ackPolicyLegacyImmediate?: boolean;
   /**
    * Whether progressive (block-streaming) reply delivery is active for this
    * account. True for every effective mode except `"off"`.
@@ -844,9 +887,9 @@ export function resolveCliqConfig(
   if (!clientId) throw new Error("cliq: clientId is required");
   if (!clientSecret) throw new Error("cliq: clientSecret is required");
   if (!botId) throw new Error("cliq: botId is required");
-  const ackPolicyRaw = section?.ackPolicy;
-  const ackPolicy: "after_dispatch" | "immediate" =
-    ackPolicyRaw === "immediate" ? "immediate" : "after_dispatch";
+  const ackPolicyNormalized = normalizeCliqAckPolicy(section?.ackPolicy);
+  const ackPolicy = ackPolicyNormalized.policy;
+  const ackPolicyLegacyImmediate = ackPolicyNormalized.legacyImmediate;
   const streamingResolved = resolveCliqStreamingConfig(section?.streaming);
   const blockStreaming = streamingResolved.mode !== "off";
   const streamingMinEditIntervalMs = streamingResolved.minEditIntervalMs;
@@ -879,6 +922,7 @@ export function resolveCliqConfig(
        ? section.trustedOrganization
        : undefined,
      ackPolicy,
+     ackPolicyLegacyImmediate,
     selfSenderIds: section?.selfSenderIds ?? [],
     blockStreaming,
     streaming: {
