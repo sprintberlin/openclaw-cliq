@@ -11,6 +11,17 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-17
+
+### Added
+
+- The release workflow now also publishes the verified tarball to npm (`@sprintcx/openclaw-cliq`) with provenance, in addition to ClawHub. The official OpenClaw channel catalog pins an exact npm version plus its integrity hash (#263).
+- `docs/REVIEW-DOSSIER.md`: public review dossier for maintainers (package facts, security posture, provenance, maintenance commitment) (#263).
+
+### Changed
+
+- `package.json` now declares built JavaScript runtime entrypoints (`openclaw.runtimeExtensions` = `./dist/index.js`, `openclaw.runtimeSetupEntry` = `./dist/setup-entry.js`). Source entries stay for workspace development. Installed packages no longer depend on TypeScript sources (#263).
+
 ## [0.6.0] - 2026-10-16
 
 ### Added
@@ -1609,7 +1620,7 @@ publish workflow extracts the matching section as the release notes (see
   lookup, plugin doctor, interactive setup wizard, SecretRef-backed credentials,
   security audit collector, session binding, multi-account, lifecycle hooks.
 
-[Unreleased]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.6.1...HEAD
 [0.6.0]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/sprintberlin/openclaw-cliq/compare/v0.3.0...v0.4.0
