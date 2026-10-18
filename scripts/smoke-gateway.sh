@@ -852,6 +852,26 @@ else
   fi
   echo "OK: restart after ack and before adoption recovered exactly one turn and reply"
 
+  # Inspect Core's durable state (never the payload) to prove adoption wrote
+  # a completed tombstone before replay. The database path is inside this
+  # throwaway profile; the query selects only status/identity metadata.
+  node - "$OPENCLAW_STATE_DIR/state/openclaw.sqlite" <<'NODE'
+const { DatabaseSync } = require("node:sqlite");
+const db = new DatabaseSync(process.argv[2], { readOnly: true });
+try {
+  const row = db.prepare("SELECT status, failed_reason FROM channel_ingress_events WHERE queue_name = ? AND event_id = ?")
+    .get(JSON.stringify(["cliq", "default"]), "dm-recovery");
+  if (row?.status !== "completed" || row.failed_reason != null) {
+    console.error(`FAIL: recovered queue record is not a completed tombstone (status=${row?.status ?? "missing"}, reason=${row?.failed_reason ?? "none"})`);
+    process.exit(1);
+  } else {
+    console.log("OK: Core ingress queue record is completed/tombstoned");
+  }
+} finally {
+  db.close();
+}
+NODE
+
   resp="$(curl -s -w "\n%{http_code}" --max-time 30 -X POST "$WEBHOOK_URL" \
     -H "x-cliq-webhook-secret: smoke-webhook-secret" \
     -H "content-type: application/json" --data "$RECOVERY_PAYLOAD")"

@@ -1235,7 +1235,7 @@ Exit codes:
 
 Secrets, tokens, auth codes, and sensitive Zoho response bodies are redacted from every report.
 
-The public-webhook stage includes the same optional `handler_secret` comparison as `openclaw cliq webhook-preflight`: with `botId` and `ZohoCliq.Bots.READ`, Message/Mention handler secret fingerprints and webhook URLs are checked against loaded config. A mismatch fails the stage without exposing either secret; an unreadable or unrecognisable handler is reported as skipped, never as evidence of equality.
+The public-webhook stage includes the same optional `handler_secret` comparison as `openclaw cliq webhook-preflight`: with `botId` and `ZohoCliq.Bots.READ`, Message/Mention handler secret fingerprints and webhook URLs are checked against loaded config. The read-back also reports whether the installed handlers carry the current serialization (`handlerSchema v6`) and failure-response fallback contracts; this is static evidence, not a live delivery test. A mismatch or stale generated script fails the stage without exposing either secret; an unreadable or unrecognisable handler is reported as skipped, never as evidence of equality or contract presence.
 
 #### Smoke testing with curl
 

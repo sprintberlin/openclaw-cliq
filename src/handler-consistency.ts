@@ -519,6 +519,34 @@ export function checkCliqHandlerConsistency(
     const trailer = skips.length > 0 ? ` Not compared: ${skips.join("; ")}.` : "";
     return { status: "fail", detail: `${failures.join("; ")}.${trailer}` };
   }
+  // A handler whose serialization or failure-response contract could not be
+  // read is never a pass (issue #262): the secret comparison alone does not
+  // prove the installed script carries the current contracts.
+  const contractEvidence = options.handlers
+    .filter((handler) => handler.type === "message_handler" || handler.type === "mention_handler")
+    .map((handler) => {
+      const label = describeHandler(handler.type);
+      const script = typeof handler.script === "string" ? handler.script : "";
+      if (handler.error || script.length === 0) {
+        return `${label} serialization/failure-response contract: skipped (script unreadable)`;
+      }
+      const schema = extractDelugePayloadPutStringLiteral(script, CLIQ_HANDLER_SCHEMA_FIELD);
+      const fallback = hasCliqDeliveryFailureFallback(script, handler.type);
+      if (schema === CLIQ_HANDLER_SCHEMA_VERSION && fallback) {
+        return `${label} serialization/failure-response contract: present (handlerSchema ${schema}, failure fallback present)`;
+      }
+      return `${label} serialization/failure-response contract: stale (handlerSchema ${schema ?? "absent"}, failure fallback ${fallback ? "present" : "absent"})`;
+    });
+  if (
+    skips.length === 0 &&
+    contractEvidence.some((line) => line.includes(": skipped") || line.includes(": stale"))
+  ) {
+    const compared = matched.length > 0 ? ` ${matched.join(" and ")} matched the configured secret.` : "";
+    return {
+      status: "skipped",
+      detail: `serialization/failure-response contract evidence is incomplete.${compared} ${contractEvidence.join("; ")}.`,
+    };
+  }
   if (skips.length > 0) {
     const readProblem = mostSpecificHandlerReadProblem(options.handlers);
     const compared = matched.length > 0
@@ -534,7 +562,7 @@ export function checkCliqHandlerConsistency(
     status: "pass",
     detail: `${matched.join(" and ")} carry the same webhook secret as the config (${configFingerprint})${
       options.expectedWebhookUrl ? " and post to the configured public webhook URL" : ""
-    }.`,
+    }. ${contractEvidence.join("; ")}.`,
   };
 }
 
