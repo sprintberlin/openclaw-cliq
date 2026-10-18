@@ -164,7 +164,9 @@ export async function prepareInboundMedia(
         Buffer.from(fetched.bytes),
         contentType,
         "inbound",
-        undefined,
+        // HOTFIX finanzgewissen 2026-10-17 (Dominic): 30 MB instead of the
+        // 5 MB media-store default, so voice notes are not dropped.
+        30 * 1024 * 1024,
         attachment.fileName ?? undefined,
       );
       paths.push(saved.path);
