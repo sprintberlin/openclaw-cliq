@@ -474,6 +474,13 @@
                 "silent",
                 "allowlist"
               ]
+            },
+            "commandUnmentioned": {
+              "type": "string",
+              "enum": [
+                "off",
+                "allowlist"
+              ]
             }
           }
         }
@@ -1211,6 +1218,13 @@
                       "silent",
                       "allowlist"
                     ]
+                  },
+                  "commandUnmentioned": {
+                    "type": "string",
+                    "enum": [
+                      "off",
+                      "allowlist"
+                    ]
                   }
                 }
               }
@@ -1492,6 +1506,20 @@
                   "default": "dm"
                 }
               }
+            },
+            "commands": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "unmentioned": {
+                  "type": "string",
+                  "enum": [
+                    "off",
+                    "allowlist"
+                  ],
+                  "description": "Authorize native slash commands on unmentioned always-on group turns: \"off\" (default) keeps the #285 guard; \"allowlist\" authorizes commands from senders on allowFrom (including *) or pairing-approved. Bot senders (botId / botName / ownSenderIds / selfSenderIds) are never authorized. DMs, @mentions, and replies to the bot stay authorized regardless."
+                }
+              }
             }
           }
         }
@@ -1508,6 +1536,20 @@
               "all"
             ],
             "default": "dm"
+          }
+        }
+      },
+      "commands": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "unmentioned": {
+            "type": "string",
+            "enum": [
+              "off",
+              "allowlist"
+            ],
+            "description": "Authorize native slash commands on unmentioned always-on group turns: \"off\" (default) keeps the #285 guard; \"allowlist\" authorizes commands from senders on allowFrom (including *) or pairing-approved. Bot senders (botId / botName / ownSenderIds / selfSenderIds) are never authorized. DMs, @mentions, and replies to the bot stay authorized regardless."
           }
         }
       }
@@ -1978,6 +2020,13 @@
                   "type": "string",
                   "enum": [
                     "silent",
+                    "allowlist"
+                  ]
+                },
+                "commandUnmentioned": {
+                  "type": "string",
+                  "enum": [
+                    "off",
                     "allowlist"
                   ]
                 }
@@ -2717,6 +2766,13 @@
                           "silent",
                           "allowlist"
                         ]
+                      },
+                      "commandUnmentioned": {
+                        "type": "string",
+                        "enum": [
+                          "off",
+                          "allowlist"
+                        ]
                       }
                     }
                   }
@@ -2998,6 +3054,20 @@
                       "default": "dm"
                     }
                   }
+                },
+                "commands": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "unmentioned": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "allowlist"
+                      ],
+                      "description": "Authorize native slash commands on unmentioned always-on group turns: \"off\" (default) keeps the #285 guard; \"allowlist\" authorizes commands from senders on allowFrom (including *) or pairing-approved. Bot senders (botId / botName / ownSenderIds / selfSenderIds) are never authorized. DMs, @mentions, and replies to the bot stay authorized regardless."
+                    }
+                  }
                 }
               }
             }
@@ -3014,6 +3084,20 @@
                   "all"
                 ],
                 "default": "dm"
+              }
+            }
+          },
+          "commands": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "unmentioned": {
+                "type": "string",
+                "enum": [
+                  "off",
+                  "allowlist"
+                ],
+                "description": "Authorize native slash commands on unmentioned always-on group turns: \"off\" (default) keeps the #285 guard; \"allowlist\" authorizes commands from senders on allowFrom (including *) or pairing-approved. Bot senders (botId / botName / ownSenderIds / selfSenderIds) are never authorized. DMs, @mentions, and replies to the bot stay authorized regardless."
               }
             }
           }

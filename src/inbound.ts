@@ -1248,6 +1248,62 @@ export function cliqUnmentionedPlaceholderAdmitted(
 }
 
 /**
+ * Resolve the effective #316 policy: per-channel `commandUnmentioned` wins,
+ * then the `*` entry, then the account-level `commands.unmentioned` (default
+ * `"off"`). Mirrors {@link resolveCliqThinkingUnmentioned}.
+ */
+export function resolveCliqCommandUnmentioned(
+  parsed: Pick<ParsedCliqInbound, "channelUniqueName" | "channelId" | "chatId">,
+  account: Pick<ResolvedCliqAccount, "groups" | "commands">,
+): "off" | "allowlist" {
+  const groups = account.groups ?? {};
+  const wanted = (
+    parsed.channelUniqueName ?? parsed.channelId ?? parsed.chatId ?? ""
+  )
+    .trim()
+    .toLowerCase();
+  const entryFor = (key: string): Record<string, unknown> | undefined => {
+    const hit = Object.keys(groups).find((k) => k.trim().toLowerCase() === key);
+    const value = hit === undefined ? undefined : groups[hit];
+    return value && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : undefined;
+  };
+  const override =
+    (wanted ? entryFor(wanted)?.commandUnmentioned : undefined) ??
+    entryFor("*")?.commandUnmentioned;
+  if (override === "allowlist" || override === "off") return override;
+  return account.commands?.unmentioned === "allowlist" ? "allowlist" : "off";
+}
+
+/**
+ * Whether a native slash command on an UNMENTIONED always-on group turn may be
+ * authorized (issue #316).
+ *
+ * The default `commands.unmentioned: "off"` keeps #285: unaddressed `/model`
+ * chatter never executes a session-level command. `"allowlist"` (account-level
+ * or the per-channel `commandUnmentioned` override) authorizes it only for a
+ * trusted HUMAN sender: on `allowFrom` (incl. `*`), the SDK allow-from
+ * store, or pairing-approved. The full self/ignore set (`botId` /
+ * `botName` / `ownSenderIds` / `selfSenderIds`) is checked first and is never
+ * authorized in any mode, so bot ping-pong protection (#283 / #285) holds.
+ */
+export function cliqUnmentionedCommandAuthorized(
+  parsed: ParsedCliqInbound,
+  account: ResolvedCliqAccount,
+  options?: { sdkAllowFrom?: Array<string | number> },
+): boolean {
+  if (resolveCliqCommandUnmentioned(parsed, account) !== "allowlist") return false;
+  if (!isCliqUnmentionedGroupTurn(parsed, account)) return false;
+  if (isCliqSelfMessage(parsed, account).self) return false;
+  return (
+    isCliqSenderAllowed(parsed.senderId, account.allowFrom) ||
+    isCliqSenderAllowed(parsed.senderId, options?.sdkAllowFrom) ||
+    isCliqSenderApproved(parsed.senderId, account)
+  );
+}
+
+/**
  * Evaluate the inbound mention decision using the shared SDK helper. Returns
  * the decision the webhook handler uses to skip or proceed.
  */
@@ -1638,6 +1694,35 @@ export async function dispatchCliqInbound(params: {
         }
       : {};
 
+  // Issue #316: opt-in native-command authorization for unmentioned always-on
+  // turns from trusted humans. The SDK allow-from store is only read when the
+  // option is on and this is actually an unmentioned slash command, so
+  // ordinary traffic pays nothing.
+  let unmentionedCommandAuthorized = false;
+  if (
+    !isAbort &&
+    parsed.isGroup &&
+    cleanText.startsWith("/") &&
+    resolveCliqCommandUnmentioned(parsed, account) === "allowlist" &&
+    isCliqUnmentionedGroupTurn(parsed, account)
+  ) {
+    let sdkAllowFrom: string[] = [];
+    try {
+      sdkAllowFrom =
+        (await runtime.channel.pairing?.readAllowFromStore?.({
+          channel: "cliq",
+          accountId: account.accountId ?? "",
+        })) ?? [];
+    } catch (err) {
+      onError?.(err, { kind: "commands-unmentioned-allowfrom" });
+    }
+    unmentionedCommandAuthorized = cliqUnmentionedCommandAuthorized(
+      parsed,
+      account,
+      { sdkAllowFrom },
+    );
+  }
+
   const ctxPayload = runtime.channel.reply.finalizeInboundContext({
     Body: body,
     RawBody: cleanText,
@@ -1709,11 +1794,15 @@ export async function dispatchCliqInbound(params: {
     // was diagnosed), explicit mentions of this bot, and replies to this
     // bot. On an always-on group, unaddressed "/model" chatter is ambient
     // noise and must never execute a session-level command.
+    // #316: `commands.unmentioned: "allowlist"` additionally authorizes an
+    // unmentioned slash command from a trusted HUMAN sender (allowFrom /
+    // pairing-approved); bot identities are never authorized.
     ...(!isAbort &&
     cleanText.startsWith("/") &&
     (!parsed.isGroup ||
       isCliqExplicitBotMention(parsed, account) ||
-      isReplyToBot(parsed, account))
+      isReplyToBot(parsed, account) ||
+      unmentionedCommandAuthorized)
       ? {
           CommandSource: "native" as const,
           CommandAuthorized: true,

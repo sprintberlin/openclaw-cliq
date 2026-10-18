@@ -34,6 +34,8 @@ import {
   isCliqExplicitBotMention,
   resolveCliqThinkingUnmentioned,
   cliqUnmentionedPlaceholderAdmitted,
+  resolveCliqCommandUnmentioned,
+  cliqUnmentionedCommandAuthorized,
   CLIQ_UNMENTIONED_GROUP_PROMPT,
   type CliqWebhookPayload,
   type ParsedCliqInbound,
@@ -1850,6 +1852,170 @@ describe("dispatchCliqInbound — native slash command authorization (issue #91)
     expect(capture.ctxPayload?.CommandSource).toBeUndefined();
     expect(capture.ctxPayload?.CommandAuthorized).toBeUndefined();
     expect(capture.ctxPayload?.GroupSystemPrompt).toBe(CLIQ_UNMENTIONED_GROUP_PROMPT);
+  });
+
+  it("authorizes an unmentioned always-on group /new from an allowFrom sender when commands.unmentioned is allowlist (#316)", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload(
+      groupPayload({ handler: "participation", mentions: undefined, message: "/new" }),
+    )!;
+    expect(parsed.isMention).toBe(false);
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({ commands: { unmentioned: "allowlist" }, allowFrom: ["u2"] }),
+      parsed,
+      client: makeClient(),
+    });
+    expect(capture.ctxPayload?.CommandSource).toBe("native");
+    expect(capture.ctxPayload?.CommandAuthorized).toBe(true);
+    expect(capture.ctxPayload?.GroupSystemPrompt).toBe(CLIQ_UNMENTIONED_GROUP_PROMPT);
+  });
+
+  it("authorizes an unmentioned group command via a per-channel commandUnmentioned override (#316)", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload(
+      groupPayload({ handler: "participation", mentions: undefined, message: "/new" }),
+    )!;
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        groups: { "dev-team": { commandUnmentioned: "allowlist" } },
+        allowFrom: ["u2"],
+      }),
+      parsed,
+      client: makeClient(),
+    });
+    expect(capture.ctxPayload?.CommandSource).toBe("native");
+    expect(capture.ctxPayload?.CommandAuthorized).toBe(true);
+  });
+
+  it("authorizes an unmentioned group command for a sender in the CLI pairing store (#316)", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const readAllowFromStore = vi.fn(async () => ["u2"]);
+    const base = mockRuntime(capture);
+    const runtime: CliqRuntime = {
+      channel: {
+        ...base.channel,
+        pairing: { ...base.channel.pairing, readAllowFromStore },
+      },
+    };
+    const parsed = parseCliqWebhookPayload(
+      groupPayload({ handler: "participation", mentions: undefined, message: "/new" }),
+    )!;
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({ commands: { unmentioned: "allowlist" } }),
+      parsed,
+      client: makeClient(),
+    });
+    expect(readAllowFromStore).toHaveBeenCalledTimes(1);
+    expect(capture.ctxPayload?.CommandSource).toBe("native");
+    expect(capture.ctxPayload?.CommandAuthorized).toBe(true);
+  });
+
+  it("fails closed and reports when the CLI pairing store read throws (#316)", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const onError = vi.fn();
+    const base = mockRuntime(capture);
+    const runtime: CliqRuntime = {
+      channel: {
+        ...base.channel,
+        pairing: {
+          ...base.channel.pairing,
+          readAllowFromStore: async () => {
+            throw new Error("store unavailable");
+          },
+        },
+      },
+    };
+    const parsed = parseCliqWebhookPayload(
+      groupPayload({ handler: "participation", mentions: undefined, message: "/new" }),
+    )!;
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({ commands: { unmentioned: "allowlist" } }),
+      parsed,
+      client: makeClient(),
+      onError,
+    });
+    expect(onError).toHaveBeenCalledWith(expect.any(Error), {
+      kind: "commands-unmentioned-allowfrom",
+    });
+    expect(capture.ctxPayload?.CommandSource).toBeUndefined();
+    expect(capture.ctxPayload?.CommandAuthorized).toBeUndefined();
+  });
+
+  it("does not read the pairing store for default-off or non-command turns (#316)", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const readAllowFromStore = vi.fn(async () => ["u2"]);
+    const base = mockRuntime(capture);
+    const runtime: CliqRuntime = {
+      channel: {
+        ...base.channel,
+        pairing: { ...base.channel.pairing, readAllowFromStore },
+      },
+    };
+    const slash = parseCliqWebhookPayload(
+      groupPayload({ handler: "participation", mentions: undefined, message: "/new" }),
+    )!;
+    const chatter = parseCliqWebhookPayload(
+      groupPayload({ handler: "participation", mentions: undefined, message: "hello team" }),
+    )!;
+    const cfg = { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never;
+    await dispatchCliqInbound({ runtime, cfg, account: account(), parsed: slash, client: makeClient() });
+    await dispatchCliqInbound({
+      runtime,
+      cfg,
+      account: account({ commands: { unmentioned: "allowlist" } }),
+      parsed: chatter,
+      client: makeClient(),
+    });
+    expect(readAllowFromStore).not.toHaveBeenCalled();
+  });
+
+  it("does NOT authorize an unmentioned group /model from an unlisted sender in allowlist mode (#316)", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload(
+      groupPayload({ handler: "participation", mentions: undefined, message: "/model sonnet" }),
+    )!;
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({ commands: { unmentioned: "allowlist" }, allowFrom: ["someone-else"] }),
+      parsed,
+      client: makeClient(),
+    });
+    expect(capture.ctxPayload?.CommandSource).toBeUndefined();
+    expect(capture.ctxPayload?.CommandAuthorized).toBeUndefined();
+  });
+
+  it("never authorizes an unmentioned command from a bot sender, even on the allowlist (#316)", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload(
+      groupPayload({
+        handler: "participation",
+        mentions: undefined,
+        message: "/model sonnet",
+        user: { id: "b-paula", name: "Paula" },
+      }),
+    )!;
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        commands: { unmentioned: "allowlist" },
+        allowFrom: ["*"],
+        selfSenderIds: ["b-paula"],
+      }),
+      parsed,
+      client: makeClient(),
+    });
+    expect(capture.ctxPayload?.CommandSource).toBeUndefined();
+    expect(capture.ctxPayload?.CommandAuthorized).toBeUndefined();
   });
 
   it("does NOT mark a normal conversational DM as a native command", async () => {
@@ -6082,6 +6248,136 @@ describe("unmentioned always-on group turns (issue #283)", () => {
             thinking: { mode: "placeholder", text: "💭 …", unmentioned: "allowlist" },
             allowFrom: ["*"],
             selfSenderIds: ["b-paula"],
+          }),
+        ),
+      ).toBe(false);
+    });
+  });
+
+  describe("resolveCliqCommandUnmentioned / cliqUnmentionedCommandAuthorized (#316)", () => {
+    function slashPayload(overrides: Partial<CliqWebhookPayload> = {}): CliqWebhookPayload {
+      return unmentionedPayload({ data: { message: "/new" }, ...overrides });
+    }
+
+    it("defaults to off and reads the account-level option", () => {
+      const parsed = parseCliqWebhookPayload(slashPayload())!;
+      expect(resolveCliqCommandUnmentioned(parsed, account())).toBe("off");
+      expect(
+        resolveCliqCommandUnmentioned(parsed, account({
+          commands: { unmentioned: "allowlist" },
+        })),
+      ).toBe("allowlist");
+    });
+
+    it("a per-channel commandUnmentioned override wins (with * fallback)", () => {
+      const parsed = parseCliqWebhookPayload(slashPayload())!;
+      expect(
+        resolveCliqCommandUnmentioned(parsed, account({
+          groups: { gregorfinnitest: { commandUnmentioned: "allowlist" } },
+        })),
+      ).toBe("allowlist");
+      expect(
+        resolveCliqCommandUnmentioned(parsed, account({
+          groups: { otherchannel: { commandUnmentioned: "allowlist" } },
+        })),
+      ).toBe("off");
+      expect(
+        resolveCliqCommandUnmentioned(parsed, account({
+          groups: { "*": { commandUnmentioned: "allowlist" } },
+        })),
+      ).toBe("allowlist");
+      expect(
+        resolveCliqCommandUnmentioned(parsed, account({
+          groups: { gregorfinnitest: { commandUnmentioned: "off" } },
+          commands: { unmentioned: "allowlist" },
+        })),
+      ).toBe("off");
+    });
+
+    it("authorizes an unmentioned command from an allowFrom sender (incl. *)", () => {
+      const parsed = parseCliqWebhookPayload(slashPayload())!;
+      expect(
+        cliqUnmentionedCommandAuthorized(parsed, account({
+          commands: { unmentioned: "allowlist" },
+          allowFrom: ["u123"],
+        })),
+      ).toBe(true);
+      expect(
+        cliqUnmentionedCommandAuthorized(parsed, account({
+          commands: { unmentioned: "allowlist" },
+          allowFrom: ["*"],
+        })),
+      ).toBe(true);
+      expect(
+        cliqUnmentionedCommandAuthorized(parsed, account({
+          groups: { gregorfinnitest: { commandUnmentioned: "allowlist" } },
+          allowFrom: ["u123"],
+        })),
+      ).toBe(true);
+    });
+
+    it("honors the CLI pairing store (sdkAllowFrom) for admitted senders", () => {
+      const parsed = parseCliqWebhookPayload(slashPayload())!;
+      expect(
+        cliqUnmentionedCommandAuthorized(
+          parsed,
+          account({ commands: { unmentioned: "allowlist" } }),
+          { sdkAllowFrom: ["u123"] },
+        ),
+      ).toBe(true);
+      expect(
+        cliqUnmentionedCommandAuthorized(
+          parsed,
+          account({ commands: { unmentioned: "allowlist" } }),
+          { sdkAllowFrom: ["someone-else"] },
+        ),
+      ).toBe(false);
+    });
+
+    it("stays off by default and for unlisted senders (#285 regression)", () => {
+      const parsed = parseCliqWebhookPayload(slashPayload())!;
+      // Default: no authorization even for an allowlisted sender.
+      expect(
+        cliqUnmentionedCommandAuthorized(parsed, account({ allowFrom: ["u123"] })),
+      ).toBe(false);
+      // Opted in, but the sender is not on any allowlist.
+      expect(
+        cliqUnmentionedCommandAuthorized(parsed, account({
+          commands: { unmentioned: "allowlist" },
+          allowFrom: [],
+        })),
+      ).toBe(false);
+    });
+
+    it("never authorizes a self/other-bot sender in any mode (#283/#285)", () => {
+      const opts = [
+        { commands: { unmentioned: "allowlist" as const }, allowFrom: ["*"], selfSenderIds: ["b-paula"] },
+      ];
+      for (const accountOverrides of opts) {
+        expect(
+          cliqUnmentionedCommandAuthorized(
+            parseCliqWebhookPayload(
+              slashPayload({ user: { id: "b-paula", name: "Paula" } }),
+            )!,
+            account(accountOverrides),
+          ),
+        ).toBe(false);
+      }
+      // The bot's own id (botId) is self even without any explicit list.
+      expect(
+        cliqUnmentionedCommandAuthorized(
+          parseCliqWebhookPayload(slashPayload({ user: { id: "bot", name: "Bot" } }))!,
+          account({ commands: { unmentioned: "allowlist" }, allowFrom: ["*"] }),
+        ),
+      ).toBe(false);
+      // ownSenderIds are this bot's alternate identities, never authorized.
+      expect(
+        cliqUnmentionedCommandAuthorized(
+          parseCliqWebhookPayload(slashPayload({ user: { id: "b-self", name: "Bot" } }))!,
+          account({
+            commands: { unmentioned: "allowlist" },
+            allowFrom: ["*"],
+            ownSenderIds: ["b-self"],
           }),
         ),
       ).toBe(false);
