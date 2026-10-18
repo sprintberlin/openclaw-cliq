@@ -11,6 +11,10 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Fixed
+
+- Inbound v6 `participation_handler` payloads that deliver `data.message` (or a top-level `message`) as a JSON string are normalized back into an object before parsing (#315). Channel messages without an @mention now reach the agent as plain text instead of raw JSON, and attachments carried inside that object — including voice notes — are preserved. A string that is not a JSON object is left untouched, and the existing object/`data` shapes are unchanged. No handler re-provisioning is needed.
+
 ### Changed
 
 - Distribution and trust documentation now matches upstream's decision on the official-catalog request (#263): OpenClaw closed [openclaw/openclaw#175516](https://github.com/openclaw/openclaw/issues/175516) as ClawHub-scoped because the durable-ingress APIs (`openChannelIngressQueue` / `openChannelIngressDrain`) are available to every loaded plugin since [openclaw/openclaw#165063](https://github.com/openclaw/openclaw/pull/165063). The README gains a "Distribution & trust status" section (community plugin, ClawHub is the supported install route, no config can assert official trust), and `docs/REVIEW-DOSSIER.md` is rewritten as a public evidence pack with a data-flow/threat model, a verification matrix, explicit non-covered areas, and the maintenance commitment.
