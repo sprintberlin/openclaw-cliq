@@ -743,6 +743,32 @@ export function parseCliqWebhookPayload(
     };
   }
 
+  // HOTFIX finanzgewissen 2026-10-17 (Claude Code): a v6 participation_handler
+  // delivers `data.message` as a JSON string instead of a Map. Left as a string,
+  // the message text reaches the agent as raw JSON and attachments (voice notes)
+  // are lost. Parse a string that starts with "{" back into an object, on both
+  // the top-level payload and `data`, before the participation unwrapping below.
+  // A non-JSON string is left untouched.
+  for (const key of ["message"] as const) {
+    const value = payload[key] ?? payload.data?.[key];
+    if (typeof value === "string" && value.trim().startsWith("{")) {
+      try {
+        const parsed = JSON.parse(value) as unknown;
+        if (parsed && typeof parsed === "object") {
+          payload = { ...payload, [key]: parsed as Record<string, unknown> };
+          if (payload.data && typeof payload.data === "object") {
+            payload = {
+              ...payload,
+              data: { ...payload.data, [key]: parsed as Record<string, unknown> },
+            };
+          }
+        }
+      } catch {
+        // Not JSON. Keep the original string.
+      }
+    }
+  }
+
   // Participation Handler payload unwrapping (issue #279):
   // When Zoho calls the participation_handler, it delivers `operation`
   // (e.g. "message_sent") and `data` (which holds `message` among other fields).
@@ -1647,7 +1673,12 @@ export async function dispatchCliqInbound(params: {
     cleanText.startsWith("/") &&
     (!parsed.isGroup ||
       isCliqExplicitBotMention(parsed, account) ||
-      isReplyToBot(parsed, account))
+      isReplyToBot(parsed, account) ||
+      // HOTFIX finanzgewissen 2026-10-17 (Dominic): commands such as /new from
+      // allowlisted senders run without an @mention. The sender's own bot
+      // messages stay excluded so a bot cannot authorize itself.
+      (!isCliqSelfMessage(parsed, account).self &&
+        isCliqSenderAllowed(parsed.senderId, account.allowFrom)))
       ? {
           CommandSource: "native" as const,
           CommandAuthorized: true,
