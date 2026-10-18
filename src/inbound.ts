@@ -520,6 +520,43 @@ interface ExtractedCliqMessage {
   isEdited: boolean;
 }
 
+const CLIQ_MESSAGE_OBJECT_KEYS = [
+  "text",
+  "content",
+  "attachments",
+  "file",
+  "description",
+  "id",
+  "time",
+  "message_type",
+  "rte",
+] as const;
+
+/**
+ * Parse a stringified Cliq message object, returning the object or `undefined`
+ * when the string is not valid JSON, does not decode to a plain object, or
+ * carries none of the known message-object keys (issue #315). Arrays,
+ * primitives, and arbitrary user-typed JSON (e.g. a DM containing `{"a":1}`)
+ * stay undefined so a deliberately-string message is never rewritten. Only
+ * called for strings that already start with "{".
+ */
+function tryParseStringifiedObject(value: string): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed) &&
+      CLIQ_MESSAGE_OBJECT_KEYS.some((key) => key in parsed)
+    ) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Not JSON — the caller keeps the original string.
+  }
+  return undefined;
+}
+
 function normalizeInboundLabel(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim().toLowerCase();
@@ -741,6 +778,35 @@ export function parseCliqWebhookPayload(
       content: payload.params.content ?? payload.content,
       file: payload.params.file ?? payload.file,
     };
+  }
+
+  // Stringified-object message normalization (issue #315): a Deluge v6
+  // participation_handler can deliver `message` / `data.message` as a JSON
+  // STRING (e.g. "{\"text\": …}") instead of a Map. Left as a string, the
+  // agent receives raw JSON as the body and attachments inside the object
+  // (voice notes) are dropped. Parse a string that starts with "{" back into
+  // an object — independently on the top level and on `data` — before the
+  // participation unwrapping below. Non-JSON strings are left untouched.
+  if (typeof payload.message === "string" && payload.message.trimStart().startsWith("{")) {
+    const parsedMessage = tryParseStringifiedObject(payload.message);
+    if (parsedMessage !== undefined) {
+      payload = { ...payload, message: parsedMessage as CliqWebhookPayload["message"] };
+    }
+  }
+  if (payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)) {
+    const dataMessage = payload.data.message;
+    if (typeof dataMessage === "string" && dataMessage.trimStart().startsWith("{")) {
+      const parsedDataMessage = tryParseStringifiedObject(dataMessage);
+      if (parsedDataMessage !== undefined) {
+        payload = {
+          ...payload,
+          data: {
+            ...payload.data,
+            message: parsedDataMessage as NonNullable<CliqWebhookPayload["data"]>["message"],
+          },
+        };
+      }
+    }
   }
 
   // Participation Handler payload unwrapping (issue #279):

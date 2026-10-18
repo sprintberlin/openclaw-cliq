@@ -508,6 +508,96 @@ describe("parseCliqWebhookPayload", () => {
       expect(parsed!.handler).toBe("participation");
     });
 
+    it("parses a v6 participation_handler message_sent where data.message is a JSON string (issue #315)", () => {
+      const parsed = parseCliqWebhookPayload({
+        handler: "participation",
+        operation: "message_sent",
+        data: {
+          message: JSON.stringify({
+            text: "Hallo Kanal",
+            id: "m-v6-1",
+            attachments: [{ id: "voice-1", name: "voice-note.wav", type: "audio/wav" }],
+          }),
+        },
+        user: { id: "u123", name: "Gregor Sprint" },
+        chat: {
+          id: "CT_channel_123",
+          type: "channel",
+          chat_type: "channel",
+          channel_unique_name: "gregorfinnitest",
+          title: "#GregorFinniTest",
+        },
+        eventId: "ev-part-v6",
+      } as CliqWebhookPayload);
+
+      expect(parsed).not.toBeNull();
+      // The stringified object is normalized before unwrapping: the agent sees
+      // the text, not the raw JSON, and the voice attachment survives.
+      expect(parsed!.text).toBe("Hallo Kanal");
+      expect(parsed!.text).not.toContain("{");
+      expect(parsed!.attachments).toEqual([
+        { fileId: "voice-1", fileName: "voice-note.wav", mimeType: "audio/wav" },
+      ]);
+      expect(parsed!.messageId).toBe("m-v6-1");
+      expect(parsed!.isGroup).toBe(true);
+      expect(parsed!.channelUniqueName).toBe("gregorfinnitest");
+      expect(parsed!.handler).toBe("participation");
+      expect(parsed!.isMention).toBe(false);
+    });
+
+    it("parses a v6 participation payload whose top-level message is a JSON string (issue #315)", () => {
+      const parsed = parseCliqWebhookPayload({
+        handler: "participation",
+        operation: "message_sent",
+        message: JSON.stringify({ text: "Root-JSON", attachments: ["voice-sample.wav"] }),
+        user: { id: "u123", name: "Gregor Sprint" },
+        chat: { id: "CT_channel_123", type: "channel", channel_unique_name: "gregorfinnitest" },
+      } as CliqWebhookPayload);
+
+      expect(parsed).not.toBeNull();
+      expect(parsed!.text).toBe("<file: voice-sample.wav>\nRoot-JSON");
+      expect(parsed!.attachments).toEqual([{ fileName: "voice-sample.wav" }]);
+    });
+
+    it("leaves a non-JSON string message untouched (issue #315)", () => {
+      const parsed = parseCliqWebhookPayload({
+        handler: "participation",
+        operation: "message_sent",
+        data: { message: "{this is not json" },
+        user: { id: "u123", name: "Gregor Sprint" },
+        chat: { id: "CT_channel_123", type: "channel", channel_unique_name: "gregorfinnitest" },
+      } as CliqWebhookPayload);
+
+      expect(parsed).not.toBeNull();
+      expect(parsed!.text).toBe("{this is not json");
+      expect(parsed!.attachments).toEqual([]);
+    });
+
+    it("leaves user-typed JSON without message-object keys as plain text (issue #315)", () => {
+      const parsed = parseCliqWebhookPayload({
+        handler: "message",
+        message: '{"a": 1}',
+        user: { id: "u1", name: "Alice" },
+        chat: { id: "CT_dm" },
+      } as CliqWebhookPayload);
+
+      expect(parsed).not.toBeNull();
+      expect(parsed!.text).toBe('{"a": 1}');
+    });
+
+    it("leaves a stringified JSON array message untouched (issue #315)", () => {
+      const parsed = parseCliqWebhookPayload({
+        handler: "participation",
+        operation: "message_sent",
+        data: { message: '["not", "an", "object"]' },
+        user: { id: "u123", name: "Gregor Sprint" },
+        chat: { id: "CT_channel_123", type: "channel" },
+      } as CliqWebhookPayload);
+
+      expect(parsed).not.toBeNull();
+      expect(parsed!.text).toBe('["not", "an", "object"]');
+    });
+
     it("returns null for non-message participation operations (e.g. bot_added)", () => {
       const parsed = parseCliqWebhookPayload({
         handler: "participation",
