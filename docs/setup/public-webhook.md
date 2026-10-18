@@ -266,15 +266,17 @@ constant-time secret check and expects the request to arrive unmodified.
 > `$remote_addr` line above does. This does not weaken the shared-secret
 > check itself — that is constant-time and independent of the client IP.
 
-> **Timeouts.** With the default `ackPolicy: "after_dispatch"` the gateway
-> answers only after the agent turn completes, which is what drives Cliq's
-> native "bot is processing" indicator. If your proxy's read timeout is
-> shorter than a slow turn, raise it (as above) rather than lowering the
-> plugin's guarantees. If you cannot, `ackPolicy: "immediate"` trades the
-> documented lost-message-on-crash risk for a fast ack — but do not use it on
-> OpenClaw `2026.8.2`, where post-ack turns can fail with
-> `GatewayDrainingError`. `openclaw cliq doctor` warns whenever `immediate` is
-> configured.
+> **Timeouts.** With the default `ackPolicy: "after_receive_record"` the
+> gateway answers as soon as the event is durably recorded (milliseconds),
+> and the agent turn runs afterwards — so a proxy read timeout only has to
+> cover the append, not the turn. The explicit `ackPolicy: "after_dispatch"`
+> compatibility mode still answers only after the agent turn completes,
+> which is what drives Cliq's native "bot is processing" indicator; in that
+> mode a turn longer than Zoho's ~40 s `invokeUrl` timeout is redelivered,
+> so raise the proxy read timeout (as above) rather than lowering the
+> plugin's guarantees. `ackPolicy: "immediate"` is a deprecated alias of the
+> default and no longer skips the durable record; `openclaw cliq doctor`
+> warns once when it is configured.
 
 ---
 

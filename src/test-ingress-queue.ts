@@ -25,8 +25,16 @@ export interface TestIngressQueue {
     ownerId: string;
     claimedAt: number;
   }): void;
-  seedPending(params: { id: string; payload: unknown; laneKey: string; receivedAt?: number }): void;
+  seedPending(params: {
+    id: string;
+    payload: unknown;
+    laneKey: string;
+    receivedAt?: number;
+    attempts?: number;
+    lastError?: string;
+  }): void;
   statusOf(id: string): Row["status"] | undefined;
+  failedReasonOf(id: string): string | undefined;
 }
 
 export function createTestIngressQueue(): TestIngressQueue {
@@ -200,7 +208,7 @@ export function createTestIngressQueue(): TestIngressQueue {
         claim: { token: `seed-${id}`, ownerId, claimedAt },
       });
     },
-    seedPending({ id, payload, laneKey, receivedAt }) {
+    seedPending({ id, payload, laneKey, receivedAt, attempts, lastError }) {
       const at = receivedAt ?? Date.now();
       rows.set(id, {
         id,
@@ -208,10 +216,12 @@ export function createTestIngressQueue(): TestIngressQueue {
         receivedAt: at,
         updatedAt: at,
         laneKey,
-        attempts: 0,
+        attempts: attempts ?? 0,
+        ...(attempts ? { lastAttemptAt: at, lastError } : {}),
         status: "pending",
       });
     },
     statusOf: (id) => rows.get(id)?.status,
+    failedReasonOf: (id) => rows.get(id)?.failedReason,
   };
 }

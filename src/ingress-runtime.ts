@@ -86,6 +86,13 @@ export function resolveCliqIngressLaneKey(parsed: ParsedCliqInbound): string {
   return `cliq:dm:${parsed.chatId || "chat"}:${parsed.senderId || "anon"}`;
 }
 
+const CLIQ_SYNTHETIC_ID_PREFIX = "syn:";
+
+export function hasStableCliqIngressIdentity(parsed: ParsedCliqInbound): boolean {
+  const eventId = parsed.messageId?.trim() || "";
+  return eventId.length > 0 && !eventId.startsWith(CLIQ_SYNTHETIC_ID_PREFIX);
+}
+
 /**
  * Extract the queue identity for one parsed Cliq inbound. Returns `null`
  * when there is nothing stable to key on — the monitor then reports the
@@ -94,9 +101,8 @@ export function resolveCliqIngressLaneKey(parsed: ParsedCliqInbound): string {
 export function resolveCliqIngressFacts(
   parsed: ParsedCliqInbound,
 ): CliqIngressFacts | null {
-  const eventId = parsed.messageId?.trim() || "";
-  if (!eventId) return null;
-  return { eventId, laneKey: resolveCliqIngressLaneKey(parsed) };
+  if (!hasStableCliqIngressIdentity(parsed)) return null;
+  return { eventId: parsed.messageId.trim(), laneKey: resolveCliqIngressLaneKey(parsed) };
 }
 
 /** Stored payload shape for `storage: "raw-event"` (Core wraps the body). */

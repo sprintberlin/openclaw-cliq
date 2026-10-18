@@ -8,6 +8,7 @@ import {
   createCliqIngressPayloadCodec,
   resolveCliqIngressFacts,
   resolveCliqIngressNonRetryableFailure,
+  hasStableCliqIngressIdentity,
   type CliqIngressMonitor,
   type CliqIngressRawEvent,
 } from "./ingress-runtime.js";
@@ -70,6 +71,12 @@ describe("cliq ingress facts + codec (issue #261)", () => {
 
   it("returns null without a stable event identity (ignored admission)", () => {
     expect(resolveCliqIngressFacts(fakeParsed({ messageId: "" }))).toBeNull();
+  });
+
+  it("never durably keys a content-derived syn: identity (issue #114, #261)", () => {
+    const parsed = fakeParsed({ messageId: "syn:0123456789abcdef" });
+    expect(hasStableCliqIngressIdentity(parsed)).toBe(false);
+    expect(resolveCliqIngressFacts(parsed)).toBeNull();
   });
 
   it("round-trips the serialized payload", () => {
@@ -540,6 +547,82 @@ describe("handler fallback when the drain cannot deliver (issue #262)", () => {
       );
       await monitor.waitForIdle();
       expect(delivered).toEqual(["evt-next"]);
+    } finally {
+      await monitor.stop();
+    }
+  });
+
+  it("dead-letters a retryable event once Core's retry budget is exhausted (issue #261)", async () => {
+    const store = createTestIngressQueue();
+    const codec = createCliqIngressPayloadCodec();
+    const event = fakeParsed({ messageId: "evt-exhausted" });
+    const body = codec.serialize(rawEvent(event));
+    store.seedPending({
+      id: "evt-exhausted",
+      payload: { version: 1, rawEvent: body },
+      laneKey: "cliq:dm:chat-1:user-1",
+      receivedAt: Date.now() - 25 * 60 * 60 * 1000,
+      attempts: 7,
+      lastError: "handler unavailable",
+    });
+    const monitor = createChannelIngressMonitor({
+      queue: store.queue,
+      inspect: (raw: CliqIngressRawEvent) => resolveCliqIngressFacts(raw.parsed),
+      payload: codec,
+      deliver: async () => ({
+        kind: "failed-retryable" as const,
+        error: new Error("handler unavailable"),
+      }),
+      pollIntervalMs: 20,
+      retention: "standard" as const,
+      drain: { resolveNonRetryableFailure: resolveCliqIngressNonRetryableFailure },
+      admissionMode: "while-running" as const,
+    });
+    monitor.start();
+    try {
+      await monitor.waitForIdle();
+      expect(store.statusOf("evt-exhausted")).toBe("failed");
+      expect(store.failedReasonOf("evt-exhausted")).toBe("retry-limit-exceeded");
+    } finally {
+      await monitor.stop();
+    }
+  });
+});
+
+describe("turn adoption completes the claim (issue #261)", () => {
+  it("keeps the claim open until the threaded lifecycle adopts the turn", async () => {
+    const store = createTestIngressQueue();
+    const codec = createCliqIngressPayloadCodec();
+    const event = fakeParsed({ messageId: "evt-adopt" });
+    const body = codec.serialize(rawEvent(event));
+    store.seedPending({
+      id: "evt-adopt",
+      payload: { version: 1, rawEvent: body },
+      laneKey: "cliq:dm:chat-1:user-1",
+    });
+    let adopt: (() => Promise<void>) | null = null;
+    const monitor = createChannelIngressMonitor({
+      queue: store.queue,
+      inspect: (raw: CliqIngressRawEvent) => resolveCliqIngressFacts(raw.parsed),
+      payload: codec,
+      deliver: async (_raw, lifecycle) => {
+        adopt = async () => { await lifecycle.onAdopted(); };
+        lifecycle.onDeferred();
+        return { kind: "deferred" as const };
+      },
+      pollIntervalMs: 20,
+      retention: "standard" as const,
+      drain: { resolveNonRetryableFailure: resolveCliqIngressNonRetryableFailure },
+      admissionMode: "while-running" as const,
+    });
+    monitor.start();
+    try {
+      await vi.waitFor(() => expect(adopt).not.toBeNull());
+      await monitor.waitForIdle();
+      expect(store.statusOf("evt-adopt")).toBe("claimed");
+      await adopt!();
+      await monitor.waitForIdle();
+      expect(store.statusOf("evt-adopt")).toBe("completed");
     } finally {
       await monitor.stop();
     }
