@@ -77,6 +77,7 @@ v3 adds CRUD endpoints v2 never had (bots, slash commands, message actions, widg
 
 Mostly v3-independent; **dynamic agents** in particular is high-value and can be pulled forward.
 
+- **Isolated live test-bot handler-fallback matrix (issue #262).** CI cannot execute Zoho Deluge, so run one isolated test bot (never production) through: healthy `2xx` (no fallback text), controlled `400`, controlled `503`, and a controlled timeout/transport exception (exactly one generic fallback text each), then a healthy message after every failure receiving a normal reply. Record only redacted evidence: handler type, response class, event reference, fallback visible/not visible, next turn observed/not observed — no message body, handler script, endpoint, token, or secret.
 - **Live trusted-organization acceptance run.** Confirm on the Pay-Jet organization that one DM
   user and one group channel still round-trip under the acknowledged trusted-organization
   configuration, and that `openclaw security audit` reports the deployment as informational

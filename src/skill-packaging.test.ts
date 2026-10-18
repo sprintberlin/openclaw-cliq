@@ -26,7 +26,7 @@ describe("bundled cliq companion skill packaging and manifest (issue #274)", () 
     expect(content).toContain("sprintberlin/openclaw-cliq");
     expect(content).toContain("gh issue create");
     expect(content).toContain('"config": ["channels.cliq"]');
-    expect(content).toContain("Definition of Done");
+    expect(content).toContain("## Issue Rule");
     expect(content).not.toContain("report_plugin_issue.py");
     expect(content.length).toBeLessThan(12000);
   });

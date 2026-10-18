@@ -11,6 +11,14 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Fixed
+
+- Corrupt or identity-mismatched durable-queue records are now dead-lettered by Core's ingress drain instead of being retried forever: the monitor passes `drain.resolveNonRetryableFailure` so the codec's non-retryable claim errors (`invalid-version`, `identity-mismatch`) reach the dead-letter path. One poison record can no longer block its lane (#262).
+
+### Added
+
+- Reliability proofs for the durable ingress pipeline (#262): unit tests drive the real Core monitor over a queue double to prove corrupt-row dead-lettering, queue recovery after a crash before turn adoption (exactly one recovered turn, HTTP replay produces none), queue-append-before-ack ordering through the live webhook route, and retryable-delivery release. The gateway smoke gains a kill-restart stage: it acks an event, kills the isolated gateway between the durable ack and turn adoption, restarts against the same state, and asserts exactly one recovered turn/reply plus no second turn on HTTP replay. The stage runs only on runtimes that expose `runtime.state.openChannelIngressQueue` (2026.10.x); gated runtimes report a skip instead of a false pass (#263 tracks the remaining gap). The latch is a test-only `OPENCLAW_CLIQ_TEST_HOLD_DISPATCH_FILE` env var with no production behaviour.
+
 ### Added
 
 - `thinking.unmentioned: "allowlist"` (per channel `groups.<ch>.thinkingUnmentioned`) re-admits the thinking placeholder on unmentioned always-on turns for trusted human senders only: on `allowFrom` (including `*`), the CLI pairing store, or pairing-approved. The default `"silent"` is unchanged (#283): unmentioned chatter posts nothing. A Core `NO_REPLY` completion deletes the re-admitted placeholder instead of rewriting it to the failure notice, and bot senders (`botId` / `botName` / `ownSenderIds` / `selfSenderIds`) never get a placeholder in any mode (#311).
