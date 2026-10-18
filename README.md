@@ -1197,6 +1197,8 @@ Inbound-side shapes stay explicit manual acceptance checks, because no Zoho bot 
 
 The config stage also warns when a multi-user Cliq bot still resolves `session.dmScope` to `main` (shared conversation context and delivery route) and whenever `ackPolicy: "immediate"` is configured (a crash after the ack loses the message; on OpenClaw `>= 2026.8.2` the plugin must reserve detached work with `runDetachedWebhookWork` before responding or the healthy gateway rejects the turn with `GatewayDrainingError`).
 
+`OPENCLAW_CLIQ_TEST_HOLD_DISPATCH_FILE` is a test-only latch used by the gateway smoke's kill-restart proof (issue #262): when set to a path, a durably claimed event waits for that file to exist before the turn is dispatched, so a test can stop the process between the HTTP ack and turn adoption. It has no effect unless the variable is set and must never be set in production.
+
 `--json` emits a stable report. The documented keys are:
 
 ```json

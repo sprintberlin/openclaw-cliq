@@ -767,6 +767,106 @@ for secret in smoke-client-secret smoke-webhook-secret stub-key; do
 done
 echo "OK: no configured secrets present in gateway or mock logs"
 
+# Issue #262: kill the gateway AFTER the durable ack and BEFORE turn
+# adoption, restart it against the same state, and prove exactly one
+# recovered turn and reply. Then replay the HTTP event and prove no second
+# turn. Only runtimes that actually expose the durable queue can prove it;
+# a trusted-gated runtime keeps the pre-queue fallback and is reported as
+# skipped rather than as a pass.
+if grep -q "durable ingress queue unavailable" "$GW_LOG"; then
+  echo "SKIP: queue crash/restart proof needs a runtime exposing openChannelIngressQueue (issue #263)"
+else
+  echo "==> [11b/12] Proving queue recovery across a kill before adoption"
+  HOLD_FILE="$SMOKE_HOME/hold-dispatch"
+  rm -f "$HOLD_FILE" "$HOLD_FILE.holding"
+  kill "$GATEWAY_PID" 2>/dev/null || true
+  wait "$GATEWAY_PID" 2>/dev/null || true
+  GATEWAY_PID=""
+  GW_LOG="$SMOKE_HOME/gateway-recovery.log"
+  OPENCLAW_CLIQ_TEST_HOLD_DISPATCH_FILE="$HOLD_FILE" \
+    "${OC[@]}" --profile "$PROFILE" --log-level info gateway run \
+    --port "$PORT" --auth none --allow-unconfigured \
+    < /dev/null > "$GW_LOG" 2>&1 &
+  GATEWAY_PID=$!
+  ready=0
+  for _ in $(seq 1 60); do
+    code="$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 -X GET "$WEBHOOK_URL" 2>/dev/null || true)"
+    if [ "$code" = "405" ]; then ready=1; break; fi
+    sleep 0.5
+  done
+  if [ "$ready" -ne 1 ]; then
+    echo "FAIL: recovery gateway did not become ready" >&2
+    cat "$GW_LOG" >&2
+    exit 1
+  fi
+
+  RECOVERY_MARKER="stage4b-recovery-$$"
+  RECOVERY_PAYLOAD='{"message":{"text":"'"$RECOVERY_MARKER"'","id":"dm-recovery"},"user":{"id":"user-alice","name":"Alice"},"chat":{"id":"CT_smoke_dm","type":"single"},"eventId":"evt:recovery-smoke"}'
+  resp="$(curl -s -w "\n%{http_code}" --max-time 30 -X POST "$WEBHOOK_URL" \
+    -H "x-cliq-webhook-secret: smoke-webhook-secret" \
+    -H "content-type: application/json" --data "$RECOVERY_PAYLOAD")"
+  code="$(printf "%s" "$resp" | tail -n1)"
+  assert_status "recovery event acked before adoption" 200 "$code"
+
+  # The ack must precede adoption: the latch file is written when the claim
+  # is taken, and it must exist before the process is killed.
+  held=0
+  for _ in $(seq 1 40); do
+    if [ -s "$HOLD_FILE.holding" ]; then held=1; break; fi
+    sleep 0.25
+  done
+  if [ "$held" -ne 1 ]; then
+    echo "FAIL: durable claim was not latched before adoption" >&2
+    cat "$GW_LOG" >&2
+    exit 1
+  fi
+  turns_before="$(grep -c "$RECOVERY_MARKER" "$MODEL_REQUESTS_LOG" 2>/dev/null || true)"
+  if [ "$turns_before" != "0" ]; then
+    echo "FAIL: turn ran before the crash latch released" >&2
+    exit 1
+  fi
+
+  # Kill between ack and adoption, then restart against the same state with
+  # the latch released so the recovered claim can dispatch.
+  kill "$GATEWAY_PID" 2>/dev/null || true
+  wait "$GATEWAY_PID" 2>/dev/null || true
+  GATEWAY_PID=""
+  : > "$HOLD_FILE"
+  GW_LOG="$SMOKE_HOME/gateway-recovered.log"
+  "${OC[@]}" --profile "$PROFILE" --log-level info gateway run \
+    --port "$PORT" --auth none --allow-unconfigured \
+    < /dev/null > "$GW_LOG" 2>&1 &
+  GATEWAY_PID=$!
+
+  recovered=0
+  for _ in $(seq 1 120); do
+    if grep -q "$RECOVERY_MARKER" "$SENDS_LOG" 2>/dev/null; then recovered=1; break; fi
+    sleep 0.5
+  done
+  recovery_turns="$(grep -c "$RECOVERY_MARKER" "$MODEL_REQUESTS_LOG" 2>/dev/null || true)"
+  recovery_sends="$(grep -c "$RECOVERY_MARKER" "$SENDS_LOG" 2>/dev/null || true)"
+  if [ "$recovered" -ne 1 ] || [ "$recovery_turns" != "1" ] || [ "$recovery_sends" != "1" ]; then
+    echo "FAIL: restart did not recover exactly one turn (turns=$recovery_turns sends=$recovery_sends)" >&2
+    tail -n 80 "$GW_LOG" >&2
+    exit 1
+  fi
+  echo "OK: restart after ack and before adoption recovered exactly one turn and reply"
+
+  resp="$(curl -s -w "\n%{http_code}" --max-time 30 -X POST "$WEBHOOK_URL" \
+    -H "x-cliq-webhook-secret: smoke-webhook-secret" \
+    -H "content-type: application/json" --data "$RECOVERY_PAYLOAD")"
+  code="$(printf "%s" "$resp" | tail -n1)"
+  assert_status "replay after completion" 200 "$code"
+  sleep 2
+  recovery_turns="$(grep -c "$RECOVERY_MARKER" "$MODEL_REQUESTS_LOG" 2>/dev/null || true)"
+  recovery_sends="$(grep -c "$RECOVERY_MARKER" "$SENDS_LOG" 2>/dev/null || true)"
+  if [ "$recovery_turns" != "1" ] || [ "$recovery_sends" != "1" ]; then
+    echo "FAIL: HTTP replay after completion produced another turn (turns=$recovery_turns sends=$recovery_sends)" >&2
+    exit 1
+  fi
+  echo "OK: HTTP replay after completion produced no second turn or reply"
+fi
+
 echo "==> [12/12] Tearing down mock + gateway"
 if [ -n "$MOCK_PID" ]; then kill "$MOCK_PID" 2>/dev/null || true; wait "$MOCK_PID" 2>/dev/null || true; fi
 if [ -n "$GATEWAY_PID" ]; then kill "$GATEWAY_PID" 2>/dev/null || true; wait "$GATEWAY_PID" 2>/dev/null || true; fi

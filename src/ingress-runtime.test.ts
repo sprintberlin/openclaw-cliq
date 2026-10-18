@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { createChannelIngressMonitor } from "openclaw/plugin-sdk/channel-outbound";
 import {
   CliqIngressMonitorRegistry,
   admitCliqEvent,
@@ -6,8 +7,11 @@ import {
   setCliqIngressGlobalsForTest,
   createCliqIngressPayloadCodec,
   resolveCliqIngressFacts,
+  resolveCliqIngressNonRetryableFailure,
   type CliqIngressMonitor,
+  type CliqIngressRawEvent,
 } from "./ingress-runtime.js";
+import { createTestIngressQueue } from "./test-ingress-queue.js";
 import {
   createCliqTestConfig,
   createMockIncomingRequest,
@@ -314,6 +318,231 @@ describe("webhook durable admission before ack (issue #261)", () => {
     );
     expect(res.statusCode).toBe(200);
     expect(dispatches).toBe(1);
+  });
+});
+
+function rawEvent(parsed: ParsedCliqInbound): CliqIngressRawEvent {
+  return { parsed, accountId: "default", receivedAt: 1 };
+}
+
+describe("corrupt queue events stay isolated (issue #262)", () => {
+  it("dead-letters a corrupt row through Core and still delivers the next event", async () => {
+    const store = createTestIngressQueue();
+    const codec = createCliqIngressPayloadCodec();
+    const delivered: string[] = [];
+    const monitor = createChannelIngressMonitor({
+      queue: store.queue,
+      inspect: (raw: CliqIngressRawEvent) => resolveCliqIngressFacts(raw.parsed),
+      payload: codec,
+      deliver: async (raw: CliqIngressRawEvent) => {
+        delivered.push(raw.parsed.messageId);
+        return { kind: "completed" as const };
+      },
+      pollIntervalMs: 20,
+      retention: "standard" as const,
+      drain: { resolveNonRetryableFailure: resolveCliqIngressNonRetryableFailure },
+      admissionMode: "while-running" as const,
+    });
+    store.seedPending({
+      id: "evt-corrupt",
+      payload: { version: 1, rawEvent: "not-json{" },
+      laneKey: "cliq:dm:chat-1:user-1",
+    });
+    monitor.start();
+    try {
+      await monitor.waitForIdle();
+      expect(store.statusOf("evt-corrupt")).toBe("failed");
+      expect(delivered).toEqual([]);
+
+      const healthy = fakeParsed({ messageId: "evt-healthy", text: "still works" });
+      const admitted = await monitor.admit(rawEvent(healthy));
+      expect(admitted.kind).toBe("durable");
+      await monitor.waitForIdle();
+      expect(delivered).toEqual(["evt-healthy"]);
+      expect(store.statusOf("evt-healthy")).toBe("completed");
+    } finally {
+      await monitor.stop();
+    }
+  });
+
+  it("dead-letters an identity mismatch instead of retrying it", async () => {
+    const store = createTestIngressQueue();
+    const codec = createCliqIngressPayloadCodec();
+    const delivered: string[] = [];
+    const monitor = createChannelIngressMonitor({
+      queue: store.queue,
+      inspect: (raw: CliqIngressRawEvent) => resolveCliqIngressFacts(raw.parsed),
+      payload: codec,
+      deliver: async (raw: CliqIngressRawEvent) => {
+        delivered.push(raw.parsed.messageId);
+        return { kind: "completed" as const };
+      },
+      pollIntervalMs: 20,
+      retention: "standard" as const,
+      drain: { resolveNonRetryableFailure: resolveCliqIngressNonRetryableFailure },
+      admissionMode: "while-running" as const,
+    });
+    const body = codec.serialize(rawEvent(fakeParsed({ messageId: "evt-original" })));
+    store.seedPending({
+      id: "evt-rewritten",
+      payload: { version: 1, rawEvent: body },
+      laneKey: "cliq:dm:chat-1:user-1",
+    });
+    monitor.start();
+    try {
+      await monitor.waitForIdle();
+      expect(store.statusOf("evt-rewritten")).toBe("failed");
+      expect(delivered).toEqual([]);
+    } finally {
+      await monitor.stop();
+    }
+  });
+});
+
+describe("queue recovery after a crash before adoption (issue #262)", () => {
+  it("recovers a claimed event exactly once and ignores the replay", async () => {
+    const store = createTestIngressQueue();
+    const codec = createCliqIngressPayloadCodec();
+    const event = fakeParsed({ messageId: "evt-crash", text: "recover me" });
+    const body = codec.serialize(rawEvent(event));
+    store.seedClaimed({
+      id: "evt-crash",
+      payload: { version: 1, rawEvent: body },
+      laneKey: "cliq:dm:chat-1:user-1",
+      ownerId: "123:999:dead-process",
+      claimedAt: Date.now() - 60_000,
+    });
+
+    const delivered: string[] = [];
+    const monitor = createChannelIngressMonitor({
+      queue: store.queue,
+      inspect: (raw: CliqIngressRawEvent) => resolveCliqIngressFacts(raw.parsed),
+      payload: codec,
+      deliver: async (raw: CliqIngressRawEvent) => {
+        delivered.push(raw.parsed.messageId);
+        return { kind: "completed" as const };
+      },
+      pollIntervalMs: 20,
+      retention: "standard" as const,
+      drain: { resolveNonRetryableFailure: resolveCliqIngressNonRetryableFailure },
+      admissionMode: "while-running" as const,
+    });
+    monitor.start();
+    try {
+      await monitor.waitForIdle();
+      expect(delivered).toEqual(["evt-crash"]);
+      expect(store.statusOf("evt-crash")).toBe("completed");
+
+      const replay = await monitor.admit(rawEvent(event));
+      expect(replay.kind).toBe("durable");
+      if (replay.kind === "durable") expect(replay.queueResult.duplicate).toBe(true);
+      await monitor.waitForIdle();
+      expect(delivered).toEqual(["evt-crash"]);
+    } finally {
+      await monitor.stop();
+    }
+  });
+
+  it("proves the queue append completes before the route writes HTTP 200", async () => {
+    const store = createTestIngressQueue();
+    const codec = createCliqIngressPayloadCodec();
+    const order: string[] = [];
+    const monitor = createChannelIngressMonitor({
+      queue: {
+        ...store.queue,
+        enqueue: async (...args: Parameters<typeof store.queue.enqueue>) => {
+          order.push("append");
+          return store.queue.enqueue(...args);
+        },
+      },
+      inspect: (raw: CliqIngressRawEvent) => resolveCliqIngressFacts(raw.parsed),
+      payload: codec,
+      deliver: async () => ({ kind: "completed" as const }),
+      pollIntervalMs: 20,
+      retention: "standard" as const,
+      drain: { resolveNonRetryableFailure: resolveCliqIngressNonRetryableFailure },
+      admissionMode: "while-running" as const,
+    });
+    const registry = new CliqIngressMonitorRegistry({
+      isAvailable: () => true,
+      openQueue: () => store.queue,
+    });
+    registry.setForAccount("default", monitor as unknown as CliqIngressMonitor);
+    setCliqIngressGlobalsForTest({ registry });
+    const { webhook } = registerCliqPluginForTest({
+      config: createCliqTestConfig({
+        clientId: "id",
+        clientSecret: "secret",
+        botId: "bot",
+        botName: "openclaw-bot",
+        webhookSecret: "s3cr3t",
+      }),
+      runtime: createTestRuntimeChannel(async () => {}),
+    });
+    setCliqIngressGlobalsForTest({ registry });
+    monitor.start();
+    try {
+      const res = createMockServerResponse();
+      const originalEnd = res.end.bind(res);
+      res.end = (chunk) => {
+        order.push("ack");
+        originalEnd(chunk);
+      };
+      await webhook.handler(
+        createMockIncomingRequest("POST", createMentionDelugePayload(), {
+          "x-cliq-webhook-secret": "s3cr3t",
+        }),
+        res as unknown as never,
+      );
+      expect(res.statusCode).toBe(200);
+      expect(order[0]).toBe("append");
+      expect(order.indexOf("append")).toBeLessThan(order.indexOf("ack"));
+      expect(store.rows.size).toBe(1);
+    } finally {
+      await monitor.stop();
+      setCliqIngressGlobalsForTest(null);
+    }
+  });
+});
+
+describe("handler fallback when the drain cannot deliver (issue #262)", () => {
+  it("releases a delivery failure for retry and still delivers the next event", async () => {
+    const store = createTestIngressQueue();
+    const codec = createCliqIngressPayloadCodec();
+    const delivered: string[] = [];
+    const monitor = createChannelIngressMonitor({
+      queue: store.queue,
+      inspect: (raw: CliqIngressRawEvent) => resolveCliqIngressFacts(raw.parsed),
+      payload: codec,
+      deliver: async (raw: CliqIngressRawEvent) => {
+        if (raw.parsed.messageId === "evt-down") {
+          return { kind: "failed-retryable" as const, error: new Error("handler unavailable") };
+        }
+        delivered.push(raw.parsed.messageId);
+        return { kind: "completed" as const };
+      },
+      pollIntervalMs: 20,
+      retention: "standard" as const,
+      drain: { resolveNonRetryableFailure: resolveCliqIngressNonRetryableFailure },
+      admissionMode: "while-running" as const,
+    });
+    monitor.start();
+    try {
+      await monitor.admit(rawEvent(fakeParsed({ messageId: "evt-down" })));
+      await monitor.waitForIdle();
+      expect(store.statusOf("evt-down")).toBe("pending");
+      expect(delivered).toEqual([]);
+
+      await monitor.admit(
+        rawEvent(
+          fakeParsed({ messageId: "evt-next", text: "next", chatId: "chat-2", senderId: "user-2" }),
+        ),
+      );
+      await monitor.waitForIdle();
+      expect(delivered).toEqual(["evt-next"]);
+    } finally {
+      await monitor.stop();
+    }
   });
 });
 

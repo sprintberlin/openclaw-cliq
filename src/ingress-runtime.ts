@@ -33,6 +33,7 @@
  * retry loop, and no startup crash on that path.
  */
 
+import { existsSync, writeFileSync } from "node:fs";
 import {
   bindIngressLifecycleToReplyOptions,
   createChannelIngressError,
@@ -47,6 +48,23 @@ import type { CliqLogger } from "./logger.js";
 import type { CliqRuntime, ParsedCliqInbound } from "./inbound.js";
 
 const CLIQ_INGRESS_PAYLOAD_VERSION = 1;
+
+/**
+ * Inert unless `OPENCLAW_CLIQ_TEST_HOLD_DISPATCH_FILE` is set (only the
+ * isolated gateway smoke sets it, issue #262). While set, a claimed event
+ * writes `<file>.holding` and waits for `<file>` to appear BEFORE the turn
+ * is dispatched, i.e. before durable adoption — the deterministic latch the
+ * kill-restart proof needs. There is no endpoint and no behaviour change
+ * without the variable.
+ */
+async function holdDispatchForSmoke(messageId: string): Promise<void> {
+  const holdFile = process.env.OPENCLAW_CLIQ_TEST_HOLD_DISPATCH_FILE?.trim();
+  if (!holdFile) return;
+  writeFileSync(`${holdFile}.holding`, `${process.pid} ${messageId}\n`);
+  while (!existsSync(holdFile)) {
+    await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+  }
+}
 
 /**
  * Stable identity extracted from a parsed Cliq inbound by the monitor's
@@ -171,10 +189,25 @@ export function deserializeCliqIngressEvent(
 }
 
 /**
- * Non-retryable claim error factory used by the codec (Core error
- * contract: the drain dead-letters errors created this way instead of
- * retrying them).
+ * Non-retryable claim error factory used by the codec. Core's drain only
+ * dead-letters these when the monitor passes
+ * {@link resolveCliqIngressNonRetryableFailure} as `drain.resolveNonRetryableFailure`.
  */
+export function resolveCliqIngressNonRetryableFailure(
+  error: unknown,
+): { reason: string; message: string } | null {
+  const seen = new Set<unknown>();
+  let current = error;
+  while (current && !seen.has(current)) {
+    seen.add(current);
+    if (current instanceof CliqIngressPayloadError) {
+      return { reason: current.reason, message: current.message };
+    }
+    current = current instanceof Error ? current.cause : null;
+  }
+  return null;
+}
+
 export function createCliqIngressClaimError(
   kind: "invalid-version" | "identity-mismatch",
   claim: ChannelIngressQueueClaim<CliqIngressStoredPayload, unknown>,
@@ -442,6 +475,7 @@ export class CliqIngressMonitorRegistry {
         const bound = bindIngressLifecycleToReplyOptions(
           lifecycle,
         ).turnAdoptionLifecycle;
+        await holdDispatchForSmoke(raw.parsed.messageId);
         try {
           const outcome = await deliver(raw, bound);
           if (outcome.kind === "failed") {
@@ -454,6 +488,9 @@ export class CliqIngressMonitorRegistry {
       },
       pollIntervalMs: 250,
       retention: "standard",
+      drain: {
+        resolveNonRetryableFailure: resolveCliqIngressNonRetryableFailure,
+      },
       admissionMode: "while-running",
       abortSignal: options.abortSignal,
       createStoppedError: () =>

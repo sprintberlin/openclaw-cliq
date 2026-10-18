@@ -10,5 +10,5 @@
     "noUnusedParameters": false
   },
   "include": ["index.ts", "setup-entry.ts", "secret-contract-api.ts", "src/**/*.ts"],
-  "exclude": ["node_modules", "dist", "src/**/*.test.ts", "src/test-api.ts", "src/test-activity.ts", "scripts", "**/*.test.ts"]
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts", "src/test-api.ts", "src/test-activity.ts", "src/test-ingress-queue.ts", "scripts", "**/*.test.ts"]
 }
