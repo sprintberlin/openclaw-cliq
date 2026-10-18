@@ -1333,6 +1333,44 @@ OAuth flow.
 }
 ```
 
+## Distribution & trust status
+
+This is a **community** channel plugin. The supported install path is the
+ClawHub release (same verified tarball is also published to npm):
+
+```bash
+openclaw plugins install clawhub:@sprintcx/openclaw-cliq
+```
+
+What that install is and is not:
+
+- **Trusted for the durable-ingress runtime APIs.** OpenClaw Core exposes
+  `runtime.state.openChannelIngressQueue` / `openChannelIngressDrain` to every
+  loaded plugin — including community and locally linked installs (OpenClaw PR
+  [#165063](https://github.com/openclaw/openclaw/pull/165063); see the
+  [runtime docs](https://docs.openclaw.ai/plugins/sdk-runtime/state-and-system)).
+  The plugin's durable-before-ack ingest ([§4 `ackPolicy`](#4-openclaw-configuration))
+  therefore works on the ordinary ClawHub install — no official status required.
+  Authority-elevation gates in Core are unaffected and still apply.
+- **Not an OpenClaw-bundled "official" channel.** We asked for admission to the
+  official external-channel catalog (issue
+  [#263](https://github.com/sprintberlin/openclaw-cliq/issues/263) → upstream
+  [openclaw/openclaw#175516](https://github.com/openclaw/openclaw/issues/175516));
+  OpenClaw maintainers closed it: distribution and promotion of third-party
+  channels is ClawHub-scoped, and the protected APIs above no longer require
+  catalog admission. A future "vetted community"/recommended tier is tracked in
+  [openclaw/clawhub#2272](https://github.com/openclaw/clawhub/issues/2272).
+- **ClawHub review state.** Every release is published from a merged-`main` tag,
+  source-linked to the exact commit, and blocked from install surfaces until
+  ClawHub's automated security scan passes (`scanStatus: clean`; verification
+  tier `source-linked`, scope `artifact-only`). Publisher-level "Official"
+  status is a ClawHub staff decision outside this repository's control — see
+  `docs/REVIEW-DOSSIER.md` for the public evidence pack.
+- **Not conferrable by config.** No setting in this plugin (or `--force`,
+  `plugins.allow`, capability consent, ClawHub OIDC publishing) asserts or
+  grants any official trust; a local path install stays outside ClawHub review
+  metadata (see below).
+
 ## Install from a local checkout
 
 ClawHub is the published path. A local checkout is how this plugin is developed and rolled out today: clone, `npm ci`, typecheck, test, build, then link the working tree into the gateway.
