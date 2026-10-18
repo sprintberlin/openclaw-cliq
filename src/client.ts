@@ -341,6 +341,23 @@ export interface CliqChannelConfig {
   heartbeat?: {
     typing?: CliqHeartbeatTypingMode;
   };
+  /**
+   * Native-command authorization policy for UNMENTIONED always-on group
+   * turns (issue #316, `channels.cliq.commands`).
+   * - `"off"` (default): today's #285 behavior — unaddressed `/command`
+   *   chatter is ambient noise and never executes a session-level command.
+   * - `"allowlist"`: authorize the command only when the sender is a
+   *   trusted human — on `allowFrom` (incl. `*`), the SDK allow-from
+   *   store, or pairing-approved. Bot senders (`botId` / `botName` /
+   *   `ownSenderIds` / `selfSenderIds`) are never authorized in any mode,
+   *   so the #283/#285 bot ping-pong protection stays intact. DMs,
+   *   explicit @mentions, and replies to this bot remain authorized
+   *   regardless of this option (#91).
+   * Per-channel override: `groups.<ch>.commandUnmentioned`.
+   */
+  commands?: {
+    unmentioned?: "off" | "allowlist";
+  };
   allowFrom?: string[];
   dmPolicy?: string;
   groupPolicy?: string;
@@ -779,6 +796,12 @@ export interface ResolvedCliqAccount {
   groupPolicy?: string;
   groups?: Record<string, unknown>;
   trustedOrganization?: CliqTrustedOrganizationConfig;
+  /**
+   * Resolved #316 policy for native commands on unmentioned always-on group
+   * turns. `"off"` (default) keeps #285; `"allowlist"` authorizes only
+   * trusted human senders. Absent test/legacy shapes mean `"off"`.
+   */
+  commands?: { unmentioned: "off" | "allowlist" };
   selfSenderIds: string[];
   ackPolicy: CliqAckPolicy;
   /** True when the literal deprecated "immediate" value was configured (Doctor hint, #261). */
@@ -939,6 +962,10 @@ export function resolveCliqConfig(
        : undefined,
      ackPolicy,
      ackPolicyLegacyImmediate,
+    commands: {
+      unmentioned:
+        section?.commands?.unmentioned === "allowlist" ? "allowlist" : "off",
+    },
     selfSenderIds: section?.selfSenderIds ?? [],
     blockStreaming,
     streaming: {

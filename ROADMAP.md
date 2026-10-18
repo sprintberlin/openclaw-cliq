@@ -113,7 +113,8 @@ Mostly v3-independent; **dynamic agents** in particular is high-value and can be
 - **Command allowlist + admin bypass.** Restrict which slash commands non-admin users may run
   (e.g. allow `/help`, `/status`; deny `/model` switching), with an admin list that bypasses the
   gate. cliq enables native commands (`src/commands.ts`) but has no per-user command gate.
-  (Prior art: wecom.)
+  `commands.unmentioned` (#316) only decides whether an unmentioned always-on command runs at
+  all; it does not restrict *which* commands a sender may run. (Prior art: wecom.)
 - **Runtime quota / rate-limit awareness.** Track Zoho Cliq API usage locally and warn (logs /
   `openclaw status`) before hitting Zoho's rate limits; pairs naturally with the v3 consistent
   errors from Phase 2. Ref: v3 rate limits

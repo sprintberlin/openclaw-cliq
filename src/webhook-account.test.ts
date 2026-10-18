@@ -17,6 +17,18 @@ const CONFIGURED = cfgWith({
   botName: "MyBot",
 });
 
+describe("resolveCliqConfig — unmentioned command policy (#316)", () => {
+  it("keeps commands off by default and resolves the opt-in", () => {
+    expect(resolveCliqConfig(CONFIGURED).commands).toEqual({ unmentioned: "off" });
+    expect(resolveCliqConfig(cfgWith({
+      clientId: "id",
+      clientSecret: "secret",
+      botId: "bot",
+      commands: { unmentioned: "allowlist" },
+    })).commands).toEqual({ unmentioned: "allowlist" });
+  });
+});
+
 describe("isConfiguredCliqAccountShape", () => {
   it("accepts the resolved runtime account shape", () => {
     expect(isConfiguredCliqAccountShape(resolveCliqConfig(CONFIGURED))).toBe(true);

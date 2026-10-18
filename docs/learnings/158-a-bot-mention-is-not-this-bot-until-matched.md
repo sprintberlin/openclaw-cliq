@@ -6,4 +6,4 @@ Zoho's Mention handler fires only for **this** bot. The Message and Participatio
 
 The same split applies to reply/quote context: `isReplyToBot` must use the own-identity set, not the ignore list. Channel bot posts arrive with Cliq's internal `b-…` id, not the unique name, so operators must list that id in `ownSenderIds`.
 
-Unaddressed `/model` chatter on an always-on channel is ambient noise, not an authorized native command. DMs, `@this-bot /model`, and replies to this bot stay authorized (#91).
+Unaddressed `/model` chatter on an always-on channel is ambient noise, not an authorized native command. DMs, `@this-bot /model`, and replies to this bot stay authorized (#91). `commands.unmentioned: "allowlist"` (#316) is the only opt-in: it authorizes an unmentioned command for `allowFrom` / pairing-approved humans and re-checks the full self/ignore identity set first, so a listed bot never qualifies.

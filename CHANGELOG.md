@@ -11,6 +11,10 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Added
+
+- `commands.unmentioned: "allowlist"` (per channel `groups.<ch>.commandUnmentioned`) authorizes native slash commands on unmentioned always-on group turns for trusted human senders only: on `allowFrom` (including `*`), the CLI pairing store, or pairing-approved (#316). The default `"off"` keeps the #285 guard — unaddressed `/model` chatter still never executes a session-level command — and bot senders (`botId` / `botName` / `ownSenderIds` / `selfSenderIds`) are never authorized in any mode, so the #283/#285 bot ping-pong protection stays intact. DMs, explicit @mentions, and replies to the bot remain authorized regardless of this option (#91). A failing CLI pairing-store read fails closed (no authorization) and is reported as `commands-unmentioned-allowfrom`.
+
 ### Fixed
 
 - Inbound v6 `participation_handler` payloads that deliver `data.message` (or a top-level `message`) as a JSON string are normalized back into an object before parsing (#315). Channel messages without an @mention now reach the agent as plain text instead of raw JSON, and attachments carried inside that object — including voice notes — are preserved. A string that is not a JSON object is left untouched, and the existing object/`data` shapes are unchanged. No handler re-provisioning is needed.
