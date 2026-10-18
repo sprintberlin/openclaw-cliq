@@ -11,6 +11,14 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Changed
+
+- Distribution and trust documentation now matches upstream's decision on the official-catalog request (#263): OpenClaw closed [openclaw/openclaw#175516](https://github.com/openclaw/openclaw/issues/175516) as ClawHub-scoped because the durable-ingress APIs (`openChannelIngressQueue` / `openChannelIngressDrain`) are available to every loaded plugin since [openclaw/openclaw#165063](https://github.com/openclaw/openclaw/pull/165063). The README gains a "Distribution & trust status" section (community plugin, ClawHub is the supported install route, no config can assert official trust), and `docs/REVIEW-DOSSIER.md` is rewritten as a public evidence pack with a data-flow/threat model, a verification matrix, explicit non-covered areas, and the maintenance commitment.
+
+### Added
+
+- `assets/icon.png`, the bundled catalog icon ClawHub reads from the published archive (manifest icon URLs are ignored), so the next release lists custom artwork instead of the category glyph (#263).
+
 ### Fixed
 
 - Content-derived `syn:` message identities are no longer admitted to the durable ingress queue (#261, #114). A `syn:` id hashes sender, chat, and text, so a Core tombstone (retained for a day) would silently swallow a deliberate repeat of the same message. Only native message ids and Deluge-minted `evt:` ids are durable keys; `syn:` events keep the 60 s in-memory dedupe.
@@ -19,7 +27,7 @@ publish workflow extracts the matching section as the release notes (see
 ### Added
 
 - Doctor read-back now reports the installed handlers' serialization and failure-response contract evidence explicitly (#262): a pass names the current `handlerSchema` and the presence of the v6 delivery-failure fallback, and unreadable or stale contract evidence reads `skipped`, never `pass`. The gateway smoke's queue-recovery stage now also asserts the recovered event's durable queue record is completed/tombstoned in Core's state database before the HTTP replay.
-- Reliability proofs for the durable ingress pipeline (#262): unit tests drive the real Core monitor over a queue double to prove corrupt-row dead-lettering, queue recovery after a crash before turn adoption (exactly one recovered turn, HTTP replay produces none), queue-append-before-ack ordering through the live webhook route, and retryable-delivery release. The gateway smoke gains a kill-restart stage: it acks an event, kills the isolated gateway between the durable ack and turn adoption, restarts against the same state, and asserts exactly one recovered turn/reply plus no second turn on HTTP replay. The stage runs only on runtimes that expose `runtime.state.openChannelIngressQueue` (2026.10.x); gated runtimes report a skip instead of a false pass (#263 tracks the remaining gap). The latch is a test-only `OPENCLAW_CLIQ_TEST_HOLD_DISPATCH_FILE` env var with no production behaviour.
+- Reliability proofs for the durable ingress pipeline (#262): unit tests drive the real Core monitor over a queue double to prove corrupt-row dead-lettering, queue recovery after a crash before turn adoption (exactly one recovered turn, HTTP replay produces none), queue-append-before-ack ordering through the live webhook route, and retryable-delivery release. The gateway smoke gains a kill-restart stage: it acks an event, kills the isolated gateway between the durable ack and turn adoption, restarts against the same state, and asserts exactly one recovered turn/reply plus no second turn on HTTP replay. The stage runs only on runtimes that expose `runtime.state.openChannelIngressQueue` (2026.10.x); gated runtimes report a skip instead of a false pass. The latch is a test-only `OPENCLAW_CLIQ_TEST_HOLD_DISPATCH_FILE` env var with no production behaviour.
 
 ### Added
 

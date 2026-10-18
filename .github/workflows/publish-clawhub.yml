@@ -277,8 +277,8 @@ jobs:
 
   publish-npm:
     name: publish (npm)
-    # The official OpenClaw catalog pins an exact npm version plus its
-    # integrity hash, so the same tarball must also exist on npmjs.com.
+    # The same verified tarball is also published to npmjs.com with an SLSA
+    # provenance attestation.
     needs: verify
     runs-on: ubuntu-latest
     permissions:

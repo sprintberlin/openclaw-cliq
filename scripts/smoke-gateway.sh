@@ -774,7 +774,7 @@ echo "OK: no configured secrets present in gateway or mock logs"
 # a trusted-gated runtime keeps the pre-queue fallback and is reported as
 # skipped rather than as a pass.
 if grep -q "durable ingress queue unavailable" "$GW_LOG"; then
-  echo "SKIP: queue crash/restart proof needs a runtime exposing openChannelIngressQueue (issue #263)"
+  echo "SKIP: queue crash/restart proof needs a runtime exposing openChannelIngressQueue"
 else
   echo "==> [11b/12] Proving queue recovery across a kill before adoption"
   HOLD_FILE="$SMOKE_HOME/hold-dispatch"
