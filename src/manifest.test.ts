@@ -717,6 +717,55 @@ describe("cliq apiVersion manifest schema (issue #86)", () => {
   });
 });
 
+describe("cliq inbound media limit schema (issue #318)", () => {
+  const schemas = [manifest.configSchema, manifest.channelConfigs.cliq.schema];
+  const base = { clientId: "id", clientSecret: "secret", botId: "bot" };
+
+  it("accepts media.maxInboundMb at the root and in named accounts", () => {
+    for (const schema of schemas) {
+      expect(validate(schema, { ...base, media: { maxInboundMb: 30 } })).toEqual([]);
+      expect(validate(schema, {
+        ...base,
+        accounts: { alpha: { ...base, media: { maxInboundMb: 1.5 } } },
+      })).toEqual([]);
+    }
+  });
+
+  it("constrains the cap to a finite number between 1 and 100 MiB in all copies", () => {
+    for (const schema of schemas) {
+      for (const props of [
+        schema.properties,
+        (schema.properties?.accounts?.additionalProperties as JsonSchema)?.properties,
+      ]) {
+        const property = props?.media;
+        expect(property?.type).toBe("object");
+        expect(property?.additionalProperties).toBe(false);
+        const cap = property?.properties?.maxInboundMb as JsonSchema & { minimum?: number; maximum?: number };
+        expect(cap.type).toBe("number");
+        expect(cap.minimum).toBe(1);
+        expect(cap.maximum).toBe(100);
+      }
+      expect(validate(schema, { ...base, media: { bogus: true } }))
+        .toContain('$.media: must not have additional properties: "bogus"');
+    }
+  });
+
+  it("resolves configured and omitted limits for default and named accounts", () => {
+    const cfg = cfgWith({
+      ...base,
+      media: { maxInboundMb: 30 },
+      accounts: {
+        larger: { ...base, media: { maxInboundMb: 40 } },
+        inherited: { ...base },
+      },
+    });
+    expect(resolveCliqConfig(cfg).media?.maxInboundBytes).toBe(30 * 1024 * 1024);
+    expect(resolveCliqConfig(cfg, "larger").media?.maxInboundBytes).toBe(40 * 1024 * 1024);
+    expect(resolveCliqConfig(cfg, "inherited").media?.maxInboundBytes).toBe(30 * 1024 * 1024);
+    expect(resolveCliqConfig(cfgWith(base)).media?.maxInboundBytes).toBe(20 * 1024 * 1024);
+  });
+});
+
 describe("cliq enabled + bundled-channel shape audit (issue #125)", () => {
   const channelSchema = manifest.channelConfigs.cliq.schema;
   const topLevelSchema = manifest.configSchema;

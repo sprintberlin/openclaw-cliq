@@ -2382,6 +2382,62 @@ describe("dispatchCliqInbound — inbound media (issue #48)", () => {
     expect(capture.ctxPayload?.RawBody).toBe("look here");
   });
 
+  it("stages an attachment above 5 MiB under the account cap and passes that cap to saveMediaBuffer (issue #318)", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const client = makeMediaClient({
+      bytes: new Uint8Array(7 * 1024 * 1024),
+      contentType: "audio/mpeg",
+    });
+    const parsed = parseCliqWebhookPayload({
+      handler: "message",
+      user: { id: "u1", name: "Alice" },
+      chat: { id: "CT_dm_chat-B1" },
+      message: { id: "m-voice" },
+      content: { file: { id: "voice-big", name: "voice.mp3", type: "audio/mpeg" } },
+    } as CliqWebhookPayload);
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({ media: { maxInboundBytes: 30 * 1024 * 1024 } }),
+      parsed: parsed!,
+      client,
+    });
+    expect(saveMediaBufferMock).toHaveBeenCalledTimes(1);
+    expect(saveMediaBufferMock.mock.calls[0][3]).toBe(30 * 1024 * 1024);
+    expect(capture.ctxPayload?.MediaPaths).toEqual(["/mocked/media-store/inbound/voice.mp3"]);
+  });
+
+  it("rejects an attachment above the account cap through onError and still dispatches the turn (issue #318)", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const client = makeMediaClient({
+      bytes: new Uint8Array(3 * 1024 * 1024),
+      contentType: "audio/mpeg",
+    });
+    const parsed = parseCliqWebhookPayload({
+      handler: "message",
+      user: { id: "u1", name: "Alice" },
+      chat: { id: "CT_dm_chat-B1" },
+      message: { id: "m-voice" },
+      content: {
+        file: { id: "voice-big", name: "voice.mp3", type: "audio/mpeg" },
+        comment: "please listen",
+      },
+    } as CliqWebhookPayload);
+    const reported: string[] = [];
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({ media: { maxInboundBytes: 2 * 1024 * 1024 } }),
+      parsed: parsed!,
+      client,
+      onError: (_err, info) => reported.push(info.kind),
+    });
+    expect(reported).toEqual(["inbound-media-too-large"]);
+    expect(saveMediaBufferMock).not.toHaveBeenCalled();
+    expect(capture.ctxPayload?.MediaPaths).toBeUndefined();
+    expect(capture.ctxPayload?.RawBody).toBe("please listen");
+  });
+
   it("marks audio attachments as transcribed:false (runtime transcribes via media understanding)", async () => {
     const capture: { ctxPayload?: Record<string, unknown> } = {};
     const client = makeMediaClient({

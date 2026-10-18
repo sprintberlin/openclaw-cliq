@@ -488,11 +488,16 @@ export async function readCliqWebhookBody(
     headers?: IncomingMessage["headers"];
   },
   maxBytes?: number,
+  options: { multipartMaxBytes?: number } = {},
 ): Promise<CliqWebhookBodyReadResult> {
+  const multipartLimit = Math.max(
+    DEFAULT_MULTIPART_MAX_BYTES,
+    options.multipartMaxBytes ?? 0,
+  );
   const contentType = readHeaderValue(req.headers, "content-type") ?? "";
   let boundary = multipartBoundary(contentType);
   let effectiveMaxBytes = maxBytes
-    ?? (boundary ? DEFAULT_MULTIPART_MAX_BYTES : DEFAULT_JSON_MAX_BYTES);
+    ?? (boundary ? multipartLimit : DEFAULT_JSON_MAX_BYTES);
   return await new Promise((resolve) => {
     let resolved = false;
     const done = (result: CliqWebhookBodyReadResult) => {
@@ -510,7 +515,7 @@ export async function readCliqWebhookBody(
         sniffPrefix = Buffer.concat([sniffPrefix, chunk.subarray(0, remaining)]);
         boundary = sniffCliqMultipartBoundary(sniffPrefix);
         if (boundary && maxBytes === undefined) {
-          effectiveMaxBytes = DEFAULT_MULTIPART_MAX_BYTES;
+          effectiveMaxBytes = multipartLimit;
         }
       }
       total += chunk.length;

@@ -16,6 +16,7 @@ import type { CliqButton } from "./presentation.js";
 import type { CliqTrustedOrganizationConfig } from "./trusted-org.js";
 import { cliqCardToV3MessageCard, type V3CardSectionInput, type V3CardSlideInput } from "./v3-card.js";
 import { resolveCliqSecretString } from "./secret-resolve.js";
+import { resolveCliqInboundMediaMaxBytes } from "./media-limits.js";
 import { paginateList } from "./pagination.js";
 import {
   appendCliqDataCenterHint as appendDcHint,
@@ -328,6 +329,9 @@ export interface CliqChannelConfig {
    */
   replyContextRecovery?: {
     enabled?: boolean;
+  };
+  media?: {
+    maxInboundMb?: number;
   };
   /**
    * Native v3 typing activity policy (issue #222).
@@ -839,6 +843,7 @@ export interface ResolvedCliqAccount {
   inboundCatchup?: { enabled: boolean; limit: number };
   /** Effective opt-in reply-context recovery (issue #230). Disabled unless configured. */
   replyContextRecovery?: { enabled: boolean };
+  media?: { maxInboundBytes: number };
   /** Effective native typing policy; defaults to `"dm"` (issue #222). */
   heartbeatTyping?: CliqHeartbeatTypingMode;
   /** Resolved REST API base (EU default unless overridden in config). */
@@ -977,6 +982,9 @@ export function resolveCliqConfig(
     inboundCatchup: normalizeCliqInboundCatchupConfig(section?.inboundCatchup),
     replyContextRecovery: {
       enabled: section?.replyContextRecovery?.enabled === true,
+    },
+    media: {
+      maxInboundBytes: resolveCliqInboundMediaMaxBytes(section?.media?.maxInboundMb),
     },
     heartbeatTyping:
       section?.heartbeat?.typing === "off"
