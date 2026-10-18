@@ -1669,6 +1669,7 @@ export async function dispatchCliqInbound(params: {
       attachments: resolvedAttachments,
       client,
       messageId: parsed.messageId || undefined,
+      maxBytes: account.media?.maxInboundBytes,
       onError: (err, info) => onError?.(err, { kind: info.kind }),
     });
     inboundMedia = prepared.media;

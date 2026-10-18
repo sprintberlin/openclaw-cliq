@@ -208,6 +208,18 @@
           }
         }
       },
+      "media": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "maxInboundMb": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Per-attachment inbound size limit in MiB (fractions allowed). Attachments up to this size are staged into the OpenClaw media store and reach the agent; larger ones are rejected per-file with an inbound-media-too-large skip. Defaults to 20 MiB; the historical media-store default was 5 MiB."
+          }
+        }
+      },
       "replyContextRecovery": {
         "type": "object",
         "additionalProperties": false,
@@ -949,6 +961,18 @@
                   "type": "integer",
                   "minimum": 1,
                   "maximum": 50
+                }
+              }
+            },
+            "media": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "maxInboundMb": {
+                  "type": "number",
+                  "minimum": 1,
+                  "maximum": 100,
+                  "description": "Per-attachment inbound size limit in MiB (fractions allowed). Attachments up to this size are staged into the OpenClaw media store and reach the agent; larger ones are rejected per-file with an inbound-media-too-large skip. Defaults to 20 MiB; the historical media-store default was 5 MiB."
                 }
               }
             },
@@ -1756,6 +1780,18 @@
               }
             }
           },
+          "media": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "maxInboundMb": {
+                "type": "number",
+                "minimum": 1,
+                "maximum": 100,
+                "description": "Per-attachment inbound size limit in MiB (fractions allowed). Attachments up to this size are staged into the OpenClaw media store and reach the agent; larger ones are rejected per-file with an inbound-media-too-large skip. Defaults to 20 MiB; the historical media-store default was 5 MiB."
+              }
+            }
+          },
           "replyContextRecovery": {
             "type": "object",
             "additionalProperties": false,
@@ -2500,6 +2536,18 @@
                     }
                   }
                 },
+                "media": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "maxInboundMb": {
+                      "type": "number",
+                      "minimum": 1,
+                      "maximum": 100,
+                      "description": "Per-attachment inbound size limit in MiB (fractions allowed). Attachments up to this size are staged into the OpenClaw media store and reach the agent; larger ones are rejected per-file with an inbound-media-too-large skip. Defaults to 20 MiB; the historical media-store default was 5 MiB."
+                    }
+                  }
+                },
                 "replyContextRecovery": {
                   "type": "object",
                   "additionalProperties": false,
@@ -3135,6 +3183,9 @@
         "refreshToken": {
           "label": "User-context OAuth refresh token (required for channel posts / edits)",
           "sensitive": true
+        },
+        "media": {
+          "label": "Inbound attachment limit (media.maxInboundMb, MiB; default 20, max 100)"
         },
         "allowFrom": {
           "label": "Allowed senders (Zoho Cliq user ids)"

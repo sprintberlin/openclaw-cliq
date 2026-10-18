@@ -380,6 +380,55 @@ ${JSON.stringify(payload)}
     expect(request.destroyed).toBe(true);
   });
 
+  it("raises the multipart body limit above 25 MiB only when a larger attachment cap is configured (issue #318)", async () => {
+    const boundary = "very-big-file";
+    const file = Buffer.alloc(26 * 1024 * 1024, 1);
+    const body = Buffer.concat([
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="payload"\r\nContent-Type: application/json\r\n\r\n{"handler":"message","message":"hi"}\r\n`,
+      ),
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="big.bin"\r\nContent-Type: application/octet-stream\r\n\r\n`,
+      ),
+      file,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]);
+    const headers = { "content-type": `multipart/form-data; boundary=${boundary}` };
+
+    const defaultRequest = new FakeRequest(headers);
+    const defaultPending = readCliqWebhookBody(defaultRequest as never);
+    defaultRequest.emit("data", body);
+    await expect(defaultPending).resolves.toEqual({ ok: false, error: "payload too large" });
+
+    const raisedRequest = new FakeRequest(headers);
+    const raisedPending = readCliqWebhookBody(raisedRequest as never, undefined, {
+      multipartMaxBytes: 30 * 1024 * 1024,
+    });
+    raisedRequest.emit("data", body);
+    raisedRequest.emit("end");
+    const result = await raisedPending;
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.attachments?.[0]?.bytes?.byteLength).toBe(file.length);
+  });
+
+  it("never lowers the multipart limit below the historical 25 MiB or widens the JSON limit", async () => {
+    const request = new FakeRequest({ "content-type": "application/json" });
+    const pending = readCliqWebhookBody(request as never, undefined, {
+      multipartMaxBytes: 100 * 1024 * 1024,
+    });
+    request.emit("data", Buffer.from(`{"pad":"${"x".repeat(1024 * 1024)}"}`));
+    request.emit("end");
+    await expect(pending).resolves.toEqual({ ok: false, error: "payload too large" });
+
+    const small = new FakeRequest({ "content-type": "multipart/form-data; boundary=tiny" });
+    const smallPending = readCliqWebhookBody(small as never, undefined, { multipartMaxBytes: 1 });
+    small.emit("data", Buffer.alloc(24 * 1024 * 1024, 1));
+    small.emit("end");
+    const smallResult = await smallPending;
+    expect(smallResult).not.toEqual({ ok: false, error: "payload too large" });
+  });
+
   it("allows a multipart body above 1 MiB under the file aggregate limit", async () => {
     const boundary = "big-file";
     const file = Buffer.alloc(1024 * 1024 + 4096, 1);

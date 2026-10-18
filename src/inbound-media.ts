@@ -1,6 +1,7 @@
 import { saveMediaBuffer } from "openclaw/plugin-sdk/media-store";
 import type { CliqChatMessageRef, CliqClient } from "./client.js";
 import type { CliqInboundAttachment } from "./attachment-normalization.js";
+import { DEFAULT_CLIQ_INBOUND_MEDIA_MAX_BYTES, formatCliqMediaMb } from "./media-limits.js";
 
 /**
  * A parsed inbound file attachment (image / file / voice) extracted from a
@@ -104,6 +105,7 @@ export interface PrepareInboundMediaParams {
     Partial<Pick<CliqClient, "downloadAttachmentUrl">>;
   /** The inbound message id (attached to each media fact for correlation). */
   messageId?: string;
+  maxBytes?: number;
   /** Per-attachment failure sink — never throws; a failed download degrades to no media for that attachment. */
   onError?: (err: unknown, info: { kind: string; fileId: string }) => void;
 }
@@ -133,6 +135,7 @@ export async function prepareInboundMedia(
 ): Promise<PreparedInboundMedia> {
   const media: CliqInboundMediaFacts[] = [];
   const paths: string[] = [];
+  const maxBytes = params.maxBytes ?? DEFAULT_CLIQ_INBOUND_MEDIA_MAX_BYTES;
   for (const attachment of params.attachments) {
     const fileId = attachment.fileId?.trim();
     const downloadUrl = attachment.downloadUrl?.trim();
@@ -156,6 +159,15 @@ export async function prepareInboundMedia(
             : (() => {
                 throw new Error("cliq: attachment URL downloader is unavailable");
               })();
+      if (fetched.bytes.byteLength > maxBytes) {
+        params.onError?.(
+          new Error(
+            `cliq: attachment "${attachment.fileName ?? "?"}" is ${formatCliqMediaMb(fetched.bytes.byteLength)}, which exceeds the ${formatCliqMediaMb(maxBytes)} inbound limit (channels.cliq.media.maxInboundMb)`,
+          ),
+          { kind: "inbound-media-too-large", fileId: fileId ?? "" },
+        );
+        continue;
+      }
       const contentType = fetched.contentType
         ?? attachment.mimeType
         ?? inferInboundMimeType(attachment.fileName);
@@ -164,7 +176,7 @@ export async function prepareInboundMedia(
         Buffer.from(fetched.bytes),
         contentType,
         "inbound",
-        undefined,
+        maxBytes,
         attachment.fileName ?? undefined,
       );
       paths.push(saved.path);

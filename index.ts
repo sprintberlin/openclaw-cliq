@@ -55,6 +55,10 @@ import {
 } from "./src/participation.js";
 import { resolveCliqClient } from "./src/runtime-api.js";
 import {
+  CLIQ_MULTIPART_ENVELOPE_BYTES,
+  CLIQ_MULTIPART_OVERSIZE_HEADROOM_BYTES,
+} from "./src/media-limits.js";
+import {
   buildCliqProbeResponse,
   parseCliqProbePayload,
 } from "./src/webhook-probe.js";
@@ -431,7 +435,13 @@ export default defineChannelPluginEntry({
           return true;
         }
 
-        const body = await readCliqWebhookBody(req);
+        const body = await readCliqWebhookBody(req, undefined, {
+          multipartMaxBytes: account.media
+            ? account.media.maxInboundBytes
+              + CLIQ_MULTIPART_OVERSIZE_HEADROOM_BYTES
+              + CLIQ_MULTIPART_ENVELOPE_BYTES
+            : undefined,
+        });
         if (!body.ok) {
           // Issue #224: this branch used to be the last silent drop on the
           // inbound path. An authenticated POST whose body is empty or

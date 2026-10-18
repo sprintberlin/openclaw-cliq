@@ -27,6 +27,34 @@ describe("validateGeneratedCliqConfig (issue #95)", () => {
     expect(await resolveJsonSchemaValidator()).toBeTypeOf("function");
   });
 
+  it("accepts media.maxInboundMb through the real OpenClaw schema runtime (issue #318)", async () => {
+    const result = await validateGeneratedCliqConfig({
+      ...BASE,
+      clientSecret: ENV_REF,
+      webhookSecret: "wh",
+      media: { maxInboundMb: 30 },
+      accounts: { alpha: { ...BASE, clientSecret: ENV_REF, media: { maxInboundMb: 1.5 } } },
+    });
+    expect(result.valid).toBe(true);
+
+    const outOfRange = await validateGeneratedCliqConfig({
+      ...BASE,
+      clientSecret: ENV_REF,
+      webhookSecret: "wh",
+      media: { maxInboundMb: 250 },
+    });
+    expect(outOfRange.valid).toBe(false);
+    expect(outOfRange.issues.join(" ")).toMatch(/maxInboundMb/);
+
+    const unknown = await validateGeneratedCliqConfig({
+      ...BASE,
+      clientSecret: ENV_REF,
+      webhookSecret: "wh",
+      media: { maxBytes: 1024 },
+    });
+    expect(unknown.valid).toBe(false);
+  });
+
   it("accepts a canonical structured SecretRef", async () => {
     const result = await validateGeneratedCliqConfig({
       ...BASE,

@@ -24,6 +24,10 @@ import {
   mediaKindFromMime,
   type CliqInboundAttachment,
 } from "./inbound-media.js";
+import {
+  DEFAULT_CLIQ_INBOUND_MEDIA_MAX_BYTES,
+  resolveCliqInboundMediaMaxBytes,
+} from "./media-limits.js";
 
 vi.mock("openclaw/plugin-sdk/media-store", () => ({
   saveMediaBuffer: saveMediaBufferMock,
@@ -214,6 +218,134 @@ describe("prepareInboundMedia", () => {
       "/api/v2/attachments/download?token=opaque",
     );
     expect(media[0]?.kind).toBe("audio");
+  });
+
+  it("passes the configured cap as the saveMediaBuffer maxBytes argument (issue #318)", async () => {
+    const downloadAttachment = vi.fn(async () => ({
+      bytes: new Uint8Array(8 * 1024 * 1024),
+      contentType: "audio/mpeg",
+    }));
+    await prepareInboundMedia({
+      attachments: [{ fileId: "voice-big", fileName: "voice.mp3" }],
+      client: { downloadAttachment },
+      maxBytes: 30 * 1024 * 1024,
+    });
+    expect(saveMediaBufferMock).toHaveBeenCalledTimes(1);
+    expect(saveMediaBufferMock.mock.calls[0][3]).toBe(30 * 1024 * 1024);
+  });
+
+  it("defaults the saveMediaBuffer maxBytes argument to the 20 MiB plugin cap", async () => {
+    const downloadAttachment = vi.fn(async () => ({
+      bytes: new Uint8Array(6 * 1024 * 1024),
+      contentType: "image/png",
+    }));
+    await prepareInboundMedia({
+      attachments: [{ fileId: "img", fileName: "photo.png" }],
+      client: { downloadAttachment },
+    });
+    expect(saveMediaBufferMock.mock.calls[0][3]).toBe(
+      DEFAULT_CLIQ_INBOUND_MEDIA_MAX_BYTES,
+    );
+  });
+
+  it("stages an attachment above 5 MiB but below the configured cap (issue #318)", async () => {
+    const downloadAttachment = vi.fn(async () => ({
+      bytes: new Uint8Array(8 * 1024 * 1024),
+      contentType: "audio/mpeg",
+    }));
+    const { media, paths } = await prepareInboundMedia({
+      attachments: [{ fileId: "voice-1", fileName: "voice.mp3", mimeType: "audio/mpeg" }],
+      client: { downloadAttachment },
+      maxBytes: 30 * 1024 * 1024,
+      messageId: "m1",
+    });
+    expect(media).toHaveLength(1);
+    expect(paths).toHaveLength(1);
+    expect(media[0]).toMatchObject({ kind: "audio", messageId: "m1" });
+    expect(saveMediaBufferMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an attachment above the cap through onError with a clear reason (issue #318)", async () => {
+    const downloadAttachment = vi.fn(async () => ({
+      bytes: new Uint8Array(9 * 1024 * 1024),
+      contentType: "audio/mpeg",
+    }));
+    const reported: { kind: string; fileId: string }[] = [];
+    const errors: string[] = [];
+    const { media, paths } = await prepareInboundMedia({
+      attachments: [{ fileId: "voice-huge", fileName: "voice.mp3" }],
+      client: { downloadAttachment },
+      maxBytes: 8 * 1024 * 1024,
+      onError: (err, info) => {
+        reported.push(info);
+        errors.push(String(err));
+      },
+    });
+    expect(media).toHaveLength(0);
+    expect(paths).toHaveLength(0);
+    expect(saveMediaBufferMock).not.toHaveBeenCalled();
+    expect(reported).toEqual([{ kind: "inbound-media-too-large", fileId: "voice-huge" }]);
+    expect(errors[0]).toMatch(/voice\.mp3/);
+    expect(errors[0]).toMatch(/exceeds the 8 MB inbound limit/);
+    expect(errors[0]).toMatch(/media\.maxInboundMb/);
+  });
+
+  it("rejects oversize multipart-forwarded bytes without staging them", async () => {
+    const reported: { kind: string; fileId: string }[] = [];
+    const { media } = await prepareInboundMedia({
+      attachments: [{
+        bytes: new Uint8Array(2 * 1024 * 1024),
+        fileName: "voice-sample.wav",
+        mimeType: "audio/wav",
+      }],
+      client: { downloadAttachment: vi.fn() },
+      maxBytes: 1 * 1024 * 1024,
+      onError: (_err, info) => reported.push(info),
+    });
+    expect(media).toHaveLength(0);
+    expect(saveMediaBufferMock).not.toHaveBeenCalled();
+    expect(reported).toEqual([{ kind: "inbound-media-too-large", fileId: "" }]);
+  });
+
+  it("continues staging later attachments after an oversize one", async () => {
+    const downloadAttachment = vi.fn(async (fileId: string) => ({
+      bytes: new Uint8Array(fileId === "big" ? 8 * 1024 * 1024 : 16),
+      contentType: "image/png",
+    }));
+    const reported: { kind: string; fileId: string }[] = [];
+    const { media } = await prepareInboundMedia({
+      attachments: [
+        { fileId: "big", fileName: "big.png" },
+        { fileId: "small", fileName: "small.png" },
+      ],
+      client: { downloadAttachment },
+      maxBytes: 5 * 1024 * 1024,
+      onError: (_err, info) => reported.push(info),
+    });
+    expect(media).toHaveLength(1);
+    expect(saveMediaBufferMock).toHaveBeenCalledTimes(1);
+    expect(saveMediaBufferMock.mock.calls[0][3]).toBe(5 * 1024 * 1024);
+    expect(saveMediaBufferMock.mock.calls[0][4]).toBe("small.png");
+    expect(reported).toEqual([{ kind: "inbound-media-too-large", fileId: "big" }]);
+  });
+});
+
+describe("resolveCliqInboundMediaMaxBytes (issue #318)", () => {
+  it("returns the 20 MiB default for unset, non-finite, and non-number values", () => {
+    expect(resolveCliqInboundMediaMaxBytes(undefined)).toBe(20 * 1024 * 1024);
+    expect(resolveCliqInboundMediaMaxBytes(null)).toBe(20 * 1024 * 1024);
+    expect(resolveCliqInboundMediaMaxBytes(Number.NaN)).toBe(20 * 1024 * 1024);
+    expect(resolveCliqInboundMediaMaxBytes("30")).toBe(20 * 1024 * 1024);
+  });
+
+  it("maps configured MiB values to bytes, including fractions", () => {
+    expect(resolveCliqInboundMediaMaxBytes(30)).toBe(30 * 1024 * 1024);
+    expect(resolveCliqInboundMediaMaxBytes(1.5)).toBe(1.5 * 1024 * 1024);
+  });
+
+  it("clamps to the documented floor and ceiling", () => {
+    expect(resolveCliqInboundMediaMaxBytes(0.1)).toBe(1 * 1024 * 1024);
+    expect(resolveCliqInboundMediaMaxBytes(1000)).toBe(100 * 1024 * 1024);
   });
 });
 
