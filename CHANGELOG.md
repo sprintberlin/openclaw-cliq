@@ -13,6 +13,7 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- Content-derived `syn:` message identities are no longer admitted to the durable ingress queue (#261, #114). A `syn:` id hashes sender, chat, and text, so a Core tombstone (retained for a day) would silently swallow a deliberate repeat of the same message. Only native message ids and Deluge-minted `evt:` ids are durable keys; `syn:` events keep the 60 s in-memory dedupe.
 - Corrupt or identity-mismatched durable-queue records are now dead-lettered by Core's ingress drain instead of being retried forever: the monitor passes `drain.resolveNonRetryableFailure` so the codec's non-retryable claim errors (`invalid-version`, `identity-mismatch`) reach the dead-letter path. One poison record can no longer block its lane (#262).
 
 ### Added

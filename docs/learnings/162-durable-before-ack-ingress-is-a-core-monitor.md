@@ -31,3 +31,9 @@ of growing its own queue, retry counters, or retention loops.
 - Installs whose runtime exposes no `openChannelIngressQueue` keep the
   pre-queue behaviour with one diagnostic; the absence must not crash or
   restart-loop the account.
+- A `syn:` id is content-derived (sender + chat + text), so two deliberate
+  identical messages share it. Core's standard retention keeps a completed
+  tombstone for a day, far longer than the 60 s memory TTL that makes
+  repeats usable (#114), so `syn:` events must stay off the durable queue
+  and keep the short-TTL in-memory claim. Only a native message id or a
+  Deluge-minted `evt:` id is a durable key.
