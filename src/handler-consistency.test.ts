@@ -631,6 +631,51 @@ describe("handler-read classification (issue #249)", () => {
     expect(result.detail).not.toMatch(/not provisioned yet/i);
   });
 
+  it("reports installed serialization/failure-response contract evidence on pass (issue #262)", () => {
+    const script = (type: string) =>
+      type === "message_handler" || type === "mention_handler"
+        ? `webhookUrl = "${HOOK_URL}";\nwebhookSecret = "${SECRET}";\npayload.put("handlerSchema", "v6");\npayload.put("eventId", eventId);\nresponse.put("eventId", eventId);\ndelivery = invokeUrl [url: webhookUrl type: POST body: payload headers: headers detailed: true];\nif (delivery.get("responseCode") < 200 || delivery.get("responseCode") > 299)\n{\n    response = Map();\n    response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");\n}\ntry\n{\n}\ncatch (e)\n{\n    response = Map();\n    response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");\n}`
+        : "";
+    const result = checkCliqHandlerConsistency({
+      handlers: [
+        { type: "message_handler", script: script("message_handler") },
+        { type: "mention_handler", script: script("mention_handler") },
+      ],
+      configSecret: SECRET,
+      expectedWebhookUrl: HOOK_URL,
+    });
+    expect(result.status).toBe("pass");
+    expect(result.detail).toMatch(/serialization\/failure-response contract: present \(handlerSchema v6, failure fallback present\)/);
+    // The evidence names contracts, never script bodies or secrets.
+    expect(result.detail).not.toContain("invokeUrl [url:");
+    expect(result.detail).not.toContain(SECRET);
+  });
+
+  it("never reports pass when the failure-response contract is stale (issue #262)", () => {
+    // Schema is current but the v6 fallback constructs are absent.
+    const staleScript = `webhookUrl = "${HOOK_URL}";\nwebhookSecret = "${SECRET}";\npayload.put("handlerSchema", "v6");\npayload.put("eventId", eventId);\nresponse.put("eventId", eventId);\ndelivery = invokeUrl [url: webhookUrl type: POST body: payload headers: headers detailed: true];`;
+    const result = checkCliqHandlerConsistency({
+      handlers: [{ type: "message_handler", script: staleScript }],
+      configSecret: SECRET,
+      expectedWebhookUrl: HOOK_URL,
+    });
+    expect(result.status).not.toBe("pass");
+  });
+
+  it("reports unreadable contract evidence as skipped, not pass (issue #262)", () => {
+    const okScript = `webhookUrl = "${HOOK_URL}";\nwebhookSecret = "${SECRET}";\npayload.put("handlerSchema", "v6");\npayload.put("eventId", eventId);\nresponse.put("eventId", eventId);\ndelivery = invokeUrl [url: webhookUrl type: POST body: payload headers: headers detailed: true];\nif (delivery.get("responseCode") < 200 || delivery.get("responseCode") > 299)\n{\n    response = Map();\n    response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");\n}\ntry\n{\n}\ncatch (e)\n{\n    response = Map();\n    response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");\n}`;
+    const result = checkCliqHandlerConsistency({
+      handlers: [
+        { type: "message_handler", script: okScript },
+        { type: "mention_handler", error: "read failed: execution_handler_not_found" },
+      ],
+      configSecret: SECRET,
+      expectedWebhookUrl: HOOK_URL,
+    });
+    expect(result.status).toBe("skipped");
+    expect(result.detail).toMatch(/could not be completely compared/);
+  });
+
   it("prefers the unprovisioned diagnosis when one handler exists and the other does not", () => {
     const result = checkCliqHandlerConsistency({
       handlers: [

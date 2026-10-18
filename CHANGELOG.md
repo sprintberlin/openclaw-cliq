@@ -17,6 +17,7 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Added
 
+- Doctor read-back now reports the installed handlers' serialization and failure-response contract evidence explicitly (#262): a pass names the current `handlerSchema` and the presence of the v6 delivery-failure fallback, and unreadable or stale contract evidence reads `skipped`, never `pass`. The gateway smoke's queue-recovery stage now also asserts the recovered event's durable queue record is completed/tombstoned in Core's state database before the HTTP replay.
 - Reliability proofs for the durable ingress pipeline (#262): unit tests drive the real Core monitor over a queue double to prove corrupt-row dead-lettering, queue recovery after a crash before turn adoption (exactly one recovered turn, HTTP replay produces none), queue-append-before-ack ordering through the live webhook route, and retryable-delivery release. The gateway smoke gains a kill-restart stage: it acks an event, kills the isolated gateway between the durable ack and turn adoption, restarts against the same state, and asserts exactly one recovered turn/reply plus no second turn on HTTP replay. The stage runs only on runtimes that expose `runtime.state.openChannelIngressQueue` (2026.10.x); gated runtimes report a skip instead of a false pass (#263 tracks the remaining gap). The latch is a test-only `OPENCLAW_CLIQ_TEST_HOLD_DISPATCH_FILE` env var with no production behaviour.
 
 ### Added
