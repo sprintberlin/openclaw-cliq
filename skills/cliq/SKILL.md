@@ -22,7 +22,7 @@ Source repository: [sprintberlin/openclaw-cliq](https://github.com/sprintberlin/
 
 1. **Inbound requires an open HTTP ingress route**: Zoho Cliq delivers messages through Deluge webhook POST requests to `/cliq/webhook`. Unlike Telegram (polling) or Discord (outbound gateway WebSocket), the host running OpenClaw must expose a reachable HTTPS endpoint (Cloudflare Tunnel, reverse proxy, or ngrok).
 2. **Never expose credentials in reports or issues**: Never log, print, commit, or include `clientSecret`, `refreshToken`, `webhookSecret`, OAuth authorization codes, or user message content in GitHub issues, transcripts, or bug reports.
-3. **File an issue before giving up**: Any agent or operator working around a Cliq failure (fallback sent instead of edit, dropped inbound, `Couldn't process that message`, doctor non-zero exit, unexpected 4xx/5xx) MUST file a GitHub issue on `sprintberlin/openclaw-cliq` in the same task, before reporting "done" or "worked around". A workaround without an issue is an incomplete task. This applies even when the defect is not fully understood: file what you observed, mark reproduction steps as unknown, and link the failing command/output (redacted).
+3. **Every bug and every improvement idea gets a GitHub issue** on `sprintberlin/openclaw-cliq`, filed in the same task. No issue, no done. See "Issue Rule" below.
 
 ## First-Time Setup & Provisioning
 
@@ -113,64 +113,17 @@ For smooth interactive progress across all model tiers, configure streaming prog
 
 *Note:* `session.dmScope: "per-channel-peer"` is required whenever more than one person can DM the bot, ensuring isolated conversation state per user.
 
-## Defect Reporting Protocol for Agents and Operators
+## Issue Rule
 
-When an agent or automated worker interacts with Zoho Cliq and encounters an unexpected failure, the task is **not complete** until the root cause is determined and any genuine plugin defect is reported to the repository.
-
-**Escalation rule (when in doubt, file):** if you spent more than one retry cycle on a failure or routed around it, file an issue. Duplicates are cheap; silent gaps are not. Maintainers close duplicates without penalty. Filing is part of the Definition of Done, not an optional courtesy: a closed task that hid a plugin defect is reopened work later, usually at a worse time.
-
-**Fast path for agents with `gh`:** one command, then paste the body template below.
+Everything that does not work or could be better gets a GitHub issue on `sprintberlin/openclaw-cliq` — bugs and improvement ideas alike, from agents, operators, and humans. File it in the same task, before reporting done. Unsure whether it is a defect? File anyway; duplicates are closed without fuss.
 
 ```bash
-gh issue create --repo sprintberlin/openclaw-cliq --label bug   --title "bug(<area>): <one line>" --body-file /tmp/cliq-issue.md
+gh issue create --repo sprintberlin/openclaw-cliq --label bug \
+  --title "<one line>" --body "<what happened / what you expected / environment>"
 ```
 
-Body template (fill what you know; unknown is an acceptable value):
+Use label `enhancement` for improvement ideas.
 
-```markdown
-**What happened:**
-**Steps to reproduce:** (unknown counts, say what you were doing)
-**Expected / Actual:**
-**Evidence (redacted):** command + exit code / HTTP status + error code / `openclaw cliq doctor --json` schemaVersion
-**Environment:** plugin version, OpenClaw version, Node version
-**Workaround used:** yes/no, which
-```
+Not an issue on our side (fix locally instead): expired OAuth tokens, network/gateway down, Zoho rate limiting (429), missing Deluge handlers in Zoho.
 
-### What is a Defect (File an Issue)
-File an issue the moment you observe one of these — do not wait for a second reproduction:
-- **Deluge Inbound Parser Failures**: Webhook calls returning 400 with `parser_rejected` or dropping valid text, files, or attachments due to unexpected framing or missing multipart headers.
-- **API Status Misclassifications**: Unexpected error codes from Zoho REST endpoints (e.g. unhandled 4xx/5xx envelopes) causing false retries or unhandled exceptions.
-- **CLI / Doctor Crashes**: `openclaw cliq doctor`, `webhook-preflight`, `provision`, or `print-handlers` exiting non-zero, with stack traces or schema validation errors.
-- **Contract Mismatches**: Plugin configuration rejected by `openclaw config validate` or channel options ignored during message dispatch.
-- **Silent degradation**: any failure you worked around (fallback path taken, message lost, placeholder never replaced) even without a clean reproduction.
-
-### What is NOT a Defect (Do NOT File an Issue)
-- Invalid or expired OAuth tokens (`oauthtoken_scope_invalid`, `invalid_client`).
-- Network unreachable, Cloudflare Access blocking the webhook (403), or local gateway down.
-- Rate limiting from Zoho (HTTP 429) backoff behavior.
-- Missing Deluge handlers on Zoho's side.
-
-### How to File an Issue
-
-Contributions are explicitly welcome from humans and agents. Filing and linking every reproducible plugin defect is part of the task's Definition of Done. Use the native GitHub CLI; no wrapper script is required:
-
-```bash
-REPO=sprintberlin/openclaw-cliq
-gh issue list --repo "$REPO" --state open --search "<terms>"   # check for duplicates first
-gh issue create \
-  --repo "$REPO" \
-  --label "bug" \
-  --title "bug(inbound): <short description>" \
-  --body-file /tmp/issue.md   # What happened / Steps to reproduce / Expected / Actual / Version (`openclaw cliq doctor --json` schemaVersion)
-```
-
-Check for duplicates first (`gh issue list --search "<terms>"`); an existing open issue gets a `+1` comment with your new evidence instead of a new issue.
-
-Redaction is the filer's responsibility before running `gh issue create`. Never include:
-- `clientSecret`, `refreshToken`, `webhookSecret`, OAuth codes, or any token
-- message text, file names, file bytes, or attachment content
-- user IDs, chat IDs, email addresses, or customer data
-
-Masked evidence is enough: content type, multipart part names, payload syntax fingerprint (`describeBodySyntax` output), parser outcome, and the `handlerSchema` marker. When in doubt, redact more.
-
-Prefix conventions: `bug(inbound)`, `bug(outbound)`, `bug(cli)`, `bug(doctor)`, `doc(...)`.
+Never put in an issue: `clientSecret`, `refreshToken`, `webhookSecret`, OAuth codes, message text, file content, user/chat IDs, email addresses. When in doubt, redact more.
