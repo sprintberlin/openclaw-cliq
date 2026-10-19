@@ -1,0 +1,94 @@
+name: ClawHub trusted-publisher setup
+
+# One-time, credentialed step that only a ClawHub package manager can run:
+# attaches the GitHub Actions OIDC trusted-publisher config to the existing
+# @sprintcx/openclaw-cliq package. See docs/REVIEW-DOSSIER.md ("Provenance gap")
+# and RELEASING.md. Rollback: run this workflow with action=delete, or
+# `clawhub package trusted-publisher delete @sprintcx/openclaw-cliq` locally.
+#
+# Tag-push publishes keep the CLAWHUB_TOKEN fallback either way; this only lets
+# supported workflow_dispatch publishes mint a token via OIDC. It is release
+# provenance hardening — not OpenClaw Core trust and not "Official" status.
+#
+# Dispatch with action=inspect for an idempotent read-back of the current
+# config (also run automatically after set/delete).
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "What to do"
+        required: true
+        type: choice
+        default: set
+        options:
+          - set
+          - inspect
+          - delete
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clawhub-trusted-publisher
+  cancel-in-progress: false
+
+jobs:
+  trusted-publisher:
+    name: trusted-publisher
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install ClawHub CLI
+        run: npm i -g clawhub@latest
+
+      - name: ClawHub auth login (package-manager token)
+        env:
+          CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLAWHUB_TOKEN:-}" ]; then
+            echo "::error::CLAWHUB_TOKEN secret is not set. Add it under Settings → Secrets → Actions."
+            exit 1
+          fi
+          clawhub auth login --no-browser --token "$CLAWHUB_TOKEN"
+          clawhub whoami
+
+      - name: Read current config
+        run: |
+          set -euo pipefail
+          echo "[tp] current trusted-publisher config:"
+          clawhub package trusted-publisher get @sprintcx/openclaw-cliq --json || echo "[tp] (none configured)"
+
+      - name: Apply action
+        id: apply
+        env:
+          ACTION: ${{ inputs.action }}
+        run: |
+          set -euo pipefail
+          case "$ACTION" in
+            set)
+              clawhub package trusted-publisher set @sprintcx/openclaw-cliq \
+                --repository sprintberlin/openclaw-cliq \
+                --workflow-filename publish-clawhub.yml \
+                --json
+              ;;
+            delete)
+              clawhub package trusted-publisher delete @sprintcx/openclaw-cliq --json
+              ;;
+            inspect)
+              echo "[tp] inspect-only"
+              ;;
+            *)
+              echo "::error::Unknown action '$ACTION'"; exit 1 ;;
+          esac
+
+      - name: Verify resulting config
+        run: |
+          set -euo pipefail
+          clawhub package trusted-publisher get @sprintcx/openclaw-cliq --json

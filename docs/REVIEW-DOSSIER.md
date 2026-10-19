@@ -22,8 +22,10 @@ What is true today, verifiable without this repository's word:
 - ClawHub listing: `channel: "community"`, `isOfficial: false`,
   `scanStatus: "clean"`, verification tier `source-linked` / scope
   `artifact-only`, source-bound to commit `1289e0d` (tag `v0.6.1`).
-  `hasProvenance: false` — ClawHub OIDC trusted publishing is not configured
-  yet (see "Provenance gap" below).
+  `hasProvenance: false` — the OIDC trusted-publisher config can be attached by
+  dispatching `.github/workflows/clawhub-trusted-publisher.yml` (see
+  "Provenance gap" below), but `hasProvenance` flips only after a later
+  supported publish, which no release has done yet.
 - npm: `@sprintcx/openclaw-cliq@0.6.1` carries an SLSA provenance attestation
   (`dist.attestations.provenance`) plus registry signatures. Integrity
   `sha512-iyOpRG84KZ89uQhIc+ynLbUNKNjT5folNnY+/duZTOwSAVjBI+PDBD4HVNZ8leGRlYSRQ4zq/sjTgaP0g4jY6A==`.
@@ -141,15 +143,18 @@ Explicitly **not** covered here, so not claimed:
 ## Provenance gap
 
 npm publish already uses `npm publish --provenance` (SLSA attestation on
-`0.6.1`). ClawHub OIDC trusted publishing is **not** configured:
-`verification.hasProvenance` is `false` and the publish workflow still
-authenticates with the `CLAWHUB_TOKEN` repository secret. Configuring it is a
-one-time, credentialed step a package manager runs against the live registry
-(`clawhub package trusted-publisher set @sprintcx/openclaw-cliq --repository
-sprintberlin/openclaw-cliq --workflow-filename publish-clawhub.yml`); it cannot
-be done from the repository alone, and per ClawHub's docs tag-push publishes
-still need the token fallback. It is release-provenance hardening only — it is
-not Core trust and not publisher "Official" status.
+`0.6.1`). ClawHub OIDC trusted publishing is attached by a package manager:
+dispatch `.github/workflows/clawhub-trusted-publisher.yml` (action `set`) — it
+authenticates with the `CLAWHUB_TOKEN` repository secret and runs
+`clawhub package trusted-publisher set @sprintcx/openclaw-cliq --repository
+sprintberlin/openclaw-cliq --workflow-filename publish-clawhub.yml`. The action
+`inspect` reads the config back and `delete` is the rollback. Per ClawHub's
+docs only supported `workflow_dispatch` publishes mint a token via OIDC;
+tag-push publishes keep the `CLAWHUB_TOKEN` fallback, so the secret stays.
+`verification.hasProvenance` flips to `true` only after such a publish, and the
+publish workflow's manual dispatch is forced to a dry-run, so the flip is
+confirmed on the next real release. It is release-provenance hardening only —
+it is not Core trust and not publisher "Official" status.
 
 ## Catalog artwork
 
