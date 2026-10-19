@@ -22,14 +22,18 @@ Add a repository secret so CI can authenticate to ClawHub:
   `publish-clawhub.yml` as trusted publisher under the package's npm settings,
   then delete `NPM_TOKEN`.
 
-> ClawHub trusted publishing is configured per package by a package manager
-> (`clawhub package trusted-publisher set @sprintcx/openclaw-cliq --repository
-> sprintberlin/openclaw-cliq --workflow-filename publish-clawhub.yml`). Once
-> set, the workflow's OIDC path takes over for `workflow_dispatch` publishes;
-> tag-push publishes still need the `CLAWHUB_TOKEN` fallback, so keep the
-> secret. The `id-token: write` permission is already set. This is release
-> provenance only — it does not confer OpenClaw Core trust or ClawHub
-> "Official" publisher status.
+> ClawHub trusted publishing is configured per package by a package manager.
+> Dispatch **ClawHub trusted-publisher setup**
+> (`.github/workflows/clawhub-trusted-publisher.yml`, action `set`) — it runs
+> `clawhub package trusted-publisher set @sprintcx/openclaw-cliq --repository
+> sprintberlin/openclaw-cliq --workflow-filename publish-clawhub.yml` with the
+> `CLAWHUB_TOKEN` secret and prints the resulting config. `inspect` reads it
+> back; `delete` is the rollback. Once set, the publish workflow's OIDC path
+> takes over for supported `workflow_dispatch` publishes; tag-push publishes
+> still need the `CLAWHUB_TOKEN` fallback, so keep the secret. The `id-token:
+> write` permission is already set. This is release provenance only — it does
+> not confer OpenClaw Core trust or ClawHub "Official" publisher status, and
+> `verification.hasProvenance` flips only after a later supported publish.
 
 ## Cutting a release
 
