@@ -21,6 +21,8 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- Group progress and chat-id resolution on orgs where Zoho accepts a channel post with HTTP 204 and no message id (the Paula `operation_not_allowed` case, #195): the authenticated inbound group chat id now seeds placeholder, progress, and edit drafts directly instead of depending on the `/channelsbyname` metadata lookup, and an id-less group send never triggers that lookup. On a directed group turn the progress path posts at most ONE bounded progress update as a new message (clipped to the 5000-char cap, never one per event, never on unmentioned/silent turns) and waits for it before delivering the final answer, so no progress appears after the reply. DMs, snapshots, and unmentioned chatter keep the strict no-fallback behavior. Documented in the README streaming section.
+
 - Inbound v6 `participation_handler` payloads that deliver `data.message` (or a top-level `message`) as a JSON string are normalized back into an object before parsing (#315). Channel messages without an @mention now reach the agent as plain text instead of raw JSON, and attachments carried inside that object — including voice notes — are preserved. A string that is not a JSON object is left untouched, and the existing object/`data` shapes are unchanged. No handler re-provisioning is needed.
 
 ### Changed

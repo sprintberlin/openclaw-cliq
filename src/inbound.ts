@@ -20,7 +20,7 @@ import { stripCliqMentions } from "./mentions.js";
 import { isCliqSelfMessage, resolveCliqOwnBotIdentities } from "./self-message.js";
 import { isCliqSenderAllowed, isCliqSenderApproved } from "./admission.js";
 import { resolveCliqClient } from "./runtime-api.js";
-import { rememberCliqChatId } from "./heartbeat.js";
+import { isCliqChatId, rememberCliqChatId } from "./heartbeat.js";
 import { observeCliqOutboundSends } from "./activity.js";
 import {
   clearLiveEditProgressDraft,
@@ -1485,6 +1485,11 @@ export async function dispatchCliqInbound(params: {
   const deliverTo = parsed.isGroup
     ? (parsed.channelUniqueName ?? parsed.chatId)
     : parsed.senderId;
+  // Only the chat ID of this authenticated inbound group turn may seed its
+  // outgoing drafts; a channel id or a DM sender id is not a chat ID.
+  const inboundGroupChatId = parsed.isGroup && isCliqChatId(parsed.chatId)
+    ? parsed.chatId.trim()
+    : undefined;
   rememberCliqChatId({
     accountId: account.accountId,
     chatId: parsed.chatId,
@@ -1835,6 +1840,7 @@ export async function dispatchCliqInbound(params: {
   // this; the group case carries no chatId in the send response, so
   // `createLiveEditDeliver` resolves it lazily on the first edit.
   let initialDraft: { messageId: string; chatId?: string; text?: string } | undefined;
+  let uneditableGroupPlaceholderSent = false;
   // Animated "thinking" placeholder (issue #86): held so the reply deliver
   // and the no-reply cleanup can stop a late frame edit before the final
   // edit-into-reply. `null` when no animation is running.
@@ -1926,10 +1932,11 @@ export async function dispatchCliqInbound(params: {
             text: placeholderText,
             isDm: !parsed.isGroup,
           });
+      uneditableGroupPlaceholderSent = parsed.isGroup && !ref.messageId;
       if (ref.messageId) {
         initialDraft = {
           messageId: ref.messageId,
-          chatId: ref.chatId,
+          chatId: ref.chatId ?? inboundGroupChatId,
           text: placeholderText,
         };
         // Card mode: transition the status card thinking → generating
@@ -1991,8 +1998,12 @@ export async function dispatchCliqInbound(params: {
     client,
     to: deliverTo,
     isDm: !parsed.isGroup,
+    inboundGroupChatId,
     enabled: account.blockStreaming,
     initialDraft,
+    uneditableGroupPlaceholderSent,
+    allowUneditableGroupProgress:
+      uneditableGroupPlaceholderSent && !isCliqUnmentionedGroupTurn(parsed, account),
     initialDraftEditable:
       account.streaming.mode !== "progress" || account.thinking?.mode !== "card",
     minEditIntervalMs:

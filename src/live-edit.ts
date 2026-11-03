@@ -60,6 +60,7 @@ import {
   type CliqClient,
 } from "./client.js";
 import { markdownToCliq } from "./markdown.js";
+import { isCliqChatId } from "./heartbeat.js";
 import {
   isCliqCardChannelData,
   type CliqRenderedCard,
@@ -102,6 +103,8 @@ export interface LiveEditDeliverOptions {
   to: string;
   /** Whether this is a DM (delivered via `userids`) or a group (via `chatid`). */
   isDm: boolean;
+  /** Chat id supplied by the authenticated inbound event for this same group turn. */
+  inboundGroupChatId?: string;
   /** When true, edits the draft message in place across blocks; when false, each block is a separate message. */
   enabled: boolean;
   /** Per-message character cap (Cliq enforces 5000). */
@@ -114,6 +117,10 @@ export interface LiveEditDeliverOptions {
    */
   initialDraft?: { messageId: string; chatId?: string; text?: string };
   initialDraftEditable?: boolean;
+  /** A group placeholder was accepted without an ID, so it cannot be edited. */
+  uneditableGroupPlaceholderSent?: boolean;
+  /** Permit one additional, non-editable progress update on a directed group turn. */
+  allowUneditableGroupProgress?: boolean;
   /**
    * Minimum wall-clock distance between two preview edits of the same draft
    * (issue #175). Intermediate blocks that arrive inside the window are
@@ -220,6 +227,9 @@ export function createLiveEditDeliver(
   const client = opts.client;
   const to = opts.to;
   const isDm = opts.isDm;
+  const inboundGroupChatId = !isDm && isCliqChatId(opts.inboundGroupChatId)
+    ? opts.inboundGroupChatId?.trim()
+    : undefined;
   const minEditIntervalMs = Math.max(0, opts.minEditIntervalMs ?? 0);
   const now = opts.now ?? (() => Date.now());
   const sleep =
@@ -273,7 +283,11 @@ export function createLiveEditDeliver(
   let pendingDraftIsFinal = false;
   let progressDraftActive = false;
   let progressDraftStale = false;
-  let progressDraftDisabled = false;
+  // A successful 204 placeholder has no message ref and cannot be edited.
+  let progressDraftDisabled = opts.uneditableGroupPlaceholderSent === true;
+  let uneditableProgressAttempted = false;
+  let uneditableProgressInFlight: Promise<void> | undefined;
+  let replyStarted = false;
   let wakeThrottle: (() => void) | undefined;
 
   const attach = <
@@ -297,6 +311,11 @@ export function createLiveEditDeliver(
   /** Resolve the chat id for a group draft when missing (cached on the client). */
   const resolveDraftChatId = async (): Promise<string | undefined> => {
     if (draftChatId) return draftChatId;
+    if (inboundGroupChatId) {
+      draftChatId = inboundGroupChatId;
+      draftChatIdResolved = true;
+      return draftChatId;
+    }
     if (draftChatIdResolved) return undefined; // already attempted — no chatId
     if (isDm) {
       draftChatIdResolved = true;
@@ -372,6 +391,11 @@ export function createLiveEditDeliver(
       // Fits in one message → becomes the editable draft.
       const result = await client.sendMessage({ to, text: chunks[0], isDm });
       stats.sends++;
+      if (!isDm && !result.messageId) {
+        // This specific message has no editable ref. Do not create repeated
+        // uneditable progress drafts in the same turn.
+        progressDraftDisabled = true;
+      }
       draftMessageId = result.messageId;
       // For DMs the send response carries chat_id in message_details; for
       // group/channel posts it is absent, so we resolve the channel unique
@@ -381,8 +405,12 @@ export function createLiveEditDeliver(
       // error) we leave draftChatId undefined → edits fall back to a new send.
       if (result.chatId) {
         draftChatId = result.chatId;
-      } else if (!isDm) {
-        draftChatId = (await client.resolveChannelChatId(to)) ?? undefined;
+      } else if (!isDm && result.messageId) {
+        // Inbound chat id first (authenticated, zero-cost); per-send lookup
+        // retry preserved — a missing channel may become resolvable later.
+        draftChatId = inboundGroupChatId
+          ? inboundGroupChatId
+          : ((await client.resolveChannelChatId(to)) ?? undefined);
       } else {
         draftChatId = undefined;
       }
@@ -803,6 +831,17 @@ export function createLiveEditDeliver(
     const isFinalBlock = info?.final === true || info?.kind === "final";
     const isSnapshot = info?.snapshot === true;
     const isProgress = info?.progress === true;
+    if (
+      opts.uneditableGroupPlaceholderSent &&
+      !isProgress &&
+      !isSnapshot &&
+      (payload.text || payload.mediaUrl || payload.mediaUrls?.length || payload.channelData)
+    ) {
+      // Close the progress lane before waiting: later events must not post
+      // after the answer, including card-only and media-only replies.
+      replyStarted = true;
+      if (uneditableProgressInFlight) await uneditableProgressInFlight.catch(() => {});
+    }
     const hadProgressDraft = progressDraftActive || progressDraftStale;
     const allowShrink = isProgress || hadProgressDraft;
     if (await deliverCard(payload)) return;
@@ -822,22 +861,46 @@ export function createLiveEditDeliver(
     }
 
     if (isProgress) {
-      if (progressDraftDisabled) return;
+      if (opts.uneditableGroupPlaceholderSent && replyStarted) return;
       const rich = info?.rendered === true ? text : markdownToCliq(text);
       const clipped = clipRenderedToLimit(rich);
       if (!clipped) return;
+      if (progressDraftDisabled) {
+        // Zoho sometimes accepts a bot placeholder with HTTP 204 and returns
+        // no message id. Never guess another message's id from history. On a
+        // directed group turn, allow one bounded progress update as a new
+        // message, but never send updates for silent/unmentioned turns.
+        if (
+          isDm ||
+          !opts.uneditableGroupPlaceholderSent ||
+          !opts.allowUneditableGroupProgress ||
+          uneditableProgressAttempted
+        ) return;
+        uneditableProgressAttempted = true;
+        uneditableProgressInFlight = (async () => {
+          await client.sendMessage({ to, text: clipped, isDm: false });
+          stats.sends++;
+        })();
+        await uneditableProgressInFlight;
+        return;
+      }
       if (opts.initialDraft && opts.initialDraftEditable === false) {
         progressDraftDisabled = true;
         return;
       }
       if (!draftMessageId) {
         if (!isDm) {
-          try {
-            draftChatId = (await client.resolveChannelChatId(to)) ?? undefined;
-          } catch {
-            draftChatId = undefined;
+          if (inboundGroupChatId) {
+            draftChatId = inboundGroupChatId;
+            draftChatIdResolved = true;
+          } else {
+            try {
+              draftChatId = (await client.resolveChannelChatId(to)) ?? undefined;
+            } catch {
+              draftChatId = undefined;
+            }
+            draftChatIdResolved = true;
           }
-          draftChatIdResolved = true;
           if (!draftChatId) {
             progressDraftDisabled = true;
             return;

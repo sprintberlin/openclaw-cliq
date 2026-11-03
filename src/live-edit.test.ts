@@ -71,6 +71,7 @@ function makeFakeClient(opts: {
   channelResolveFails?: boolean;
   deleteFails?: boolean;
   dmSendFails?: boolean;
+  groupSendWithoutId?: boolean;
   cardSendFails?: boolean;
   cardChatId?: string;
   mediaSendFails?: boolean;
@@ -107,7 +108,7 @@ function makeFakeClient(opts: {
       // Group send: respond with only a top-level id (no chatId).
       return o.isDm
         ? { messageId: `m${sends.length}`, chatId: opts.dmChatId ?? `chat-${o.to}` }
-        : { messageId: `m${sends.length}` };
+        : opts.groupSendWithoutId ? {} : { messageId: `m${sends.length}` };
     }),
     editMessage: vi.fn(async (o: { chatId: string; messageId: string; text: string }) => {
       edits.push(o);
@@ -925,6 +926,111 @@ describe("createLiveEditDeliver — initialDraft (thinking placeholder)", () => 
       "Done.",
     ]);
     expect(fake.edits.every((entry) => entry.messageId === "m1")).toBe(true);
+  });
+
+  it("limits an id-less group placeholder to one bounded progress send and one final", async () => {
+    const fake = makeFakeClient({ groupSendWithoutId: true });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "dev-team",
+      isDm: false,
+      enabled: true,
+      charLimit: 24,
+      inboundGroupChatId: "CT_dev_team",
+      uneditableGroupPlaceholderSent: true,
+      allowUneditableGroupProgress: true,
+    });
+    await deliver({ text: "Working " + "x".repeat(100) }, { progress: true });
+    await deliver({ text: "Still working" }, { progress: true });
+    await deliver({ text: "final answer" }, { final: true });
+    await deliver({ text: "Too late" }, { progress: true });
+
+    expect(fake.sends).toHaveLength(2);
+    expect(fake.sends[0].text.length).toBeLessThanOrEqual(24);
+    expect(fake.sends[0].text).toContain("Working");
+    expect(fake.sends[1].text).toBe("final answer");
+    expect(fake.edits).toHaveLength(0);
+    expect(fake.deletes).toHaveLength(0);
+    expect(fake.messageListCalls).toHaveLength(0);
+    expect(fake.chatIdResolves).toHaveLength(0);
+  });
+
+  it.each([
+    { isDm: false, allowed: false },
+    { isDm: true, allowed: true },
+  ])("never emits id-less fallback progress outside a directed group (%o)", async ({ isDm, allowed }) => {
+    const fake = makeFakeClient({ groupSendWithoutId: true });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "target",
+      isDm,
+      enabled: true,
+      uneditableGroupPlaceholderSent: true,
+      allowUneditableGroupProgress: allowed,
+    });
+    await deliver({ text: "Working" }, { progress: true });
+    expect(fake.sends).toHaveLength(0);
+    await deliver({ text: "final answer" }, { final: true });
+    expect(fake.sends.map((entry) => entry.text)).toEqual(["final answer"]);
+  });
+
+  it.each(["text", "card"] as const)(
+    "waits for an in-flight id-less progress send before the %s final",
+    async (kind) => {
+      const fake = makeFakeClient({ groupSendWithoutId: true });
+      const events: string[] = [];
+      let releaseSend!: () => void;
+      let markStarted!: () => void;
+      const started = new Promise<void>((resolve) => { markStarted = resolve; });
+      const release = new Promise<void>((resolve) => { releaseSend = resolve; });
+      fake.sendMessage = vi.fn(async (entry) => {
+        if (entry.text === "Working") {
+          markStarted();
+          await release;
+        }
+        events.push(entry.text);
+        return {};
+      });
+      fake.sendCard = vi.fn(async () => {
+        events.push("card");
+        return {};
+      });
+      const deliver = createLiveEditDeliver({
+        client: fake,
+        to: "dev-team",
+        isDm: false,
+        enabled: true,
+        uneditableGroupPlaceholderSent: true,
+        allowUneditableGroupProgress: true,
+      });
+
+      const progress = deliver({ text: "Working" }, { progress: true });
+      await started;
+      const final = kind === "text"
+        ? deliver({ text: "final" }, { final: true })
+        : deliver({ channelData: { cliqCard: {
+            buttons: [{ label: "Choose", action: { type: "invoke.function", data: {} } }],
+          } } }, { final: true });
+      await Promise.resolve();
+      expect(events).toEqual([]);
+      releaseSend();
+      await Promise.all([progress, final]);
+      await deliver({ text: "Too late" }, { progress: true });
+      expect(events).toEqual(["Working", kind === "text" ? "final" : "card"]);
+    },
+  );
+
+  it("does not resolve a channel chat id after a group post returns no message id", async () => {
+    const fake = makeFakeClient({ groupSendWithoutId: true });
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "dev-team",
+      isDm: false,
+      enabled: true,
+    });
+    await deliver({ text: "final answer" }, { final: true });
+    expect(fake.sends.map((entry) => entry.text)).toEqual(["final answer"]);
+    expect(fake.chatIdResolves).toHaveLength(0);
   });
 
   it("converts a rendered Core progress snapshot exactly once", async () => {

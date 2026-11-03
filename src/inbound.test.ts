@@ -2773,6 +2773,7 @@ describe("dispatchCliqInbound — thinking placeholder (issue #47)", () => {
     sendFails?: boolean;
     editFails?: boolean;
     channelChatId?: string;
+    groupSendWithoutId?: boolean;
   } = {}) {
     const sends: { to: string; text: string; isDm?: boolean }[] = [];
     const cardSends: {
@@ -2791,10 +2792,10 @@ describe("dispatchCliqInbound — thinking placeholder (issue #47)", () => {
       sendMessage: vi.fn(async (o: { to: string; text: string; isDm?: boolean }) => {
         if (opts.sendFails) throw new Error("send rejected");
         sends.push(o);
-        // First send is the placeholder; return a placeholder ref.
+        // First send is the placeholder; a 204 group post has no message id.
         return o.isDm
           ? { messageId: "ph-1", chatId: opts.placeholderChatId ?? `chat-${o.to}` }
-          : { messageId: "ph-1" };
+          : opts.groupSendWithoutId ? {} : { messageId: "ph-1" };
       }),
       sendMediaMessage: vi.fn(async () => ({ messageId: "media-1" })),
       sendCard: vi.fn(async (o: {
@@ -3117,7 +3118,7 @@ describe("dispatchCliqInbound — thinking placeholder (issue #47)", () => {
     expect(client.edits).toHaveLength(0);
   });
 
-  it("supports group/channel placeholder (chat id resolved lazily on edit)", async () => {
+  it("uses the inbound group chat id for the placeholder without a metadata lookup", async () => {
     const client = makeMockClient({ channelChatId: "CT_dev_team" });
     const parsed = parseCliqWebhookPayload(groupPayload());
     await dispatchCliqInbound({
@@ -3131,15 +3132,78 @@ describe("dispatchCliqInbound — thinking placeholder (issue #47)", () => {
       parsed: parsed!,
       client,
     });
-    // Placeholder posted to the channel (no chatId in the send response);
-    // the edit resolves the channel chat id lazily.
+    // Group send response carries an id but no chatId; the current inbound id is reused.
     expect(client.sends).toHaveLength(1);
     expect(client.sends[0].text).toBe("💭 …");
     expect(client.sends[0].isDm).toBe(false);
     expect(client.edits).toHaveLength(1);
-    expect(client.edits[0].chatId).toBe("CT_dev_team");
+    expect(client.edits[0].chatId).toBe("CT_channel_chat");
+    expect(client.resolveChannelChatId).not.toHaveBeenCalled();
     expect(client.edits[0].messageId).toBe("ph-1");
     expect(client.edits[0].text).toBe("reply");
+  });
+
+  it("posts at most one progress update after an uneditable 204 placeholder", async () => {
+    const client = makeMockClient({
+      groupSendWithoutId: true,
+      channelChatId: undefined,
+    });
+    const parsed = parseCliqWebhookPayload(groupPayload());
+    const runtime = mockRuntimeWithDeliver("final answer");
+    const baseRun = runtime.channel.inbound.run!;
+    const baseRunBound = baseRun.bind(runtime.channel.inbound);
+    runtime.channel.inbound.run = async (params) => {
+      const adapter = (params as unknown as {
+        adapter: { resolveTurn: (...args: unknown[]) => unknown };
+      }).adapter;
+      const turn = adapter.resolveTurn({}, {}, {}) as unknown as {
+        replyOptions?: {
+          onPlanUpdate?: (payload: {
+            phase: "update";
+            explanation?: string;
+            steps?: Array<{ step: string; status: "in_progress" }>;
+          }) => Promise<unknown>;
+        };
+      };
+      // A plan starts the real Core compositor immediately. A preamble on
+      // its own only updates state until the work/start gate opens.
+      await turn.replyOptions?.onPlanUpdate?.({
+        phase: "update",
+        explanation: "Checking the docs",
+        steps: [{ step: "Read docs", status: "in_progress" }],
+      });
+      await turn.replyOptions?.onPlanUpdate?.({
+        phase: "update",
+        explanation: "Reading more docs",
+        steps: [{ step: "Read more docs", status: "in_progress" }],
+      });
+      return await baseRunBound(params);
+    };
+    await dispatchCliqInbound({
+      runtime,
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({
+        thinking: { mode: "placeholder", text: "💭 …" },
+        refreshToken: "rt",
+        blockStreaming: true,
+        streaming: { mode: "progress", progress: {} },
+        streamingMinEditIntervalMs: 0,
+      }),
+      parsed: parsed!,
+      client,
+    });
+    // 204 org: the placeholder post returns no message id, so it cannot be
+    // edited or deleted. On a directed turn exactly ONE bounded progress
+    // message is posted (never one per event), then the single final. No
+    // metadata lookup, no history guessing, no deletes, no edits.
+    expect(client.sends).toHaveLength(3);
+    expect(client.sends[0].text).toBe("💭 …");
+    expect(client.sends[1].text).toContain("Checking the docs");
+    expect(client.sends[2].text).toBe("final answer");
+    expect(client.edits).toHaveLength(0);
+    expect(client.deletes).toHaveLength(0);
+    expect(client.listChatMessages).not.toHaveBeenCalled();
+    expect(client.resolveChannelChatId).not.toHaveBeenCalled();
   });
 
   it("posts a Message Card status indicator in card mode (DM, v3-style sendCard)", async () => {
@@ -3905,7 +3969,7 @@ describe("dispatchCliqInbound — thinking placeholder (issue #47)", () => {
     expect(client.cardSends).toHaveLength(0);
   });
 
-  it("card mode supports group/channel posts (chat id resolved lazily on edit)", async () => {
+  it("card mode reuses the current inbound group chat id", async () => {
     const client = makeMockClient({ channelChatId: "CT_dev_team" });
     const parsed = parseCliqWebhookPayload(groupPayload());
     await dispatchCliqInbound({
@@ -3923,10 +3987,10 @@ describe("dispatchCliqInbound — thinking placeholder (issue #47)", () => {
     expect(client.cardSends[0].text).toBe("💭 thinking…");
     expect(client.cardSends[0].isDm).toBe(false);
     expect(client.edits).toHaveLength(2);
-    expect(client.edits[0].chatId).toBe("CT_dev_team");
+    expect(client.edits[0].chatId).toBe("CT_channel_chat");
     expect(client.edits[0].messageId).toBe("card-1");
     expect(client.edits[0].text).toBe("Generating…");
-    expect(client.edits[1].chatId).toBe("CT_dev_team");
+    expect(client.edits[1].chatId).toBe("CT_channel_chat");
     expect(client.edits[1].messageId).toBe("card-1");
     expect(client.edits[1].text).toBe("reply");
   });
@@ -4101,7 +4165,7 @@ describe("dispatchCliqInbound — card status phase transitions (issue #78)", ()
     expect(client.edits[1].text).toBe("answer");
   });
 
-  it("resolves the group chat id lazily for the thinking→generating edit", async () => {
+  it("uses the inbound group chat id for the thinking→generating edit", async () => {
     const client = makeClient({ channelChatId: "CT_dev_team" });
     const parsed = parseCliqWebhookPayload(groupPayload());
     await dispatchCliqInbound({
@@ -4115,13 +4179,10 @@ describe("dispatchCliqInbound — card status phase transitions (issue #78)", ()
       parsed: parsed!,
       client,
     });
-    // Group card send carries no chatId → resolved for the phase edit (and
-    // re-resolved by the live-edit deliver's lazy resolve; the real client
-    // caches it).
-    expect(client.resolveChannelChatId).toHaveBeenCalled();
-    expect(client.edits[0].chatId).toBe("CT_dev_team");
+    expect(client.resolveChannelChatId).not.toHaveBeenCalled();
+    expect(client.edits[0].chatId).toBe("CT_channel_chat");
     expect(client.edits[0].text).toBe("Generating…");
-    expect(client.edits[1].chatId).toBe("CT_dev_team");
+    expect(client.edits[1].chatId).toBe("CT_channel_chat");
     expect(client.edits[1].text).toBe("reply");
   });
 
@@ -4153,7 +4214,9 @@ describe("dispatchCliqInbound — card status phase transitions (issue #78)", ()
 
   it("does not advance phases when the chat id is unresolvable (group)", async () => {
     const client = makeClient({ channelChatId: undefined });
-    const parsed = parseCliqWebhookPayload(groupPayload());
+    const parsed = parseCliqWebhookPayload(groupPayload({
+      chat: { type: "channel", channel_unique_name: "dev-team" },
+    }));
     await dispatchCliqInbound({
       runtime: noReplyRuntime(),
       cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
@@ -5134,7 +5197,7 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
     expect(client.deletes).toHaveLength(0);
   });
 
-  it("resolves the group chat id lazily before cleaning up a channel placeholder", async () => {
+  it("uses the inbound group chat id when cleaning up a channel placeholder", async () => {
     const client = makeMockClient({ channelChatId: "CT_dev_team" });
     const parsed = parseCliqWebhookPayload(groupPayload());
     await dispatchCliqInbound({
@@ -5148,10 +5211,9 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
       parsed: parsed!,
       client,
     });
-    // Group send response carries no chatId → resolved lazily for the cleanup.
-    expect(client.resolveChannelChatId).toHaveBeenCalled();
+    expect(client.resolveChannelChatId).not.toHaveBeenCalled();
     expect(client.edits).toHaveLength(1);
-    expect(client.edits[0].chatId).toBe("CT_dev_team");
+    expect(client.edits[0].chatId).toBe("CT_channel_chat");
     expect(client.edits[0].messageId).toBe("ph-1");
     expect(client.deletes).toHaveLength(0);
   });
