@@ -42,6 +42,7 @@ import {
 import { markdownToCliq } from "./markdown.js";
 import { notifyCliqToolSend } from "./activity.js";
 import { resolveCliqClient } from "./runtime-api.js";
+import { resolveChannelReadAuthorityCapture, type ChannelReadAssertion } from "./sdk-compat.js";
 import {
   presentationToCliqCard,
   simpleButtonsToCliqButtons,
@@ -314,6 +315,7 @@ function errorResult(message: string): AgentToolResult<unknown> {
 async function resolveChatIdForAction(
   client: Pick<CliqClientLike, "resolveChannelChatId">,
   params: Record<string, unknown>,
+  assertReadCurrent?: ChannelReadAssertion,
 ): Promise<string | undefined> {
   const explicit = readString(params, "chatId");
   if (explicit) return explicit;
@@ -321,7 +323,7 @@ async function resolveChatIdForAction(
   if (!to) return undefined;
   const target = normalizeCliqRouteTarget(to);
   if (target.isDm) return undefined; // DM chat ids cannot be resolved from a user id
-  return (await client.resolveChannelChatId(target.to)) ?? undefined;
+  return (await client.resolveChannelChatId(target.to, assertReadCurrent)) ?? undefined;
 }
 
 /** Minimal slice of CliqClient the actions adapter depends on. */
@@ -361,7 +363,7 @@ interface CliqClientLike {
     chatId: string,
     opts?: CliqChatHistoryOptions,
   ): Promise<CliqChatMessageRef[]>;
-  resolveChannelChatId(channelUniqueName: string): Promise<string | undefined>;
+  resolveChannelChatId(channelUniqueName: string, assertReadCurrent?: ChannelReadAssertion): Promise<string | undefined>;
   addMessageReaction(opts: {
     chatId: string;
     messageId: string;
@@ -792,6 +794,7 @@ async function handleDelete(
 async function handleRead(
   client: CliqClientLike,
   params: Record<string, unknown>,
+  options: { crossProvider: boolean; assertReadCurrent?: ChannelReadAssertion },
 ): Promise<AgentToolResult<unknown>> {
   const readInteger = (key: string, max: number, min = 0): number | undefined => {
     const raw = params[key];
@@ -826,7 +829,29 @@ async function handleRead(
   } catch (err) {
     return errorResult(err instanceof Error ? err.message : "Invalid history parameters.");
   }
-  const chatId = await resolveChatIdForAction(client, params);
+  let chatId: string | undefined;
+  if (options.crossProvider) {
+    // Cross-provider grants bind only the original native ID, never a channel name.
+    const nativeId = params.chatId;
+    if (typeof nativeId !== "string" || !/^CT_[A-Za-z0-9_-]+$/.test(nativeId)) {
+      return errorResult("Cross-provider read requires an explicit native `chatId`.");
+    }
+    // The alias may be mirrored into target/to; it must still name this exact
+    // native id. Neither roomId nor a targets array is a Cliq history target.
+    if (params.roomId !== undefined || params.targets !== undefined) {
+      return errorResult("Cross-provider read received conflicting targets (`roomId`).");
+    }
+    for (const key of ["target", "to", "channelId"] as const) {
+      const value = params[key];
+      if (value === undefined) continue;
+      if (typeof value !== "string" || value.trim() !== nativeId) {
+        return errorResult("Cross-provider read received conflicting targets.");
+      }
+    }
+    chatId = nativeId;
+  } else {
+    chatId = await resolveChatIdForAction(client, params, options.assertReadCurrent);
+  }
   if (!chatId) {
     return errorResult(
       "`chatId` could not be resolved — pass `chatId` explicitly (DM chat ids are per-user-pair and cannot be resolved from a user id).",
@@ -838,6 +863,7 @@ async function handleRead(
       ...(fromTimeMs !== undefined ? { fromTimeMs } : {}),
       ...(toTimeMs !== undefined ? { toTimeMs } : {}),
       strictResponse: true,
+      ...(options.assertReadCurrent ? { assertReadCurrent: options.assertReadCurrent } : {}),
     });
     return okResult(
       `Read ${messages.length} message(s) from chat ${chatId}.`,
@@ -916,8 +942,28 @@ async function handleReact(
  * failure result so the model can recover (retry / give up) rather than
  * crashing the tool call.
  */
-export const cliqMessageActions: ChannelMessageActionAdapter = {
+// `readAuthorityActions` postdates the pinned 2026.8.2 SDK types, so it is
+// declared through this intersection; `providerOwnedReadGates` exists there.
+// Host admission for a delegated external read needs both declarations plus
+// loader-verified install trust before cross-context grants can apply.
+export const cliqMessageActions: ChannelMessageActionAdapter & {
+  readAuthorityActions: readonly ChannelMessageActionName[];
+} = {
   describeMessageTool: describeCliqMessageTool,
+  providerOwnedReadGates: ["read"],
+  readAuthorityActions: ["read"],
+  // The shared target normalizer mirrors this delivery alias into target/to.
+  // Preserve the bare native id so the host can compare it with chatId.
+  messageActionTargetAliases: {
+    read: {
+      aliases: ["chatId"],
+      deliveryTargetAliases: ["chatId"],
+      resolveDeliveryTarget: ({ args }) => {
+        const chatId = typeof args.chatId === "string" ? args.chatId.trim() : "";
+        return chatId || undefined;
+      },
+    },
+  },
   supportsAction: ({ action }) =>
     CLIQ_ACTIONS_ALL.includes(action as ChannelMessageActionName),
   resolveExecutionMode: () => "local",
@@ -952,8 +998,19 @@ export const cliqMessageActions: ChannelMessageActionAdapter = {
         case "delete":
         case "unsend":
           return await handleDelete(client, params);
-        case "read":
-          return await handleRead(client, params);
+        case "read": {
+          const provider = ctx.toolContext?.currentChannelProvider?.trim().toLowerCase();
+          // A missing provider is not proof of same-provider origin. Old hosts
+          // without capture can still perform direct-operator/same-provider reads.
+          const crossProvider = ctx.conversationReadOrigin !== "direct-operator" && !!provider && provider !== "cliq";
+          const capture = await resolveChannelReadAuthorityCapture();
+          const assertReadCurrent = capture?.();
+          // Missing authority is not a grant; old hosts continue same-provider reads only.
+          if (crossProvider && !assertReadCurrent) {
+            return errorResult("Cross-provider read requires active host read authority.");
+          }
+          return await handleRead(client, params, { crossProvider, assertReadCurrent });
+        }
         case "react":
           return await handleReact(client, params);
         default:

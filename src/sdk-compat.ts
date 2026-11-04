@@ -14,6 +14,25 @@
  * Supported range today: `>=2026.8.2` (the build/typecheck floor).
  */
 
+/** A host-owned assertion remains bound to its originating action. */
+export type ChannelReadAssertion = () => void;
+type CaptureChannelReadAuthority = () => ChannelReadAssertion | undefined;
+/** Older supported SDKs have no read-authority export. They must not be
+ * mistaken for a host that has granted a delegated cross-context read. */
+export function resolveChannelReadAuthorityCapture(): Promise<CaptureChannelReadAuthority | undefined> {
+  return (async () => {
+    try {
+      // The minimum supported SDK has the subpath but not this export.
+      const sdkPath = "openclaw/plugin-sdk/fetch-runtime";
+      const sdk: Record<string, unknown> = await import(sdkPath);
+      const capture = sdk.captureChannelReadAuthority;
+      return typeof capture === "function" ? (capture as CaptureChannelReadAuthority) : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+}
+
 /**
  * Structural type for the SDK's pairing-approve helper.
  *
