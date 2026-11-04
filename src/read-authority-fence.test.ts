@@ -48,8 +48,8 @@ describe("Cliq message(action=read) authority and target fencing", () => {
     expect(schema.properties.toTimeMs).toBeDefined();
   });
 
-  it("declares provider-owned read gates plus read authority actions for host admission", () => {
-    expect(cliqMessageActions.providerOwnedReadGates).toEqual(["read"]);
+  it("leaves delegated target admission to the host while supporting read-authority checks", () => {
+    expect(cliqMessageActions.providerOwnedReadGates).toBeUndefined();
     const authorityActions = (cliqMessageActions as { readAuthorityActions?: readonly string[] }).readAuthorityActions;
     expect(authorityActions).toEqual(["read"]);
   });

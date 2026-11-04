@@ -942,15 +942,13 @@ async function handleReact(
  * failure result so the model can recover (retry / give up) rather than
  * crashing the tool call.
  */
-// `readAuthorityActions` postdates the pinned 2026.8.2 SDK types, so it is
-// declared through this intersection; `providerOwnedReadGates` exists there.
-// Host admission for a delegated external read needs both declarations plus
-// loader-verified install trust before cross-context grants can apply.
+// Read authority covers the lifetime of an admitted call; target admission
+// stays with the host because this adapter does not authorize other chats.
+// `readAuthorityActions` postdates the pinned 2026.8.2 SDK types.
 export const cliqMessageActions: ChannelMessageActionAdapter & {
   readAuthorityActions: readonly ChannelMessageActionName[];
 } = {
   describeMessageTool: describeCliqMessageTool,
-  providerOwnedReadGates: ["read"],
   readAuthorityActions: ["read"],
   // The shared target normalizer mirrors this delivery alias into target/to.
   // Preserve the bare native id so the host can compare it with chatId.
