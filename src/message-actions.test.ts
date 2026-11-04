@@ -52,7 +52,13 @@ interface FakeClient {
   cards: { to: string; text?: string; isDm?: boolean; buttons?: unknown[]; theme?: string; pollOptions?: string[]; slides?: unknown[]; thumbnail?: string; sections?: unknown[] }[];
   edits: { chatId: string; messageId: string; text: string }[];
   deletes: { chatId: string; messageId: string }[];
-  reads: { chatId: string; limit?: number }[];
+  reads: {
+    chatId: string;
+    limit?: number;
+    fromTimeMs?: number;
+    toTimeMs?: number;
+    strictResponse?: boolean;
+  }[];
   reacts: { chatId: string; messageId: string; emoji: string; op: "add" | "remove" }[];
   chatIdResolves: string[];
   sendMessage: CliqClientLike["sendMessage"];
@@ -126,8 +132,17 @@ function makeFakeClient(opts: {
       deletes.push(o);
       return opts.deleteOk ?? true;
     }),
-    listChatMessages: vi.fn(async (chatId: string, o?: { limit?: number }) => {
-      reads.push({ chatId, limit: o?.limit });
+    listChatMessages: vi.fn(async (
+      chatId: string,
+      o?: { limit?: number; fromTimeMs?: number; toTimeMs?: number; strictResponse?: boolean },
+    ) => {
+      reads.push({
+        chatId,
+        limit: o?.limit,
+        ...(o?.fromTimeMs !== undefined ? { fromTimeMs: o.fromTimeMs } : {}),
+        ...(o?.toTimeMs !== undefined ? { toTimeMs: o.toTimeMs } : {}),
+        ...(o?.strictResponse !== undefined ? { strictResponse: o.strictResponse } : {}),
+      });
       return opts.messages ?? [];
     }),
     resolveChannelChatId: vi.fn(async (name: string) => {
@@ -182,6 +197,19 @@ describe("cliqMessageActions.describeMessageTool", () => {
     const discovery = describeCliqMessageTool({ cfg });
     expect(discovery!.capabilities).toEqual([...CLIQ_MESSAGE_CAPABILITIES]);
     expect(discovery!.capabilities).toContain("presentation");
+  });
+
+  it("advertises bounded time filters and the chat id only for a configured read action", () => {
+    const configured = describeCliqMessageTool({ cfg: makeCfg(makeAccount({ refreshToken: "rt" })) });
+    const schema = configured?.schema;
+    expect(Array.isArray(schema)).toBe(false);
+    if (!schema || Array.isArray(schema)) throw new Error("expected history schema");
+    expect(schema.actions).toEqual(["read"]);
+    expect(schema.visibility).toBe("current-channel");
+    expect(schema.properties.chatId).toMatchObject({ type: "string" });
+    expect(schema.properties.fromTimeMs).toMatchObject({ type: "integer", minimum: 0 });
+    expect(schema.properties.toTimeMs).toMatchObject({ type: "integer", minimum: 0 });
+    expect(describeCliqMessageTool({ cfg: makeCfg(makeAccount()) })?.schema).toBeNull();
   });
 });
 
@@ -1238,8 +1266,95 @@ describe("cliqMessageActions.handleAction", () => {
         params: { to: "cliq:channel:general", limit: 10 },
         accountId: null,
       });
-      expect(result.details).toMatchObject({ action: "read", chatId: "CT_chan", count: 1 });
-      expect(client.reads).toEqual([{ chatId: "CT_chan", limit: 10 }]);
+      expect(result.details).toMatchObject({ action: "read", chatId: "CT_chan", count: 1, completeness: "unknown" });
+      expect(client.reads).toEqual([{ chatId: "CT_chan", limit: 10, strictResponse: true }]);
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("read: forwards explicit windows and keeps duplicate timestamps with distinct IDs", async () => {
+    const client = makeFakeClient();
+    client.listChatMessages = vi.fn(async () => [
+      { messageId: "m1", chatId: "CT_dm", text: "one", timestamp: "2025-01-01T00:00:00.000Z", senderName: "A" },
+      { messageId: "m2", chatId: "CT_dm", text: "two", timestamp: "2025-01-01T00:00:00.000Z", senderName: "B" },
+    ]);
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const result = await cliqMessageActions.handleAction!({
+        channel: "cliq", action: "read", cfg: makeCfg(makeAccount({ refreshToken: "rt" })),
+        params: { chatId: "CT_dm", limit: "2", fromTimeMs: 1735689600000, toTimeMs: 1735689601000 },
+        accountId: null,
+      });
+      expect(client.listChatMessages).toHaveBeenCalledWith("CT_dm", {
+        limit: 2, fromTimeMs: 1735689600000, toTimeMs: 1735689601000, strictResponse: true,
+      });
+      expect(result.details).toMatchObject({
+        count: 2, completeness: "unknown", messages: [
+          { messageId: "m1", timestamp: "2025-01-01T00:00:00.000Z", senderName: "A" },
+          { messageId: "m2", timestamp: "2025-01-01T00:00:00.000Z", senderName: "B" },
+        ],
+      });
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("read: rejects invalid limits, dates, reversed windows and unsupported cursors before any request", async () => {
+    const client = makeFakeClient();
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const invalid: Record<string, unknown>[] = [
+        { limit: 0 }, { limit: 201 }, { limit: 1.2 }, { limit: "not-a-number" },
+        { limit: NaN }, { limit: null }, { fromTimeMs: -1 }, { toTimeMs: 1.1 },
+        { fromTimeMs: Number.MAX_SAFE_INTEGER }, { toTimeMs: "2025-01-01" },
+        { fromTimeMs: 11, toTimeMs: 10 }, { before: "id" }, { after: "id" }, { cursor: "id" },
+      ];
+      for (const args of invalid) {
+        const result = await cliqMessageActions.handleAction!({
+          channel: "cliq", action: "read", cfg: makeCfg(makeAccount({ refreshToken: "rt" })),
+          params: { to: "cliq:channel:general", ...args }, accountId: null,
+        });
+        expect(result.details).toMatchObject({ status: "failed" });
+      }
+      expect(client.reads).toHaveLength(0);
+      expect(client.chatIdResolves).toHaveLength(0);
+    } finally {
+      setCliqClientRegistry(null);
+    }
+  });
+
+  it("read: requires a refresh token and resolvable chat id, and never returns upstream error bodies", async () => {
+    const client = makeFakeClient();
+    const { setCliqClientRegistry, CliqClientRegistry } = await import("./runtime-api.js");
+    const reg = new CliqClientRegistry();
+    (reg as unknown as { getOrCreate: () => CliqClientLike }).getOrCreate = () => client;
+    setCliqClientRegistry(reg);
+    try {
+      const noToken = await cliqMessageActions.handleAction!({
+        channel: "cliq", action: "read", cfg: makeCfg(makeAccount()),
+        params: { chatId: "CT_dm" }, accountId: null,
+      });
+      expect(noToken.details).toMatchObject({ status: "failed" });
+      const noChat = await cliqMessageActions.handleAction!({
+        channel: "cliq", action: "read", cfg: makeCfg(makeAccount({ refreshToken: "rt" })),
+        params: { to: "cliq:user:u1" }, accountId: null,
+      });
+      expect(noChat.details).toMatchObject({ status: "failed" });
+      client.listChatMessages = vi.fn(async () => { throw new Error("private-response-body secret-token"); });
+      const failed = await cliqMessageActions.handleAction!({
+        channel: "cliq", action: "read", cfg: makeCfg(makeAccount({ refreshToken: "rt" })),
+        params: { chatId: "CT_dm" }, accountId: null,
+      });
+      expect(failed.details).toMatchObject({ status: "failed" });
+      expect(JSON.stringify(failed)).not.toContain("private-response-body");
+      expect(JSON.stringify(failed)).not.toContain("secret-token");
     } finally {
       setCliqClientRegistry(null);
     }

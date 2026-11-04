@@ -1509,6 +1509,15 @@ export interface CliqChatMessageRef {
   file?: { id?: string; name?: string; type?: string; downloadUrl?: string };
 }
 
+/** Query one bounded Cliq history window; times are Unix milliseconds. */
+export interface CliqChatHistoryOptions {
+  limit?: number;
+  fromTimeMs?: number;
+  toTimeMs?: number;
+  /** Reject an unrecognised or partially parsed response for explicit reads. */
+  strictResponse?: boolean;
+}
+
 /**
  * Parse a `GET /api/v2/chats/{chatId}/messages` response into a list of
  * message refs. The response shape is `{ messages: [...] }` (or a bare
@@ -1519,11 +1528,17 @@ export interface CliqChatMessageRef {
  * `content.file` descriptor for `type: "file"` messages. Records missing
  * a resolvable id are skipped, never thrown on.
  */
-function parseCliqChatMessages(data: unknown, fallbackChatId?: string): CliqChatMessageRef[] {
-  if (!data || typeof data !== "object") return [];
+function parseCliqChatMessages(data: unknown, fallbackChatId?: string, strict = false): CliqChatMessageRef[] {
+  if (!data || typeof data !== "object") {
+    if (strict) throw new Error("cliq: invalid chat history response");
+    return [];
+  }
   const obj = data as Record<string, unknown>;
   const list = obj.messages ?? obj.data ?? data;
-  if (!Array.isArray(list)) return [];
+  if (!Array.isArray(list)) {
+    if (strict) throw new Error("cliq: invalid chat history response");
+    return [];
+  }
   const refs: CliqChatMessageRef[] = [];
   for (const entry of list) {
     if (!entry || typeof entry !== "object") continue;
@@ -1601,6 +1616,9 @@ function parseCliqChatMessages(data: unknown, fallbackChatId?: string): CliqChat
       repliedTo,
       file,
     });
+  }
+  if (strict && refs.length !== list.length) {
+    throw new Error("cliq: incomplete chat history response");
   }
   return refs;
 }
@@ -1997,9 +2015,8 @@ export class CliqClient {
     const res = await fetch(url, { method: "POST" });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      this.logger.error?.(
-        `[cliq] oauth: refresh token request failed status=${res.status} body=${truncateForLog(body)}`,
-      );
+      // OAuth error bodies can echo credentials; keep diagnostics status-only.
+      this.logger.error?.(`[cliq] oauth: refresh token request failed status=${res.status}`);
       throw new Error(
         `cliq: OAuth refresh token request failed (${res.status}): ${body}${appendDcHint(body)}`,
       );
@@ -2719,10 +2736,9 @@ export class CliqClient {
     let data: unknown;
     try {
       data = await this.getJson(path, "ZohoCliq.Channels.READ");
-    } catch (err) {
-      this.logger.warn?.(
-        `[cliq] resolveChannelChatId: GET ${path} failed (${String(err)})`,
-      );
+    } catch {
+      // Provider error bodies may contain private request data.
+      this.logger.warn?.("[cliq] resolveChannelChatId: channel lookup failed");
       return undefined;
     }
     const chatId = readCliqChannelChatId(data);
@@ -2757,12 +2773,33 @@ export class CliqClient {
    */
   async listChatMessages(
     chatId: string,
-    opts: { limit?: number } = {},
+    opts: CliqChatHistoryOptions = {},
   ): Promise<CliqChatMessageRef[]> {
+    if (opts.limit !== undefined && !Number.isSafeInteger(opts.limit)) {
+      throw new Error("cliq: limit must be a finite safe integer");
+    }
     const limit = Math.max(1, Math.min(opts.limit ?? 50, 200));
-    const path = `/api/v2/chats/${encodeURIComponent(chatId)}/messages?limit=${limit}`;
+    const query = new URLSearchParams({ limit: String(limit) });
+    for (const [name, value] of [
+      ["fromtime", opts.fromTimeMs],
+      ["totime", opts.toTimeMs],
+    ] as const) {
+      if (value === undefined) continue;
+      if (!Number.isSafeInteger(value) || value < 0 || value > 8_640_000_000_000_000) {
+        throw new Error(`cliq: ${name} must be a valid non-negative Unix timestamp in milliseconds`);
+      }
+      query.set(name, String(value));
+    }
+    if (opts.fromTimeMs !== undefined && opts.toTimeMs !== undefined && opts.fromTimeMs > opts.toTimeMs) {
+      throw new Error("cliq: fromtime must not be later than totime");
+    }
+    const path = `/api/v2/chats/${encodeURIComponent(chatId)}/messages?${query}`;
     const data = await this.getJsonUserContext(path);
-    return parseCliqChatMessages(data, chatId);
+    const refs = parseCliqChatMessages(data, chatId, opts.strictResponse);
+    if (opts.strictResponse && refs.length > limit) {
+      throw new Error("cliq: chat history exceeded requested limit");
+    }
+    return refs;
   }
 
   /**

@@ -27,12 +27,16 @@ import type {
   ChannelMessageToolDiscovery,
 } from "openclaw/plugin-sdk/channel-contract";
 import type { AgentToolResult } from "openclaw/plugin-sdk/tool-results";
+import { optionalNonNegativeIntegerSchema } from "openclaw/plugin-sdk/channel-actions";
+import { channelTargetSchema } from "openclaw/plugin-sdk/core";
 
 import {
   loadCliqMediaAttachment,
   normalizeCliqRouteTarget,
   resolveCliqConfig,
   type CliqMediaAttachment,
+  type CliqChatHistoryOptions,
+  type CliqChatMessageRef,
   type ResolvedCliqAccount,
 } from "./client.js";
 import { markdownToCliq } from "./markdown.js";
@@ -119,7 +123,21 @@ function describeCliqMessageTool(
   return {
     actions: resolveCliqActions(account),
     capabilities: [...CLIQ_MESSAGE_CAPABILITIES],
-    schema: null,
+    schema: account.refreshToken ? {
+      actions: ["read"],
+      visibility: "current-channel",
+      properties: {
+        chatId: channelTargetSchema({ description: "Cliq chat id (required for DM history)." }),
+        fromTimeMs: optionalNonNegativeIntegerSchema({
+          maximum: 8_640_000_000_000_000,
+          description: "Cliq history lower time filter, Unix epoch milliseconds; boundary inclusivity is unspecified.",
+        }),
+        toTimeMs: optionalNonNegativeIntegerSchema({
+          maximum: 8_640_000_000_000_000,
+          description: "Cliq history upper time filter, Unix epoch milliseconds; boundary inclusivity is unspecified.",
+        }),
+      },
+    } : null,
   };
 }
 
@@ -141,19 +159,6 @@ function readStringArray(
   return v
     .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
     .filter((s) => s.length > 0);
-}
-
-function readNumber(
-  params: Record<string, unknown>,
-  key: string,
-): number | undefined {
-  const v = params[key];
-  if (typeof v === "number" && Number.isFinite(v)) return Math.floor(v);
-  if (typeof v === "string" && v.trim()) {
-    const n = Number(v.trim());
-    if (Number.isFinite(n)) return Math.floor(n);
-  }
-  return undefined;
 }
 
 /**
@@ -354,10 +359,8 @@ interface CliqClientLike {
   }): Promise<boolean>;
   listChatMessages(
     chatId: string,
-    opts?: { limit?: number },
-  ): Promise<
-    { messageId: string; chatId: string; text?: string }[]
-  >;
+    opts?: CliqChatHistoryOptions,
+  ): Promise<CliqChatMessageRef[]>;
   resolveChannelChatId(channelUniqueName: string): Promise<string | undefined>;
   addMessageReaction(opts: {
     chatId: string;
@@ -790,7 +793,39 @@ async function handleRead(
   client: CliqClientLike,
   params: Record<string, unknown>,
 ): Promise<AgentToolResult<unknown>> {
-  const limit = readNumber(params, "limit");
+  const readInteger = (key: string, max: number, min = 0): number | undefined => {
+    const raw = params[key];
+    if (raw === undefined) return undefined;
+    // Keep accepting ordinary numeric strings as the original `limit` did,
+    // but never silently truncate, clamp or discard malformed input.
+    const value = typeof raw === "number" ? raw
+      : typeof raw === "string" && /^\d+$/.test(raw.trim()) ? Number(raw.trim())
+      : NaN;
+    if (!Number.isSafeInteger(value) || value < min || value > max) {
+      throw new Error(`\`${key}\` must be an integer between ${min} and ${max}.`);
+    }
+    return value;
+  };
+  let limit: number;
+  let fromTimeMs: number | undefined;
+  let toTimeMs: number | undefined;
+  try {
+    // Preserve the existing client cap. Zoho's docs specify 100 when omitted,
+    // but do not state a maximum when an explicit limit is supplied.
+    limit = readInteger("limit", 200, 1) ?? 50;
+    fromTimeMs = readInteger("fromTimeMs", 8_640_000_000_000_000);
+    toTimeMs = readInteger("toTimeMs", 8_640_000_000_000_000);
+    if (fromTimeMs !== undefined && toTimeMs !== undefined && fromTimeMs > toTimeMs) {
+      throw new Error("`fromTimeMs` must not be later than `toTimeMs`.");
+    }
+    for (const unsupported of ["before", "after", "cursor"]) {
+      if (params[unsupported] !== undefined) {
+        throw new Error(`\`${unsupported}\` is not supported by Cliq history; use explicit time filters.`);
+      }
+    }
+  } catch (err) {
+    return errorResult(err instanceof Error ? err.message : "Invalid history parameters.");
+  }
   const chatId = await resolveChatIdForAction(client, params);
   if (!chatId) {
     return errorResult(
@@ -799,7 +834,10 @@ async function handleRead(
   }
   try {
     const messages = await client.listChatMessages(chatId, {
-      limit: limit ?? 50,
+      limit,
+      ...(fromTimeMs !== undefined ? { fromTimeMs } : {}),
+      ...(toTimeMs !== undefined ? { toTimeMs } : {}),
+      strictResponse: true,
     });
     return okResult(
       `Read ${messages.length} message(s) from chat ${chatId}.`,
@@ -807,15 +845,22 @@ async function handleRead(
         action: "read",
         chatId,
         count: messages.length,
+        limit,
+        completeness: "unknown",
         messages: messages.map((m) => ({
           messageId: m.messageId,
           chatId: m.chatId,
           ...(m.text ? { text: m.text } : {}),
+          ...(m.timestamp ? { timestamp: m.timestamp } : {}),
+          ...(m.senderId ? { senderId: m.senderId } : {}),
+          ...(m.senderName ? { senderName: m.senderName } : {}),
+          ...(m.messageType ? { messageType: m.messageType } : {}),
         })),
       },
     );
-  } catch (err) {
-    return errorResult(`read failed: ${String(err)}`);
+  } catch {
+    // Do not echo Zoho response bodies, request URLs, tokens or message text.
+    return errorResult("read failed. Check the Cliq account, Messages.READ scope, chat access and rate limit.");
   }
 }
 
@@ -892,9 +937,9 @@ export const cliqMessageActions: ChannelMessageActionAdapter = {
         `\`${action}\` requires a user-context refresh token (see README §3); the configured account uses client_credentials only.`,
       );
     }
-    const client = resolveCliqClient(account) as unknown as CliqClientLike;
     const params = ctx.params ?? {};
     try {
+      const client = resolveCliqClient(account) as unknown as CliqClientLike;
       switch (action) {
         case "send":
           return await handleSend(client, params, {
@@ -915,7 +960,9 @@ export const cliqMessageActions: ChannelMessageActionAdapter = {
           return errorResult(`unsupported action: ${action}`);
       }
     } catch (err) {
-      return errorResult(`${action} failed: ${String(err)}`);
+      return action === "read"
+        ? errorResult("read failed. Check the Cliq account, Messages.READ scope, chat access and rate limit.")
+        : errorResult(`${action} failed: ${String(err)}`);
     }
   },
 };

@@ -472,4 +472,41 @@ describe("CliqClient.listChatMessages — recent chat messages (edit-recovery)",
     const get = requests.find((r) => r.url.includes("/api/v2/chats/CT_c/messages"));
     expect(get?.url).toContain("limit=200");
   });
+
+  it("passes bounded Unix-millisecond time filters exactly once without a cursor", async () => {
+    const { CliqClient } = await import("./client.js");
+    installFetch({ messagesBody: { data: [] } });
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, undefined, undefined, "refresh-tok");
+    await client.listChatMessages("CT_c", { limit: 25, fromTimeMs: 1700000000000, toTimeMs: 1700000099999, strictResponse: true });
+    const urls = requests.filter((r) => r.url.includes("/api/v2/chats/CT_c/messages"));
+    expect(urls).toHaveLength(1);
+    const query = new URL(urls[0].url).searchParams;
+    expect(Object.fromEntries(query)).toEqual({ limit: "25", fromtime: "1700000000000", totime: "1700000099999" });
+  });
+
+  it("rejects invalid or reversed times and non-integer limits before OAuth or network access", async () => {
+    const { CliqClient } = await import("./client.js");
+    installFetch();
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, undefined, undefined, "refresh-tok");
+    for (const options of [
+      { fromTimeMs: -1 }, { toTimeMs: 1.2 }, { fromTimeMs: NaN },
+      { toTimeMs: Number.MAX_SAFE_INTEGER }, { fromTimeMs: 11, toTimeMs: 10 },
+      { limit: NaN }, { limit: Infinity }, { limit: 1.5 },
+    ]) {
+      await expect(client.listChatMessages("CT_c", options)).rejects.toThrow();
+    }
+    expect(requests).toHaveLength(0);
+  });
+
+  it("strict explicit reads fail closed on malformed or oversized responses while legacy reads remain tolerant", async () => {
+    const { CliqClient } = await import("./client.js");
+    installFetch({ messagesBody: { data: [{ id: "m1" }, { text: "missing id" }] } });
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, undefined, undefined, "refresh-tok");
+    await expect(client.listChatMessages("CT_c", { strictResponse: true })).rejects.toThrow(/incomplete/);
+    await expect(client.listChatMessages("CT_c")).resolves.toHaveLength(1);
+    installFetch({ messagesBody: { data: [{ id: "m1" }, { id: "m2" }] } });
+    await expect(client.listChatMessages("CT_c", { limit: 1, strictResponse: true })).rejects.toThrow(/exceeded/);
+    installFetch({ messagesBody: { unexpected: [] } });
+    await expect(client.listChatMessages("CT_c", { strictResponse: true })).rejects.toThrow(/invalid/);
+  });
 });
