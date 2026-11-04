@@ -13,6 +13,7 @@ import {
   type CliqLogger,
 } from "./logger.js";
 import type { CliqButton } from "./presentation.js";
+import type { ChannelReadAssertion } from "./sdk-compat.js";
 import type { CliqTrustedOrganizationConfig } from "./trusted-org.js";
 import { cliqCardToV3MessageCard, type V3CardSectionInput, type V3CardSlideInput } from "./v3-card.js";
 import { resolveCliqSecretString } from "./secret-resolve.js";
@@ -1516,6 +1517,8 @@ export interface CliqChatHistoryOptions {
   toTimeMs?: number;
   /** Reject an unrecognised or partially parsed response for explicit reads. */
   strictResponse?: boolean;
+  /** Captured host check, reused after token waits and before provider I/O. */
+  assertReadCurrent?: ChannelReadAssertion;
 }
 
 /**
@@ -1940,7 +1943,7 @@ export class CliqClient {
     );
   }
 
-  async getAccessToken(scope = "ZohoCliq.Webhooks.CREATE"): Promise<string> {
+  async getAccessToken(scope = "ZohoCliq.Webhooks.CREATE", assertReadCurrent?: ChannelReadAssertion): Promise<string> {
     const now = Date.now();
     const cached = this.tokens.get(scope);
     if (cached && now < cached.expiresAt - 60_000) {
@@ -1952,6 +1955,7 @@ export class CliqClient {
     url.searchParams.set("client_secret", this.clientSecret);
     url.searchParams.set("scope", scope);
     this.logger.debug?.(`[cliq] oauth: requesting access token (scope=${scope})`);
+    assertReadCurrent?.();
     const res = await fetch(url, { method: "POST" });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
@@ -1995,7 +1999,7 @@ export class CliqClient {
    * single shared entry (not per-scope) and reused for both the channel and
    * edit paths. Throws if no `refreshToken` is configured.
    */
-  async getRefreshedAccessToken(): Promise<string> {
+  async getRefreshedAccessToken(assertReadCurrent?: ChannelReadAssertion): Promise<string> {
     if (!this.refreshToken) {
       throw new Error(
         "cliq: no refreshToken configured — channel posts and message edits require a user-context token (see README §3)",
@@ -2012,6 +2016,7 @@ export class CliqClient {
     url.searchParams.set("client_secret", this.clientSecret);
     url.searchParams.set("refresh_token", this.refreshToken);
     this.logger.debug?.(`[cliq] oauth: refreshing user-context access token`);
+    assertReadCurrent?.();
     const res = await fetch(url, { method: "POST" });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
@@ -2688,9 +2693,10 @@ export class CliqClient {
    * context). Throws if no `refreshToken` is configured (the refresh-token
    * grant is the only way to mint a usable token for these endpoints).
    */
-  private async getJsonUserContext(path: string): Promise<unknown> {
-    const token = await this.getRefreshedAccessToken();
+  private async getJsonUserContext(path: string, assertReadCurrent?: ChannelReadAssertion): Promise<unknown> {
+    const token = await this.getRefreshedAccessToken(assertReadCurrent);
     const url = `${this.apiBase}${path}`;
+    assertReadCurrent?.();
     const res = await fetch(url, {
       method: "GET",
       headers: { Authorization: `Zoho-oauthtoken ${token}` },
@@ -2699,7 +2705,11 @@ export class CliqClient {
       const body = await res.text().catch(() => "");
       throw new Error(`cliq: GET ${path} failed (${res.status}): ${body}`);
     }
-    return res.json();
+    const data: unknown = await res.json();
+    // Late-response fence: the captured check throws when host read authority
+    // was revoked while the provider response was in flight.
+    assertReadCurrent?.();
+    return data;
   }
 
   /**
@@ -2724,7 +2734,7 @@ export class CliqClient {
    * channel that gains a usable id later still recovers. Transport errors
    * are NOT negatively cached — they stay per-call transient failures.
    */
-  async resolveChannelChatId(channelUniqueName: string): Promise<string | undefined> {
+  async resolveChannelChatId(channelUniqueName: string, assertReadCurrent?: ChannelReadAssertion): Promise<string | undefined> {
     const key = channelUniqueName;
     const cached = this.channelChatIdCache.get(key);
     if (cached) return cached;
@@ -2735,7 +2745,7 @@ export class CliqClient {
     const path = `/api/v2/channelsbyname/${encodeURIComponent(channelUniqueName)}`;
     let data: unknown;
     try {
-      data = await this.getJson(path, "ZohoCliq.Channels.READ");
+      data = await this.getJson(path, "ZohoCliq.Channels.READ", assertReadCurrent);
     } catch {
       // Provider error bodies may contain private request data.
       this.logger.warn?.("[cliq] resolveChannelChatId: channel lookup failed");
@@ -2794,7 +2804,7 @@ export class CliqClient {
       throw new Error("cliq: fromtime must not be later than totime");
     }
     const path = `/api/v2/chats/${encodeURIComponent(chatId)}/messages?${query}`;
-    const data = await this.getJsonUserContext(path);
+    const data = await this.getJsonUserContext(path, opts.assertReadCurrent);
     const refs = parseCliqChatMessages(data, chatId, opts.strictResponse);
     if (opts.strictResponse && refs.length > limit) {
       throw new Error("cliq: chat history exceeded requested limit");
@@ -3049,9 +3059,10 @@ export class CliqClient {
    * stay on `/api/v2/...` indefinitely regardless of `apiVersion` — locked by
    * a regression test in `src/directory.test.ts`.
    */
-  private async getJson(path: string, scope: string): Promise<unknown> {
-    const token = await this.getAccessToken(scope);
+  private async getJson(path: string, scope: string, assertReadCurrent?: ChannelReadAssertion): Promise<unknown> {
+    const token = await this.getAccessToken(scope, assertReadCurrent);
     const url = `${this.apiBase}${path}`;
+    assertReadCurrent?.();
     const res = await fetch(url, {
       method: "GET",
       headers: { Authorization: `Zoho-oauthtoken ${token}` },
@@ -3060,7 +3071,11 @@ export class CliqClient {
       const body = await res.text().catch(() => "");
       throw new Error(`cliq: GET ${path} failed (${res.status}): ${body}`);
     }
-    return res.json();
+    const data: unknown = await res.json();
+    // Late-response fence: the captured check throws when host read authority
+    // was revoked while the provider response was in flight.
+    assertReadCurrent?.();
+    return data;
   }
 
   private async writeBotJson(
