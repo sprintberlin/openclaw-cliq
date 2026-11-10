@@ -13,6 +13,7 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- Reply and forward history recovery now compares bot mentions and whitespace consistently, uses native incoming IDs when available, and rejects ambiguous or stale text-only matches. An ID-only handler parent is enriched from history only when both parent IDs agree; otherwise the direct parent lookup remains available.
 - Inbound quote, forward, and clarification envelope blocks now reach the agent model as intended: the inbound dispatch sets `BodyForAgent` explicitly on `finalizeInboundContext`. Previously, OpenClaw Core defaulted agent text to `CommandBody` (the user's cleaned input only) when `BodyForAgent` was unset, so recovered quotes, parent text, and forward attributions remained unseen in the prompt even after successful history lookups. Slash-command detection continues to read the cleaned `CommandBody`.
 - Core `deferredToActiveRun: "steer" | "followup"` admissions retire the turn's placeholder without a false failure notice (#337). Non-deferred no-reply turns retain the existing failure notice.
 

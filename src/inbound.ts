@@ -55,6 +55,7 @@ import {
   parseCliqReplyToContext,
   resolveCliqReplyToContext,
   recoverCliqInboundContextFromHistory,
+  mergeCliqReplyToContexts,
   formatCliqReplyToBlock,
   type CliqReplyToContext,
 } from "./inbound-quote.js";
@@ -1604,11 +1605,20 @@ export async function dispatchCliqInbound(params: {
       chatId: parsed.chatId || undefined,
       text: cleanText,
       senderId: parsed.senderId,
+      messageId: parsed.messageId,
+      timestamp: parsed.timestamp,
+      // History stores the message as Cliq received it (mentions, original
+      // whitespace); the live body arrives mention-stripped and collapsed.
+      // Normalize both sides identically or the match silently fails.
+      normalizeText: (text) => stripCliqMentions(text, account),
       enabled: true,
       onError: (err, info) => onError?.(err, info),
     })
     : undefined;
-  const replyToBase = parsed.replyTo ?? recoveredContext?.replyTo;
+  // A handler-provided parent id may be combined with a recovered parent
+  // only if they identify the same message; otherwise keep the handler id
+  // and try the direct parent lookup rather than attach an unrelated quote.
+  const replyToBase = mergeCliqReplyToContexts(parsed.replyTo, recoveredContext?.replyTo);
   const replyTo = await resolveCliqReplyToContext(replyToBase, {
     client,
     chatId: parsed.chatId || undefined,
