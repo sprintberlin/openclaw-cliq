@@ -261,6 +261,44 @@ describe("parseCliqWebhookPayload", () => {
     expect(parseCliqWebhookPayload({ user: { id: "u" } })).toBeNull();
   });
 
+  it.each(["", "   ", null, { text: " " }])(
+    "accepts a directed textless handler message while retaining event identity: %j",
+    (message) => {
+      const parsed = parseCliqWebhookPayload({
+        handler: "mention", handlerSchema: "v6", message,
+        eventId: "event-334", user: { id: "u1" },
+        chat: { id: "CT_channel", type: "channel" },
+      });
+      expect(parsed?.text).toBe("");
+      expect(parsed?.isMention).toBe(true);
+      expect(parsed?.messageId).toBe("evt:event-334");
+    },
+  );
+
+  it("admits a Message-handler textless reply with an explicit parent", () => {
+    const parsed = parseCliqWebhookPayload({
+      handler: "message", message: { text: "", id: "m-new", reply_to: "m-parent" },
+      user: { id: "u1" }, chat: { id: "CT_dm" },
+    });
+    expect(parsed?.messageId).toBe("m-new");
+    expect(parsed?.replyTo?.messageId).toBe("m-parent");
+    const withoutTextField = parseCliqWebhookPayload({
+      handler: "message", message: { id: "m-new", reply_to: "m-parent" },
+      user: { id: "u1" }, chat: { id: "CT_dm" },
+    });
+    expect(withoutTextField?.replyTo?.messageId).toBe("m-parent");
+  });
+
+  it("does not accept malformed or unidentified empty messages", () => {
+    const base = { handler: "mention", message: "", user: { id: "u1" }, chat: { id: "CT1" } };
+    expect(parseCliqWebhookPayload({ ...base, message: undefined })).toBeNull();
+    expect(parseCliqWebhookPayload({ ...base, message: {} })).toBeNull();
+    expect(parseCliqWebhookPayload({ ...base, handler: "unknown" })).toBeNull();
+    expect(parseCliqWebhookPayload({ ...base, user: {} })).toBeNull();
+    expect(parseCliqWebhookPayload({ ...base, user: { id: " " } })).toBeNull();
+    expect(parseCliqWebhookPayload({ ...base, chat: {} })).toBeNull();
+  });
+
   it("returns null when user id missing", () => {
     expect(
       parseCliqWebhookPayload({ message: "hi", user: {} } as CliqWebhookPayload),
@@ -2111,6 +2149,53 @@ describe("dispatchCliqInbound — inbound quote / reply context (issue #49)", ()
       }),
     };
   }
+
+  it.each(["", "@Bot", "{@b-123}"])(
+    "requests clarification rather than inventing missing context for %j",
+    async (message) => {
+      const capture: { ctxPayload?: Record<string, unknown>; body?: string } = {};
+      const parsed = parseCliqWebhookPayload({
+        handler: "mention", eventId: "event-334", message,
+        user: { id: "u1" }, chat: { id: "CT_channel", type: "channel" },
+      })!;
+      const client = makeClient();
+      await dispatchCliqInbound({
+        runtime: mockRuntime(capture), cfg: {} as never,
+        account: account({ ownSenderIds: ["b-123"] }), parsed, client,
+      });
+      expect(capture.body).toContain("no readable message text");
+      expect(capture.body).toContain("do not guess");
+      expect(capture.ctxPayload?.ReplyToText).toBeUndefined();
+    },
+  );
+
+  it("preserves a textless reply's explicit quote", async () => {
+    const capture: { ctxPayload?: Record<string, unknown>; body?: string } = {};
+    const parsed = parseCliqWebhookPayload({
+      handler: "mention", message: { text: "", id: "m2", reply_to: "m1" },
+      user: { id: "u1" }, chat: { id: "CT_channel", type: "channel" },
+      parent: { id: "m1", text: "original", sender: { id: "u2", name: "Alice" } },
+    })!;
+    await dispatchCliqInbound({ runtime: mockRuntime(capture), cfg: {} as never,
+      account: account(), parsed, client: makeClient() });
+    expect(capture.body).toContain("> original");
+    expect(capture.body).toContain("without additional text");
+    expect(capture.ctxPayload?.ReplyToText).toBe("original");
+  });
+
+  it("does not guess a quote from history for empty input, even with recovery enabled", async () => {
+    const capture: { ctxPayload?: Record<string, unknown>; body?: string } = {};
+    const parsed = parseCliqWebhookPayload({
+      handler: "mention", eventId: "event-334", message: "",
+      user: { id: "u1" }, chat: { id: "CT_channel", type: "channel" },
+    })!;
+    const client = makeClient([{ messageId: "old-unrelated", chatId: "CT_channel", text: "old" }]);
+    await dispatchCliqInbound({ runtime: mockRuntime(capture), cfg: {} as never,
+      account: account({ refreshToken: "test", replyContextRecovery: { enabled: true } }), parsed, client });
+    expect(capture.body).toContain("do not guess");
+    expect(capture.ctxPayload?.ReplyToText).toBeUndefined();
+    expect(client.listChatMessages).not.toHaveBeenCalled();
+  });
 
   it("carries the parent message id + text + sender into the inbound context", async () => {
     const capture: { ctxPayload?: Record<string, unknown>; body?: string } = {};

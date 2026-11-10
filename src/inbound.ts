@@ -753,7 +753,7 @@ import { resolveCliqOrganizationIdentity, type CliqOrganizationIdentity } from "
 
 /**
  * Parse a raw Cliq webhook payload into a normalized inbound message.
- * Returns null when the payload is missing required fields (text or sender id).
+ * Returns null when the payload lacks a sender or an admissible message shape.
  */
 export function parseCliqWebhookPayload(
   raw: unknown,
@@ -915,7 +915,33 @@ export function parseCliqWebhookPayload(
   if (!bodyText && extracted.type && extracted.type !== "text" && extracted.type !== "file") {
     bodyText = `<cliq ${extracted.type} message>`;
   }
-  if (!bodyText) return null;
+  // A generated Message/Mention handler can carry a deliberate empty text
+  // when a user sends a bare mention or a native reply whose content the
+  // handler cannot expose (#334). Admit only a recognizable message field,
+  // known handler and real routing identities, never an arbitrary empty JSON
+  // object. Existing admission, self-message and durable-ack gates still run.
+  const emptyMessageField =
+    Object.prototype.hasOwnProperty.call(payload, "message") &&
+    (payload.message === null ||
+      (typeof payload.message === "string" && !payload.message.trim()) ||
+      (typeof payload.message === "object" &&
+        payload.message !== null &&
+        !Array.isArray(payload.message) &&
+        ((typeof payload.message.text === "string" && !payload.message.text.trim()) ||
+          (payload.message.text === undefined && Boolean(parseCliqReplyToContext(payload))))));
+  // An undecodable attachment is not a bare mention. Preserve the existing
+  // rejection rather than falsely acknowledging a malformed file delivery.
+  const hasUndecodableAttachment = attachments.length === 0 &&
+    [payload.attachments, payload.attachment, payload.files, payload.audio, payload.voice, payload.file]
+      .some((item) => Array.isArray(item) ? item.length > 0 : item !== undefined && item !== null && item !== "");
+  const isTextlessHandlerMessage =
+    !bodyText &&
+    (payload.handler === "message" || payload.handler === "mention") &&
+    emptyMessageField &&
+    !hasUndecodableAttachment && extracted.type !== "file" &&
+    typeof user.id === "string" && Boolean(user.id.trim()) &&
+    typeof payload.chat?.id === "string" && Boolean(payload.chat.id.trim());
+  if (!bodyText && !isTextlessHandlerMessage) return null;
 
   const userName = buildUserName(user);
   const handler = payload.handler ?? "";
@@ -986,7 +1012,7 @@ export function parseCliqWebhookPayload(
   const resolvedMessageId =
     messageId ||
     eventId ||
-    (attachments.length > 0 || bodyText
+    (attachments.length > 0 || bodyText || isTextlessHandlerMessage
       ? buildSyntheticMessageId(user.id, chatId, attachments, time, bodyText)
       : "");
 
@@ -1618,7 +1644,9 @@ export async function dispatchCliqInbound(params: {
     ? await resolveCliqForwardContext(parsed.forward, {
       client,
       chatId: parsed.chatId || undefined,
-      messageId: parsed.messageId,
+      // Deluge event ids and content hashes are not Cliq message ids.
+      // Never match them against an unrelated history record.
+      messageId: /^(?:evt|syn):/.test(parsed.messageId) ? undefined : parsed.messageId,
       text: cleanText,
       canReadChatMessages: Boolean(account.refreshToken),
       onError: (err, info) => onError?.(err, info),
@@ -1632,7 +1660,15 @@ export async function dispatchCliqInbound(params: {
             : forward,
         )
       : "";
-  const bodyText = [quoteBlock, forwardBlock, cleanText]
+  // Never guess a parent from unrelated chat history. If Cliq did not send
+  // actionable text, keep any verified quote but explicitly ask for missing
+  // context rather than dispatching an empty prompt or silently dropping it.
+  const textlessHint = !cleanText && parsed.attachments.length === 0 && !parsed.forward
+    ? (quoteBlock
+        ? "[The user replied or mentioned the bot without additional text. Ask what they need about the quoted message.]"
+        : "[Cliq provided no readable message text. A quoted or forwarded message may be missing. Ask the user to resend the content or explain what they need; do not guess.]")
+    : "";
+  const bodyText = [quoteBlock, forwardBlock, cleanText, textlessHint]
     .filter((part) => part.trim().length > 0)
     .join("\n\n");
   const body = runtime.channel.reply.formatAgentEnvelope({
@@ -1731,7 +1767,7 @@ export async function dispatchCliqInbound(params: {
 
   const ctxPayload = runtime.channel.reply.finalizeInboundContext({
     Body: body,
-    RawBody: cleanText,
+    RawBody: cleanText || textlessHint,
     CommandBody: cleanText,
     From: fromField,
     To: `cliq:${responseTarget}`,

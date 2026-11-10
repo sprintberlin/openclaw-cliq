@@ -958,6 +958,26 @@ describe("durable-before-ack ingest (issue #12)", () => {
     expect(res.statusCode).toBe(200);
   });
 
+  it.each(["mention", "message"])("dispatches an identifiable empty %s webhook and preserves replay dedupe", async (handler) => {
+    let calls = 0;
+    const { webhook } = buildDurableRegistration({ inboundRun: async () => { calls++; } });
+    const payload = createMentionDelugePayload({ handler, message: "", eventId: "event-empty-334" });
+    // An explicit mention-handler event is directed. For the generic message
+    // handler, the matching mention metadata makes the directedness explicit.
+    const post = async (secret: string) => {
+      const res = createMockServerResponse();
+      await webhook.handler(createMockIncomingRequest("POST", payload,
+        { "x-cliq-webhook-secret": secret }), res as unknown as any);
+      return res;
+    };
+    expect((await post("wrong")).statusCode).toBe(401);
+    expect(calls).toBe(0);
+    expect((await post("s3cr3t")).statusCode).toBe(200);
+    expect(calls).toBe(1);
+    expect((await post("s3cr3t")).statusCode).toBe(200);
+    expect(calls).toBe(1);
+  });
+
   it("ackPolicy=immediate acks 200 without awaiting dispatch", async () => {
     setCliqDetachedWebhookWorkForTest(null);
     let runStarted = false;
