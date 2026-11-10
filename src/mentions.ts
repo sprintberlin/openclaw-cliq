@@ -56,10 +56,16 @@ export function buildCliqMentionRegexes(account: {
  */
 export function stripCliqMentions(
   text: string,
-  account: { botId?: string; botName?: string },
+  account: { botId?: string; botName?: string; ownSenderIds?: string[] },
 ): string {
   if (!text) return "";
   let result = text;
+  // Cliq may render a mention as `{@b-...}`. Only remove identities that
+  // belong to this bot; a different bot's mention is meaningful text.
+  for (const raw of [account.botId, ...(account.ownSenderIds ?? [])]) {
+    const id = raw?.trim();
+    if (id) result = result.replace(new RegExp(`\\{@${escapeRegex(id)}\\}`, "giu"), " ");
+  }
   for (const re of buildCliqMentionRegexes(account)) {
     re.lastIndex = 0;
     result = result.replace(re, " ");

@@ -68,6 +68,13 @@ describe("stripCliqMentions", () => {
     ).toBe("ping @alice please");
   });
 
+  it("strips only this bot's raw Cliq mention identifiers", () => {
+    const account = { botName: "Zora", botId: "zora", ownSenderIds: ["b-123"] };
+    expect(stripCliqMentions("{@b-123}", account)).toBe("");
+    expect(stripCliqMentions("{@b-123} please ping {@b-999}", account)).toBe("please ping {@b-999}");
+    expect(stripCliqMentions("{@b-1234} @Zora test", account)).toBe("{@b-1234} test");
+  });
+
   it("does not strip a substring of a longer token", () => {
     expect(
       stripCliqMentions("@Zorascript @Zora run", { botName: "Zora" }),

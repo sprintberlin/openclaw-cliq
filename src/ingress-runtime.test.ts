@@ -238,6 +238,33 @@ describe("webhook durable admission before ack (issue #261)", () => {
     return { res, result };
   };
 
+  it("durably admits a textless mention before acknowledging it", async () => {
+    const accepted: ParsedCliqInbound[] = [];
+    const webhook = registerWithRegistry(fakeRegistryMonitor(async ({ parsed }) => {
+      accepted.push(parsed);
+      return { kind: "durable", queueResult: { kind: "accepted", duplicate: false, record: { id: parsed.messageId } } };
+    }));
+    const res = createMockServerResponse();
+    await webhook.handler(createMockIncomingRequest("POST", createMentionDelugePayload({
+      handler: "mention", message: "", eventId: "textless-durable-334",
+    }), { "x-cliq-webhook-secret": "s3cr3t" }), res as unknown as never);
+    expect(res.statusCode).toBe(200);
+    expect(accepted).toHaveLength(1);
+    expect(accepted[0].messageId).toBe("evt:textless-durable-334");
+    expect(accepted[0].text).toBe("");
+    expect(dispatches).toBe(0);
+  });
+
+  it("does not acknowledge a textless mention when durable admission fails", async () => {
+    const webhook = registerWithRegistry(fakeRegistryMonitor(async () => { throw new Error("append failed"); }));
+    const res = createMockServerResponse();
+    await webhook.handler(createMockIncomingRequest("POST", createMentionDelugePayload({
+      handler: "mention", message: "", eventId: "textless-fail-334",
+    }), { "x-cliq-webhook-secret": "s3cr3t" }), res as unknown as never);
+    expect(res.statusCode).toBe(503);
+    expect(dispatches).toBe(0);
+  });
+
   it("acks 200 after a durable admission without awaiting dispatch", async () => {
     const webhook = registerWithRegistry(
       fakeRegistryMonitor(async () => ({
