@@ -1767,6 +1767,9 @@ export async function dispatchCliqInbound(params: {
 
   const ctxPayload = runtime.channel.reply.finalizeInboundContext({
     Body: body,
+    // Core defaults agent text to CommandBody, not Body. Preserve quote,
+    // forward and textless context without changing command interpretation.
+    BodyForAgent: bodyText,
     RawBody: cleanText || textlessHint,
     CommandBody: cleanText,
     From: fromField,
