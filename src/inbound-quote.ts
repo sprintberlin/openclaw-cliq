@@ -283,6 +283,27 @@ export async function resolveCliqReplyToContext(
   }
 }
 
+/** Combine handler and history fields only when both identify the same parent. */
+export function mergeCliqReplyToContexts(
+  handler: CliqReplyToContext | undefined,
+  recovered: CliqReplyToContext | undefined,
+): CliqReplyToContext | undefined {
+  if (!handler) return recovered;
+  if (!recovered) return handler;
+  // A matching text, sender and time does not prove the live record is in
+  // history yet. Conflicting or missing parent IDs cannot be merged safely.
+  if (!handler.messageId || !recovered.messageId || handler.messageId !== recovered.messageId) {
+    return handler;
+  }
+  return {
+    messageId: handler.messageId,
+    text: handler.text ?? recovered.text,
+    senderName: handler.senderName ?? recovered.senderName,
+    senderId: handler.senderId ?? recovered.senderId,
+    time: handler.time ?? recovered.time,
+  };
+}
+
 /**
  * Recover inbound context (reply / forward) from Cliq's chat history
  * (issues #230 + #223).
@@ -301,11 +322,9 @@ export async function resolveCliqReplyToContext(
  * inbound message. It is therefore opt-in via
  * `channels.cliq.replyContextRecovery` and off by default.
  *
- * Matching: the webhook fires because the message was just sent, so the live
- * message is the NEWEST history entry with the same body text (and sender,
- * when known). List order is not assumed: the match with the highest
- * timestamp wins, and equal-text ambiguity is resolved by recency rather than
- * by guessing a parent. Never throws.
+ * Match a native incoming message id when available. Otherwise require a
+ * unique normalized-text match from the same sender within the time window.
+ * Ambiguous matches are discarded rather than choosing an unrelated parent.
  */
 export async function recoverCliqInboundContextFromHistory(
   params: {
@@ -328,6 +347,17 @@ export async function recoverCliqInboundContextFromHistory(
     text?: string;
     /** Live sender id, used to avoid matching another user's identical text. */
     senderId?: string;
+    /** Native incoming message id, if available (not a Deluge event or hash). */
+    messageId?: string;
+    /** Inbound timestamp, used to reject stale text-only matches when supplied. */
+    timestamp?: string;
+    /**
+     * Comparison normalizer applied to BOTH the live body and each history
+     * text (default: whitespace collapse). Pass the channel's mention
+     * stripper so a history record that still contains the bot @handle can
+     * match the mention-stripped inbound text.
+     */
+    normalizeText?: (text: string) => string;
     /** When false, the fetch is skipped (feature off or no refresh token). */
     enabled: boolean;
     recentMessagesLimit?: number;
@@ -336,7 +366,8 @@ export async function recoverCliqInboundContextFromHistory(
 ): Promise<{ replyTo?: CliqReplyToContext; forward?: CliqForwardContext } | undefined> {
   if (!params.enabled) return undefined;
   const chatId = params.chatId?.trim();
-  const liveText = params.text?.trim();
+  const normalize = (text: string) => (params.normalizeText ?? normalizeCliqHistoryText)(text).trim();
+  const liveText = normalize(params.text ?? "");
   if (!chatId || !liveText) return undefined;
 
   let messages: {
@@ -357,16 +388,28 @@ export async function recoverCliqInboundContextFromHistory(
     return undefined;
   }
 
-  // Newest matching entry wins: the live message is the most recent one with
-  // this body (and sender). Timestamp compare is order-independent.
+  // Normalization can make distinct messages look identical. A recent,
+  // unique text/sender match reduces ambiguity but is still best effort:
+  // Cliq history may not yet contain the inbound message.
   const liveSender = params.senderId?.trim();
-  let match: (typeof messages)[number] | undefined;
-  for (const m of messages) {
-    if (m.text?.trim() !== liveText) continue;
-    if (liveSender && m.senderId && m.senderId !== liveSender) continue;
-    if (!match || (m.timestamp ?? "") > (match.timestamp ?? "")) match = m;
-  }
-  if (!match) return undefined;
+  const incomingId = params.messageId?.trim();
+  const nativeId = incomingId && !/^(?:evt|syn):/.test(incomingId) ? incomingId : undefined;
+  const liveTime = params.timestamp ? parseCliqRecoveryTime(params.timestamp) : undefined;
+  if (!nativeId && (!liveSender || liveTime === undefined)) return undefined;
+  const candidates = messages.filter((m) => {
+    if (nativeId && m.messageId !== nativeId) return false;
+    if (!m.text || normalize(m.text) !== liveText) return false;
+    if (liveSender && m.senderId && m.senderId.trim() !== liveSender) return false;
+    // Text-only matching requires both the sender and a recent timestamp.
+    if (!nativeId) {
+      if (m.senderId?.trim() !== liveSender) return false;
+      const historyTime = parseCliqRecoveryTime(m.timestamp);
+      if (historyTime === undefined || liveTime === undefined || Math.abs(historyTime - liveTime) > 120_000) return false;
+    }
+    return true;
+  });
+  if (candidates.length !== 1) return undefined;
+  const match = candidates[0];
 
   if (match.repliedTo) {
     const replyTo = parseCliqReplyToContext({ replied_to: match.repliedTo });
@@ -377,6 +420,23 @@ export async function recoverCliqInboundContextFromHistory(
     if (forward) return { forward };
   }
   return undefined;
+}
+
+/** Parse ISO or epoch-millisecond timestamps without guessing units. */
+function parseCliqRecoveryTime(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  const time = /^\d{13}$/.test(trimmed) ? Number(trimmed) : Date.parse(trimmed);
+  return Number.isFinite(time) ? time : undefined;
+}
+
+/**
+ * Default recovery-match normalization: collapse whitespace runs to single
+ * spaces. Mention tokens are NOT touched here — callers with a bot identity
+ * pass `stripCliqMentions` as `normalizeText` to also remove the handle.
+ */
+function normalizeCliqHistoryText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
 }
 
 /**

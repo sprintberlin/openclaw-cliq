@@ -2133,7 +2133,16 @@ describe("dispatchCliqInbound — inbound quote / reply context (issue #49)", ()
     };
   }
 
-  function makeClient(messages: { messageId: string; chatId: string; text?: string }[] = []) {
+  function makeClient(
+    messages: {
+      messageId: string;
+      chatId: string;
+      text?: string;
+      senderId?: string;
+      timestamp?: string;
+      repliedTo?: unknown;
+    }[] = [],
+  ) {
     return {
       sendMessage: vi.fn(async (_o: { to: string; text: string; isDm?: boolean }) => ({
         messageId: "out-1",
@@ -2183,7 +2192,7 @@ describe("dispatchCliqInbound — inbound quote / reply context (issue #49)", ()
     })!;
     const history = [{
       messageId: "m-live", chatId: "CT_dm_chat-B1", text: liveText,
-      senderId: "u1", timestamp: "2026-11-10T19:42:21.131Z",
+      senderId: "u1", timestamp: parsed.timestamp,
       repliedTo: { id: "m-parent", content: "Parent only in history", sender: { id: "bot", name: "Bot" } },
     }];
     const client = makeClient(history);
@@ -2198,6 +2207,64 @@ describe("dispatchCliqInbound — inbound quote / reply context (issue #49)", ()
     expect(capture.dispatchedCtx?.agentText).toContain("> Parent only in history");
     expect(capture.dispatchedCtx?.CommandBody).toBe(liveText);
     expect(capture.dispatchedCtx?.RawBody).toBe(liveText);
+  });
+
+  it("preserves a history parent when the handler supplies only the matching parent id", async () => {
+    const capture: { ctxPayload?: Record<string, unknown>; dispatchedCtx?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload({
+      handler: "message", message: { id: "live-1", text: "Explain", reply_to: "parent-1" },
+      user: { id: "u1" }, chat: { id: "CT_dm_chat-B1" },
+    })!;
+    const client = makeClient([{
+      messageId: "live-1", chatId: "CT_dm_chat-B1", text: "Explain", senderId: "u1",
+      repliedTo: { id: "parent-1", content: "History parent", sender: { id: "b1", name: "Bot" } },
+    }]);
+    await dispatchCliqInbound({
+      runtime: runtimeWithSdkFinalizer(capture), cfg: {} as never,
+      account: account({ refreshToken: "rt", replyContextRecovery: { enabled: true } }), parsed, client,
+    });
+    expect(capture.dispatchedCtx?.agentText).toContain("> History parent");
+    expect(capture.dispatchedCtx?.ReplyToMessageId).toBe("parent-1");
+    expect(capture.dispatchedCtx?.ReplyToSenderName).toBe("Bot");
+    expect(client.listChatMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not attach a recovered parent with an incompatible handler parent id", async () => {
+    const capture: { ctxPayload?: Record<string, unknown>; dispatchedCtx?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload({
+      handler: "message", message: { id: "live-1", text: "Explain", reply_to: "parent-1" },
+      user: { id: "u1" }, chat: { id: "CT_dm_chat-B1" },
+    })!;
+    const client = makeClient([{
+      messageId: "live-1", chatId: "CT_dm_chat-B1", text: "Explain", senderId: "u1",
+      repliedTo: { id: "other-parent", content: "Wrong parent", sender: { id: "b1", name: "Bot" } },
+    }]);
+    await dispatchCliqInbound({
+      runtime: runtimeWithSdkFinalizer(capture), cfg: {} as never,
+      account: account({ refreshToken: "rt", replyContextRecovery: { enabled: true } }), parsed, client,
+    });
+    expect(capture.dispatchedCtx?.agentText).not.toContain("Wrong parent");
+    expect(capture.dispatchedCtx?.ReplyToMessageId).toBe("parent-1");
+    expect(capture.dispatchedCtx?.ReplyToText).toBeUndefined();
+  });
+
+  it("matches normalized mentions and whitespace in history through the real dispatch", async () => {
+    const capture: { ctxPayload?: Record<string, unknown>; dispatchedCtx?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload({
+      handler: "message", eventId: "test-normalized", message: "@Bot first\n  second",
+      user: { id: "u1" }, chat: { id: "CT_dm_chat-B1" },
+    })!;
+    const client = makeClient([{
+      messageId: "live-1", chatId: "CT_dm_chat-B1", text: "@Bot first   second",
+      senderId: "u1", timestamp: parsed.timestamp,
+      repliedTo: { id: "parent-1", content: "History parent", sender: { name: "Bot" } },
+    }]);
+    await dispatchCliqInbound({
+      runtime: runtimeWithSdkFinalizer(capture), cfg: {} as never,
+      account: account({ refreshToken: "rt", replyContextRecovery: { enabled: true } }), parsed, client,
+    });
+    expect(capture.dispatchedCtx?.agentText).toContain("> History parent");
+    expect(capture.dispatchedCtx?.CommandBody).toBe("first second");
   });
 
   it("passes an explicit textless quote and clarification to the agent without making them a command", async () => {
