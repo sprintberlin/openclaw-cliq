@@ -2340,6 +2340,10 @@ const CLIQ_BENIGN_SKIP_REASONS = new Set([
   "deferred",
 ]);
 
+function isCliqDeferredToActiveRun(value: unknown): boolean {
+  return value === "steer" || value === "followup" || value === true;
+}
+
 /**
  * Whether a plugin-visible `inbound.run` result reports an intentionally
  * quiet turn (#283). Two signals, strongest first:
@@ -2387,7 +2391,7 @@ export function isCliqSilentDispatchResult(runResult: unknown): boolean {
   if (result.deliberateSilentTerminalReply === true) {
     return true;
   }
-  if (result.queuedFinal === true || result.deferredToActiveRun === true) {
+  if (result.queuedFinal === true || isCliqDeferredToActiveRun(result.deferredToActiveRun)) {
     return false;
   }
   const counts = result.counts;
@@ -2424,7 +2428,9 @@ async function isBenignlySkippedTurn(
     dispatchResult &&
     typeof dispatchResult === "object" &&
     !Array.isArray(dispatchResult) &&
-    (dispatchResult as { deferredToActiveRun?: unknown }).deferredToActiveRun === true
+    isCliqDeferredToActiveRun(
+      (dispatchResult as { deferredToActiveRun?: unknown }).deferredToActiveRun,
+    )
   ) {
     return true;
   }

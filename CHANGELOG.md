@@ -11,6 +11,10 @@ publish workflow extracts the matching section as the release notes (see
 
 ## [Unreleased]
 
+### Fixed
+
+- Core `deferredToActiveRun: "steer" | "followup"` admissions retire the turn's placeholder without a false failure notice (#337). Non-deferred no-reply turns retain the existing failure notice.
+
 ### Added
 
 - Bounded `message(action=read)` accepts explicit `fromTimeMs`/`toTimeMs` Unix-millisecond filters and exposes them in the SDK schema alongside `chatId`. One read requests at most 200 records, validates inputs, returns sender/time metadata with `completeness: "unknown"`, and reports failures without raw provider errors; no pagination, polling, cross-provider guard bypass, or completeness claim is added. Existing recent-message lookups retain their default and cap.

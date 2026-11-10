@@ -3902,6 +3902,58 @@ describe("dispatchCliqInbound — thinking placeholder (issue #47)", () => {
     expect(client.deletes).toHaveLength(0);
   });
 
+  it.each(["steer", "followup", true] as const)(
+    "retires visible progress on deferred admission %s without a failure notice (#337)",
+    async (marker) => {
+      const client = makeMockClient({ placeholderChatId: "chat-u1" });
+      const parsed = parseCliqWebhookPayload(dmPayload({ eventId: `progress-deferred-${marker}` }));
+      const runtime = mockRuntimeWithDeliver("unused");
+      runtime.channel.inbound.run = async (params) => {
+        const adapter = (params as unknown as {
+          adapter: { resolveTurn: (...args: unknown[]) => unknown };
+        }).adapter;
+        const turn = adapter.resolveTurn({}, {}, {}) as unknown as {
+          replyOptions?: {
+            onPlanUpdate?: (payload: {
+              phase: "update";
+              steps?: Array<{ step: string; status: "in_progress" }>;
+            }) => Promise<unknown>;
+          };
+        };
+        await turn.replyOptions?.onPlanUpdate?.({
+          phase: "update",
+          steps: [{ step: "Read docs", status: "in_progress" }],
+        });
+        return {
+          admission: { kind: "dispatch" },
+          dispatched: true,
+          dispatchResult: {
+            queuedFinal: false,
+            deferredToActiveRun: marker,
+            counts: { tool: 0, block: 0, final: 0 },
+          },
+        };
+      };
+      await dispatchCliqInbound({
+        runtime,
+        cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+        account: account({
+          apiVersion: { dmPost: "v3", channelPost: "v2" },
+          refreshToken: "rt",
+          blockStreaming: true,
+          streaming: { mode: "progress", progress: {} },
+          streamingMinEditIntervalMs: 0,
+        }),
+        parsed: parsed!,
+        client,
+      });
+      expect(client.edits.at(-1)?.text).toBe(" ");
+      expect(
+        client.edits.some((entry) => entry.text === "⚠️ Couldn't process that message."),
+      ).toBe(false);
+    },
+  );
+
   it("retires visible progress on a benign skip without a failure notice", async () => {
     const client = makeMockClient({ placeholderChatId: "chat-u1" });
     const parsed = parseCliqWebhookPayload(dmPayload());
@@ -4850,6 +4902,87 @@ describe("dispatchCliqInbound — thinking placeholder cleanup on no reply", () 
     };
     return client;
   }
+
+  it.each(["steer", "followup", true] as const)(
+    "deletes the placeholder for deferred admission %s on a directed DM (#337)",
+    async (marker) => {
+      const client = makeMockClient({ placeholderChatId: "chat-u1" });
+      const parsed = parseCliqWebhookPayload(dmPayload({ eventId: `deferred-${marker}` }));
+      const runtime = mockRuntimeNoReply();
+      runtime.channel.inbound.run = async (params) => {
+        const adapter = (params as unknown as {
+          adapter: { resolveTurn: (...args: unknown[]) => unknown };
+        }).adapter;
+        adapter.resolveTurn({}, {}, {});
+        return {
+          admission: { kind: "dispatch" },
+          dispatched: true,
+          dispatchResult: {
+            queuedFinal: false,
+            deferredToActiveRun: marker,
+            counts: { tool: 0, block: 0, final: 0 },
+          },
+        };
+      };
+
+      await dispatchCliqInbound({
+        runtime,
+        cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+        account: account({
+          thinking: { mode: "placeholder", text: "⏳ …", animate: "off" },
+          refreshToken: "rt",
+          blockStreaming: false,
+        }),
+        parsed: parsed!,
+        client,
+      });
+
+      expect(parsed!.messageId).toBe(`evt:deferred-${marker}`);
+      expect(client.sends).toHaveLength(1);
+      expect(client.deletes).toEqual([{ chatId: "chat-u1", messageId: "ph-1" }]);
+      expect(client.edits).toHaveLength(0);
+    },
+  );
+
+  it.each([false, null, "unexpected"])(
+    "shows the failure notice for a non-deferred marker %s on a directed DM (#337)",
+    async (marker) => {
+      const client = makeMockClient({ placeholderChatId: "chat-u1" });
+      const parsed = parseCliqWebhookPayload(dmPayload({ eventId: `not-deferred-${marker}` }));
+      const runtime = mockRuntimeNoReply();
+      runtime.channel.inbound.run = async (params) => {
+        const adapter = (params as unknown as {
+          adapter: { resolveTurn: (...args: unknown[]) => unknown };
+        }).adapter;
+        adapter.resolveTurn({}, {}, {});
+        return {
+          admission: { kind: "dispatch" },
+          dispatched: true,
+          dispatchResult: {
+            queuedFinal: false,
+            deferredToActiveRun: marker,
+            counts: { tool: 0, block: 0, final: 0 },
+          },
+        };
+      };
+
+      await dispatchCliqInbound({
+        runtime,
+        cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+        account: account({
+          thinking: { mode: "placeholder", text: "⏳ …", animate: "off" },
+          refreshToken: "rt",
+          blockStreaming: false,
+        }),
+        parsed: parsed!,
+        client,
+      });
+
+      expect(client.sends).toHaveLength(1);
+      expect(client.deletes).toHaveLength(0);
+      expect(client.edits.map((entry) => entry.text)).toEqual(["⚠️ Couldn't process that message."]);
+    },
+  );
 
   it("deletes an active placeholder when Core returns a zero-count skip without processedOutcome (issue #204)", async () => {
     const client = makeMockClient({ placeholderChatId: "chat-u1" });
@@ -6612,7 +6745,24 @@ describe("unmentioned always-on group turns (issue #283)", () => {
       ).toBe(false);
     });
 
-    it("rejects undefined, non-dispatched, deferred, and answered turns", () => {
+    it.each(["steer", "followup", true] as const)(
+      "rejects deferred admission %s as a silent dispatch",
+      (marker) => {
+        expect(
+          isCliqSilentDispatchResult({
+            admission: { kind: "dispatch" },
+            dispatched: true,
+            dispatchResult: {
+              queuedFinal: false,
+              deferredToActiveRun: marker,
+              counts: { tool: 0, block: 0, final: 0 },
+            },
+          }),
+        ).toBe(false);
+      },
+    );
+
+    it("rejects undefined, non-dispatched, and answered turns", () => {
       expect(isCliqSilentDispatchResult(undefined)).toBe(false);
       expect(
         isCliqSilentDispatchResult({ admission: { kind: "drop" }, dispatched: false }),
@@ -6622,17 +6772,6 @@ describe("unmentioned always-on group turns (issue #283)", () => {
           admission: { kind: "dispatch" },
           dispatched: true,
           dispatchResult: { queuedFinal: true, counts: {} },
-        }),
-      ).toBe(false);
-      expect(
-        isCliqSilentDispatchResult({
-          admission: { kind: "dispatch" },
-          dispatched: true,
-          dispatchResult: {
-            queuedFinal: false,
-            deferredToActiveRun: true,
-            counts: {},
-          },
         }),
       ).toBe(false);
       expect(
