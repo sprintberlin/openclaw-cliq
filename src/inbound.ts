@@ -595,9 +595,9 @@ function extractMessageText(payload: CliqWebhookPayload): ExtractedCliqMessage {
   if (typeof payload.message === "string") {
     text = payload.message.trim();
   } else if (payload.message && typeof payload.message === "object") {
-    text = payload.message.text?.trim() ?? "";
-    messageId = payload.message.id ?? "";
-    time = payload.message.time ?? "";
+    text = typeof payload.message.text === "string" ? payload.message.text.trim() : "";
+    messageId = typeof payload.message.id === "string" ? payload.message.id : "";
+    time = typeof payload.message.time === "string" ? payload.message.time : "";
     type = normalizeInboundLabel(payload.message.message_type ?? payload.message.type) ?? type;
     richText = richText || Boolean(payload.message.rte);
     revision = normalizeInboundRevision(payload.message.revision) ?? revision;
@@ -612,16 +612,17 @@ function extractMessageText(payload: CliqWebhookPayload): ExtractedCliqMessage {
     payload.message.content && typeof payload.message.content === "object"
       ? payload.message.content
       : undefined;
-  if (!text && payload.text) text = payload.text.trim();
+  if (!text && typeof payload.text === "string") text = payload.text.trim();
   if (!text && typeof payload.description === "string") text = payload.description.trim();
   const content = payload.content && typeof payload.content === "object"
     ? payload.content
     : messageContent;
-  if (!text) text = content?.text?.trim() ?? content?.description?.trim() ?? "";
+  if (!text && typeof content?.text === "string") text = content.text.trim();
+  if (!text && typeof content?.description === "string") text = content.description.trim();
   // A file share may carry the caption in `content.comment` rather than the
   // message text; surface it so the agent sees what the user said alongside
   // the attachment.
-  if (!text && content?.comment) {
+  if (!text && typeof content?.comment === "string") {
     text = content.comment.trim();
   }
   return { text, messageId, time, type, richText, revision, isEdited };
@@ -659,7 +660,7 @@ function extractMessageAttachments(payload: CliqWebhookPayload): CliqInboundAtta
     : messageObject?.content && typeof messageObject.content === "object"
       ? messageObject.content
       : undefined;
-  const caption = content?.comment?.trim() || undefined;
+  const caption = typeof content?.comment === "string" ? content.comment.trim() || undefined : undefined;
   append(normalizeCliqAttachments(content, caption));
   append(normalizeCliqAttachments(messageObject?.attachments, caption));
   if (typeof messageObject?.file !== "string") {
@@ -823,6 +824,15 @@ export function parseCliqWebhookPayload(
     }
   }
 
+  const message = payload.message;
+  if (message !== undefined && (message === null || Array.isArray(message) ||
+      (typeof message !== "string" && typeof message !== "object"))) return null;
+  if (message && typeof message === "object" && !Array.isArray(message)) {
+    if (message.text !== undefined && typeof message.text !== "string") return null;
+    if (message.id !== undefined && typeof message.id !== "string") return null;
+    if (message.time !== undefined && typeof message.time !== "string") return null;
+  }
+  if (payload.text !== undefined && typeof payload.text !== "string") return null;
   const extracted = extractMessageText(payload);
   const { text, messageId, time } = extracted;
   const attachments = extractMessageAttachments(payload);
@@ -915,7 +925,17 @@ export function parseCliqWebhookPayload(
   if (!bodyText && extracted.type && extracted.type !== "text" && extracted.type !== "file") {
     bodyText = `<cliq ${extracted.type} message>`;
   }
-  if (!bodyText) return null;
+  if (!bodyText) {
+    const messageShape = typeof message === "string" ||
+      (Boolean(message) && typeof message === "object" && !Array.isArray(message));
+    const address = payload.chat?.id ?? payload.chat?.channel_id ??
+      payload.channel?.id ?? payload.chat?.channel_unique_name ?? payload.channel?.unique_name;
+    if (
+      (payload.handler !== "message" && payload.handler !== "mention") ||
+      !messageShape || typeof user.id !== "string" || !user.id.trim() ||
+      typeof address !== "string" || !address.trim()
+    ) return null;
+  }
 
   const userName = buildUserName(user);
   const handler = payload.handler ?? "";
@@ -986,9 +1006,7 @@ export function parseCliqWebhookPayload(
   const resolvedMessageId =
     messageId ||
     eventId ||
-    (attachments.length > 0 || bodyText
-      ? buildSyntheticMessageId(user.id, chatId, attachments, time, bodyText)
-      : "");
+    buildSyntheticMessageId(user.id, chatId, attachments, time, bodyText);
 
   return {
     text: finalText,
@@ -1576,18 +1594,32 @@ export async function dispatchCliqInbound(params: {
     ? await recoverCliqInboundContextFromHistory({
       client,
       chatId: parsed.chatId || undefined,
-      text: cleanText,
+      text: cleanText ? parsed.text : "",
       senderId: parsed.senderId,
+      messageId: parsed.messageId,
+      allowTextMatch: Boolean(cleanText),
       enabled: true,
-      onError: (err, info) => onError?.(err, info),
+      onError: (_err, info) => onError?.(new Error("history read failed"), info),
     })
     : undefined;
-  const replyToBase = parsed.replyTo ?? recoveredContext?.replyTo;
+  const recoveredReply = recoveredContext?.replyTo;
+  const replyToBase = parsed.replyTo?.messageId &&
+    parsed.replyTo.messageId !== recoveredReply?.messageId
+    ? parsed.replyTo
+    : parsed.replyTo && recoveredReply
+      ? {
+          messageId: parsed.replyTo.messageId ?? recoveredReply.messageId,
+          text: parsed.replyTo.text ?? recoveredReply.text,
+          senderId: parsed.replyTo.senderId ?? recoveredReply.senderId,
+          senderName: parsed.replyTo.senderName ?? recoveredReply.senderName,
+          time: parsed.replyTo.time ?? recoveredReply.time,
+        }
+      : parsed.replyTo ?? recoveredReply;
   const replyTo = await resolveCliqReplyToContext(replyToBase, {
     client,
     chatId: parsed.chatId || undefined,
     canReadChatMessages: Boolean(account.refreshToken),
-    onError: (err, info) => onError?.(err, info),
+    onError: (_err, info) => onError?.(new Error("history read failed"), info),
   });
   const quoteBlock =
     replyTo && (replyTo.text || replyTo.senderName)
@@ -1613,7 +1645,7 @@ export async function dispatchCliqInbound(params: {
   // is tracked in #223 rather than paid for by every message.
   const forwardNeedsLookup =
     !recoveredContext?.forward &&
-    (Boolean(parsed.forward) || parsed.messageType === "forwarded" || !cleanText.trim());
+    (Boolean(parsed.forward) || parsed.messageType === "forwarded");
   const forward = recoveredContext?.forward ?? (forwardNeedsLookup
     ? await resolveCliqForwardContext(parsed.forward, {
       client,
@@ -1632,7 +1664,20 @@ export async function dispatchCliqInbound(params: {
             : forward,
         )
       : "";
-  const bodyText = [quoteBlock, forwardBlock, cleanText]
+  const emptyTurn = !cleanText && parsed.attachments.length === 0 && !parsed.forward;
+  if (emptyTurn && !replyTo?.text && !forward?.text) {
+    await client.sendMessage({
+      to: deliverTo,
+      text: "I received no message text or readable quoted context. Please resend your request and include or paste the quoted text.",
+      isDm: !parsed.isGroup,
+    });
+    return;
+  }
+  const bodyText = [
+    quoteBlock,
+    forwardBlock,
+    cleanText || (emptyTurn ? "The user supplied no additional text. Ask what they would like you to do with this context." : ""),
+  ]
     .filter((part) => part.trim().length > 0)
     .join("\n\n");
   const body = runtime.channel.reply.formatAgentEnvelope({
@@ -2194,6 +2239,7 @@ export async function dispatchCliqInbound(params: {
           id: raw.messageId,
           timestamp: raw.timestamp ? Date.parse(raw.timestamp) : undefined,
           rawText: raw.text,
+          ...(emptyTurn ? { textForAgent: bodyText } : {}),
           raw,
         }),
         resolveTurn: () => ({

@@ -283,30 +283,6 @@ export async function resolveCliqReplyToContext(
   }
 }
 
-/**
- * Recover inbound context (reply / forward) from Cliq's chat history
- * (issues #230 + #223).
- *
- * The deployed Deluge Message handler forwards `message` / `user` / `chat`
- * only: no parent reference for replies, no forward marker, and no native
- * message id (`parsed.messageId` is a `syn:` fallback for string-message
- * traffic), so id-based matching is impossible. Cliq does store both on the
- * message itself — verified live 2026-09-07, a real reply carried
- * `replied_to: { id, content, sender: { id, name }, time }`, and forwards
- * carry `message_type: "forwarded"` + `forward_info` — reachable only via
- * `GET /api/v2/chats/{chatId}/messages`.
- *
- * Neither a reply nor a caption-bearing forward has any marker in the handler
- * payload, so this cannot be gated on evidence and costs one history read per
- * inbound message. It is therefore opt-in via
- * `channels.cliq.replyContextRecovery` and off by default.
- *
- * Matching: the webhook fires because the message was just sent, so the live
- * message is the NEWEST history entry with the same body text (and sender,
- * when known). List order is not assumed: the match with the highest
- * timestamp wins, and equal-text ambiguity is resolved by recency rather than
- * by guessing a parent. Never throws.
- */
 export async function recoverCliqInboundContextFromHistory(
   params: {
     client: {
@@ -324,20 +300,30 @@ export async function recoverCliqInboundContextFromHistory(
       }[]>;
     };
     chatId?: string;
-    /** Body text of the live inbound message. Empty text cannot be matched. */
     text?: string;
-    /** Live sender id, used to avoid matching another user's identical text. */
     senderId?: string;
-    /** When false, the fetch is skipped (feature off or no refresh token). */
+    messageId?: string;
     enabled: boolean;
+    allowTextMatch?: boolean;
     recentMessagesLimit?: number;
     onError?: (err: unknown, info: { kind: string }) => void;
   },
 ): Promise<{ replyTo?: CliqReplyToContext; forward?: CliqForwardContext } | undefined> {
   if (!params.enabled) return undefined;
   const chatId = params.chatId?.trim();
+  if (!chatId) return undefined;
+
+  const rawId = params.messageId?.trim();
+  const nativeId =
+    rawId && !rawId.startsWith("syn:") && !rawId.startsWith("evt:") ? rawId : undefined;
   const liveText = params.text?.trim();
-  if (!chatId || !liveText) return undefined;
+  const liveSender = params.senderId?.trim();
+
+  if (!nativeId) {
+    if (params.allowTextMatch === false) return undefined;
+    if (!liveText || isMentionOnlyText(liveText)) return undefined;
+    if (!liveSender) return undefined;
+  }
 
   let messages: {
     messageId: string;
@@ -357,16 +343,22 @@ export async function recoverCliqInboundContextFromHistory(
     return undefined;
   }
 
-  // Newest matching entry wins: the live message is the most recent one with
-  // this body (and sender). Timestamp compare is order-independent.
-  const liveSender = params.senderId?.trim();
   let match: (typeof messages)[number] | undefined;
-  for (const m of messages) {
-    if (m.text?.trim() !== liveText) continue;
-    if (liveSender && m.senderId && m.senderId !== liveSender) continue;
-    if (!match || (m.timestamp ?? "") > (match.timestamp ?? "")) match = m;
+
+  if (nativeId) {
+    const idMatches = messages.filter((m) => m.messageId === nativeId);
+    if (idMatches.length !== 1) return undefined;
+    const candidate = idMatches[0];
+    const candidateSender = candidate.senderId?.trim();
+    if (liveSender && candidateSender && candidateSender !== liveSender) return undefined;
+    match = candidate;
+  } else {
+    const candidates = messages.filter(
+      (m) => m.text?.trim() === liveText && m.senderId?.trim() === liveSender,
+    );
+    if (candidates.length !== 1) return undefined;
+    match = candidates[0];
   }
-  if (!match) return undefined;
 
   if (match.repliedTo) {
     const replyTo = parseCliqReplyToContext({ replied_to: match.repliedTo });
@@ -377,6 +369,11 @@ export async function recoverCliqInboundContextFromHistory(
     if (forward) return { forward };
   }
   return undefined;
+}
+
+function isMentionOnlyText(value: string): boolean {
+  const parts = value.split(/\s+/).filter((part) => part.length > 0);
+  return parts.every((part) => part.startsWith("@"));
 }
 
 /**

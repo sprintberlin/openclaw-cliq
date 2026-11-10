@@ -869,9 +869,8 @@ describe("parseCliqWebhookPayload", () => {
       chat: { id: "CT_dm" },
       attachments: [""],
     } as CliqWebhookPayload);
-    // An empty string entry is skipped (no name); with no text either, the
-    // payload is dropped (no body to dispatch).
-    expect(parsed).toBeNull();
+    expect(parsed?.text).toBe("");
+    expect(parsed?.attachments).toEqual([]);
   });
 
   it("keeps existing object attachments with id working (no name-only prepend)", () => {
@@ -6076,8 +6075,8 @@ describe("rich, edited and unknown non-text messages (#233)", () => {
     expect(parsed?.messageType).toBe("location");
   });
 
-  it("keeps a known text/file type free of a placeholder and still returns null without any content", () => {
-    expect(parseCliqWebhookPayload({ ...base, message: { id: "m-3", type: "text" } } as never)).toBeNull();
+  it("keeps a known text type without content free of a placeholder", () => {
+    expect(parseCliqWebhookPayload({ ...base, message: { id: "m-3", type: "text" } } as never)?.text).toBe("");
   });
 
   it("surfaces rich-text, revision and edit markers as safe labels only", () => {

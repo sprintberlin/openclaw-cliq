@@ -7,6 +7,11 @@ import cliqEntry from "../index.js";
 import { cliqPlugin } from "./channel.js";
 import { resetCliqDedupeForTest } from "./dedupe.js";
 import { setCliqDetachedWebhookWorkForTest } from "./detached-dispatch.js";
+import {
+  CliqIngressMonitorRegistry,
+  setCliqIngressGlobalsForTest,
+  type CliqIngressMonitor,
+} from "./ingress-runtime.js";
 import { resetCliqPairingStoreCacheForTests } from "./pairing-store.js";
 import { setCliqClientRegistry } from "./runtime-api.js";
 import { resetCliqHandlerSchemaWarningsForTest } from "./handler-schema.js";
@@ -1812,5 +1817,372 @@ describe("always-on group sender gates (issue #283)", () => {
     expect(dispatched).toHaveLength(1);
     const lines = skipLines(warns);
     expect(lines).toHaveLength(0);
+  });
+});
+
+describe("textless Message and Mention webhooks (issue #334)", () => {
+  const fallback = "I received no message text or readable quoted context. Please resend your request and include or paste the quoted text.";
+  type Handler = "message" | "mention";
+  type Run = { raw: { text: string; messageId: string } };
+
+  beforeEach(() => {
+    resetCliqDedupeForTest();
+    resetCliqHandlerSchemaWarningsForTest();
+  });
+
+  afterEach(() => {
+    setCliqClientRegistry(null);
+    setCliqIngressGlobalsForTest(null);
+  });
+
+  function payload(handler: Handler, message: unknown, eventId = "334-1") {
+    const overrides = { handler, handlerSchema: "v6", message, eventId };
+    return handler === "message"
+      ? createDmDelugePayload(overrides)
+      : createMentionDelugePayload({
+          ...overrides,
+          chat: { id: "CT_channel", type: "channel", channel_unique_name: "general" },
+          channel: undefined,
+          mentions: undefined,
+        });
+  }
+
+  function registration(extra: Record<string, unknown> = {}) {
+    const runs: Run[] = [];
+    const bodies: string[] = [];
+    const sendMessage = vi.fn(async (_opts: { to: string; text: string; isDm?: boolean }) => ({ messageId: "sent" }));
+    const listChatMessages = vi.fn(async () => [] as Array<Record<string, unknown>>);
+    setCliqClientRegistry({
+      getOrCreate: () => ({ sendMessage, listChatMessages }),
+      setLogger: () => {},
+    } as unknown as Parameters<typeof setCliqClientRegistry>[0]);
+    const runtime = createTestRuntimeChannel(async (params: unknown) => {
+      runs.push(params as Run);
+      return undefined;
+    });
+    const channel = runtime.channel as {
+      reply: { formatAgentEnvelope: (params: Record<string, unknown>) => string };
+    };
+    channel.reply.formatAgentEnvelope = (params) => {
+      const body = String(params.body ?? "");
+      bodies.push(body);
+      return body;
+    };
+    const { webhook } = registerCliqPluginForTest({
+      config: createCliqTestConfig({
+        clientId: "id",
+        clientSecret: "secret",
+        botId: "bot",
+        botName: "openclaw-bot",
+        webhookSecret: "s3cr3t",
+        dmPolicy: "open",
+        ackPolicy: "after_dispatch",
+        thinking: { mode: "off" },
+        ...extra,
+      }),
+      runtime,
+    });
+    return { webhook, runs, bodies, sendMessage, listChatMessages };
+  }
+
+  async function post(
+    webhook: ReturnType<typeof registerCliqPluginForTest>["webhook"],
+    body: Record<string, unknown>,
+    secret = "s3cr3t",
+  ) {
+    const res = createMockServerResponse();
+    await webhook.handler(
+      createMockIncomingRequest("POST", body, { "x-cliq-webhook-secret": secret }),
+      res as unknown as any,
+    );
+    return res;
+  }
+
+  function expectFallback(
+    sendMessage: ReturnType<typeof registration>["sendMessage"],
+    handler: Handler,
+  ) {
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      to: handler === "message" ? "user-123" : "general",
+      isDm: handler === "message",
+      text: fallback,
+    }));
+  }
+
+  it.each([
+    ["message", "empty string", ""],
+    ["message", "whitespace", " \t\n "],
+    ["message", "empty object", {}],
+    ["message", "empty object text", { text: "  " }],
+    ["mention", "empty string", ""],
+    ["mention", "whitespace", " \t\n "],
+    ["mention", "empty object", {}],
+    ["mention", "empty object text", { text: "  " }],
+  ] as const)("accepts %s handler %s, sends one fallback per event, and dedupes replay", async (handler, _shape, message) => {
+    const { webhook, runs, sendMessage } = registration();
+    const firstPayload = payload(handler, message);
+    const first = await post(webhook, firstPayload);
+    const replay = await post(webhook, firstPayload);
+    const next = await post(webhook, payload(handler, message, "334-2"));
+
+    expect(first.statusCode).toBe(200);
+    expect(JSON.parse(first.body)).toEqual({ status: "received" });
+    expect(replay.statusCode).toBe(200);
+    expect(next.statusCode).toBe(200);
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    expectFallback(sendMessage, handler);
+    expect(runs).toHaveLength(0);
+  });
+
+  it.each(["message", "mention"] as const)("sends the fallback for a literal bot-only %s", async (handler) => {
+    const { webhook, runs, sendMessage } = registration();
+    const res = await post(webhook, payload(handler, "@openclaw-bot"));
+    expect(res.statusCode).toBe(200);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expectFallback(sendMessage, handler);
+    expect(runs).toHaveLength(0);
+  });
+
+  it.each([
+    ["message", ""],
+    ["mention", ""],
+    ["mention", "@openclaw-bot"],
+  ] as const)("dispatches a readable quoted parent with an instruction for textless %s", async (handler, message) => {
+    const { webhook, runs, bodies, sendMessage, listChatMessages } = registration();
+    const res = await post(webhook, {
+      ...payload(handler, message),
+      parent: { id: "parent-1", text: "quoted parent text", sender: { id: "author-1", name: "Alice" } },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(runs).toHaveLength(1);
+    expect(runs[0].raw.messageId).toBe("evt:334-1");
+    expect(runs[0].raw.text).toBe(message);
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toContain("↩ Replying to Alice:");
+    expect(bodies[0]).toContain("> quoted parent text");
+    expect(bodies[0].replace("↩ Replying to Alice:", "").replace("> quoted parent text", "").trim()).not.toBe("");
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(listChatMessages).not.toHaveBeenCalled();
+  });
+
+  it.each(["message", "mention"] as const)("preserves normal text and quoted context for %s", async (handler) => {
+    const { webhook, runs, bodies, sendMessage } = registration();
+    const text = handler === "mention" ? "@openclaw-bot Please summarize" : "Please summarize";
+    const res = await post(webhook, {
+      ...payload(handler, text),
+      parent: { id: "parent-1", text: "quoted parent text", sender: { id: "author-1", name: "Alice" } },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(runs).toHaveLength(1);
+    expect(runs[0].raw).toMatchObject({ text, messageId: "evt:334-1" });
+    expect(bodies[0]).toContain("> quoted parent text");
+    expect(bodies[0]).toContain("Please summarize");
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["message", { message: undefined }],
+    ["message", { message: null }],
+    ["message", { message: [] }],
+    ["message", { message: 42 }],
+    ["message", { message: { id: 42 } }],
+    ["message", { message: { text: 42 } }],
+    ["message", { text: 42 }],
+    ["message", { user: undefined }],
+    ["message", { chat: undefined }],
+    ["mention", { message: undefined }],
+    ["mention", { message: null }],
+    ["mention", { message: [] }],
+    ["mention", { user: undefined }],
+    ["mention", { chat: undefined }],
+    ["message", { handler: "form" }],
+    ["message", { handler: "unknown" }],
+  ] as const)("rejects malformed or unrelated %s payloads instead of treating them as empty messages", async (handler, overrides) => {
+    const { webhook, runs, sendMessage } = registration();
+    const res = await post(webhook, { ...payload(handler, ""), ...overrides });
+    expect(res.statusCode).toBe(400);
+    expect(runs).toHaveLength(0);
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unauthenticated empty payload without consuming its event", async () => {
+    const { webhook, runs, sendMessage } = registration();
+    const event = payload("message", "");
+    const unauthorized = await post(webhook, event, "wrong");
+    expect(unauthorized.statusCode).toBe(401);
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(runs).toHaveLength(0);
+
+    const authorized = await post(webhook, event);
+    expect(authorized.statusCode).toBe(200);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expectFallback(sendMessage, "message");
+  });
+
+  it.each([
+    ["denied DM", "message", { dmPolicy: "allowlist", allowFrom: ["someone-else"] }, {}],
+    ["denied group", "mention", { groupPolicy: "disabled" }, {}],
+    ["unmentioned group", "mention", {}, { handler: "message", mentions: [] }],
+    ["self DM", "message", {}, { user: { id: "bot", name: "openclaw-bot" } }],
+  ] as const)("does not send a fallback or dispatch for %s", async (_case, handler, config, overrides) => {
+    const { webhook, runs, sendMessage } = registration(config);
+    const res = await post(webhook, { ...payload(handler, ""), ...overrides });
+    expect(res.statusCode).toBe(200);
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(runs).toHaveLength(0);
+  });
+
+  it("does not guess a quote from ambiguous textless history", async () => {
+    const { webhook, runs, sendMessage, listChatMessages } = registration({
+      refreshToken: "refresh-token",
+      replyContextRecovery: { enabled: true },
+    });
+    listChatMessages.mockResolvedValue([
+      { messageId: "other-1", text: "", senderId: "user-123", repliedTo: { id: "p1", content: "unrelated quote one" } },
+      { messageId: "other-2", text: "", senderId: "user-123", repliedTo: { id: "p2", content: "unrelated quote two" } },
+    ]);
+    const res = await post(webhook, payload("message", ""));
+    expect(res.statusCode).toBe(200);
+    expect(runs).toHaveLength(0);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expectFallback(sendMessage, "message");
+  });
+
+  it.each(["message", "mention"] as const)("recovers a textless %s quote only by its native message id", async (handler) => {
+    const { webhook, runs, bodies, sendMessage, listChatMessages } = registration({
+      refreshToken: "refresh-token",
+      replyContextRecovery: { enabled: true },
+    });
+    listChatMessages.mockResolvedValue([
+      { messageId: "unrelated", senderId: "user-123", text: "", repliedTo: { id: "wrong", content: "unrelated quote" } },
+      { messageId: "native-1", senderId: "user-123", text: "", repliedTo: { id: "parent-1", content: "correct quote" } },
+    ]);
+    const res = await post(webhook, payload(handler, { id: "native-1", text: "" }));
+    expect(res.statusCode).toBe(200);
+    expect(runs).toHaveLength(1);
+    expect(bodies[0]).toContain("> correct quote");
+    expect(bodies[0]).not.toContain("unrelated quote");
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(listChatMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["disabled", "no refresh token", "history failure"] as const)("falls back for an unreadable parent with %s", async (reason) => {
+    const { webhook, runs, sendMessage, listChatMessages } = registration({
+      replyContextRecovery: { enabled: reason !== "disabled" },
+      ...(reason === "history failure" ? { refreshToken: "refresh-token" } : {}),
+    });
+    if (reason === "history failure") listChatMessages.mockRejectedValue(new Error("history unavailable"));
+    const res = await post(webhook, payload("message", { id: "native-1", text: "" }));
+    expect(res.statusCode).toBe(200);
+    expect(runs).toHaveLength(0);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expectFallback(sendMessage, "message");
+    if (reason !== "history failure") expect(listChatMessages).not.toHaveBeenCalled();
+  });
+
+  it("does not acknowledge a failed fallback send in after-dispatch mode and permits retry", async () => {
+    const { webhook, runs, sendMessage } = registration();
+    sendMessage.mockRejectedValueOnce(new Error("send failed"));
+    const event = payload("message", "");
+    const first = await post(webhook, event);
+    expect(first.statusCode).toBe(500);
+    expect(runs).toHaveLength(0);
+    const second = await post(webhook, event);
+    expect(second.statusCode).toBe(200);
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it("dedupes a legacy textless replay without a native or event id", async () => {
+    const { webhook, runs, sendMessage } = registration();
+    const event = { ...payload("message", ""), eventId: undefined };
+    expect((await post(webhook, event)).statusCode).toBe(200);
+    expect((await post(webhook, event)).statusCode).toBe(200);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(runs).toHaveLength(0);
+  });
+
+  it.each([
+    ["attachment", { ...payload("message", ""), attachments: ["report.txt"] }, "<file: report.txt>"],
+    ["form", { handler: "form", user: { id: "user-123" }, chat: { id: "CT_dm" }, values: { request: "report" }, eventId: "334-form" }, "request: report"],
+    ["forward", { ...payload("message", ""), forwarded_message: { text: "forwarded text", sender: { name: "Alice" } } }, "forwarded text"],
+  ] as const)("keeps %s dispatch intact", async (_kind, event, expectedText) => {
+    const { webhook, runs, bodies, sendMessage } = registration();
+    const res = await post(webhook, event);
+    expect(res.statusCode).toBe(200);
+    expect(runs).toHaveLength(1);
+    expect(bodies[0]).toContain(expectedText);
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  function ingressRegistry(admit?: CliqIngressMonitor["admit"]) {
+    const registry = new CliqIngressMonitorRegistry({ isAvailable: () => true, openQueue: () => ({}) as never });
+    registry.setReadyWaitMs(0);
+    if (admit) {
+      registry.setForAccount("default", {
+        admit,
+        start: () => {},
+        stop: async () => {},
+        waitForIdle: async () => {},
+        isRunning: () => true,
+        isStopped: () => false,
+      });
+    }
+    setCliqIngressGlobalsForTest({ registry });
+    return registry;
+  }
+
+  it.each(["message", "mention"] as const)("queues an empty %s with its event identity before acknowledging and dedupes replay", async (handler) => {
+    const { webhook, runs, sendMessage } = registration({ ackPolicy: "after_receive_record" });
+    let release: () => void = () => {};
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const recorded: Array<{ text: string; messageId: string }> = [];
+    const seen = new Set<string>();
+    const admit = vi.fn(async (raw: { parsed: { text: string; messageId: string } }) => {
+      await blocked;
+      const { text, messageId } = raw.parsed;
+      const duplicate = seen.has(messageId);
+      if (!duplicate) {
+        seen.add(messageId);
+        recorded.push({ text, messageId });
+      }
+      return { kind: "durable", queueResult: { kind: duplicate ? "completed" : "accepted", duplicate, record: { id: messageId } } };
+    });
+    ingressRegistry(admit as unknown as CliqIngressMonitor["admit"]);
+    const res = createMockServerResponse();
+    const request = webhook.handler(
+      createMockIncomingRequest("POST", payload(handler, ""), { "x-cliq-webhook-secret": "s3cr3t" }),
+      res as unknown as any,
+    );
+    try {
+      await vi.waitFor(() => expect(admit).toHaveBeenCalledTimes(1));
+      expect(res.ended).toBe(false);
+      expect(sendMessage).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await request;
+    }
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ status: "received" });
+    expect(recorded).toEqual([{ text: "", messageId: "evt:334-1" }]);
+    expect((await post(webhook, payload(handler, ""))).statusCode).toBe(200);
+    expect((await post(webhook, payload(handler, "", "334-2"))).statusCode).toBe(200);
+    expect(recorded).toEqual([
+      { text: "", messageId: "evt:334-1" },
+      { text: "", messageId: "evt:334-2" },
+    ]);
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(runs).toHaveLength(0);
+  });
+
+  it.each(["not ready", "append failure"] as const)("does not ack or send before durable admission on %s", async (reason) => {
+    const { webhook, runs, sendMessage } = registration({ ackPolicy: "after_receive_record" });
+    const admit = reason === "append failure"
+      ? vi.fn(async () => { throw new Error("append failed"); }) as unknown as CliqIngressMonitor["admit"]
+      : undefined;
+    ingressRegistry(admit);
+    const res = await post(webhook, payload("message", ""));
+    expect(res.statusCode).toBe(503);
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(runs).toHaveLength(0);
   });
 });

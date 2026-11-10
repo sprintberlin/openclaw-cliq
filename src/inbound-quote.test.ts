@@ -64,7 +64,7 @@ describe("recoverCliqInboundContextFromHistory", () => {
     listChatMessages: vi.fn().mockResolvedValue(messages as never),
   });
 
-  it("recovers reply context the handler never delivered", async () => {
+  it("matches one text/sender record by text", async () => {
     const client = clientWith([replyEntry]);
     const out = await recoverCliqInboundContextFromHistory({
       client: client as never,
@@ -77,35 +77,195 @@ describe("recoverCliqInboundContextFromHistory", () => {
     expect(out?.replyTo?.senderName).toBe("Livia");
   });
 
-  it("picks the newest match when the same text was sent twice", async () => {
-    const older = {
-      ...replyEntry,
-      messageId: "m-old",
-      timestamp: "2026-09-07T05:00:00.000Z",
-      repliedTo: { ...replyEntry.repliedTo, content: "older parent" },
+  it("honors recovery enabled and read guard", async () => {
+    const enabledClient = clientWith([replyEntry]);
+    expect(await recoverCliqInboundContextFromHistory({
+      client: enabledClient as never,
+      chatId: "CT_1",
+      text: "my reply",
+      senderId: "u-1",
+      enabled: true,
+    })).toBeDefined();
+    const disabledClient = clientWith([replyEntry]);
+    expect(await recoverCliqInboundContextFromHistory({
+      client: disabledClient as never,
+      chatId: "CT_1",
+      text: "my reply",
+      senderId: "u-1",
+      enabled: false,
+    })).toBeUndefined();
+    expect(disabledClient.listChatMessages).not.toHaveBeenCalled();
+  });
+
+  it("matches a native id exactly without needing text", async () => {
+    const textless = {
+      messageId: "m-textless",
+      senderId: "u-1",
+      timestamp: "2026-11-09T08:00:00.000Z",
+      messageType: "text",
+      repliedTo: { ...replyEntry.repliedTo, content: "quoted parent" },
     };
-    // Deliberately unordered: recency must not depend on list order.
-    const client = clientWith([replyEntry, older]);
+    const client = clientWith([textless]);
     const out = await recoverCliqInboundContextFromHistory({
       client: client as never,
       chatId: "CT_1",
+      messageId: "m-textless",
+      senderId: "u-1",
+      enabled: true,
+    });
+    expect(out?.replyTo?.text).toBe("quoted parent");
+  });
+
+  it("matches only one native record and rejects ambiguity", async () => {
+    const duplicate = {
+      ...replyEntry,
+      text: "duplicate text",
+      repliedTo: { ...replyEntry.repliedTo, content: "other parent" },
+    };
+    const client = clientWith([replyEntry, duplicate]);
+    expect(await recoverCliqInboundContextFromHistory({
+      client: client as never,
+      chatId: "CT_1",
+      messageId: "no-such-id",
       text: "my reply",
+      senderId: "u-1",
+      enabled: true,
+    })).toBeUndefined();
+    const dupeClient = clientWith([duplicate, duplicate]);
+    expect(await recoverCliqInboundContextFromHistory({
+      client: dupeClient as never,
+      chatId: "CT_1",
+      messageId: duplicate.messageId,
+      text: "duplicate text",
+      senderId: "u-1",
+      enabled: true,
+    })).toBeUndefined();
+  });
+
+  it("never falls back from a supplied native id to text", async () => {
+    const differentReply = {
+      messageId: "m-other",
+      text: "my reply",
+      senderId: "u-1",
+      timestamp: "2026-09-07T06:45:06.530Z",
+      messageType: "text",
+      repliedTo: { ...replyEntry.repliedTo, content: "wrong parent" },
+    };
+    const client = clientWith([differentReply]);
+    expect(await recoverCliqInboundContextFromHistory({
+      client: client as never,
+      chatId: "CT_1",
+      messageId: "m-missing",
+      text: "my reply",
+      senderId: "u-1",
+      enabled: true,
+    })).toBeUndefined();
+  });
+
+  it("rejects mismatched native sender", async () => {
+    const client = clientWith([{ ...replyEntry, senderId: "u-other" }]);
+    expect(await recoverCliqInboundContextFromHistory({
+      client: client as never,
+      chatId: "CT_1",
+      messageId: "m-live",
+      text: "my reply",
+      senderId: "u-1",
+      enabled: true,
+    })).toBeUndefined();
+  });
+
+  it("treats synthetic and event ids as missing ids", async () => {
+    for (const synthetic of ["syn:0123456789abcdef", "evt:delivery-1"]) {
+      const client = clientWith([
+        { ...replyEntry, messageId: synthetic, text: "  " },
+        { ...replyEntry, messageId: "m-other", text: "other text" },
+      ]);
+      expect(await recoverCliqInboundContextFromHistory({
+        client: client as never,
+        chatId: "CT_1",
+        messageId: synthetic,
+        enabled: true,
+      })).toBeUndefined();
+      expect(client.listChatMessages).not.toHaveBeenCalled();
+    }
+  });
+
+  it("requires chat id and handles an empty id search without reading", async () => {
+    const client = clientWith([replyEntry]);
+    expect(await recoverCliqInboundContextFromHistory({
+      client: client as never,
+      text: "my reply",
+      senderId: "u-1",
+      enabled: true,
+    })).toBeUndefined();
+    expect(client.listChatMessages).not.toHaveBeenCalled();
+  });
+
+  it("does not text-match missing sender, wrong sender, duplicates or mention-only text", async () => {
+    const duplicate = { ...replyEntry, messageId: "m-second" };
+    const duplicateClient = clientWith([replyEntry, duplicate]);
+    expect(await recoverCliqInboundContextFromHistory({
+      client: duplicateClient as never,
+      chatId: "CT_1",
+      text: "my reply",
+      senderId: "u-1",
+      enabled: true,
+    })).toBeUndefined();
+
+    const missingSenderClient = clientWith([replyEntry]);
+    expect(await recoverCliqInboundContextFromHistory({
+      client: missingSenderClient as never,
+      chatId: "CT_1",
+      text: "my reply",
+      enabled: true,
+    })).toBeUndefined();
+    expect(missingSenderClient.listChatMessages).not.toHaveBeenCalled();
+
+    const wrongSenderClient = clientWith([replyEntry]);
+    expect(await recoverCliqInboundContextFromHistory({
+      client: wrongSenderClient as never,
+      chatId: "CT_1",
+      text: "my reply",
+      senderId: "u-other",
+      enabled: true,
+    })).toBeUndefined();
+
+    for (const emptyText of ["   ", "@Zora", "@Zora @Livia"]) {
+      const mentionClient = clientWith([{ ...replyEntry, text: emptyText }]);
+      expect(await recoverCliqInboundContextFromHistory({
+        client: mentionClient as never,
+        chatId: "CT_1",
+        text: emptyText,
+        senderId: "u-1",
+        enabled: true,
+      })).toBeUndefined();
+      expect(mentionClient.listChatMessages).not.toHaveBeenCalled();
+    }
+  });
+
+  it("recovers nonempty mixed mention text from one sender record", async () => {
+    const client = clientWith([{ ...replyEntry, text: "@Zora please" }]);
+    const out = await recoverCliqInboundContextFromHistory({
+      client: client as never,
+      chatId: "CT_1",
+      text: "@Zora please",
       senderId: "u-1",
       enabled: true,
     });
     expect(out?.replyTo?.text).toBe("parent body");
   });
 
-  it("does not match another user's identical text", async () => {
-    const client = clientWith([{ ...replyEntry, senderId: "someone-else" }]);
-    const out = await recoverCliqInboundContextFromHistory({
+  it("respects allowTextMatch false", async () => {
+    const client = clientWith([replyEntry]);
+    expect(await recoverCliqInboundContextFromHistory({
       client: client as never,
       chatId: "CT_1",
       text: "my reply",
       senderId: "u-1",
       enabled: true,
-    });
-    expect(out).toBeUndefined();
+      allowTextMatch: false,
+    })).toBeUndefined();
+    expect(client.listChatMessages).not.toHaveBeenCalled();
   });
 
   it("recovers forward context from the same single lookup", async () => {
@@ -126,12 +286,47 @@ describe("recoverCliqInboundContextFromHistory", () => {
     expect(out?.forward?.senderName).toBe("Original Author");
   });
 
+  it("recovers a forward by native id with mismatched text", async () => {
+    const forwardEntry = {
+      messageId: "m-forwarded",
+      text: "live-not-forward-text",
+      senderId: "u-1",
+      messageType: "forwarded",
+      forwardInfo: { sender: "111111111", dname: "Original Author", time: "1788704063087" },
+    };
+    const client = clientWith([forwardEntry]);
+    const out = await recoverCliqInboundContextFromHistory({
+      client: client as never,
+      chatId: "CT_1",
+      messageId: "m-forwarded",
+      text: "different body",
+      senderId: "u-1",
+      enabled: true,
+    });
+    expect(out?.forward?.senderName).toBe("Original Author");
+  });
+
+  it("returns nothing for a native id without reply or forward", async () => {
+    const client = clientWith([
+      { messageId: "m-plain", text: "", senderId: "u-1", messageType: "text" },
+    ]);
+    const out = await recoverCliqInboundContextFromHistory({
+      client: client as never,
+      chatId: "CT_1",
+      messageId: "m-plain",
+      senderId: "u-1",
+      enabled: true,
+    });
+    expect(out).toBeUndefined();
+  });
+
   it("performs no read at all when the feature is disabled", async () => {
     const client = clientWith([replyEntry]);
     const out = await recoverCliqInboundContextFromHistory({
       client: client as never,
       chatId: "CT_1",
       text: "my reply",
+      senderId: "u-1",
       enabled: false,
     });
     expect(out).toBeUndefined();
@@ -144,6 +339,7 @@ describe("recoverCliqInboundContextFromHistory", () => {
       client: client as never,
       chatId: "CT_1",
       text: "   ",
+      senderId: "u-1",
       enabled: true,
     });
     expect(out).toBeUndefined();
@@ -153,14 +349,20 @@ describe("recoverCliqInboundContextFromHistory", () => {
   it("degrades to no context when the history read fails", async () => {
     const client = { listChatMessages: vi.fn().mockRejectedValue(new Error("boom")) };
     const onError = vi.fn();
-    const out = await recoverCliqInboundContextFromHistory({
-      client: client as never,
-      chatId: "CT_1",
-      text: "my reply",
-      enabled: true,
-      onError,
-    });
-    expect(out).toBeUndefined();
+    for (const params of [
+      { messageId: "m-live", senderId: "u-1" },
+      { text: "my reply", senderId: "u-1" },
+    ]) {
+      const out = await recoverCliqInboundContextFromHistory({
+        client: client as never,
+        chatId: "CT_1",
+        enabled: true,
+        onError,
+        ...params,
+      });
+      expect(out).toBeUndefined();
+    }
+    expect(onError).toHaveBeenCalledTimes(2);
     expect(onError).toHaveBeenCalledWith(expect.any(Error), { kind: "inbound-context-recovery" });
   });
 
