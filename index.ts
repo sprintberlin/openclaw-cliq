@@ -9,6 +9,7 @@ import {
   handleCliqPairingApprovalAction,
   issueCliqPairingChallenge,
 } from "./src/pairing.js";
+import { stripCliqMentions } from "./src/mentions.js";
 import {
   dispatchCliqInbound,
   isCliqExplicitBotMention,
@@ -1015,6 +1016,11 @@ export default defineChannelPluginEntry({
         // Kept for the explicit `after_dispatch` mode and the pre-queue /
         // no-stable-identity fallbacks only — the durable path above uses the
         // queue tombstones as the replay source of truth (issue #261).
+        const textlessNewlyAdmitted = !parsed.confirmAction &&
+          !parsed.formValues &&
+          parsed.attachments.length === 0 &&
+          !parsed.forward &&
+          !stripCliqMentions(parsed.text, account);
         const claim = await claimCliqMessage(parsed, account);
         if (claim && claim.kind !== "claimed") {
           // Issue #232: a dedupe hit is the single most confusing silent 200 —
@@ -1026,6 +1032,12 @@ export default defineChannelPluginEntry({
               senderId: parsed.senderId,
             }),
           );
+          if (textlessNewlyAdmitted && claim.kind === "inflight") {
+            res.statusCode = 503;
+            res.setHeader("Retry-After", "5");
+            res.end("dispatch in progress");
+            return true;
+          }
           res.statusCode = 200;
           res.end("ok");
           return true;
@@ -1056,7 +1068,7 @@ export default defineChannelPluginEntry({
         // Pre-queue fallback only: a configured legacy `immediate` keeps its
         // ack-first behaviour on installs without the durable queue surface.
         const legacyImmediate = account.ackPolicyLegacyImmediate === true;
-        const runDetached = legacyImmediate
+        const runDetached = legacyImmediate && !textlessNewlyAdmitted
           ? await resolveCliqDetachedWebhookWork()
           : null;
 
@@ -1078,7 +1090,7 @@ export default defineChannelPluginEntry({
           return dispatchPromise;
         };
 
-        if (legacyImmediate) {
+        if (legacyImmediate && !textlessNewlyAdmitted) {
           // Reserve the independent admission root synchronously, while the
           // request is still admitted, and only then write the 200. Calling
           // it after `res.end` would be too late — that is the entire point
@@ -1135,7 +1147,7 @@ export default defineChannelPluginEntry({
           // conflict storm. The dedupe layer already serialized the
           // redeliveries; a genuine concurrent-turn conflict is rare and
           // best left to the SDK's own queue (issue #84).
-          if (isCliqSessionConflictError(err)) {
+          if (!textlessNewlyAdmitted && isCliqSessionConflictError(err)) {
             api.logger.warn?.(
               `[cliq] inbound dispatch conflicted (session init) — acking to stop retry: ${String(err)}`,
             );

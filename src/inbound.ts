@@ -421,6 +421,7 @@ export interface ParsedCliqInbound {
   text: string;
   messageId: string;
   timestamp: string;
+  sourceTimestamp?: string;
   senderId: string;
   senderName: string;
   senderEmail?: string;
@@ -1012,6 +1013,7 @@ export function parseCliqWebhookPayload(
     text: finalText,
     messageId: resolvedMessageId,
     timestamp: resolvedTimestamp,
+    sourceTimestamp: time || undefined,
     senderId: user.id,
     senderName: userName,
     senderEmail: user.email_id ?? user.email,
@@ -1597,6 +1599,7 @@ export async function dispatchCliqInbound(params: {
       text: cleanText ? parsed.text : "",
       senderId: parsed.senderId,
       messageId: parsed.messageId,
+      sourceTimestamp: parsed.sourceTimestamp,
       allowTextMatch: Boolean(cleanText),
       enabled: true,
       onError: (_err, info) => onError?.(new Error("history read failed"), info),

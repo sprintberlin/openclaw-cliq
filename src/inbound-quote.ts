@@ -303,6 +303,7 @@ export async function recoverCliqInboundContextFromHistory(
     text?: string;
     senderId?: string;
     messageId?: string;
+    sourceTimestamp?: string;
     enabled: boolean;
     allowTextMatch?: boolean;
     recentMessagesLimit?: number;
@@ -318,11 +319,14 @@ export async function recoverCliqInboundContextFromHistory(
     rawId && !rawId.startsWith("syn:") && !rawId.startsWith("evt:") ? rawId : undefined;
   const liveText = params.text?.trim();
   const liveSender = params.senderId?.trim();
+  let sourceTime: number | undefined;
 
   if (!nativeId) {
     if (params.allowTextMatch === false) return undefined;
     if (!liveText || isMentionOnlyText(liveText)) return undefined;
     if (!liveSender) return undefined;
+    sourceTime = parseRecoveryTimestamp(params.sourceTimestamp);
+    if (sourceTime === undefined) return undefined;
   }
 
   let messages: {
@@ -353,9 +357,11 @@ export async function recoverCliqInboundContextFromHistory(
     if (liveSender && candidateSender && candidateSender !== liveSender) return undefined;
     match = candidate;
   } else {
-    const candidates = messages.filter(
-      (m) => m.text?.trim() === liveText && m.senderId?.trim() === liveSender,
-    );
+    const candidates = messages.filter((m) => {
+      if (m.text?.trim() !== liveText || m.senderId?.trim() !== liveSender) return false;
+      const historyTime = parseRecoveryTimestamp(m.timestamp);
+      return historyTime !== undefined && historyTime === sourceTime;
+    });
     if (candidates.length !== 1) return undefined;
     match = candidates[0];
   }
@@ -369,6 +375,14 @@ export async function recoverCliqInboundContextFromHistory(
     if (forward) return { forward };
   }
   return undefined;
+}
+
+function parseRecoveryTimestamp(value: unknown): number | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?(?:Z|[+-]\d{2}:\d{2})$/.test(trimmed)) return undefined;
+  const parsed = Date.parse(trimmed);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function isMentionOnlyText(value: string): boolean {

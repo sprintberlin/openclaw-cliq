@@ -1833,6 +1833,7 @@ describe("textless Message and Mention webhooks (issue #334)", () => {
   afterEach(() => {
     setCliqClientRegistry(null);
     setCliqIngressGlobalsForTest(null);
+    setCliqDetachedWebhookWorkForTest(undefined);
   });
 
   function payload(handler: Handler, message: unknown, eventId = "334-1") {
@@ -2069,7 +2070,7 @@ describe("textless Message and Mention webhooks (issue #334)", () => {
   it.each(["disabled", "no refresh token", "history failure"] as const)("falls back for an unreadable parent with %s", async (reason) => {
     const { webhook, runs, sendMessage, listChatMessages } = registration({
       replyContextRecovery: { enabled: reason !== "disabled" },
-      ...(reason === "history failure" ? { refreshToken: "refresh-token" } : {}),
+      ...(reason !== "no refresh token" ? { refreshToken: "refresh-token" } : {}),
     });
     if (reason === "history failure") listChatMessages.mockRejectedValue(new Error("history unavailable"));
     const res = await post(webhook, payload("message", { id: "native-1", text: "" }));
@@ -2078,6 +2079,24 @@ describe("textless Message and Mention webhooks (issue #334)", () => {
     expect(sendMessage).toHaveBeenCalledTimes(1);
     expectFallback(sendMessage, "message");
     if (reason !== "history failure") expect(listChatMessages).not.toHaveBeenCalled();
+  });
+
+  it("does not borrow a quote from an older identical message when the live history record is absent", async () => {
+    const { webhook, bodies, listChatMessages } = registration({
+      refreshToken: "refresh-token",
+      replyContextRecovery: { enabled: true },
+    });
+    listChatMessages.mockResolvedValue([{
+      messageId: "old-native",
+      text: "Please summarize",
+      senderId: "user-123",
+      timestamp: "2026-09-01T10:00:00.000Z",
+      repliedTo: { id: "old-parent", content: "unrelated quote" },
+    }]);
+    const res = await post(webhook, payload("message", "Please summarize"));
+    expect(res.statusCode).toBe(200);
+    expect(bodies[0]).toBe("Please summarize");
+    expect(listChatMessages).not.toHaveBeenCalled();
   });
 
   it("does not acknowledge a failed fallback send in after-dispatch mode and permits retry", async () => {
@@ -2089,6 +2108,104 @@ describe("textless Message and Mention webhooks (issue #334)", () => {
     expect(runs).toHaveLength(0);
     const second = await post(webhook, event);
     expect(second.statusCode).toBe(200);
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["message", "", "event", "unavailable"],
+    ["message", "@openclaw-bot", "synthetic", "unavailable"],
+    ["mention", "", "synthetic", "ignored"],
+    ["mention", "@openclaw-bot", "event", "ignored"],
+  ] as const)("waits for the legacy-immediate fallback send for %s text %j with %s identity and queue %s", async (handler, message, identity, queue) => {
+    const { webhook, runs, sendMessage } = registration({ ackPolicy: "immediate" });
+    const admit = vi.fn<CliqIngressMonitor["admit"]>(async () => ({ kind: "ignored" }));
+    if (queue === "ignored") ingressRegistry(admit);
+    const detached = vi.fn();
+    setCliqDetachedWebhookWorkForTest((work) => {
+      detached();
+      return work();
+    });
+    let release: () => void = () => {};
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    sendMessage.mockImplementationOnce(async () => {
+      await blocked;
+      return { messageId: "sent" };
+    });
+    const event = {
+      ...payload(handler, message),
+      eventId: identity === "event" ? "334-1" : undefined,
+    };
+    const res = createMockServerResponse();
+    const request = webhook.handler(
+      createMockIncomingRequest("POST", event, { "x-cliq-webhook-secret": "s3cr3t" }),
+      res as unknown as any,
+    );
+    try {
+      await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1));
+      expect(res.ended).toBe(false);
+      expectFallback(sendMessage, handler);
+      expect(detached).not.toHaveBeenCalled();
+      if (queue === "ignored") {
+        expect(admit).toHaveBeenCalledTimes(1);
+        expect(admit.mock.calls[0]![0].parsed.messageId).toMatch(identity === "event" ? /^evt:/ : /^syn:/);
+      }
+    } finally {
+      release();
+      await request;
+    }
+    expect(res.ended).toBe(true);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ status: "received" });
+    expect(runs).toHaveLength(0);
+  });
+
+  it.each([
+    ["message", "", "event", "unavailable"],
+    ["message", "@openclaw-bot", "synthetic", "ignored"],
+    ["mention", "", "synthetic", "unavailable"],
+    ["mention", "@openclaw-bot", "event", "ignored"],
+  ] as const)("retries a failed legacy-immediate fallback for %s text %j with %s identity and queue %s", async (handler, message, identity, queue) => {
+    const { webhook, runs, sendMessage } = registration({ ackPolicy: "immediate" });
+    if (queue === "ignored") ingressRegistry(async () => ({ kind: "ignored" }));
+    sendMessage.mockRejectedValueOnce(new Error("send failed"));
+    const event = {
+      ...payload(handler, message),
+      eventId: identity === "event" ? "334-1" : undefined,
+    };
+    const first = await post(webhook, event);
+    expect(first.statusCode).toBe(500);
+    expect(first.body).toBe("dispatch failed");
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    const second = await post(webhook, event);
+    expect(second.statusCode).toBe(200);
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    expectFallback(sendMessage, handler);
+    expect(runs).toHaveLength(0);
+  });
+
+  it.each(["event", "synthetic"] as const)("does not acknowledge an in-flight legacy-immediate textless %s replay before a failed send", async (identity) => {
+    const { webhook, sendMessage } = registration({ ackPolicy: "immediate" });
+    let rejectSend: (error: Error) => void = () => {};
+    sendMessage.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectSend = reject; }));
+    const event = { ...payload("message", ""), eventId: identity === "event" ? "334-1" : undefined };
+    const firstRes = createMockServerResponse();
+    const first = webhook.handler(
+      createMockIncomingRequest("POST", event, { "x-cliq-webhook-secret": "s3cr3t" }),
+      firstRes as unknown as any,
+    );
+    try {
+      await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1));
+      const replay = await post(webhook, event);
+      expect(replay.statusCode).toBe(503);
+      expect(replay.headers["Retry-After"]).toBe("5");
+      expect(firstRes.ended).toBe(false);
+    } finally {
+      rejectSend(new Error("send failed"));
+      await first;
+    }
+    expect(firstRes.statusCode).toBe(500);
+    const retry = await post(webhook, event);
+    expect(retry.statusCode).toBe(200);
     expect(sendMessage).toHaveBeenCalledTimes(2);
   });
 
