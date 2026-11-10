@@ -31,6 +31,20 @@ const EU_OAUTH_BASE = "https://accounts.zoho.eu";
 
 const MESSAGE_CHAR_LIMIT = 5000;
 
+export class CliqChatHistoryHttpError extends Error {
+  readonly status: number;
+  readonly code?: "operation_failed" | "oauthtoken_scope_invalid";
+
+  constructor(status: number, code: unknown) {
+    super("cliq: chat-history request failed");
+    this.name = "CliqChatHistoryHttpError";
+    this.status = Number.isInteger(status) && status >= 100 && status <= 599 ? status : 0;
+    if (code === "operation_failed" || code === "oauthtoken_scope_invalid") {
+      this.code = code;
+    }
+  }
+}
+
 /**
  * Live company attachment path Zoho delivers in webhook payloads
  * (observed 2026-09-14): `/company/{orgId}/v2/attachments/{opaqueId}`.
@@ -2703,7 +2717,16 @@ export class CliqClient {
     });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      throw new Error(`cliq: GET ${path} failed (${res.status}): ${body}`);
+      let code: unknown;
+      try {
+        const parsed = JSON.parse(body) as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          code = (parsed as { code?: unknown }).code;
+        }
+      } catch {
+        code = undefined;
+      }
+      throw new CliqChatHistoryHttpError(res.status, code);
     }
     const data: unknown = await res.json();
     // Late-response fence: the captured check throws when host read authority

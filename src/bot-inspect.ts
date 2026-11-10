@@ -297,13 +297,10 @@ export function toCliqDoctorBotInspection(
   ].some((value) => value.state === "unknown");
   const narrowerScope =
     inspection.visibility.state === "known" && inspection.visibility.value !== "organization";
-  // The normal bot send API cannot create a native reply/quote or forward,
-  // so a static declaration is not live proof. Without a delivery path for
-  // those shapes (handler fields are not enough, history recovery is) the
-  // stage stays visibly degraded rather than implying shape coverage.
   const shapeGap = inspection.handlerContentShapes.status === "unknown" ||
     inspection.handlerContentShapes.status === "uncovered" ||
-    inspection.handlerContentShapes.status === "declared_unexercised";
+    inspection.handlerContentShapes.status === "declared_unexercised" ||
+    inspection.handlerContentShapes.status === "history_recovery_configured";
   if (
     unknownFacet ||
     narrowerScope ||
@@ -322,9 +319,13 @@ export function toCliqDoctorBotInspection(
         ? [
             "Grant and re-consent ZohoCliq.Bots.READ; subscriber details additionally require the bot creator or an organization administrator.",
           ]
-        : [
-            "Reply/quote and forwarded-message context does not reach the agent. Set channels.cliq.replyContextRecovery.enabled=true (needs a user-context refreshToken with ZohoCliq.Messages.READ) so the plugin recovers both from Cliq chat history, then restart the gateway. Alternatively forward the fields from a verified Deluge handler.",
-          ];
+        : inspection.handlerContentShapes.status === "history_recovery_configured"
+          ? [
+              "History recovery is best-effort and chat access is unverified. Verify native reply/forward context with the intended users on an isolated test bot; alternatively forward context from a verified Deluge handler. Ask users to resend or describe missing content when recovery fails.",
+            ]
+          : [
+              "Reply/quote and forwarded-message context is not verified. Set channels.cliq.replyContextRecovery.enabled=true (needs a user-context refreshToken with ZohoCliq.Messages.READ) for best-effort recovery, or forward the fields from a verified Deluge handler. Verify delivery with the intended users on an isolated test bot.",
+            ];
     return {
       status: "warn",
       evidence,

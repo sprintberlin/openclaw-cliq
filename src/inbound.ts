@@ -55,6 +55,7 @@ import {
   parseCliqReplyToContext,
   resolveCliqReplyToContext,
   recoverCliqInboundContextFromHistory,
+  reportCliqHistoryReadError,
   formatCliqReplyToBlock,
   type CliqReplyToContext,
 } from "./inbound-quote.js";
@@ -1605,7 +1606,7 @@ export async function dispatchCliqInbound(params: {
       text: cleanText,
       senderId: parsed.senderId,
       enabled: true,
-      onError: (err, info) => onError?.(err, info),
+      onError,
     })
     : undefined;
   const replyToBase = parsed.replyTo ?? recoveredContext?.replyTo;
@@ -1613,7 +1614,7 @@ export async function dispatchCliqInbound(params: {
     client,
     chatId: parsed.chatId || undefined,
     canReadChatMessages: Boolean(account.refreshToken),
-    onError: (err, info) => onError?.(err, info),
+    onError,
   });
   const quoteBlock =
     replyTo && (replyTo.text || replyTo.senderName)
@@ -1649,7 +1650,7 @@ export async function dispatchCliqInbound(params: {
       messageId: /^(?:evt|syn):/.test(parsed.messageId) ? undefined : parsed.messageId,
       text: cleanText,
       canReadChatMessages: Boolean(account.refreshToken),
-      onError: (err, info) => onError?.(err, info),
+      onError: (err, info) => reportCliqHistoryReadError(err, info, onError),
     })
     : parsed.forward);
   const forwardBlock =
@@ -1704,7 +1705,7 @@ export async function dispatchCliqInbound(params: {
       client,
       chatId: parsed.chatId || undefined,
       canReadChatMessages: Boolean(account.refreshToken),
-      onError: (err, info) => onError?.(err, { kind: info.kind }),
+      onError: (err, info) => reportCliqHistoryReadError(err, info, onError),
     });
     const prepared = await prepareInboundMedia({
       attachments: resolvedAttachments,

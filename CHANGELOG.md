@@ -13,6 +13,8 @@ publish workflow extracts the matching section as the release notes (see
 
 ### Fixed
 
+- Cliq chat-history reads (inbound quote/reply recovery, forward recovery, and media file-id resolution) classify provider errors as `CliqChatHistoryHttpError` and report failures without chat IDs, message text, user IDs, OAuth tokens, or raw provider bodies (#339). A classified failure includes only the HTTP status and an allow-listed error code (`operation_failed`, `oauthtoken_scope_invalid`) when present, identifies the cause as unknown, and continues inbound processing without the unrecovered context. Regression tests reproduce live 200/400 observations across DM lanes. Doctor stage 5 reports `history_recovery_configured` and warns rather than treating unverified history recovery as full shape coverage.
+
 - Core `deferredToActiveRun: "steer" | "followup"` admissions retire the turn's placeholder without a false failure notice (#337). Non-deferred no-reply turns retain the existing failure notice.
 
 ### Added
