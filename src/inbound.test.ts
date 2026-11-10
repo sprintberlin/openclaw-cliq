@@ -20,7 +20,10 @@ vi.mock("openclaw/plugin-sdk/media-store", () => ({
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
 import type { IncomingMessage } from "node:http";
-import type { GetReplyOptions } from "openclaw/plugin-sdk/reply-runtime";
+import {
+  finalizeInboundContext as finalizeSdkInboundContext,
+  type GetReplyOptions,
+} from "openclaw/plugin-sdk/reply-runtime";
 import {
   parseCliqWebhookPayload,
   describeCliqPayloadRejection,
@@ -2149,6 +2152,82 @@ describe("dispatchCliqInbound — inbound quote / reply context (issue #49)", ()
       }),
     };
   }
+
+  function runtimeWithSdkFinalizer(capture: {
+    ctxPayload?: Record<string, unknown>;
+    body?: string;
+    dispatchedCtx?: Record<string, unknown>;
+  }): CliqRuntime {
+    const runtime = mockRuntime(capture);
+    runtime.channel.reply.finalizeInboundContext = (fields) => {
+      const finalized = finalizeSdkInboundContext(fields as never);
+      capture.ctxPayload = finalized as unknown as Record<string, unknown>;
+      return finalized;
+    };
+    runtime.channel.inbound.run = async ({ adapter }) => {
+      const turn = adapter.resolveTurn(undefined, undefined, undefined) as {
+        ctxPayload: Record<string, unknown>;
+      };
+      capture.dispatchedCtx = turn.ctxPayload;
+      return undefined;
+    };
+    return runtime;
+  }
+
+  it("passes a history-recovered quote through the real SDK finalizer to the agent, not the command body", async () => {
+    const capture: { ctxPayload?: Record<string, unknown>; body?: string; dispatchedCtx?: Record<string, unknown> } = {};
+    const liveText = "What do you think?";
+    const parsed = parseCliqWebhookPayload({
+      handler: "message", eventId: "evt-test", message: liveText,
+      user: { id: "u1", name: "Alice" }, chat: { id: "CT_dm_chat-B1" },
+    })!;
+    const history = [{
+      messageId: "m-live", chatId: "CT_dm_chat-B1", text: liveText,
+      senderId: "u1", timestamp: "2026-11-10T19:42:21.131Z",
+      repliedTo: { id: "m-parent", content: "Parent only in history", sender: { id: "bot", name: "Bot" } },
+    }];
+    const client = makeClient(history);
+    await dispatchCliqInbound({
+      runtime: runtimeWithSdkFinalizer(capture), cfg: {} as never,
+      account: account({ refreshToken: "rt", replyContextRecovery: { enabled: true } }),
+      parsed, client,
+    });
+    expect(client.listChatMessages).toHaveBeenCalledWith("CT_dm_chat-B1", { limit: 50 });
+    expect(capture.dispatchedCtx).toBe(capture.ctxPayload);
+    expect(capture.dispatchedCtx?.BodyForAgent).toContain("> Parent only in history");
+    expect(capture.dispatchedCtx?.agentText).toContain("> Parent only in history");
+    expect(capture.dispatchedCtx?.CommandBody).toBe(liveText);
+    expect(capture.dispatchedCtx?.RawBody).toBe(liveText);
+  });
+
+  it("passes an explicit textless quote and clarification to the agent without making them a command", async () => {
+    const capture: { ctxPayload?: Record<string, unknown>; body?: string; dispatchedCtx?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload({
+      handler: "mention", message: { text: "", id: "m2", reply_to: "m1" },
+      user: { id: "u1" }, chat: { id: "CT_channel", type: "channel" },
+      parent: { id: "m1", text: "quoted original", sender: { id: "u2", name: "Alice" } },
+    })!;
+    await dispatchCliqInbound({
+      runtime: runtimeWithSdkFinalizer(capture), cfg: {} as never, account: account(), parsed, client: makeClient(),
+    });
+    expect(capture.dispatchedCtx?.BodyForAgent).toContain("> quoted original");
+    expect(capture.dispatchedCtx?.BodyForAgent).toContain("without additional text");
+    expect(capture.dispatchedCtx?.CommandBody).toBe("");
+  });
+
+  it("passes forwarded attribution to the agent while leaving the user's command unchanged", async () => {
+    const capture: { ctxPayload?: Record<string, unknown>; body?: string; dispatchedCtx?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload({
+      handler: "message", message: "Please review", user: { id: "u1" }, chat: { id: "CT_dm_chat-B1" },
+      forwarded_message: { text: "Forwarded content", sender: { id: "u2", name: "Alice" } },
+    })!;
+    await dispatchCliqInbound({
+      runtime: runtimeWithSdkFinalizer(capture), cfg: {} as never, account: account(), parsed, client: makeClient(),
+    });
+    expect(capture.dispatchedCtx?.BodyForAgent).toContain("⤷ Forwarded message from Alice:");
+    expect(capture.dispatchedCtx?.BodyForAgent).toContain("> Forwarded content");
+    expect(capture.dispatchedCtx?.CommandBody).toBe("Please review");
+  });
 
   it.each(["", "@Bot", "{@b-123}"])(
     "requests clarification rather than inventing missing context for %j",

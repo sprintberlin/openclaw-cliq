@@ -757,6 +757,40 @@ if grep -q "@openclaw-bot $GROUP_MARKER" "$MODEL_REQUESTS_LOG"; then
 fi
 echo "OK: valid group mention dispatched exactly once through channel target"
 
+# A parent supplied by a handler must reach the actual model prompt, not just
+# the plugin's envelope or telemetry fields. Use only synthetic content.
+QUOTE_MARKER="stage4b-quote-$$"
+QUOTE_PARENT="stage4b-parent-$$"
+QUOTE_PAYLOAD_4B='{"handler":"message","message":{"text":"'"$QUOTE_MARKER"'","id":"dm-quote-4b"},"user":{"id":"user-quote","name":"Quote Tester"},"chat":{"id":"CT_smoke_quote","type":"single"},"parent":{"id":"parent-4b","text":"'"$QUOTE_PARENT"'","sender":{"id":"bot-1","name":"Bot"}}}'
+resp="$(curl -s -w "\n%{http_code}" --max-time 60 -X POST "$WEBHOOK_URL" \
+  -H "x-cliq-webhook-secret: smoke-webhook-secret" \
+  -H "content-type: application/json" --data "$QUOTE_PAYLOAD_4B")"
+code="$(printf "%s" "$resp" | tail -n1)"
+assert_status "valid DM with quoted parent" 200 "$code"
+quote_delivered=0
+for _ in $(seq 1 80); do
+  if grep -q "$QUOTE_MARKER" "$SENDS_LOG" 2>/dev/null; then quote_delivered=1; break; fi
+  sleep 0.5
+done
+if [ "$quote_delivered" -ne 1 ] || ! node - "$MODEL_REQUESTS_LOG" "$QUOTE_MARKER" "$QUOTE_PARENT" <<'NODE'
+const fs = require("fs");
+const [path, live, parent] = process.argv.slice(2);
+const requests = fs.readFileSync(path, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
+const contents = (message) => typeof message?.content === "string" ? message.content
+  : Array.isArray(message?.content) ? message.content.map((part) => part?.text ?? "").join("") : "";
+const matching = requests.filter((request) => (request.messages ?? []).some(
+  (message) => message.role === "user" && contents(message).includes(live),
+));
+if (matching.length !== 1 || !(matching[0].messages ?? []).some(
+  (message) => message.role === "user" && contents(message).includes(live) && contents(message).includes(parent),
+)) process.exit(1);
+NODE
+then
+  echo "FAIL: quoted parent did not reach the agent model with the user message" >&2
+  exit 1
+fi
+echo "OK: quoted parent reached the model in the same user message"
+
 # Synthetic credentials are deliberately distinctive; neither gateway nor
 # mock logs may contain them. This also catches accidental OAuth query logging.
 for secret in smoke-client-secret smoke-webhook-secret stub-key; do

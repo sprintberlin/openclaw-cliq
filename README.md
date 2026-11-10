@@ -1066,6 +1066,8 @@ When only the parent **id** is present (e.g. the default `message.reply_to` shap
 <the user's message>
 ```
 
+When a quote or forward is available, its context is included in the agent-visible message. Command parsing still uses only the user's cleaned text. History-based recovery remains best effort: it requires a readable chat and a matching message, and may not be available for every bot DM.
+
 A failed or empty fetch degrades to "no quote text" and never breaks the turn. For a textless Message/Mention-handler event with a valid sender and chat, the webhook admits the event through the normal security, dedupe, and durable-ingress gates instead of rejecting it as invalid. If the handler supplies a quoted parent, the agent receives it; otherwise the agent is instructed to ask for the missing content rather than guess. A bare mention also receives a clarification prompt. This does not recover a quote the handler did not forward: history recovery requires nonempty matching text, and a textless reply or captionless forward without an identifiable native message id cannot be matched safely. Malformed payloads and unreadable attachments remain errors.
 
 A reply to the bot in a group is also admitted as an implicit mention (the `reply_to_bot` / `quoted_bot` gating kinds) — the user does not need to re-@mention the bot when replying to one of its messages.
