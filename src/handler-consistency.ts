@@ -254,7 +254,7 @@ export function inspectCliqHandlerContentShapeCoverage(
   if (options.historyRecovery) {
     return {
       status: "history_recovery_configured",
-      detail: `${detail}. History recovery is configured but access and reply/forward delivery are unverified; some active DM lanes returned HTTP 400 operation_failed even while the token owner's DM and a channel were readable`,
+      detail: `${detail}. History recovery is configured, but the history read is best-effort and can fail even on active chats, and no native reply/forward delivery has been verified`,
     };
   }
   if (everyShapeDeclared) {

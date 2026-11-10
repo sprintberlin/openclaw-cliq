@@ -150,7 +150,7 @@ describe("inspectCliqBot — reply/forward context via history recovery", () => 
     expect(result.handlerContentShapes.status).toBe("history_recovery_configured");
     const doctor = toCliqDoctorBotInspection(result);
     expect(doctor.status).toBe("warn");
-    expect(doctor.evidence.join(" ")).toMatch(/HTTP 400 operation_failed/i);
+    expect(doctor.evidence.join(" ")).toMatch(/history read is best-effort/i);
     expect(JSON.stringify(doctor)).not.toContain("refresh-token-value");
   });
 

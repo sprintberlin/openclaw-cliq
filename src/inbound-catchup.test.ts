@@ -174,13 +174,18 @@ describe("inspectCliqInboundCatchup", () => {
     });
   });
 
-  it("reports a failed history read but does not throw", async () => {
+  it("reports a failed history read as a redacted cause-unknown error but does not throw", async () => {
     const onError = vi.fn();
     await expect(inspectCliqInboundCatchup({
       account, live: live(), cursor: "saved-cursor",
-      listChatMessages: async () => { throw new Error("denied"); },
+      listChatMessages: async () => { throw new Error("denied CT_1 secret-body"); },
       onError,
     })).resolves.toEqual({ attempted: true, reason: "history_fetch_failed", candidates: [] });
-    expect(onError).toHaveBeenCalledWith(expect.any(Error), { kind: "inbound-catchup-history-fetch" });
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining("cause unknown") }),
+      { kind: "inbound-catchup-history-fetch" },
+    );
+    expect(String(onError.mock.calls[0][0])).not.toContain("CT_1");
+    expect(String(onError.mock.calls[0][0])).not.toContain("secret-body");
   });
 });
