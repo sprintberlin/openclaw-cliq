@@ -66,9 +66,9 @@ describe("inspectCliqHandlerContentShapeCoverage (issue #225)", () => {
     expect(result.detail).toMatch(/does not claim native reply\/quote or forward delivery/i);
   });
 
-  it("reports recovered_from_history only when history recovery is requested and every handler was read", () => {
+  it("reports history_recovery_configured only when history recovery is requested and every handler was read", () => {
     const recovered = inspectCliqHandlerContentShapeCoverage(handlers(script()), { historyRecovery: true });
-    expect(recovered.status).toBe("recovered_from_history");
+    expect(recovered.status).toBe("history_recovery_configured");
     expect(recovered.detail).toContain("reply/quote fields [none]");
     expect(recovered.detail).not.toContain(SECRET);
 

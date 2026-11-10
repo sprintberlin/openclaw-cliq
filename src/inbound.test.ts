@@ -46,7 +46,7 @@ import {
 } from "./handler-schema.js";
 import { verifyWebhookSecret } from "./webhook-security.js";
 import { lookupCliqChatId, resetCliqTypingState } from "./heartbeat.js";
-import { resolveCliqConfig, type ResolvedCliqAccount } from "./client.js";
+import { resolveCliqConfig, CliqChatHistoryHttpError, type ResolvedCliqAccount } from "./client.js";
 
 function account(overrides: Partial<ResolvedCliqAccount> = {}): ResolvedCliqAccount {
   return {
@@ -2318,7 +2318,69 @@ describe("dispatchCliqInbound — inbound quote / reply context (issue #49)", ()
       onError,
     });
     expect(capture.body).toBe("agreed");
-    expect(onError).toHaveBeenCalledWith(expect.any(Error), { kind: "reply-to-fetch" });
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining("cause unknown") }),
+      { kind: "reply-to-fetch" },
+    );
+  });
+
+  it("recovery succeeds for the token-owner DM and degrades safely for foreign DM 400s under the refresh_token grant (issue #339)", async () => {
+    const recoveryHistory = [
+      { messageId: "owner-live", chatId: "CT_owner_dm", text: "owner reply", senderId: "u-owner", repliedTo: { id: "m-parent", content: "parent body" } },
+    ];
+    const capture: { ctxPayload?: Record<string, unknown>; body?: string } = {};
+    const ownerParsed = parseCliqWebhookPayload(
+      {
+        handler: "message",
+        message: { text: "owner reply", id: "owner-live" },
+        user: { id: "u-owner", name: "Owner" },
+        chat: { id: "CT_owner_dm" },
+      } as CliqWebhookPayload,
+    )!;
+    const ownerClient = makeClient(recoveryHistory);
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account({ refreshToken: "rt", replyContextRecovery: { enabled: true } }),
+      parsed: ownerParsed,
+      client: ownerClient,
+    });
+    expect(capture.ctxPayload?.ReplyToText).toBe("parent body");
+    expect(capture.body).toContain("parent body");
+    for (const chatId of ["CT_foreign_a", "CT_foreign_b"]) {
+      const foreignCapture: { ctxPayload?: Record<string, unknown>; body?: string } = {};
+      const foreignParsed = parseCliqWebhookPayload(
+        {
+          handler: "message",
+          message: { text: "foreign reply", id: "foreign-live" },
+          user: { id: "u-foreign", name: "Foreign" },
+          chat: { id: chatId },
+        } as CliqWebhookPayload,
+      )!;
+      const foreignClient = makeClient();
+      foreignClient.listChatMessages = vi.fn(async () => {
+        throw new CliqChatHistoryHttpError(400, "operation_failed");
+      });
+      const foreignOnError = vi.fn();
+      await dispatchCliqInbound({
+        runtime: mockRuntime(foreignCapture),
+        cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+        account: account({ refreshToken: "rt", replyContextRecovery: { enabled: true } }),
+        parsed: foreignParsed,
+        client: foreignClient,
+        onError: foreignOnError,
+      });
+      expect(foreignCapture.body).toBe("foreign reply");
+      expect(foreignCapture.ctxPayload?.ReplyToText).toBeUndefined();
+      expect(foreignOnError).toHaveBeenCalledTimes(1);
+      const [reported, info] = foreignOnError.mock.calls[0];
+      expect(info).toEqual({ kind: "inbound-context-recovery" });
+      expect(String((reported as Error).message)).toContain("HTTP 400");
+      expect(String((reported as Error).message)).toContain("code=operation_failed");
+      expect(String((reported as Error).message)).toContain("cause unknown");
+      expect(String((reported as Error).message)).not.toContain(chatId);
+      expect(String((reported as Error).message)).not.toContain("foreign reply");
+    }
   });
 
   it("a group reply-to-bot is admitted as an implicit mention", async () => {
@@ -2767,7 +2829,7 @@ describe("dispatchCliqInbound — inbound media (issue #48)", () => {
     const capture: { ctxPayload?: Record<string, unknown> } = {};
     const client = makeMediaClient();
     client.listChatMessages = vi.fn(async () => {
-      throw new Error("cliq: GET /api/v2/chats/CT_1000000000000000000_20000000000-B2/messages?limit=50 failed (400): {\"code\":\"operation_failed\"}");
+      throw new CliqChatHistoryHttpError(400, "operation_failed");
     });
     const parsed = parseCliqWebhookPayload({
       handler: "message",
@@ -2777,20 +2839,22 @@ describe("dispatchCliqInbound — inbound media (issue #48)", () => {
       attachments: ["notes.txt"],
     } as CliqWebhookPayload)!;
 
-    let reportedKind = "";
+    const onError = vi.fn();
     await dispatchCliqInbound({
       runtime: mockRuntime(capture),
       cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
       account: account({ refreshToken: "rt" }),
       parsed,
       client,
-      onError: (_err, info) => {
-        reportedKind = info.kind;
-      },
+      onError,
     });
 
     expect(client.listChatMessages).toHaveBeenCalledWith("CT_1000000000000000000_20000000000-B2", { limit: 50 });
-    expect(reportedKind).toBe("inbound-media-no-fileid");
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining("HTTP 400, code=operation_failed") }),
+      { kind: "inbound-media-fileid-fetch" },
+    );
+    expect(onError).toHaveBeenCalledWith(expect.any(Error), { kind: "inbound-media-no-fileid" });
     expect(saveMediaBufferMock).not.toHaveBeenCalled();
     expect(capture.ctxPayload?.MediaPath).toBeUndefined();
     expect(capture.ctxPayload?.RawBody).toBe("<file: notes.txt>");

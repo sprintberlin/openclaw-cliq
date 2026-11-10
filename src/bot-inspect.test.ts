@@ -141,16 +141,16 @@ describe("inspectCliqBot — organization-visible, not subscribed", () => {
 describe("inspectCliqBot — reply/forward context via history recovery", () => {
   const url = "https://cliq.example.com/cliq/webhook";
 
-  it("passes when replyContextRecovery is enabled with a user-context refresh token", async () => {
+  it("reports history_recovery_configured and stays degraded as warn when replyContextRecovery is enabled with a user-context refresh token (#339)", async () => {
     const result = await inspectCliqBot({
       account: account({ replyContextRecovery: { enabled: true }, refreshToken: "refresh-token-value" }),
       publicWebhookUrl: url,
       reader: reader(),
     });
-    expect(result.handlerContentShapes.status).toBe("recovered_from_history");
+    expect(result.handlerContentShapes.status).toBe("history_recovery_configured");
     const doctor = toCliqDoctorBotInspection(result);
-    expect(doctor.status).toBe("pass");
-    expect(doctor.evidence.join(" ")).toMatch(/recovered from Cliq chat history/i);
+    expect(doctor.status).toBe("warn");
+    expect(doctor.evidence.join(" ")).toMatch(/history read is best-effort/i);
     expect(JSON.stringify(doctor)).not.toContain("refresh-token-value");
   });
 

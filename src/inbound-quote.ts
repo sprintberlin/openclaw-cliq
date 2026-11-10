@@ -23,10 +23,31 @@
  *  - Post message `reply_to` arg <https://www.zoho.com/cliq/help/restapi/v2/messages/>
  */
 
+import { CliqChatHistoryHttpError } from "./client.js";
+import { getCliqDefaultLogger } from "./logger.js";
 import {
   parseCliqForwardContext,
   type CliqForwardContext,
 } from "./inbound-forward.js";
+
+export function reportCliqHistoryReadError(
+  err: unknown,
+  info: { kind: string },
+  onError?: (err: unknown, info: { kind: string }) => void,
+): void {
+  const detail = err instanceof CliqChatHistoryHttpError && Number.isInteger(err.status) && err.status >= 100 && err.status <= 599
+    ? `HTTP ${err.status}${err.code === "operation_failed" || err.code === "oauthtoken_scope_invalid" ? `, code=${err.code}` : ""}`
+    : "failure details unavailable";
+  const safeError = new Error(
+    `Cliq chat-history read failed (${detail}); cause unknown, inbound processing continues without recovered context`,
+  );
+  try {
+    if (onError) onError(safeError, info);
+    else getCliqDefaultLogger().warn?.(`[cliq] ${info.kind}: ${safeError.message}`);
+  } catch {
+    return;
+  }
+}
 
 /** A normalized reference to the message a user replied to / quoted. */
 export interface CliqReplyToContext {
@@ -278,7 +299,7 @@ export async function resolveCliqReplyToContext(
     }
     return replyTo;
   } catch (err) {
-    params.onError?.(err, { kind: "reply-to-fetch" });
+    reportCliqHistoryReadError(err, { kind: "reply-to-fetch" }, params.onError);
     return replyTo;
   }
 }
@@ -353,7 +374,7 @@ export async function recoverCliqInboundContextFromHistory(
       limit: params.recentMessagesLimit ?? 50,
     });
   } catch (err) {
-    params.onError?.(err, { kind: "inbound-context-recovery" });
+    reportCliqHistoryReadError(err, { kind: "inbound-context-recovery" }, params.onError);
     return undefined;
   }
 

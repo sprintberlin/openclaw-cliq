@@ -12,6 +12,7 @@
 import type { CliqChatMessageRef, ResolvedCliqAccount } from "./client.js";
 import type { ParsedCliqInbound } from "./inbound.js";
 import { parseCliqForwardContext } from "./inbound-forward.js";
+import { reportCliqHistoryReadError } from "./inbound-quote.js";
 
 export const DEFAULT_CLIQ_INBOUND_CATCHUP_LIMIT = 50;
 export const MAX_CLIQ_INBOUND_CATCHUP_LIMIT = 50;
@@ -182,7 +183,7 @@ export async function inspectCliqInboundCatchup(params: {
   try {
     history = await params.listChatMessages(params.live.chatId, { limit });
   } catch (err) {
-    params.onError?.(err, { kind: "inbound-catchup-history-fetch" });
+    reportCliqHistoryReadError(err, { kind: "inbound-catchup-history-fetch" }, params.onError);
     return { attempted: true, reason: "history_fetch_failed", candidates: [] };
   }
   if (!Array.isArray(history) || history.length === 0) {

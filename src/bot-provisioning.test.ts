@@ -8,7 +8,7 @@ import {
   CLIQ_HANDLER_SCHEMA_FIELD,
   CLIQ_HANDLER_SCHEMA_VERSION,
 } from "./handler-schema.js";
-
+import { parseCliqReplyToContext } from "./inbound-quote.js";
 
 const URL_OK = "https://cliq.example.com/cliq/webhook";
 const SECRET = "config-secret";
@@ -217,6 +217,71 @@ describe("buildCliqHandlerScript", () => {
     expect(body).toContain("newuser");
     expect(body).not.toContain("attachments");
     expect(body).toContain('payload.put("eventId"');
+  });
+
+  describe("reply context without a proven handler-side source (issues #230 and #339)", () => {
+    const handlerTypes = [
+      "message_handler",
+      "mention_handler",
+      "participation_handler",
+      "welcome_handler",
+    ] as const;
+
+    it.each(handlerTypes)("%s does not reference unverified reply symbols", (handlerType) => {
+      const body = buildCliqHandlerScript({ handlerType, webhookUrl: URL_OK, webhookSecret: SECRET });
+      expect(body).not.toMatch(/\b(?:reply_to|replied_to|repliedTo|parent|parent_message|quoted|quoted_message|reply_to_message)\b/);
+    });
+
+    it.each(handlerTypes)("%s sends only to the authenticated webhook", (handlerType) => {
+      const body = buildCliqHandlerScript({ handlerType, webhookUrl: URL_OK, webhookSecret: SECRET });
+      const calls = [...body.matchAll(/\binvokeUrl\s*\[([\s\S]*?)\]\s*;/g)].map((match) => match[1]);
+      expect(calls).toHaveLength(handlerType === "message_handler" ? 2 : 1);
+      for (const call of calls) {
+        expect(call).toMatch(/\burl\s*:\s*webhookUrl\b/);
+        expect(call).toMatch(/\btype\s*:\s*POST\b/);
+        expect(call).toMatch(/headers\s*:\s*(?:headers|\{"x-cliq-webhook-secret":webhookSecret\})/);
+        expect(call).not.toMatch(/\bconnection\s*:/);
+      }
+      expect(body).not.toMatch(/\b(?:Authorization|Bearer|accessToken|refreshToken|clientSecret)\b/i);
+      expect(body).not.toMatch(/response\.put\("(?:message|parent|quoted|webhookSecret)"/);
+    });
+
+    it.each(["message_handler", "mention_handler"] as const)(
+      "%s forwards the existing message argument without projecting a parent",
+      (handlerType) => {
+        const body = buildCliqHandlerScript({ handlerType, webhookUrl: URL_OK, webhookSecret: SECRET });
+        expect(body).toContain('payload.put("message", message);');
+        expect(body).toContain("body   : payload");
+        if (handlerType === "message_handler") {
+          expect(body).toContain('partMessage.put("content", "" + message);');
+        }
+      },
+    );
+
+    it("forwards the participation message value without projecting its fields", () => {
+      const body = buildCliqHandlerScript({
+        handlerType: "participation_handler",
+        webhookUrl: URL_OK,
+        webhookSecret: SECRET,
+      });
+      expect(body).toContain('payload.put("message", data.get("message"));');
+      expect(body).toContain("body   : payload");
+    });
+
+    it("keeps parser compatibility intact when a custom handler forwards parent metadata", () => {
+      const parsedFromCustomMap = parseCliqReplyToContext({
+        message: {
+          text: "custom reply",
+          replied_to: { id: "p-1", content: "quoted text", sender: { id: "u-9", name: "Alice" } },
+        },
+      });
+      expect(parsedFromCustomMap).toEqual({
+        messageId: "p-1",
+        text: "quoted text",
+        senderId: "u-9",
+        senderName: "Alice",
+      });
+    });
   });
 });
 

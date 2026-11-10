@@ -1,4 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
+import { CliqChatHistoryHttpError, CliqClient } from "./client.js";
+import { setCliqDefaultLogger } from "./logger.js";
 import {
   parseCliqReplyToContext,
   resolveCliqReplyToContext,
@@ -161,7 +163,218 @@ describe("recoverCliqInboundContextFromHistory", () => {
       onError,
     });
     expect(out).toBeUndefined();
-    expect(onError).toHaveBeenCalledWith(expect.any(Error), { kind: "inbound-context-recovery" });
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining("cause unknown") }),
+      { kind: "inbound-context-recovery" },
+    );
+  });
+
+  it("recovers the token-owner DM through the history read (issue #339)", async () => {
+    const client = clientWith([{
+      ...replyEntry,
+      messageId: "owner-live-reply",
+      text: "owner reply",
+    }]);
+    const out = await recoverCliqInboundContextFromHistory({
+      client: client as never,
+      chatId: "CT_owner_dm",
+      text: "owner reply",
+      senderId: "u-1",
+      enabled: true,
+    });
+    expect(out?.replyTo?.text).toBe("parent body");
+    expect(client.listChatMessages).toHaveBeenCalledWith(
+      "CT_owner_dm",
+      { limit: 50 },
+    );
+  });
+
+  it.each([
+    ["CT_foreign_a"],
+    ["CT_foreign_b"],
+  ])("degrades safely on a foreign DM 400 operation_failed (%s, issue #339)", async (chatId) => {
+    const client = {
+      listChatMessages: vi.fn().mockRejectedValue(
+        new CliqChatHistoryHttpError(400, "operation_failed"),
+      ),
+    };
+    const onError = vi.fn();
+    const out = await recoverCliqInboundContextFromHistory({
+      client: client as never,
+      chatId,
+      text: "foreign DM reply",
+      senderId: "u-foreign",
+      enabled: true,
+      onError,
+    });
+    expect(out).toBeUndefined();
+    expect(client.listChatMessages).toHaveBeenCalledWith(chatId, { limit: 50 });
+    expect(onError).toHaveBeenCalledTimes(1);
+    const [reported, info] = onError.mock.calls[0];
+    expect(info).toEqual({ kind: "inbound-context-recovery" });
+    expect(String((reported as Error).message)).toContain("HTTP 400");
+    expect(String((reported as Error).message)).toContain("code=operation_failed");
+    expect(String((reported as Error).message)).toContain("cause unknown");
+    expect(String((reported as Error).message)).not.toContain(chatId);
+    expect(String((reported as Error).message)).not.toContain("foreign DM reply");
+  });
+
+  it("uses the real refresh-token history client for the observed owner/other DM matrix", async () => {
+    const originalFetch = globalThis.fetch;
+    const oauthUrls: URL[] = [];
+    const historyRequests: Array<{ chatId: string; auth: string | null; limit: string | null }> = [];
+    const privateBody = "private-provider-message";
+    try {
+      globalThis.fetch = (async (input: URL | string | Request, init?: RequestInit) => {
+        const url = new URL(input instanceof Request ? input.url : input.toString());
+        if (url.pathname === "/oauth/v2/token") {
+          oauthUrls.push(url);
+          return new Response(JSON.stringify({ access_token: "test-access-token", expires_in: 3600 }));
+        }
+        const chatId = decodeURIComponent(url.pathname.split("/")[4]);
+        historyRequests.push({ chatId, auth: new Headers(init?.headers).get("Authorization"), limit: url.searchParams.get("limit") });
+        if (chatId === "CT_owner_dm") {
+          return new Response(JSON.stringify({ data: [{
+            id: "owner-live",
+            text: "owner reply",
+            sender: { id: "owner" },
+            replied_to: { id: "parent", content: "parent body", sender: { id: "bot", name: "Bot" } },
+          }] }));
+        }
+        return new Response(JSON.stringify({
+          code: "operation_failed",
+          message: `${privateBody} test-access-token test-refresh-token test-client-secret ${chatId}`,
+        }), { status: 400 });
+      }) as typeof fetch;
+      const client = new CliqClient("id", "test-client-secret", "bot", undefined, undefined, undefined, {}, "test-refresh-token");
+      const onError = vi.fn();
+      const owner = await recoverCliqInboundContextFromHistory({
+        client, chatId: "CT_owner_dm", text: "owner reply", senderId: "owner", enabled: true, onError,
+      });
+      expect(owner?.replyTo?.text).toBe("parent body");
+      expect(onError).not.toHaveBeenCalled();
+      for (const chatId of ["CT_foreign_a", "CT_foreign_b"]) {
+        expect(await recoverCliqInboundContextFromHistory({
+          client, chatId, text: "private inbound text", senderId: "other", enabled: true, onError,
+        })).toBeUndefined();
+      }
+      expect(oauthUrls).toHaveLength(1);
+      expect(oauthUrls[0].searchParams.get("grant_type")).toBe("refresh_token");
+      expect(oauthUrls[0].searchParams.has("scope")).toBe(false);
+      expect(historyRequests).toEqual(["CT_owner_dm", "CT_foreign_a", "CT_foreign_b"].map((chatId) => ({
+        chatId, auth: "Zoho-oauthtoken test-access-token", limit: "50",
+      })));
+      expect(onError).toHaveBeenCalledTimes(2);
+      for (const [error, info] of onError.mock.calls) {
+        expect(info).toEqual({ kind: "inbound-context-recovery" });
+        const logged = `${String(error)} ${(error as Error).stack}`;
+        expect(logged).toContain("HTTP 400, code=operation_failed");
+        expect(logged).toContain("cause unknown");
+        for (const secret of [privateBody, "test-access-token", "test-refresh-token", "test-client-secret", "private inbound text", "CT_foreign_a", "CT_foreign_b"]) {
+          expect(logged).not.toContain(secret);
+        }
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("does not change the client_credentials guard for history reads", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    try {
+      const client = new CliqClient("id", "secret", "bot", undefined, undefined, undefined, {});
+      await expect(client.listChatMessages("CT_other_a")).rejects.toThrow(/refreshToken/);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("emits a safe fallback log without a caller onError and never logs bodies or secrets", async () => {
+    const logged: string[] = [];
+    setCliqDefaultLogger({ warn: (message: string) => { logged.push(message); } });
+    try {
+      const client = {
+        listChatMessages: vi.fn().mockRejectedValue(new Error(`cliq: GET /api/v2/chats/CT_secret/messages?limit=50 failed (400): secret-token-body`)),
+      };
+      const out = await recoverCliqInboundContextFromHistory({
+        client: client as never,
+        chatId: "CT_secret",
+        text: "sensitive body",
+        senderId: "u-sensitive",
+        enabled: true,
+      });
+      expect(out).toBeUndefined();
+      expect(logged).toHaveLength(1);
+      expect(logged[0]).toContain("inbound-context-recovery");
+      expect(logged[0]).not.toContain("CT_secret");
+      expect(logged[0]).not.toContain("sensitive body");
+      expect(logged[0]).not.toContain("u-sensitive");
+      expect(logged[0]).not.toContain("secret-token-body");
+    } finally {
+      setCliqDefaultLogger(null);
+    }
+  });
+
+  it("does not copy arbitrary provider error codes or raw errors into diagnostics", async () => {
+    const onError = vi.fn();
+    for (const failure of [
+      new CliqChatHistoryHttpError(400, "secret-token-and-user-content"),
+      new Error("HTTP 400 operation_failed CT_private private message token=secret"),
+      { status: 400, code: "operation_failed", message: "private message" },
+      "secret-token-and-user-content",
+    ]) {
+      await recoverCliqInboundContextFromHistory({
+        client: { listChatMessages: async () => { throw failure; } },
+        chatId: "CT_private", text: "private message", enabled: true, onError,
+      });
+    }
+    expect(onError).toHaveBeenCalledTimes(4);
+    for (const [error] of onError.mock.calls) {
+      const logged = `${String(error)} ${(error as Error).stack} ${JSON.stringify(error)}`;
+      expect(logged).not.toContain("secret-token-and-user-content");
+      expect(logged).not.toContain("private message");
+      expect(logged).not.toContain("CT_private");
+      expect(logged).not.toContain("token=secret");
+    }
+    expect(String(onError.mock.calls[0][0])).toContain("HTTP 400");
+    expect(String(onError.mock.calls[0][0])).not.toContain("code=");
+    expect(String(onError.mock.calls[1][0])).toContain("failure details unavailable");
+  });
+
+  it("continues if error reporting itself throws", async () => {
+    const client = { listChatMessages: async () => { throw new Error("private"); } };
+    const onError = () => { throw new Error("logger failed"); };
+    await expect(recoverCliqInboundContextFromHistory({
+      client, chatId: "CT_1", text: "hello", enabled: true, onError,
+    })).resolves.toBeUndefined();
+    await expect(resolveCliqReplyToContext({ messageId: "parent" }, {
+      client, chatId: "CT_1", canReadChatMessages: true, onError,
+    })).resolves.toEqual({ messageId: "parent" });
+  });
+
+  it("reports a classified history failure without leaking chat ids, bodies, or tokens", async () => {
+    const client = {
+      listChatMessages: vi.fn().mockRejectedValue(
+        new CliqChatHistoryHttpError(401, "oauthtoken_scope_invalid"),
+      ),
+    };
+    const onError = vi.fn();
+    await recoverCliqInboundContextFromHistory({
+      client: client as never,
+      chatId: "CT_secret",
+      text: "sensitive body",
+      enabled: true,
+      onError,
+    });
+    const [reported] = onError.mock.calls[0];
+    const message = String((reported as Error).message);
+    expect(message).toContain("HTTP 401");
+    expect(message).toContain("code=oauthtoken_scope_invalid");
+    expect(message).not.toContain("CT_secret");
+    expect(message).not.toContain("sensitive body");
+    expect(message).not.toMatch(/refresh[_-]?token|client[_-]?secret|Bearer\b/i);
+    expect(message).not.toMatch(/Zoho-oauthtoken/i);
   });
 
   it("returns nothing for an ordinary message with neither reply nor forward", async () => {
@@ -370,7 +583,7 @@ describe("resolveCliqReplyToContext", () => {
     expect(out).toEqual({ messageId: "m-missing" });
   });
 
-  it("swallows fetch errors and reports via onError", async () => {
+  it("swallows fetch errors and reports a redacted cause-unknown error via onError", async () => {
     const client = {
       listChatMessages: vi.fn(async () => {
         throw new Error("api down");
@@ -385,7 +598,10 @@ describe("resolveCliqReplyToContext", () => {
       onError,
     });
     expect(out).toEqual({ messageId: "m1" });
-    expect(onError).toHaveBeenCalledWith(expect.any(Error), { kind: "reply-to-fetch" });
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining("cause unknown") }),
+      { kind: "reply-to-fetch" },
+    );
   });
 });
 
