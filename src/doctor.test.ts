@@ -81,8 +81,8 @@ describe("collectCliqPreviewWarnings", () => {
       }),
       doctorFixCommand: DOCTOR_FIX,
     });
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toMatch(/webhookSecret is not set/);
+    expect(warnings.some((w) => /webhookSecret is not set/.test(w))).toBe(true);
+    expect(warnings.some((w) => /replyContextRecovery is not enabled/.test(w))).toBe(true);
   });
 
   it("warns about wildcard allowFrom under open dmPolicy", () => {
@@ -98,8 +98,7 @@ describe("collectCliqPreviewWarnings", () => {
       }),
       doctorFixCommand: DOCTOR_FIX,
     });
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toMatch(/dmPolicy is "open".*wildcard/);
+    expect(warnings.some((w) => /dmPolicy is "open".*wildcard/.test(w))).toBe(true);
   });
 
   it("reports the honest organization boundary for an acknowledged trusted-organization deployment", () => {
@@ -272,6 +271,7 @@ describe("collectCliqPreviewWarnings", () => {
         webhookSecret: "s",
         dmPolicy: "allowlist",
         allowFrom: ["*"],
+        replyContextRecovery: { enabled: true },
       }),
       doctorFixCommand: DOCTOR_FIX,
     });
@@ -290,6 +290,7 @@ describe("collectCliqPreviewWarnings", () => {
         refreshToken: "rt",
         webhookSecret: "s",
         // dmPolicy defaults to "allowlist"
+        replyContextRecovery: { enabled: true },
       }),
       doctorFixCommand: DOCTOR_FIX,
     });
@@ -308,6 +309,7 @@ describe("collectCliqPreviewWarnings", () => {
         dmPolicy: "open",
         allowFrom: ["someone"],
         ackPolicy: "immediate",
+        replyContextRecovery: { enabled: true },
       }),
       doctorFixCommand: DOCTOR_FIX,
     });
@@ -327,6 +329,7 @@ describe("collectCliqPreviewWarnings", () => {
         webhookSecret: "s",
         dmPolicy: "allowlist",
         allowFrom: ["user@example.com"],
+        replyContextRecovery: { enabled: true },
       }),
       doctorFixCommand: DOCTOR_FIX,
     });
@@ -359,6 +362,7 @@ describe("collectCliqPreviewWarnings — data-center validation (issue #46)", ()
     webhookSecret: "s",
     dmPolicy: "open" as const,
     allowFrom: ["u1"],
+    replyContextRecovery: { enabled: true },
   };
 
   it("warns when only oauthBase is set (apiBase defaults to EU)", () => {

@@ -139,12 +139,25 @@ function collectCliqPreviewWarnings(params: {
   }
   if (section.ackPolicy === "immediate") {
     warnings.push(
-      `- channels.cliq: ackPolicy is "immediate" (deprecated alias). It now resolves to "after_receive_record": the Core durable ingress queue records the event BEFORE the HTTP 200, so a crash between ack and turn adoption re-dispatches exactly once instead of losing the message. Remove the deprecated key (or set "after_receive_record" explicitly) to silence this warning.`,
+      `- channels.cliq: ackPolicy is "immediate" (deprecated alias). It now resolves to "after_receive_record": the Core durable ingress queue records the event BEFORE the HTTP 200, so a crash between ack and turn adoption re-dispatches exactly once instead of losing the message. Remove the deprecated key (or set "after_receive_record" explicitly), or run \`${params.doctorFixCommand}\`, to silence this warning — \`openclaw cliq doctor\` FAILS on it (issue #344).`,
     );
   }
   if (section.ackPolicy === "after_dispatch") {
+    const override = section.allowBlockingAck === true;
     warnings.push(
-      `- channels.cliq: ackPolicy is "after_dispatch" (blocking compatibility mode). The HTTP 200 waits for the full dispatch; a turn longer than Zoho's ~40 s Deluge invokeUrl timeout will be redelivered while the original turn is still running. Prefer "after_receive_record" (the default), which acks after the durable record instead.`,
+      override
+        ? `- channels.cliq: ackPolicy is "after_dispatch" (blocking compatibility mode) with the explicit channels.cliq.allowBlockingAck=true override. The HTTP 200 waits for the full dispatch; a turn longer than Zoho's ~40 s Deluge invokeUrl timeout will be redelivered while the original turn is still running. Keep the override only when blocking acks are deliberate. Prefer "after_receive_record" (the default); run \`${params.doctorFixCommand}\` to migrate. (issue #344)`
+        : `- channels.cliq: ackPolicy is "after_dispatch" (blocking compatibility mode) without channels.cliq.allowBlockingAck=true. The HTTP 200 waits for the full dispatch; a turn longer than Zoho's ~40 s Deluge invokeUrl timeout will be redelivered while the original turn is still running. Prefer "after_receive_record" (the default), which acks after the durable record instead; run \`${params.doctorFixCommand}\` to migrate. \`openclaw cliq doctor\` FAILS on this without the override (issue #344).`,
+    );
+  }
+  // Reply/quote context recovery (issue #230) needs a user-context refresh
+  // token; without it the recovered fields never reach the agent.
+  if (
+    hasCoreCredentials &&
+    (section.replyContextRecovery as { enabled?: unknown } | undefined)?.enabled !== true
+  ) {
+    warnings.push(
+      `- channels.cliq: channels.cliq.replyContextRecovery is not enabled. Reply/quote and forwarded-message context is lost; enabling it needs a user-context refreshToken with ZohoCliq.Messages.READ (issue #230/#344).`,
     );
   }
   // Data-center validation: warn when only one of `oauthBase` / `apiBase` is

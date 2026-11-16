@@ -36,6 +36,7 @@ function cfgWith(section: Record<string, unknown> = {}, extra: Record<string, un
         dmPolicy: "allowlist",
         allowFrom: ["user-1"],
         thinking: { mode: "off" },
+        replyContextRecovery: { enabled: true },
         ...section,
       },
     },
@@ -82,6 +83,9 @@ function createDeps(overrides: Partial<CliqDoctorDeps> = {}): Partial<CliqDoctor
       httpStatus: 200,
     })),
     runPreflight: vi.fn(async () => passingPreflight()),
+    // Baseline: a live gateway with the durable Core ingress surface. Tests
+    // inject false/undefined to exercise the issue #344 failure/warning.
+    hasDurableSurface: () => true,
     randomUUID: () => "nonce-1234",
     now: () => new Date("2026-08-27T10:00:00.000Z"),
     ...overrides,
@@ -356,18 +360,64 @@ describe("cliq doctor — stage 1 config and secret resolution", () => {
     expect(stageOf(report, "config").evidence.join(" ")).not.toMatch(/session\.dmScope resolves to main/);
   });
 
-  it("reports ackPolicy immediate as a deprecated alias of after_receive_record (issue #261)", async () => {
+  it("fails on ackPolicy immediate: the deprecated alias is never optimal (issue #344)", async () => {
     const report = await runDefault(cfgWith({ ackPolicy: "immediate" }), createDeps());
-    const evidence = stageOf(report, "config").evidence.join(" ");
-    expect(evidence).toMatch(/deprecated alias/);
-    expect(evidence).toMatch(/after_receive_record/);
+    const config = stageOf(report, "config");
+    expect(config.status).toBe("fail");
+    expect(config.boundary).toBe("optimal_config");
+    expect(config.evidence.join(" ")).toMatch(/deprecated alias/);
+    expect(config.evidence.join(" ")).toMatch(/after_receive_record/);
+    expect(report.outcome).toBe("failed");
   });
 
-  it("explains that after_dispatch redelivers turns over Zoho's 40 s timeout (issue #261)", async () => {
+  it("fails on ackPolicy after_dispatch without the allowBlockingAck override (issue #344)", async () => {
     const report = await runDefault(cfgWith({ ackPolicy: "after_dispatch" }), createDeps());
-    const evidence = stageOf(report, "config").evidence.join(" ");
-    expect(evidence).toMatch(/blocking compatibility mode/);
-    expect(evidence).toMatch(/40 s/);
+    const config = stageOf(report, "config");
+    expect(config.status).toBe("fail");
+    expect(config.boundary).toBe("optimal_config");
+    expect(config.evidence.join(" ")).toMatch(/blocking compatibility mode/);
+    expect(config.evidence.join(" ")).toMatch(/40 s/);
+    expect(config.remediation.join(" ")).toMatch(/after_receive_record/);
+    expect(report.outcome).toBe("failed");
+  });
+
+  it("keeps an explicit allowBlockingAck override at warning level (issue #344)", async () => {
+    const report = await runDefault(
+      cfgWith({ ackPolicy: "after_dispatch", allowBlockingAck: true }),
+      createDeps(),
+    );
+    const config = stageOf(report, "config");
+    expect(config.status).toBe("warn");
+    expect(config.evidence.join(" ")).toMatch(/allowBlockingAck=true/);
+    expect(report.outcome).not.toBe("failed");
+  });
+
+  it("never lets the allowBlockingAck override rescue ackPolicy immediate (issue #344)", async () => {
+    const report = await runDefault(
+      cfgWith({ ackPolicy: "immediate", allowBlockingAck: true }),
+      createDeps(),
+    );
+    expect(stageOf(report, "config").status).toBe("fail");
+  });
+
+  it("fails when the webhookSecret is missing (issue #344)", async () => {
+    const report = await runDefault(cfgWith({ webhookSecret: undefined }), createDeps());
+    const config = stageOf(report, "config");
+    expect(config.status).toBe("fail");
+    expect(config.boundary).toBe("optimal_config");
+    expect(config.evidence.join(" ")).toMatch(/webhookSecret is not configured/);
+    expect(config.evidence.join(" ")).toMatch(/503/);
+  });
+
+  it("warns when replyContextRecovery is missing (issue #344)", async () => {
+    const report = await runDefault(
+      cfgWith({ replyContextRecovery: undefined }),
+      createDeps(),
+    );
+    const config = stageOf(report, "config");
+    expect(config.status).toBe("warn");
+    expect(config.evidence.join(" ")).toMatch(/replyContextRecovery is not enabled/);
+    expect(config.evidence.join(" ")).toMatch(/refreshToken/);
   });
 
   it("scopes config warnings to the selected account rather than the top-level section", async () => {
@@ -385,6 +435,7 @@ describe("cliq doctor — stage 1 config and secret resolution", () => {
               publicWebhookUrl: WEBHOOK_URL,
               dmPolicy: "allowlist",
               allowFrom: ["only-user"],
+              replyContextRecovery: { enabled: true },
             },
           },
         },
@@ -426,6 +477,49 @@ describe("cliq doctor — stage 2 runtime", () => {
   it("reports the registered webhook route on success", async () => {
     const report = await runDefault();
     expect(stageOf(report, "runtime").evidence.join(" ")).toContain("/cliq/webhook");
+  });
+
+  it("fails the runtime stage when after_receive_record has no durable surface (issue #344)", async () => {
+    const report = await runDefault(
+      cfgWith(),
+      createDeps({ hasDurableSurface: () => false }),
+    );
+    const runtime = stageOf(report, "runtime");
+    expect(runtime.status).toBe("fail");
+    expect(runtime.boundary).toBe("durable_surface");
+    expect(runtime.evidence.join(" ")).toMatch(/runtime\.state\.openChannelIngressQueue/);
+    expect(report.outcome).toBe("failed");
+  });
+
+  it("warns when the durable surface state is unknown (offline doctor run, issue #344)", async () => {
+    const report = await runDefault(
+      cfgWith(),
+      createDeps({ hasDurableSurface: () => undefined }),
+    );
+    const runtime = stageOf(report, "runtime");
+    expect(runtime.status).toBe("warn");
+    expect(runtime.evidence.join(" ")).toMatch(/unknown \(offline doctor run/);
+    expect(report.outcome).not.toBe("failed");
+  });
+
+  it("passes the runtime stage with a durable surface and names it as evidence (issue #344)", async () => {
+    const report = await runDefault(
+      cfgWith(),
+      createDeps({ hasDurableSurface: () => true }),
+    );
+    const runtime = stageOf(report, "runtime");
+    expect(runtime.status).toBe("pass");
+    expect(runtime.evidence.join(" ")).toMatch(/durable ingress surface/);
+  });
+
+  it("skips the durable-surface check for an overridden after_dispatch config (issue #344)", async () => {
+    const report = await runDefault(
+      cfgWith({ ackPolicy: "after_dispatch", allowBlockingAck: true }),
+      createDeps({ hasDurableSurface: () => false }),
+    );
+    const runtime = stageOf(report, "runtime");
+    expect(runtime.status).toBe("pass");
+    expect(runtime.evidence.join(" ")).not.toMatch(/durable/);
   });
 });
 

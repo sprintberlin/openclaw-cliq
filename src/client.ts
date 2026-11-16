@@ -398,6 +398,18 @@ export interface CliqChannelConfig {
    */
   ackPolicy?: CliqAckPolicy;
   /**
+   * Explicit, opt-in acceptance of the blocking `ackPolicy: "after_dispatch"`
+   * mode (issue #344). Without this flag set to `true`,
+   * `openclaw cliq doctor` FAILS a config that uses `after_dispatch` (and any
+   * config that uses the deprecated `immediate` alias, which this flag never
+   * rescues), because Zoho's ~40 s Deluge `invokeUrl` timeout aborts the
+   * webhook call on slow turns and redelivers the event while the original
+   * turn is still running. With `allowBlockingAck: true` the same finding is
+   * downgraded to a warning: the operator has stated that blocking acks are
+   * deliberate. `openclaw doctor --fix` never removes this flag.
+   */
+  allowBlockingAck?: boolean;
+  /**
    * Streaming preview configuration, Core-compatible (issue #207).
    * - `mode` is the OpenClaw preview-streaming mode: `"off"`, `"partial"`,
    *   `"block"`, or `"progress"`. An explicit `mode` wins over a legacy
@@ -812,6 +824,12 @@ export interface ResolvedCliqAccount {
   /** True when the literal deprecated "immediate" value was configured (Doctor hint, #261). */
   ackPolicyLegacyImmediate?: boolean;
   /**
+   * Resolved `channels.cliq.allowBlockingAck` (issue #344). `true` keeps an
+   * explicit `after_dispatch` config at warn-level in doctor instead of
+   * failing it. Absent means `false`.
+   */
+  allowBlockingAck?: boolean;
+  /**
    * Whether progressive (block-streaming) reply delivery is active for this
    * account. True for every effective mode except `"off"`.
    */
@@ -968,6 +986,7 @@ export function resolveCliqConfig(
        : undefined,
      ackPolicy,
      ackPolicyLegacyImmediate,
+     allowBlockingAck: section?.allowBlockingAck === true ? true : undefined,
     commands: {
       unmentioned:
         section?.commands?.unmentioned === "allowlist" ? "allowlist" : "off",

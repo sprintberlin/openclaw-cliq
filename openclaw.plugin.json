@@ -360,6 +360,10 @@
         ],
         "default": "after_receive_record"
       },
+      "allowBlockingAck": {
+        "type": "boolean",
+        "default": false
+      },
       "replyToMode": {
         "type": "string",
         "enum": [
@@ -1115,6 +1119,10 @@
                 "immediate"
               ],
               "default": "after_receive_record"
+            },
+            "allowBlockingAck": {
+              "type": "boolean",
+              "default": false
             },
             "replyToMode": {
               "type": "string",
@@ -1932,6 +1940,10 @@
             ],
             "default": "after_receive_record"
           },
+          "allowBlockingAck": {
+            "type": "boolean",
+            "default": false
+          },
           "replyToMode": {
             "type": "string",
             "enum": [
@@ -2688,6 +2700,10 @@
                   ],
                   "default": "after_receive_record"
                 },
+                "allowBlockingAck": {
+                  "type": "boolean",
+                  "default": false
+                },
                 "replyToMode": {
                   "type": "string",
                   "enum": [
@@ -3212,6 +3228,9 @@
             "after_dispatch",
             "immediate"
           ]
+        },
+        "allowBlockingAck": {
+          "label": "Allow the blocking ackPolicy (after_dispatch) — downgrades the doctor finding to a warning"
         },
         "replyToMode": {
           "label": "Reply-to metadata mode (Cliq cannot render reply quotes; off = none, all = carry inbound id for correlation)",

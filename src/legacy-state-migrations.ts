@@ -66,6 +66,53 @@ function readCliqSection(
   return section as Record<string, unknown>;
 }
 
+/** Read the Cliq section from a bare root record (doctor rule `match`). */
+function readRootCliqSection(
+  root: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const channels = root["channels"];
+  if (!channels || typeof channels !== "object") return null;
+  const section = (channels as Record<string, unknown>)["cliq"];
+  if (!section || typeof section !== "object") return null;
+  return section as Record<string, unknown>;
+}
+
+/** True when `allowBlockingAck: true` is explicitly set (issue #344). */
+function hasBlockingAckOverride(
+  section: Record<string, unknown> | null,
+): boolean {
+  return section?.allowBlockingAck === true;
+}
+
+/** Blocking or deprecated ack policies that the optimal-config pass migrates. */
+function isMigratableAckPolicy(value: unknown): value is "immediate" | "after_dispatch" {
+  return value === "immediate" || value === "after_dispatch";
+}
+
+/**
+ * Rewrite a blocking/deprecated `ackPolicy` to `after_receive_record`
+ * (issue #344). `immediate` is a deprecated alias and is always migrated;
+ * `after_dispatch` is migrated only when the operator has NOT set the
+ * explicit `allowBlockingAck: true` override — the override flag itself is
+ * never removed by doctor --fix.
+ */
+function migrateAckPolicy(
+  owner: Record<string, unknown>,
+  path: string,
+  changes: string[],
+): boolean {
+  if (!isMigratableAckPolicy(owner.ackPolicy)) return false;
+  if (owner.ackPolicy === "after_dispatch" && owner.allowBlockingAck === true) {
+    return false;
+  }
+  const from = owner.ackPolicy;
+  owner.ackPolicy = "after_receive_record";
+  changes.push(
+    `Migrated ${path}.ackPolicy ${from} → after_receive_record (issue #344).`,
+  );
+  return true;
+}
+
 /**
  * Declarative legacy-config rules. `openclaw doctor` walks the raw config and
  * for each rule whose `path` resolves to a defined value (and whose optional
@@ -102,6 +149,32 @@ export const cliqLegacyConfigRules: ChannelDoctorLegacyConfigRule[] = [
       ),
     message:
       "a channels.cliq.accounts.<id>.streaming.preview key is legacy; use streaming.mode (on → partial, off → off). An explicit mode wins when both are present. Run `openclaw doctor --fix` to migrate automatically.",
+  },
+  {
+    path: ["channels", "cliq", "ackPolicy"],
+    match: (value, root) =>
+      (value === "immediate" || value === "after_dispatch") &&
+      !hasBlockingAckOverride(readRootCliqSection(root)),
+    message:
+      "channels.cliq.ackPolicy is a blocking or deprecated value (after_dispatch waits for the full dispatch, immediate is the deprecated alias); the optimal policy is after_receive_record, which records the event in the durable ingress queue before the HTTP 200. Run `openclaw doctor --fix` to migrate automatically (an explicit channels.cliq.allowBlockingAck=true is kept and keeps the finding at warning level).",
+  },
+  {
+    path: ["channels", "cliq", "accounts"],
+    match: (value) =>
+      Boolean(
+        value &&
+          typeof value === "object" &&
+          Object.values(value as Record<string, unknown>).some((entry) => {
+            if (!entry || typeof entry !== "object") return false;
+            const account = entry as Record<string, unknown>;
+            const ackPolicy = account.ackPolicy;
+            const blocking =
+              ackPolicy === "immediate" || ackPolicy === "after_dispatch";
+            return blocking && account.allowBlockingAck !== true;
+          }),
+      ),
+    message:
+      "a channels.cliq.accounts.<id>.ackPolicy key holds a blocking or deprecated value; the optimal policy is after_receive_record, which records the event in the durable ingress queue before the HTTP 200. Run `openclaw doctor --fix` to migrate automatically (an explicit channels.cliq.accounts.<id>.allowBlockingAck=true is kept and keeps the finding at warning level).",
   },
 ];
 
@@ -164,6 +237,11 @@ export function normalizeCliqCompatibilityConfig(params: {
   const rootStreaming = migrateStreamingPreview(updated, "channels.cliq.streaming");
   if (rootStreaming) updated.streaming = rootStreaming;
 
+  // Blocking/deprecated ack policies (issue #344): the optimal policy is
+  // after_receive_record (durable record before the HTTP 200). The explicit
+  // allowBlockingAck=true override is kept and never migrated away.
+  if (migrateAckPolicy(updated, "channels.cliq", changes)) changed = true;
+
   const rawAccounts = updated.accounts;
   if (rawAccounts && typeof rawAccounts === "object" && !Array.isArray(rawAccounts)) {
     let nextAccounts: Record<string, unknown> | undefined;
@@ -174,9 +252,20 @@ export function normalizeCliqCompatibilityConfig(params: {
         account,
         `channels.cliq.accounts.${accountId}.streaming`,
       );
-      if (!accountStreaming) continue;
+      const accountAck = { ...account };
+      const ackChanged = migrateAckPolicy(
+        accountAck,
+        `channels.cliq.accounts.${accountId}`,
+        changes,
+      );
+      if (!accountStreaming && !ackChanged) continue;
       nextAccounts ??= { ...(rawAccounts as Record<string, unknown>) };
-      nextAccounts[accountId] = { ...account, streaming: accountStreaming };
+      nextAccounts[accountId] = {
+        ...account,
+        ...(accountStreaming ? { streaming: accountStreaming } : {}),
+        ...(ackChanged ? { ackPolicy: accountAck.ackPolicy } : {}),
+      };
+      if (ackChanged) changed = true;
     }
     if (nextAccounts) updated.accounts = nextAccounts;
   }

@@ -5,6 +5,7 @@ import {
   normalizeCliqRouteTarget,
   readEffectiveCliqSection,
   resolveCliqConfig,
+  type CliqChannelConfig,
   type CliqClient,
   type CliqDirectoryEntry,
   type ResolvedCliqAccount,
@@ -33,6 +34,10 @@ import {
   persistCliqHandlerUrlAdoption,
   type PersistCliqInboundVerificationResult,
 } from "./inbound-verification-store.js";
+import {
+  getCliqIngressDispatchContext,
+  getCliqIngressMonitorRegistry,
+} from "./ingress-runtime.js";
 
 export const CLIQ_DOCTOR_SCHEMA_VERSION = 2 as const;
 export const CLIQ_DOCTOR_EXIT = {
@@ -143,6 +148,15 @@ export interface CliqDoctorDeps {
     accountId?: string;
     now?: Date;
   }) => Promise<PersistCliqInboundVerificationResult>;
+  /**
+   * Probe for the Core durable ingress surface (`runtime.state.openChannelIngressQueue`).
+   * - `true` / `false` — the surface was inspected in this process.
+   * - `undefined` — unknown (offline `openclaw cliq doctor` run outside the
+   *   gateway process), which is reported as a warning, not a failure.
+   * See issue #344: `after_receive_record` without a durable surface falls
+   * back to the pre-queue blocking behaviour.
+   */
+  hasDurableSurface?: () => boolean | undefined;
   randomUUID: () => string;
   now: () => Date;
 }
@@ -168,9 +182,25 @@ const defaultDeps: CliqDoctorDeps = {
   runPreflight: ({ url, secret, readHandlers }) =>
     runCliqWebhookPreflight({ url, secret, readHandlers }),
   persistHandlerUrlAdoption: persistCliqHandlerUrlAdoption,
+  hasDurableSurface: probeCliqDurableSurface,
   randomUUID,
   now: () => new Date(),
 };
+
+/**
+ * Default durable-surface probe (issue #344). Only answers when the ingress
+ * runtime was configured in this process (i.e. the doctor runs inside a
+ * live gateway): an offline CLI run never calls `configureCliqIngress`, so
+ * the surface state is *unknown* rather than absent — reported as a warning.
+ */
+function probeCliqDurableSurface(): boolean | undefined {
+  try {
+    if (getCliqIngressDispatchContext() === null) return undefined;
+    return getCliqIngressMonitorRegistry().hasDurableSurface();
+  } catch {
+    return undefined;
+  }
+}
 
 function stage(
   id: CliqDoctorStageId,
@@ -220,20 +250,12 @@ function isDmScopeUnset(cfg: OpenClawConfig): boolean {
 
 function collectOperationalWarnings(cfg: OpenClawConfig, accountId?: string): string[] {
   const warnings: string[] = [];
-  const effective = readEffectiveCliqSection(cfg, accountId ?? null).section;
   if (isMultiUserDmConfig(cfg, accountId) && readDmScope(cfg) === "main") {
     warnings.push(SHARED_DM_SCOPE_WARNING);
   }
-  if (effective?.ackPolicy === "immediate") {
-    warnings.push(
-      "ackPolicy is immediate (deprecated alias): it now resolves to after_receive_record, which records the event in the Core durable ingress queue before acknowledging; remove the key or set after_receive_record explicitly",
-    );
-  }
-  if (effective?.ackPolicy === "after_dispatch") {
-    warnings.push(
-      "ackPolicy is after_dispatch (blocking compatibility mode): turns longer than Zoho's ~40 s Deluge timeout are redelivered while the original turn still runs; prefer after_receive_record",
-    );
-  }
+  // ackPolicy findings are NOT warnings any more (issue #344): they are
+  // failures (or an explicit allowBlockingAck warning) computed in
+  // buildConfigStage so a blocking ack can never reach a healthy report.
   return warnings;
 }
 
@@ -335,6 +357,61 @@ function scopedStaticWarnings(cfg: OpenClawConfig, accountId?: string): string[]
   });
 }
 
+/** Read the explicit `channels.cliq.allowBlockingAck` override (issue #344). */
+function readAllowBlockingAck(
+  cfg: OpenClawConfig,
+  accountId?: string,
+): boolean {
+  const effective = readEffectiveCliqSection(cfg, accountId ?? null).section;
+  return effective?.allowBlockingAck === true;
+}
+
+/**
+ * Optimal-config failures (issue #344). Everything here is a hard FAIL:
+ * a blocking or deprecated ack policy, or an absent webhook secret (inbound
+ * delivery is disabled and `/cliq/webhook` answers 503 without it). The
+ * `allowBlockingAck: true` override rescues `after_dispatch` only — the
+ * deprecated `immediate` alias is never valid in production.
+ */
+function collectOptimalConfigFailures(params: {
+  cfg: OpenClawConfig;
+  accountId?: string;
+  section: CliqChannelConfig;
+  secretFindings: ReturnType<typeof inspectCliqSecretFields>;
+}): { evidence: string[]; remediation: string[] } {
+  const evidence: string[] = [];
+  const remediation: string[] = [];
+  const allowBlockingAck = readAllowBlockingAck(params.cfg, params.accountId);
+  const ackPolicy = params.section.ackPolicy;
+  if (ackPolicy === "immediate") {
+    evidence.push(
+      "ackPolicy is immediate (deprecated alias): it now resolves to after_receive_record, but a config that still names it is never a production-optimal config and no override rescues it",
+    );
+    remediation.push(
+      "Set channels.cliq.ackPolicy to after_receive_record (or remove the key — the default is after_receive_record); run `openclaw doctor --fix` to migrate it.",
+    );
+  } else if (ackPolicy === "after_dispatch" && !allowBlockingAck) {
+    evidence.push(
+      "ackPolicy is after_dispatch (blocking compatibility mode) without channels.cliq.allowBlockingAck=true: the HTTP 200 waits for the full dispatch, so a turn longer than Zoho's ~40 s Deluge invokeUrl timeout is aborted and redelivered while the original turn still runs",
+    );
+    remediation.push(
+      "Set channels.cliq.ackPolicy=after_receive_record (durable record before the ack); run `openclaw doctor --fix` to migrate. Only keep after_dispatch when blocking acks are deliberate, and then set channels.cliq.allowBlockingAck=true to downgrade this failure to a warning.",
+    );
+  }
+  const webhookFinding = params.secretFindings.find(
+    (finding) => finding.field === "webhookSecret",
+  );
+  if (webhookFinding?.status === "absent") {
+    evidence.push(
+      "webhookSecret is not configured: inbound delivery is disabled — /cliq/webhook answers 503 without dispatching an agent turn",
+    );
+    remediation.push(
+      "Set channels.cliq.webhookSecret (openclaw configure, or a SecretRef resolved by the gateway) so the plugin can verify inbound Cliq delivery.",
+    );
+  }
+  return { evidence, remediation };
+}
+
 function buildConfigStage(
   cfg: OpenClawConfig,
   accountId: string | undefined,
@@ -387,10 +464,36 @@ function buildConfigStage(
       account: null,
     };
   }
-  const warnings = [
-    ...scopedStaticWarnings(cfg, accountId),
-    ...collectOperationalWarnings(cfg, accountId),
-  ].map((warning) => warning.replace(/^- channels\.cliq:\s*/, ""));
+  const staticWarnings = scopedStaticWarnings(cfg, accountId)
+    .map((warning) => warning.replace(/^- channels\.cliq:\s*/, ""))
+    // The runner reports this finding itself from the resolved account
+    // (resolved replyContextRecovery + the exact remediation), so the static
+    // preview copy is dropped to keep one line per finding.
+    .filter((warning) => !/replyContextRecovery is not enabled/.test(warning));
+  const operationalWarnings = collectOperationalWarnings(cfg, accountId);
+  const warnings = [...staticWarnings, ...operationalWarnings];
+  const optimal = collectOptimalConfigFailures({
+    cfg,
+    accountId,
+    section: effective,
+    secretFindings,
+  });
+  // The explicit override downgrades the blocking-ack failure to a warning
+  // (the override is never removed by `openclaw doctor --fix`).
+  const blockingAckOverrideWarning =
+    effective.ackPolicy === "after_dispatch" && effective.allowBlockingAck === true
+      ? [
+          "ackPolicy is after_dispatch (blocking compatibility mode) with channels.cliq.allowBlockingAck=true: the operator accepted the blocking ack; a turn longer than Zoho's ~40 s Deluge timeout is still aborted and redelivered",
+        ]
+      : [];
+  // replyContextRecovery needs a user-context refreshToken; without it the
+  // reply/quote context never reaches the agent.
+  const replyRecoveryWarning =
+    account.replyContextRecovery?.enabled === true
+      ? []
+      : [
+          "channels.cliq.replyContextRecovery is not enabled: reply/quote and forwarded-message context is lost; enabling it needs a user-context refreshToken (ZohoCliq.Messages.READ)",
+        ];
   // Per-field secret state. A configured-but-broken reference used to look
   // exactly like an unset optional field; the reference coordinates and the
   // failure reason are reported, never a value.
@@ -412,6 +515,7 @@ function buildConfigStage(
     (finding) =>
       finding.status === "unresolved" || finding.status === "provider_unavailable",
   );
+  const allWarnings = [...warnings, ...blockingAckOverrideWarning, ...replyRecoveryWarning];
   const evidence = [
     "the channel section resolved through the plugin's own config resolver (manifest schema validation happens at gateway load)",
     ...secretEvidence,
@@ -419,7 +523,8 @@ function buildConfigStage(
     ...(isDmScopeUnset(cfg)
       ? ["session.dmScope is unset and falls back to the runtime default, not an explicit operator choice"]
       : []),
-    ...warnings,
+    ...allWarnings,
+    ...optimal.evidence,
   ];
   const remediations = [
     ...(secretProblems.length > 0
@@ -429,19 +534,25 @@ function buildConfigStage(
             .join(", ")}: export the referenced environment variable, or repair the provider in secrets.providers, then rerun the doctor.`,
         ]
       : []),
-    ...(warnings.length > 0
+    ...(allWarnings.length > 0
       ? [
-          "Review each warning before production use; use session.dmScope=per-channel-peer for multi-user DMs and ackPolicy=after_dispatch on affected OpenClaw versions.",
+          "Review each warning before production use; use session.dmScope=per-channel-peer for multi-user DMs, and set channels.cliq.replyContextRecovery.enabled=true (with a user-context refreshToken) to recover reply/quote context.",
         ]
       : []),
+    ...optimal.remediation,
   ];
+  const failed = optimal.evidence.length > 0;
   return {
     result: stage(
       "config",
-      secretProblems.length > 0 || warnings.length > 0 ? "warn" : "pass",
+      failed ? "fail" : secretProblems.length > 0 || allWarnings.length > 0 ? "warn" : "pass",
       evidence,
       remediations,
-      secretProblems.length > 0 ? "secret_resolution" : undefined,
+      failed
+        ? "optimal_config"
+        : secretProblems.length > 0
+          ? "secret_resolution"
+          : undefined,
     ),
     account,
   };
@@ -453,6 +564,11 @@ async function buildRuntimeStage(
   values: readonly string[],
 ): Promise<CliqDoctorStage> {
   if (!account) return skipped("runtime", "not run: config and secret resolution failed");
+  // Durable-surface check (issue #344): `after_receive_record` only acks
+  // after a durable record when the runtime exposes
+  // `runtime.state.openChannelIngressQueue`. Without it the webhook falls
+  // back to the pre-queue blocking behaviour, so the config is not optimal.
+  const durable = durableSurfaceFinding(account, deps);
   try {
     const status = await deps.probeStatus(account);
     if (!status.ok) {
@@ -464,12 +580,26 @@ async function buildRuntimeStage(
         "runtime_status",
       );
     }
+    if (durable.status === "fail" || durable.status === "warn") {
+      return stage(
+        "runtime",
+        durable.status,
+        [
+          "channel status OAuth probe passed",
+          "the plugin defines a passive webhook lifecycle for /cliq/webhook",
+          ...durable.evidence,
+        ],
+        durable.remediation,
+        "durable_surface",
+      );
+    }
     return stage(
       "runtime",
       "pass",
       [
         "channel status OAuth probe passed",
         "the plugin defines a passive webhook lifecycle for /cliq/webhook",
+        ...durable.evidence,
         "this stage cannot inspect the running gateway's route table; the public-webhook stage verifies live route registration",
       ],
     );
@@ -482,6 +612,64 @@ async function buildRuntimeStage(
       "runtime_status",
     );
   }
+}
+
+/**
+ * Durable-surface verdict for the effective ack policy (issue #344).
+ * - `after_dispatch` (with or without the override) does not need the
+ *   durable surface — the blocking ack is the operator's explicit choice.
+ * - `after_receive_record` (also the unset default) needs it: without it the
+ *   webhook falls back to the pre-queue blocking behaviour.
+ */
+function durableSurfaceFinding(
+  account: ResolvedCliqAccount,
+  deps: CliqDoctorDeps,
+): {
+  status: "pass" | "warn" | "fail" | "skip";
+  evidence: string[];
+  remediation: string[];
+} {
+  // The resolved (normalized) policy: the deprecated "immediate" alias
+  // already resolves to after_receive_record, so it needs the durable
+  // surface; "after_dispatch" does not.
+  const ackPolicy = account.ackPolicy;
+  if (ackPolicy !== "after_receive_record") {
+    return {
+      status: "skip",
+      evidence: [],
+      remediation: [],
+    };
+  }
+  const surface = deps.hasDurableSurface?.();
+  if (surface === true) {
+    return {
+      status: "pass",
+      evidence: [
+        "the running gateway exposes the Core durable ingress surface (runtime.state.openChannelIngressQueue): after_receive_record records the event before the HTTP 200",
+      ],
+      remediation: [],
+    };
+  }
+  if (surface === false) {
+    return {
+      status: "fail",
+      evidence: [
+        "the running gateway does not expose the Core durable ingress surface (runtime.state.openChannelIngressQueue): with ackPolicy=after_receive_record the webhook falls back to the pre-queue blocking behaviour",
+      ],
+      remediation: [
+        "Upgrade or re-install OpenClaw on a build that exposes runtime.state.openChannelIngressQueue, or set channels.cliq.ackPolicy explicitly and verify the durable ingress queue before production use.",
+      ],
+    };
+  }
+  return {
+    status: "warn",
+    evidence: [
+      "the durable ingress surface state is unknown (offline doctor run outside the gateway process): with ackPolicy=after_receive_record the webhook falls back to the pre-queue blocking behaviour when the runtime lacks runtime.state.openChannelIngressQueue",
+    ],
+    remediation: [
+      "Rerun the doctor inside the running gateway (or check `openclaw status`) to verify that the durable ingress surface is available.",
+    ],
+  };
 }
 
 async function buildOAuthStage(
