@@ -172,3 +172,20 @@ describe("resolveRunDetachedWebhookWork (issue #122)", () => {
     await expect(resolveRunDetachedWebhookWork()).resolves.toBeNull();
   });
 });
+
+describe("probeCliqDurableIngress (issue #344)", () => {
+  it("proves the durable surface on the installed OpenClaw", async () => {
+    const { probeCliqDurableIngress, resetCliqDurableIngressProbeForTest } = await loadResolver();
+    resetCliqDurableIngressProbeForTest();
+
+    const result = await probeCliqDurableIngress();
+    expect(result.available).toBe(true);
+    if (result.available) {
+      expect(typeof result.installedVersion).toBe("string");
+      expect(result.installedVersion.length).toBeGreaterThan(0);
+    }
+    // Memoized per process.
+    await expect(probeCliqDurableIngress()).resolves.toBe(result);
+    resetCliqDurableIngressProbeForTest();
+  });
+});

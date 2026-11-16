@@ -94,6 +94,12 @@ export interface InspectedCliqAccountConfig {
   /** Additional identities belonging specifically to this bot. */
   ownSenderIds: string[];
   ackPolicy: CliqAckPolicy;
+  /**
+   * Explicit operator opt-in that keeps `ackPolicy: "after_dispatch"`
+   * (issue #344). Reported so the doctor failure is explainable from the
+   * inspected account alone.
+   */
+  allowBlockingAck: boolean;
   /** Effective Core-compatible streaming preview mode. */
   streamingMode: ResolvedCliqAccount["streaming"]["mode"];
   /** Backward-compatible on/off summary for older status consumers. */
@@ -293,6 +299,7 @@ export function inspectCliqAccount(params: {
       selfSenderIds: resolved?.selfSenderIds ?? section?.selfSenderIds ?? [],
       ownSenderIds: resolved?.ownSenderIds ?? section?.ownSenderIds ?? [],
       ackPolicy: resolved?.ackPolicy ?? "after_receive_record",
+      allowBlockingAck: resolved?.allowBlockingAck ?? section?.allowBlockingAck === true,
       streamingMode: resolved?.streaming.mode ?? "partial",
       streamingPreview: resolved
         ? (resolved.blockStreaming ? "on" : "off")

@@ -360,6 +360,11 @@
         ],
         "default": "after_receive_record"
       },
+      "allowBlockingAck": {
+        "type": "boolean",
+        "default": false,
+        "description": "Explicit opt-in that keeps ackPolicy after_dispatch: the blocking HTTP-200-waits-for-dispatch mode is a redelivery hazard on turns over Zoho's ~40 s Deluge invokeUrl timeout. cliq doctor fails an unacknowledged blocking policy; openclaw doctor --fix migrates it to after_receive_record instead of setting this flag."
+      },
       "replyToMode": {
         "type": "string",
         "enum": [
@@ -1115,6 +1120,11 @@
                 "immediate"
               ],
               "default": "after_receive_record"
+            },
+            "allowBlockingAck": {
+              "type": "boolean",
+              "default": false,
+              "description": "Explicit opt-in that keeps ackPolicy after_dispatch: the blocking HTTP-200-waits-for-dispatch mode is a redelivery hazard on turns over Zoho's ~40 s Deluge invokeUrl timeout. cliq doctor fails an unacknowledged blocking policy; openclaw doctor --fix migrates it to after_receive_record instead of setting this flag."
             },
             "replyToMode": {
               "type": "string",
@@ -1932,6 +1942,11 @@
             ],
             "default": "after_receive_record"
           },
+          "allowBlockingAck": {
+            "type": "boolean",
+            "default": false,
+            "description": "Explicit opt-in that keeps ackPolicy after_dispatch: the blocking HTTP-200-waits-for-dispatch mode is a redelivery hazard on turns over Zoho's ~40 s Deluge invokeUrl timeout. cliq doctor fails an unacknowledged blocking policy; openclaw doctor --fix migrates it to after_receive_record instead of setting this flag."
+          },
           "replyToMode": {
             "type": "string",
             "enum": [
@@ -2688,6 +2703,11 @@
                   ],
                   "default": "after_receive_record"
                 },
+                "allowBlockingAck": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Explicit opt-in that keeps ackPolicy after_dispatch: the blocking HTTP-200-waits-for-dispatch mode is a redelivery hazard on turns over Zoho's ~40 s Deluge invokeUrl timeout. cliq doctor fails an unacknowledged blocking policy; openclaw doctor --fix migrates it to after_receive_record instead of setting this flag."
+                },
                 "replyToMode": {
                   "type": "string",
                   "enum": [
@@ -3212,6 +3232,9 @@
             "after_dispatch",
             "immediate"
           ]
+        },
+        "allowBlockingAck": {
+          "label": "Keep blocking webhook ack (after_dispatch) deliberately — redelivery hazard on slow turns"
         },
         "replyToMode": {
           "label": "Reply-to metadata mode (Cliq cannot render reply quotes; off = none, all = carry inbound id for correlation)",

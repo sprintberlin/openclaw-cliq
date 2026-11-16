@@ -79,6 +79,21 @@ export const cliqLegacyConfigRules: ChannelDoctorLegacyConfigRule[] = [
     path: ["channels", "cliq", snake],
     message: `channels.cliq.${snake} is the snake_case form copied from Zoho's API/Deluge docs; use the camelCase "${camel}" key. Run \`openclaw doctor --fix\` to migrate automatically.`,
   })),
+  // Blocking ack policies (issue #344): the value itself is the problem, not
+  // the spelling. The rules name the `--fix` migration; the match predicates
+  // keep them silent once fixed or explicitly overridden.
+  {
+    path: ["channels", "cliq", "ackPolicy"],
+    match: (value, root) => {
+      if (value !== "after_dispatch" && value !== "immediate") return false;
+      const section = (root as Record<string, Record<string, Record<string, unknown>>>)
+        ?.channels?.cliq;
+      if (value === "after_dispatch" && section?.allowBlockingAck === true) return false;
+      return true;
+    },
+    message:
+      'channels.cliq.ackPolicy blocks the webhook ack (after_dispatch) or predates the durable ingress contract (immediate). Run `openclaw doctor --fix` to migrate it to "after_receive_record", or set channels.cliq.allowBlockingAck to true to keep after_dispatch deliberately.',
+  },
   {
     path: ["channels", "cliq", "streaming", "preview"],
     message:
@@ -192,17 +207,47 @@ export function normalizeCliqCompatibilityConfig(params: {
 }
 
 /**
- * `openclaw doctor --fix` repair path. The snake_case rewrite is idempotent
- * and safe to apply unconditionally, so repair delegates to
- * `normalizeCliqCompatibilityConfig` — there is no destructive "remove" step
- * that requires a separate confirmation. Sync because the rewrite is pure.
+ * `openclaw doctor --fix` repair path (issue #344). The snake_case rewrite is
+ * idempotent and safe to apply unconditionally, so it still delegates to
+ * `normalizeCliqCompatibilityConfig`. On top of that, repair migrates
+ * blocking ack policies to `"after_receive_record"` — UNLESS the operator
+ * explicitly keeps the blocking mode with `allowBlockingAck: true`:
+ *  - `ackPolicy: "after_dispatch"` without the override → rewritten (the
+ *    Deluge ~40 s `invokeUrl` timeout redelivers slow turns otherwise).
+ *  - `ackPolicy: "immediate"` (deprecated alias) → rewritten; it already
+ *    resolves to `after_receive_record` at runtime, so the rewrite only
+ *    makes the stored config honest.
+ * Sync because every rewrite is pure.
  */
 export function repairCliqConfig(params: {
   cfg: OpenClawConfig;
   doctorFixCommand: string;
   env?: NodeJS.ProcessEnv;
 }): ChannelDoctorConfigMutation {
-  return normalizeCliqCompatibilityConfig({ cfg: params.cfg });
+  const normalized = normalizeCliqCompatibilityConfig({ cfg: params.cfg });
+  const section = readCliqSection(normalized.config);
+  if (!section) return normalized;
+  if (
+    (section.ackPolicy === "after_dispatch" && section.allowBlockingAck === true) ||
+    (section.ackPolicy !== "after_dispatch" && section.ackPolicy !== "immediate")
+  ) {
+    return normalized;
+  }
+  const from = section.ackPolicy as string;
+  const updated: Record<string, unknown> = { ...section, ackPolicy: "after_receive_record" };
+  return {
+    config: {
+      ...(normalized.config as Record<string, unknown>),
+      channels: {
+        ...((normalized.config as unknown as { channels?: Record<string, unknown> }).channels),
+        cliq: updated,
+      },
+    } as unknown as OpenClawConfig,
+    changes: [
+      ...normalized.changes,
+      `Moved channels.cliq.ackPolicy "${from}" → "after_receive_record".`,
+    ],
+  };
 }
 
 /**

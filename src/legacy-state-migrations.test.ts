@@ -294,12 +294,78 @@ describe("normalizeCliqCompatibilityConfig", () => {
 });
 
 describe("repairCliqConfig", () => {
-  it("delegates to normalizeCliqCompatibilityConfig (same mutation)", () => {
+  it("delegates snake_case normalization to normalizeCliqCompatibilityConfig", () => {
     const cfg = cfgWith({ client_id: "id" });
     const repair = repairCliqConfig({ cfg, doctorFixCommand: DOCTOR_FIX });
     const norm = normalizeCliqCompatibilityConfig({ cfg });
     expect(repair.changes).toEqual(norm.changes);
     expect(repair.config).toEqual(norm.config);
+  });
+
+  it("migrates after_dispatch to after_receive_record (issue #344)", () => {
+    const cfg = cfgWith({ ackPolicy: "after_dispatch" });
+    const repair = repairCliqConfig({ cfg, doctorFixCommand: DOCTOR_FIX });
+    expect(repair.changes).toEqual([
+      'Moved channels.cliq.ackPolicy "after_dispatch" → "after_receive_record".',
+    ]);
+    const section = (repair.config as unknown as { channels: { cliq: Record<string, unknown> } })
+      .channels.cliq;
+    expect(section.ackPolicy).toBe("after_receive_record");
+    expect(cfgWith({ ackPolicy: "after_dispatch" }).channels).toEqual(
+      (cfg as unknown as { channels: unknown }).channels,
+    );
+    // Idempotent: a second pass produces no changes.
+    const second = repairCliqConfig({ cfg: repair.config, doctorFixCommand: DOCTOR_FIX });
+    expect(second.changes).toEqual([]);
+  });
+
+  it("migrates the deprecated immediate alias to after_receive_record (issue #344)", () => {
+    const cfg = cfgWith({ ackPolicy: "immediate" });
+    const repair = repairCliqConfig({ cfg, doctorFixCommand: DOCTOR_FIX });
+    expect(repair.changes).toEqual([
+      'Moved channels.cliq.ackPolicy "immediate" → "after_receive_record".',
+    ]);
+    const section = (repair.config as unknown as { channels: { cliq: Record<string, unknown> } })
+      .channels.cliq;
+    expect(section.ackPolicy).toBe("after_receive_record");
+  });
+
+  it("never migrates an explicitly overridden after_dispatch (issue #344)", () => {
+    const cfg = cfgWith({ ackPolicy: "after_dispatch", allowBlockingAck: true });
+    const repair = repairCliqConfig({ cfg, doctorFixCommand: DOCTOR_FIX });
+    expect(repair.changes).toEqual([]);
+    const section = (repair.config as unknown as { channels: { cliq: Record<string, unknown> } })
+      .channels.cliq;
+    expect(section.ackPolicy).toBe("after_dispatch");
+    expect(section.allowBlockingAck).toBe(true);
+  });
+
+  it("leaves an already-optimal policy untouched (issue #344)", () => {
+    for (const ackPolicy of [undefined, "after_receive_record"]) {
+      const cfg = cfgWith(ackPolicy === undefined ? {} : { ackPolicy });
+      const repair = repairCliqConfig({ cfg, doctorFixCommand: DOCTOR_FIX });
+      expect(repair.changes).toEqual([]);
+    }
+  });
+
+  it("fires a migration warning for a blocking ackPolicy (issue #344)", () => {
+    for (const ackPolicy of ["after_dispatch", "immediate"]) {
+      const issues = findLegacyConfigIssues(
+        cfgWith({ ackPolicy }) as unknown as Record<string, unknown>,
+        cliqLegacyConfigRules,
+      );
+      expect(issues.map((i) => i.path)).toContain("channels.cliq.ackPolicy");
+      expect(issues.every((i) => i.message.includes("openclaw doctor --fix"))).toBe(true);
+    }
+    // Untouched when already optimal or explicitly overridden.
+    for (const section of [{}, { ackPolicy: "after_receive_record" }, { ackPolicy: "after_dispatch", allowBlockingAck: true }]) {
+      expect(
+        findLegacyConfigIssues(
+          cfgWith(section) as unknown as Record<string, unknown>,
+          cliqLegacyConfigRules,
+        ).map((i) => i.path),
+      ).not.toContain("channels.cliq.ackPolicy");
+    }
   });
 });
 

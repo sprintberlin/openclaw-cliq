@@ -717,6 +717,54 @@ describe("cliq apiVersion manifest schema (issue #86)", () => {
   });
 });
 
+describe("cliq allowBlockingAck manifest schema (issue #344)", () => {
+  const channelSchema = manifest.channelConfigs.cliq.schema;
+  const topLevelSchema = manifest.configSchema;
+  const accountSchema = channelSchema.properties?.accounts?.additionalProperties as JsonSchema | undefined;
+  const topLevelAccountSchema = topLevelSchema.properties?.accounts?.additionalProperties as JsonSchema | undefined;
+  const baseConfig = { clientId: "id", clientSecret: "s", botId: "b" };
+
+  it("declares allowBlockingAck as a boolean next to ackPolicy in every schema copy", () => {
+    for (const schema of [channelSchema, topLevelSchema, accountSchema, topLevelAccountSchema]) {
+      expect(schema?.properties?.allowBlockingAck?.type).toBe("boolean");
+    }
+  });
+
+  it("accepts an explicit boolean override and rejects other types", () => {
+    expect(validate(channelSchema, { ...baseConfig, allowBlockingAck: true })).toEqual([]);
+    expect(validate(channelSchema, { ...baseConfig, allowBlockingAck: false })).toEqual([]);
+    expect(validate(channelSchema, { ...baseConfig, allowBlockingAck: "yes" }).length).toBeGreaterThan(0);
+    expect(
+      validate(topLevelSchema, {
+        ...baseConfig,
+        accounts: { alpha: { ...baseConfig, allowBlockingAck: true } },
+      }),
+    ).toEqual([]);
+  });
+
+  it("resolves the override through the full config-resolution path, defaulting to off", () => {
+    expect(resolveCliqConfig(cfgWith(baseConfig)).allowBlockingAck).toBe(false);
+    expect(
+      resolveCliqConfig(cfgWith({ ...baseConfig, allowBlockingAck: true })).allowBlockingAck,
+    ).toBe(true);
+    expect(
+      resolveCliqConfig(
+        cfgWith({ ...baseConfig, accounts: { alpha: { ...baseConfig, allowBlockingAck: true } } }),
+        "alpha",
+      ).allowBlockingAck,
+    ).toBe(true);
+  });
+
+  it("exposes the override in the inspected account", async () => {
+    const { inspectCliqAccount } = await import("./account-inspect.js");
+    expect(inspectCliqAccount({ cfg: cfgWith(baseConfig) }).config.allowBlockingAck).toBe(false);
+    expect(
+      inspectCliqAccount({ cfg: cfgWith({ ...baseConfig, allowBlockingAck: true }) }).config
+        .allowBlockingAck,
+    ).toBe(true);
+  });
+});
+
 describe("cliq inbound media limit schema (issue #318)", () => {
   const schemas = [manifest.configSchema, manifest.channelConfigs.cliq.schema];
   const base = { clientId: "id", clientSecret: "secret", botId: "bot" };

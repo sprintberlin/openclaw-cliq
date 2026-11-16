@@ -14,12 +14,16 @@ import {
   toCliqDoctorBotInspection,
   type CliqBotReader,
 } from "./bot-inspect.js";
-import { collectCliqPreviewWarnings } from "./doctor.js";
+import {
+  collectCliqOptimalConfigFindings,
+  collectCliqPreviewWarnings,
+} from "./doctor.js";
 import {
   admitsMultipleDmSenders,
   readEffectiveDmScope,
   SHARED_DM_SCOPE_WARNING,
 } from "./dm-scope.js";
+import { probeCliqDurableIngress } from "./sdk-compat.js";
 import { inspectCliqSecretFields } from "./secret-resolve.js";
 import { probeCliqStatus } from "./status.js";
 import { resolveCliqClient } from "./runtime-api.js";
@@ -133,6 +137,16 @@ export interface CliqDoctorDeps {
     secret: string | undefined;
     readHandlers?: () => Promise<readonly CliqHandlerScriptRecord[]>;
   }) => Promise<CliqPreflightReport>;
+  /**
+   * Probe whether the installed OpenClaw ships the durable channel-ingress
+   * queue (issue #344). The config stage fails `after_receive_record` (or an
+   * unset policy, which resolves to it) when the surface cannot be proven —
+   * without the queue the webhook falls back to the pre-queue path and the
+   * durable-before-ack guarantee silently does not hold.
+   */
+  probeDurableIngress: () => Promise<
+    { available: true; installedVersion: string } | { available: false; installedVersion: string | null; reason: string }
+  >;
   inspectBot?: (options: {
     account: ResolvedCliqAccount;
     publicWebhookUrl: string | undefined;
@@ -167,6 +181,7 @@ const defaultDeps: CliqDoctorDeps = {
     probeCliqCapability(capability, apiBase, token),
   runPreflight: ({ url, secret, readHandlers }) =>
     runCliqWebhookPreflight({ url, secret, readHandlers }),
+  probeDurableIngress: () => probeCliqDurableIngress(),
   persistHandlerUrlAdoption: persistCliqHandlerUrlAdoption,
   randomUUID,
   now: () => new Date(),
@@ -218,12 +233,116 @@ function isDmScopeUnset(cfg: OpenClawConfig): boolean {
   return readString(raw) === undefined;
 }
 
+/**
+ * Optimal-config findings for the staged `cliq doctor` run (issue #344).
+ * Unlike the static preview warnings, these carry a severity: `fail`
+ * findings fail the config stage (and block a consented outbound test via
+ * the mandatory-stage gate), `warn` findings degrade it.
+ */
+export interface CliqConfigFinding {
+  severity: "fail" | "warn";
+  boundary: string;
+  evidence: string;
+  remediation: string;
+}
+
+/**
+ * Blocking + degrading config findings beyond the shared static warnings:
+ *  - FAIL `ackPolicy: "after_dispatch"` without `allowBlockingAck: true`
+ *    (redelivery hazard on turns over Zoho's ~40 s Deluge timeout).
+ *  - FAIL `ackPolicy: "immediate"` (deprecated alias; `--fix` rewrites it).
+ *  - FAIL `after_receive_record` (or unset, which resolves to it) without a
+ *    proven durable ingress surface — without the queue the webhook keeps
+ *    the pre-queue behaviour and the durable guarantee silently does not
+ *    hold. The probe is injected so tests control the install signal.
+ *  - WARN shared-main DM session on a multi-user config (existing #104).
+ *  - WARN missing `replyContextRecovery` (native reply/quote context loss).
+ */
+export async function collectCliqConfigFindings(
+  cfg: OpenClawConfig,
+  accountId: string | undefined,
+  probeDurableIngress: CliqDoctorDeps["probeDurableIngress"],
+  webhookSecretUsable?: boolean,
+): Promise<CliqConfigFinding[]> {
+  const effective = readEffectiveCliqSection(cfg, accountId ?? null).section;
+  const findings: CliqConfigFinding[] = [];
+  if (isMultiUserDmConfig(cfg, accountId) && readDmScope(cfg) === "main") {
+    findings.push({
+      severity: "warn",
+      boundary: "dm_scope",
+      evidence: SHARED_DM_SCOPE_WARNING,
+      remediation: "Set session.dmScope to per-channel-peer for multi-user DMs.",
+    });
+  }
+  if (webhookSecretUsable === false) {
+    findings.push({
+      severity: "fail",
+      boundary: "webhook_secret",
+      evidence:
+        "webhookSecret is not usable: inbound Cliq delivery is disabled and /cliq/webhook returns 503 without dispatching an agent turn",
+      remediation:
+        "Run `openclaw configure` to set channels.cliq.webhookSecret (or run `openclaw doctor --fix` if managed).",
+    });
+  }
+  if (effective?.ackPolicy === "immediate") {
+    findings.push({
+      severity: "fail",
+      boundary: "ack_policy",
+      evidence:
+        "ackPolicy is immediate (deprecated alias): the explicit key means this config predates the durable ingress contract; run `openclaw doctor --fix` to rewrite it to after_receive_record",
+      remediation:
+        "Run `openclaw doctor --fix` to rewrite ackPolicy to after_receive_record.",
+    });
+  }
+  if (effective?.ackPolicy === "after_dispatch" && (effective as Record<string, unknown>).allowBlockingAck !== true) {
+    findings.push({
+      severity: "fail",
+      boundary: "ack_policy",
+      evidence:
+        "ackPolicy is after_dispatch without allowBlockingAck: the HTTP 200 waits for the full dispatch, so turns longer than Zoho's ~40 s Deluge timeout are redelivered while the original turn still runs",
+      remediation:
+        "Run `openclaw doctor --fix` to migrate to after_receive_record, or set channels.cliq.allowBlockingAck to true to keep the blocking mode deliberately.",
+    });
+  }
+  if (
+    effective &&
+    (effective.ackPolicy === undefined ||
+      effective.ackPolicy === "after_receive_record")
+  ) {
+    const durable = await probeDurableIngress();
+    if (!durable.available) {
+      findings.push({
+        severity: "fail",
+        boundary: "durable_ingress",
+        evidence:
+          `ackPolicy resolves to after_receive_record but the durable ingress surface cannot be proven: ${durable.reason}`,
+        remediation:
+          "Upgrade OpenClaw to a supported version (>= 2026.8.2) so runtime.state.openChannelIngressQueue is available, then rerun the doctor.",
+      });
+    }
+  }
+  if (
+    effective &&
+    (effective.replyContextRecovery as { enabled?: unknown } | undefined)?.enabled !== true
+  ) {
+    findings.push({
+      severity: "warn",
+      boundary: "reply_context_recovery",
+      evidence:
+        "replyContextRecovery is not enabled: native reply/quote and forwarded-message context does not reach the agent",
+      remediation:
+        "Set channels.cliq.replyContextRecovery.enabled to true (needs a user-context refreshToken with ZohoCliq.Messages.READ) to recover both from Cliq chat history.",
+    });
+  }
+  return findings;
+}
+
 function collectOperationalWarnings(cfg: OpenClawConfig, accountId?: string): string[] {
   const warnings: string[] = [];
   const effective = readEffectiveCliqSection(cfg, accountId ?? null).section;
-  if (isMultiUserDmConfig(cfg, accountId) && readDmScope(cfg) === "main") {
-    warnings.push(SHARED_DM_SCOPE_WARNING);
-  }
+  // The shared-main-DM-session and replyContextRecovery warnings live in
+  // collectCliqConfigFindings (with boundary + remediation); repeating them
+  // here would print the same concern twice in one stage.
   if (effective?.ackPolicy === "immediate") {
     warnings.push(
       "ackPolicy is immediate (deprecated alias): it now resolves to after_receive_record, which records the event in the Core durable ingress queue before acknowledging; remove the key or set after_receive_record explicitly",
@@ -335,10 +454,11 @@ function scopedStaticWarnings(cfg: OpenClawConfig, accountId?: string): string[]
   });
 }
 
-function buildConfigStage(
+async function buildConfigStage(
   cfg: OpenClawConfig,
   accountId: string | undefined,
-): { result: CliqDoctorStage; account: ResolvedCliqAccount | null } {
+  deps: CliqDoctorDeps,
+): Promise<{ result: CliqDoctorStage; account: ResolvedCliqAccount | null }> {
   const effective = readEffectiveCliqSection(cfg, accountId ?? null).section;
   if (!effective) {
     return {
@@ -387,10 +507,39 @@ function buildConfigStage(
       account: null,
     };
   }
+  // Optimal-config matrix (issue #344): blocking findings fail the stage,
+  // degrading findings join the warnings. A blocking finding also blocks a
+  // consented outbound send through the mandatory-stage gate below. The
+  // static preview renders the same matrix as warnings, so its messages are
+  // filtered out of the warning list here — the stage carries the enforced
+  // severities instead of printing both.
+  const matrixScope =
+    !accountId || accountId === "default"
+      ? cfg
+      : ({
+          ...(cfg as unknown as Record<string, unknown>),
+          channels: { cliq: readEffectiveCliqSection(cfg, accountId).section },
+        } as unknown as OpenClawConfig);
+  const staticMatrixMessages = new Set(
+    collectCliqOptimalConfigFindings({
+      cfg: matrixScope,
+      doctorFixCommand: "openclaw doctor --fix",
+    }).map((finding) => finding.message.replace(/^- channels\.cliq:\s*/, "")),
+  );
   const warnings = [
     ...scopedStaticWarnings(cfg, accountId),
     ...collectOperationalWarnings(cfg, accountId),
-  ].map((warning) => warning.replace(/^- channels\.cliq:\s*/, ""));
+  ]
+    .map((warning) => warning.replace(/^- channels\.cliq:\s*/, ""))
+    .filter((warning) => !staticMatrixMessages.has(warning));
+  const optimalFindings = await collectCliqConfigFindings(
+    cfg,
+    accountId,
+    deps.probeDurableIngress,
+    Boolean(account.webhookSecret),
+  );
+  const blocking = optimalFindings.filter((finding) => finding.severity === "fail");
+  const degrading = optimalFindings.filter((finding) => finding.severity === "warn");
   // Per-field secret state. A configured-but-broken reference used to look
   // exactly like an unset optional field; the reference coordinates and the
   // failure reason are reported, never a value.
@@ -419,7 +568,9 @@ function buildConfigStage(
     ...(isDmScopeUnset(cfg)
       ? ["session.dmScope is unset and falls back to the runtime default, not an explicit operator choice"]
       : []),
+    ...blocking.map((finding) => finding.evidence),
     ...warnings,
+    ...degrading.map((finding) => finding.evidence),
   ];
   const remediations = [
     ...(secretProblems.length > 0
@@ -429,16 +580,30 @@ function buildConfigStage(
             .join(", ")}: export the referenced environment variable, or repair the provider in secrets.providers, then rerun the doctor.`,
         ]
       : []),
-    ...(warnings.length > 0
+    ...blocking.map((finding) => finding.remediation),
+    ...(warnings.length > 0 || degrading.length > 0
       ? [
           "Review each warning before production use; use session.dmScope=per-channel-peer for multi-user DMs and ackPolicy=after_dispatch on affected OpenClaw versions.",
         ]
       : []),
+    ...degrading.map((finding) => finding.remediation),
   ];
+  if (blocking.length > 0) {
+    return {
+      result: stage(
+        "config",
+        "fail",
+        evidence,
+        remediations,
+        blocking[0]?.boundary ?? "config",
+      ),
+      account,
+    };
+  }
   return {
     result: stage(
       "config",
-      secretProblems.length > 0 || warnings.length > 0 ? "warn" : "pass",
+      secretProblems.length > 0 || warnings.length > 0 || degrading.length > 0 ? "warn" : "pass",
       evidence,
       remediations,
       secretProblems.length > 0 ? "secret_resolution" : undefined,
@@ -1029,7 +1194,7 @@ export async function runCliqDoctor(
   if (invocationError) return invalidReport(options, invocationError, startedAt);
   const accountId = options.accountId ?? "default";
   const stages: CliqDoctorStage[] = [];
-  const config = buildConfigStage(cfg, options.accountId);
+  const config = await buildConfigStage(cfg, options.accountId, deps);
   stages.push(config.result);
   const values = sensitiveValues(config.account);
   const client = config.account ? deps.getClient(config.account) : null;
