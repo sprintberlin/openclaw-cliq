@@ -139,6 +139,51 @@ describe("cliqLegacyConfigRules", () => {
     );
     expect(issues.every((issue) => issue.message.includes("openclaw doctor --fix"))).toBe(true);
   });
+
+  it("fires for a blocking or deprecated root ackPolicy (issue #344)", () => {
+    for (const ackPolicy of ["after_dispatch", "immediate"]) {
+      const cfg = cfgWith({ clientId: "id", ackPolicy });
+      const issues = findLegacyConfigIssues(
+        cfg as unknown as Record<string, unknown>,
+        cliqLegacyConfigRules,
+      );
+      const ackIssues = issues.filter((issue) => issue.path === "channels.cliq.ackPolicy");
+      expect(ackIssues).toHaveLength(1);
+      expect(ackIssues[0]!.message).toContain("openclaw doctor --fix");
+    }
+  });
+
+  it("stays silent on the optimal ackPolicy and on an explicit allowBlockingAck override (issue #344)", () => {
+    for (const section of [
+      { clientId: "id", ackPolicy: "after_receive_record" },
+      { clientId: "id" },
+      { clientId: "id", ackPolicy: "after_dispatch", allowBlockingAck: true },
+    ]) {
+      const issues = findLegacyConfigIssues(
+        cfgWith(section) as unknown as Record<string, unknown>,
+        cliqLegacyConfigRules,
+      );
+      expect(issues.filter((issue) => issue.path === "channels.cliq.ackPolicy")).toEqual([]);
+    }
+  });
+
+  it("fires for a per-account blocking ackPolicy but keeps an account-level override quiet (issue #344)", () => {
+    const cfg = cfgWith({
+      accounts: {
+        aura: { ackPolicy: "after_dispatch" },
+        zora: { ackPolicy: "after_dispatch", allowBlockingAck: true },
+      },
+    });
+    const issues = findLegacyConfigIssues(
+      cfg as unknown as Record<string, unknown>,
+      cliqLegacyConfigRules,
+    );
+    const accountIssues = issues.filter(
+      (issue) => issue.path === "channels.cliq.accounts",
+    );
+    expect(accountIssues).toHaveLength(1);
+    expect(accountIssues[0]!.message).toContain("openclaw doctor --fix");
+  });
 });
 
 describe("normalizeCliqCompatibilityConfig", () => {
@@ -203,7 +248,8 @@ describe("normalizeCliqCompatibilityConfig", () => {
       ack_policy: "immediate",
     });
     const result = normalizeCliqCompatibilityConfig({ cfg });
-    expect(result.changes).toHaveLength(11);
+    // 11 snake_case rewrites + the ackPolicy migration (issue #344).
+    expect(result.changes).toHaveLength(12);
     const section = (result.config as unknown as { channels: { cliq: Record<string, unknown> } })
       .channels.cliq;
     expect(section).toEqual({
@@ -217,7 +263,7 @@ describe("normalizeCliqCompatibilityConfig", () => {
       ownSenderIds: ["b-this"],
       selfSenderIds: ["s1"],
       dmPolicy: "open",
-      ackPolicy: "immediate",
+      ackPolicy: "after_receive_record",
     });
   });
 
@@ -294,7 +340,7 @@ describe("normalizeCliqCompatibilityConfig", () => {
 });
 
 describe("repairCliqConfig", () => {
-  it("delegates snake_case normalization to normalizeCliqCompatibilityConfig", () => {
+  it("delegates to normalizeCliqCompatibilityConfig (same mutation)", () => {
     const cfg = cfgWith({ client_id: "id" });
     const repair = repairCliqConfig({ cfg, doctorFixCommand: DOCTOR_FIX });
     const norm = normalizeCliqCompatibilityConfig({ cfg });
@@ -302,70 +348,60 @@ describe("repairCliqConfig", () => {
     expect(repair.config).toEqual(norm.config);
   });
 
-  it("migrates after_dispatch to after_receive_record (issue #344)", () => {
-    const cfg = cfgWith({ ackPolicy: "after_dispatch" });
-    const repair = repairCliqConfig({ cfg, doctorFixCommand: DOCTOR_FIX });
-    expect(repair.changes).toEqual([
-      'Moved channels.cliq.ackPolicy "after_dispatch" → "after_receive_record".',
-    ]);
-    const section = (repair.config as unknown as { channels: { cliq: Record<string, unknown> } })
-      .channels.cliq;
-    expect(section.ackPolicy).toBe("after_receive_record");
-    expect(cfgWith({ ackPolicy: "after_dispatch" }).channels).toEqual(
-      (cfg as unknown as { channels: unknown }).channels,
-    );
-    // Idempotent: a second pass produces no changes.
-    const second = repairCliqConfig({ cfg: repair.config, doctorFixCommand: DOCTOR_FIX });
-    expect(second.changes).toEqual([]);
+  it("migrates a blocking or deprecated ackPolicy to after_receive_record (issue #344)", () => {
+    for (const ackPolicy of ["after_dispatch", "immediate"]) {
+      const repair = repairCliqConfig({
+        cfg: cfgWith({ clientId: "id", ackPolicy }),
+        doctorFixCommand: DOCTOR_FIX,
+      });
+      const section = (
+        repair.config as unknown as { channels: { cliq: Record<string, unknown> } }
+      ).channels.cliq;
+      expect(section.ackPolicy).toBe("after_receive_record");
+      expect(repair.changes.join(" ")).toMatch(
+        /Migrated channels\.cliq\.ackPolicy .* → after_receive_record/,
+      );
+    }
   });
 
-  it("migrates the deprecated immediate alias to after_receive_record (issue #344)", () => {
-    const cfg = cfgWith({ ackPolicy: "immediate" });
-    const repair = repairCliqConfig({ cfg, doctorFixCommand: DOCTOR_FIX });
-    expect(repair.changes).toEqual([
-      'Moved channels.cliq.ackPolicy "immediate" → "after_receive_record".',
-    ]);
-    const section = (repair.config as unknown as { channels: { cliq: Record<string, unknown> } })
-      .channels.cliq;
-    expect(section.ackPolicy).toBe("after_receive_record");
-  });
-
-  it("never migrates an explicitly overridden after_dispatch (issue #344)", () => {
-    const cfg = cfgWith({ ackPolicy: "after_dispatch", allowBlockingAck: true });
-    const repair = repairCliqConfig({ cfg, doctorFixCommand: DOCTOR_FIX });
-    expect(repair.changes).toEqual([]);
-    const section = (repair.config as unknown as { channels: { cliq: Record<string, unknown> } })
-      .channels.cliq;
+  it("keeps an explicit allowBlockingAck override and its ackPolicy (issue #344)", () => {
+    const repair = repairCliqConfig({
+      cfg: cfgWith({
+        clientId: "id",
+        ackPolicy: "after_dispatch",
+        allowBlockingAck: true,
+      }),
+      doctorFixCommand: DOCTOR_FIX,
+    });
+    const section = (
+      repair.config as unknown as { channels: { cliq: Record<string, unknown> } }
+    ).channels.cliq;
     expect(section.ackPolicy).toBe("after_dispatch");
     expect(section.allowBlockingAck).toBe(true);
+    expect(repair.changes).toEqual([]);
   });
 
-  it("leaves an already-optimal policy untouched (issue #344)", () => {
-    for (const ackPolicy of [undefined, "after_receive_record"]) {
-      const cfg = cfgWith(ackPolicy === undefined ? {} : { ackPolicy });
-      const repair = repairCliqConfig({ cfg, doctorFixCommand: DOCTOR_FIX });
-      expect(repair.changes).toEqual([]);
-    }
-  });
-
-  it("fires a migration warning for a blocking ackPolicy (issue #344)", () => {
-    for (const ackPolicy of ["after_dispatch", "immediate"]) {
-      const issues = findLegacyConfigIssues(
-        cfgWith({ ackPolicy }) as unknown as Record<string, unknown>,
-        cliqLegacyConfigRules,
-      );
-      expect(issues.map((i) => i.path)).toContain("channels.cliq.ackPolicy");
-      expect(issues.every((i) => i.message.includes("openclaw doctor --fix"))).toBe(true);
-    }
-    // Untouched when already optimal or explicitly overridden.
-    for (const section of [{}, { ackPolicy: "after_receive_record" }, { ackPolicy: "after_dispatch", allowBlockingAck: true }]) {
-      expect(
-        findLegacyConfigIssues(
-          cfgWith(section) as unknown as Record<string, unknown>,
-          cliqLegacyConfigRules,
-        ).map((i) => i.path),
-      ).not.toContain("channels.cliq.ackPolicy");
-    }
+  it("migrates per-account ack policies and keeps an account-level override (issue #344)", () => {
+    const repair = repairCliqConfig({
+      cfg: cfgWith({
+        accounts: {
+          aura: { ackPolicy: "after_dispatch" },
+          zora: { ackPolicy: "after_dispatch", allowBlockingAck: true },
+        },
+      }),
+      doctorFixCommand: DOCTOR_FIX,
+    });
+    const accounts = (
+      repair.config as unknown as {
+        channels: { cliq: { accounts: Record<string, Record<string, unknown>> } };
+      }
+    ).channels.cliq.accounts;
+    expect(accounts.aura!.ackPolicy).toBe("after_receive_record");
+    expect(accounts.zora!.ackPolicy).toBe("after_dispatch");
+    expect(accounts.zora!.allowBlockingAck).toBe(true);
+    expect(repair.changes.join(" ")).toMatch(
+      /Migrated channels\.cliq\.accounts\.aura\.ackPolicy/,
+    );
   });
 });
 

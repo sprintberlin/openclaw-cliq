@@ -457,7 +457,7 @@ export function checkCliqHandlerConsistency(
           ? "no recognisable handlerSchema literal"
           : `handlerSchema "${handlerSchema}"`;
         failures.push(
-          `${label} carries ${observed}; expected handlerSchema "${CLIQ_HANDLER_SCHEMA_VERSION}". The Zoho-held script is stale even if the plugin was upgraded or the gateway restarted; run openclaw setup or the confirmation-gated handler repair to update it`,
+          `${label} carries ${observed}; expected handlerSchema "${CLIQ_HANDLER_SCHEMA_VERSION}". The Zoho-held script is stale even if the plugin was upgraded or the gateway restarted; run "openclaw cliq provision --handlers" (or openclaw setup, or the confirmation-gated handler repair) to update it`,
         );
       }
     }
@@ -466,7 +466,7 @@ export function checkCliqHandlerConsistency(
     if (handlerSecret !== null &&
       extractDelugePayloadPutStringLiteral(handler.script, CLIQ_HANDLER_SCHEMA_FIELD) === CLIQ_HANDLER_SCHEMA_VERSION &&
       !hasCliqDeliveryFailureFallback(handler.script, handler.type)) {
-      failures.push(`${label} lacks the v6 webhook status/exception fallback; run openclaw setup or the confirmation-gated handler repair to update it`);
+      failures.push(`${label} lacks the v6 webhook status/exception fallback; run "openclaw cliq provision --handlers" (or openclaw setup, or the confirmation-gated handler repair) to update it`);
     }
 
     if (
