@@ -125,6 +125,86 @@ export function resolveChannelReadyPatch(): Promise<ChannelReadyPatchFn | null> 
   return readyPatchResolution;
 }
 
+/**
+ * Durable channel-ingress surface probe (issue #344).
+ *
+ * `after_receive_record` only delivers its guarantee — ack after the Core
+ * durable queue records the event — when the running OpenClaw install
+ * exposes `openChannelIngressQueue` on the plugin runtime state. The doctor
+ * runs in the CLI process, not the gateway, so it cannot observe the live
+ * runtime state; the installed package version is the available signal
+ * (same mechanism `checkInstalledOpenClawCompatibility` uses for setup).
+ * The durable queue ships on every supported OpenClaw version
+ * (`>= 2026.8.2`, the build/typecheck floor), so a supported install proves
+ * the surface while an unsupported or unreadable install cannot.
+ */
+export type CliqDurableIngressProbeResult =
+  | { available: true; installedVersion: string }
+  | { available: false; installedVersion: string | null; reason: string };
+
+let durableIngressResolution:
+  | Promise<CliqDurableIngressProbeResult>
+  | undefined;
+
+async function loadDurableIngressProbe(): Promise<CliqDurableIngressProbeResult> {
+  let installedVersion: string | null = null;
+  try {
+    // Same mechanism `checkInstalledOpenClawCompatibility` uses for setup:
+    // resolve a known SDK subpath through the package's `exports` map, then
+    // walk up to the installed package.json. A direct
+    // `require.resolve("openclaw/package.json")` fails because the package's
+    // `exports` map does not expose `./package.json`.
+    const { createRequire } = await import("node:module");
+    const { dirname, resolve } = await import("node:path");
+    const require = createRequire(import.meta.url);
+    const setupPath: string = require.resolve("openclaw/plugin-sdk/setup");
+    const packagePath = resolve(dirname(setupPath), "..", "..", "package.json");
+    const { readFileSync } = await import("node:fs");
+    const parsed = JSON.parse(readFileSync(packagePath, "utf8")) as {
+      version?: unknown;
+    };
+    if (typeof parsed.version === "string" && parsed.version.trim()) {
+      installedVersion = parsed.version.trim();
+    }
+  } catch {
+    installedVersion = null;
+  }
+  if (installedVersion === null) {
+    return {
+      available: false,
+      installedVersion: null,
+      reason:
+        "the installed OpenClaw version could not be determined, so the durable ingress surface cannot be proven",
+    };
+  }
+  // The durable channel-ingress queue ships on every supported OpenClaw
+  // version (>= 2026.8.2). A lexicographic compare is safe for the
+  // zero-padded YYYY.M.D calendar versions OpenClaw publishes.
+  if (installedVersion >= "2026.8.2") {
+    return { available: true, installedVersion };
+  }
+  return {
+    available: false,
+    installedVersion,
+    reason: `installed OpenClaw ${installedVersion} predates the durable channel-ingress queue (>= 2026.8.2); after_receive_record degrades to the pre-queue path`,
+  };
+}
+
+/**
+ * Probe whether the installed OpenClaw ships the durable channel-ingress
+ * queue. Never throws — an unreadable install resolves to unavailable with
+ * the reason named. The result is memoized per process.
+ */
+export function probeCliqDurableIngress(): Promise<CliqDurableIngressProbeResult> {
+  durableIngressResolution ??= loadDurableIngressProbe();
+  return durableIngressResolution;
+}
+
+/** Reset the memoized durable-ingress probe (tests only). */
+export function resetCliqDurableIngressProbeForTest(): void {
+  durableIngressResolution = undefined;
+}
+
 export type InboundProcessedOutcome = {
   outcome: string;
   reason?: string;

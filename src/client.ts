@@ -398,6 +398,16 @@ export interface CliqChannelConfig {
    */
   ackPolicy?: CliqAckPolicy;
   /**
+   * Explicit opt-in that keeps `ackPolicy: "after_dispatch"` (issue #344).
+   * The blocking mode is a redelivery hazard on any turn longer than Zoho's
+   * ~40 s Deluge `invokeUrl` timeout, so `cliq doctor` fails a blocking
+   * policy unless this flag is `true` — the acknowledgement documents that
+   * the operator accepted the blocking behaviour deliberately instead of
+   * inheriting it silently. `openclaw doctor --fix` never sets this flag;
+   * it migrates the policy to `"after_receive_record"` instead.
+   */
+  allowBlockingAck?: boolean;
+  /**
    * Streaming preview configuration, Core-compatible (issue #207).
    * - `mode` is the OpenClaw preview-streaming mode: `"off"`, `"partial"`,
    *   `"block"`, or `"progress"`. An explicit `mode` wins over a legacy
@@ -812,6 +822,15 @@ export interface ResolvedCliqAccount {
   /** True when the literal deprecated "immediate" value was configured (Doctor hint, #261). */
   ackPolicyLegacyImmediate?: boolean;
   /**
+   * Explicit opt-in that keeps `ackPolicy: "after_dispatch"` (issue #344).
+   * Mirrors `CliqChannelConfig.allowBlockingAck` (per-account overridable
+   * through the same shallow-merge resolution as every other scalar).
+   * Optional because test fixtures construct resolved accounts literally;
+   * `resolveCliqConfig` always sets it, and every reader treats a missing
+   * value as `false` via `=== true`.
+   */
+  allowBlockingAck?: boolean;
+  /**
    * Whether progressive (block-streaming) reply delivery is active for this
    * account. True for every effective mode except `"off"`.
    */
@@ -966,8 +985,9 @@ export function resolveCliqConfig(
      trustedOrganization: section?.trustedOrganization?.acknowledged === true
        ? section.trustedOrganization
        : undefined,
-     ackPolicy,
-     ackPolicyLegacyImmediate,
+      ackPolicy,
+      ackPolicyLegacyImmediate,
+      allowBlockingAck: section?.allowBlockingAck === true,
     commands: {
       unmentioned:
         section?.commands?.unmentioned === "allowlist" ? "allowlist" : "off",

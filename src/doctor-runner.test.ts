@@ -32,6 +32,7 @@ function cfgWith(section: Record<string, unknown> = {}, extra: Record<string, un
         botName: "OpenClaw",
         webhookSecret: WEBHOOK_SECRET,
         refreshToken: REFRESH_TOKEN,
+        replyContextRecovery: { enabled: true },
         publicWebhookUrl: WEBHOOK_URL,
         dmPolicy: "allowlist",
         allowFrom: ["user-1"],
@@ -356,18 +357,78 @@ describe("cliq doctor — stage 1 config and secret resolution", () => {
     expect(stageOf(report, "config").evidence.join(" ")).not.toMatch(/session\.dmScope resolves to main/);
   });
 
-  it("reports ackPolicy immediate as a deprecated alias of after_receive_record (issue #261)", async () => {
+  it("fails the config stage on ackPolicy immediate (issue #344)", async () => {
     const report = await runDefault(cfgWith({ ackPolicy: "immediate" }), createDeps());
-    const evidence = stageOf(report, "config").evidence.join(" ");
-    expect(evidence).toMatch(/deprecated alias/);
-    expect(evidence).toMatch(/after_receive_record/);
+    const config = stageOf(report, "config");
+    expect(config.status).toBe("fail");
+    expect(config.boundary).toBe("ack_policy");
+    expect(config.evidence.join(" ")).toMatch(/deprecated alias/);
+    expect(config.remediation.join(" ")).toMatch(/openclaw doctor --fix/);
+    // A blocking config finding blocks a consented outbound send.
+    const send = await runDefault(cfgWith({ ackPolicy: "immediate" }), createDeps(), {
+      outboundTest: true,
+      target: "user-1",
+      targetKind: "dm",
+      confirmed: true,
+    });
+    expect(stageOf(send, "outbound_test").status).toBe("fail");
+    expect(stageOf(send, "outbound_test").boundary).toBe("outbound_precondition");
+    expect(send.outcome).toBe("failed");
   });
 
-  it("explains that after_dispatch redelivers turns over Zoho's 40 s timeout (issue #261)", async () => {
+  it("fails the config stage on an unacknowledged after_dispatch (issue #344)", async () => {
     const report = await runDefault(cfgWith({ ackPolicy: "after_dispatch" }), createDeps());
-    const evidence = stageOf(report, "config").evidence.join(" ");
-    expect(evidence).toMatch(/blocking compatibility mode/);
-    expect(evidence).toMatch(/40 s/);
+    const config = stageOf(report, "config");
+    expect(config.status).toBe("fail");
+    expect(config.boundary).toBe("ack_policy");
+    expect(config.evidence.join(" ")).toMatch(/without allowBlockingAck/);
+    expect(config.evidence.join(" ")).toMatch(/40 s/);
+    expect(config.remediation.join(" ")).toMatch(/allowBlockingAck/);
+  });
+
+  it("keeps an explicitly overridden after_dispatch as a warning, never a failure (issue #344)", async () => {
+    const report = await runDefault(
+      cfgWith({ ackPolicy: "after_dispatch", allowBlockingAck: true }),
+      createDeps(),
+    );
+    const config = stageOf(report, "config");
+    expect(config.status).toBe("warn");
+    expect(config.evidence.join(" ")).toMatch(/explicit blocking compatibility mode/);
+    expect(config.boundary).toBeUndefined();
+  });
+
+  it("fails the config stage when the durable surface cannot be proven (issue #344)", async () => {
+    const report = await runDefault(
+      cfgWith({ ackPolicy: "after_receive_record" }),
+      createDeps({
+        probeDurableIngress: async () => ({
+          available: false as const,
+          installedVersion: "2026.1.0",
+          reason: "installed OpenClaw 2026.1.0 predates the durable channel-ingress queue",
+        }),
+      }),
+    );
+    const config = stageOf(report, "config");
+    expect(config.status).toBe("fail");
+    expect(config.boundary).toBe("durable_ingress");
+    expect(config.evidence.join(" ")).toMatch(/after_receive_record.*cannot be proven/);
+    expect(config.remediation.join(" ")).toMatch(/Upgrade OpenClaw/);
+  });
+
+  it("fails the config stage on a missing webhookSecret (issue #344)", async () => {
+    const report = await runDefault(cfgWith({ webhookSecret: undefined }), createDeps());
+    const config = stageOf(report, "config");
+    expect(config.status).toBe("fail");
+    expect(config.boundary).toBe("webhook_secret");
+    expect(config.evidence.join(" ")).toMatch(/webhookSecret is not usable/);
+  });
+
+  it("warns on missing replyContextRecovery without failing (issue #344)", async () => {
+    const report = await runDefault(cfgWith({ replyContextRecovery: undefined }), createDeps());
+    const config = stageOf(report, "config");
+    expect(config.status).toBe("warn");
+    expect(config.evidence.join(" ")).toMatch(/replyContextRecovery is not enabled/);
+    expect(config.remediation.join(" ")).toMatch(/replyContextRecovery/);
   });
 
   it("scopes config warnings to the selected account rather than the top-level section", async () => {
@@ -382,6 +443,7 @@ describe("cliq doctor — stage 1 config and secret resolution", () => {
               botName: "OpenClaw",
               webhookSecret: WEBHOOK_SECRET,
               refreshToken: REFRESH_TOKEN,
+              replyContextRecovery: { enabled: true },
               publicWebhookUrl: WEBHOOK_URL,
               dmPolicy: "allowlist",
               allowFrom: ["only-user"],
@@ -1126,12 +1188,35 @@ describe("cliq doctor — SecretRef diagnostics (issue #95)", () => {
       createDeps(),
     );
     const config = stageOf(report, "config");
-    expect(config.status).toBe("warn");
-    expect(config.boundary).toBe("secret_resolution");
+    expect(config.status).toBe("fail");
+    expect(config.boundary).toBe("webhook_secret");
     expect(config.evidence.join(" ")).toContain(
       "env:default:CLIQ_DOCTOR_UNSET",
     );
     expect(config.evidence.join(" ")).toMatch(/UNRESOLVED/);
+  });
+
+  it("fails an unusable webhook secret without exposing a value", async () => {
+    delete process.env.CLIQ_DOCTOR_UNSET;
+    const report = await runCliqDoctor(
+      cfgWith({
+        webhookSecret: {
+          source: "env",
+          provider: "default",
+          id: "CLIQ_DOCTOR_UNSET",
+        },
+      }),
+      {},
+      createDeps(),
+    );
+    const config = stageOf(report, "config");
+    // An unresolvable webhookSecret disables inbound delivery exactly like a
+    // missing one (the route answers 503), so the optimal-config matrix
+    // fails it. The coordinates are named, never the value.
+    expect(config.status).toBe("fail");
+    expect(config.boundary).toBe("webhook_secret");
+    expect(config.evidence.join(" ")).toMatch(/webhookSecret is not usable/);
+    expect(JSON.stringify(report)).not.toContain("CLIQ_DOCTOR_UNSET_VALUE");
   });
 
   it("reports a resolved env shorthand as ref-backed rather than plaintext", async () => {
@@ -1158,8 +1243,12 @@ describe("cliq doctor — SecretRef diagnostics (issue #95)", () => {
       createDeps(),
     );
     const config = stageOf(report, "config");
-    expect(config.status).toBe("warn");
-    expect(config.boundary).toBe("secret_resolution");
+    // A well-formed but unresolvable webhookSecret ref disables inbound
+    // delivery exactly like a missing secret (the route answers 503), so the
+    // optimal-config matrix fails it — while still naming the ref coordinates
+    // for repair and never leaking the placeholder text.
+    expect(config.status).toBe("fail");
+    expect(config.boundary).toBe("webhook_secret");
     expect(config.evidence.join(" ")).toContain(
       "env:default:CLIQ_DOCTOR_UNSET",
     );
@@ -1202,7 +1291,13 @@ describe("cliq doctor — SecretRef diagnostics (issue #95)", () => {
       {},
       createDeps(),
     );
-    const evidence = stageOf(report, "config").evidence.join(" ");
+    // An absent webhookSecret fails the optimal-config matrix (inbound
+    // delivery is disabled), while the per-field state still distinguishes
+    // "not configured" from a broken reference.
+    const config = stageOf(report, "config");
+    expect(config.status).toBe("fail");
+    expect(config.boundary).toBe("webhook_secret");
+    const evidence = config.evidence.join(" ");
     expect(evidence).toContain("webhookSecret is not configured");
     expect(evidence).not.toMatch(/webhookSecret.*UNRESOLVED/);
   });

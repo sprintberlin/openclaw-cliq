@@ -45,6 +45,110 @@ function isWildcardAllowFrom(allowFrom: string[]): boolean {
 }
 
 /**
+ * Optimal Cliq config finding from the static doctor pass (issue #344).
+ *
+ * The SDK's `collectPreviewWarnings` surface only carries `string[]` — it
+ * cannot fail a check, so both severities render as warnings in
+ * `openclaw doctor`. The severity is what `openclaw cliq doctor` (the staged
+ * runner in `src/doctor-runner.ts`) enforces: `fail` findings fail the
+ * config stage and block a consented outbound test, `warn` findings degrade
+ * it. The message text is shared so both surfaces name the same fix.
+ */
+export interface CliqOptimalConfigFinding {
+  severity: "fail" | "warn";
+  /** Machine-stable boundary, also used as the config-stage `boundary`. */
+  boundary: string;
+  message: string;
+}
+
+/**
+ * Evaluate `channels.cliq` against the optimal matrix (issue #344).
+ * Pure static config read — no network, no secret values in the output.
+ *
+ * FAIL:
+ *  - `ackPolicy: "after_dispatch"` without `allowBlockingAck: true` —
+ *    the HTTP 200 waits for the full agent turn, so any turn longer than
+ *    Zoho's ~40 s Deluge `invokeUrl` timeout is redelivered while the
+ *    original still runs (#123).
+ *  - `ackPolicy: "immediate"` — the deprecated alias predates the durable
+ *    ingress queue; even though the route now resolves it to
+ *    `after_receive_record`, the explicit key means the operator never
+ *    acknowledged the durable contract.
+ *  - missing `webhookSecret` — inbound delivery is disabled and the route
+ *    answers 503; nothing can be admitted.
+ * WARN:
+ *  - `session.dmScope: "main"` on a multi-user config — all DMs share one
+ *    OpenClaw session (context leakage between users).
+ *  - missing `channels.cliq.replyContextRecovery` — native reply/quote and
+ *    forwarded-message context never reaches the agent.
+ * PASS (no finding): `ackPolicy` unset or `"after_receive_record"`, with the
+ * durable-queue presence decided by the staged runner (see
+ * `probeCliqDurableIngress`), which can inspect the running install.
+ */
+export function collectCliqOptimalConfigFindings(params: {
+  cfg: OpenClawConfig;
+  doctorFixCommand: string;
+  /**
+   * Whether the webhook secret is usable. Defaults to the static
+   * configured-ness check (`hasConfiguredSecretInput`); the staged runner
+   * passes the resolved account's secret presence instead, which also covers
+   * a well-formed SecretRef whose environment value is missing.
+   */
+  webhookSecretUsable?: boolean;
+}): CliqOptimalConfigFinding[] {
+  const section = readCliqSection(params.cfg);
+  if (!section) return [];
+  const findings: CliqOptimalConfigFinding[] = [];
+  if (section.ackPolicy === "after_dispatch" && section.allowBlockingAck !== true) {
+    findings.push({
+      severity: "fail",
+      boundary: "ack_policy",
+      message:
+        `- channels.cliq: ackPolicy is "after_dispatch" without allowBlockingAck. ` +
+        `The HTTP 200 waits for the full dispatch; a turn longer than Zoho's ~40 s Deluge invokeUrl timeout ` +
+        `will be redelivered while the original turn is still running. ` +
+        `Run \`${params.doctorFixCommand}\` to migrate to "after_receive_record" (the default), ` +
+        `or set channels.cliq.allowBlockingAck to true to keep the blocking mode deliberately.`,
+    });
+  }
+  if (section.ackPolicy === "immediate") {
+    findings.push({
+      severity: "fail",
+      boundary: "ack_policy",
+      message:
+        `- channels.cliq: ackPolicy is "immediate" (deprecated alias). ` +
+        `It resolves to "after_receive_record" at runtime, but the explicit key means this config ` +
+        `predates the durable ingress contract. Run \`${params.doctorFixCommand}\` to rewrite it to ` +
+        `"after_receive_record" explicitly.`,
+    });
+  }
+  const webhookSecretUsable = params.webhookSecretUsable ??
+    (section.webhookSecret !== undefined && hasConfiguredSecretInput(section.webhookSecret));
+  if (!webhookSecretUsable) {
+    findings.push({
+      severity: "fail",
+      boundary: "webhook_secret",
+      message:
+        `- channels.cliq: webhookSecret is not set. Inbound Cliq delivery is disabled and /cliq/webhook ` +
+        `returns 503 without dispatching an agent turn. Run \`openclaw configure\` to set it ` +
+        `(or run \`${params.doctorFixCommand}\` if managed).`,
+    });
+  }
+  const recovery = section.replyContextRecovery as { enabled?: unknown } | undefined;
+  if (recovery?.enabled !== true) {
+    findings.push({
+      severity: "warn",
+      boundary: "reply_context_recovery",
+      message:
+        `- channels.cliq: replyContextRecovery is not enabled. Native reply/quote and forwarded-message ` +
+        `context does not reach the agent. Set channels.cliq.replyContextRecovery.enabled to true ` +
+        `(needs a user-context refreshToken with ZohoCliq.Messages.READ) to recover both from Cliq chat history.`,
+    });
+  }
+  return findings;
+}
+
+/**
  * Cliq-specific doctor preview warnings. These run on every `openclaw doctor`
  * (and `openclaw plugins doctor`) invocation against the resolved config,
  * without touching the network — they are pure static config checks. The
@@ -61,9 +165,11 @@ function isWildcardAllowFrom(allowFrom: string[]): boolean {
  *  - `streaming.mode` resolving to a non-`"off"` mode without a `refreshToken`
  *    (live-edit degrades to a single final reply; operators can set
  *    `streaming.mode: "off"` to opt out),
- *  - an `ackPolicy: "immediate"` opt-in (lost-message risk on crash — opt-in
- *    only when the Deluge `invokeUrl` timeout is tighter than the agent
- *    round-trip).
+ *  - an `ackPolicy: "immediate"` / unacknowledged `"after_dispatch"` value
+ *    (blocking/redelivery risk — `openclaw cliq doctor` fails these; the
+ *    static preview names the same `openclaw doctor --fix` migration),
+ *  - a missing `replyContextRecovery` opt-in (native reply/quote context
+ *    never reaches the agent).
  *
  * Warnings are prefixed `- channels.cliq:` to match the convention the
  * bundled channels use in doctor output.
@@ -84,10 +190,11 @@ function collectCliqPreviewWarnings(params: {
       `- channels.cliq: missing required credential${missing.length > 1 ? "s" : ""}: ${missing.join(", ")}. Run \`${params.doctorFixCommand}\` or \`openclaw configure\` to set them.`,
     );
   }
-  if (!section.webhookSecret) {
-    warnings.push(
-      `- channels.cliq: webhookSecret is not set. Inbound Cliq delivery is disabled and /cliq/webhook returns 503 without dispatching an agent turn. Run \`openclaw configure\` to set it (or run \`${params.doctorFixCommand}\` if managed).`,
-    );
+  // Optimal-config matrix (issue #344): blocking findings render here as
+  // warnings — the static preview surface only carries strings — while
+  // `openclaw cliq doctor` enforces the same findings as stage failures.
+  for (const finding of collectCliqOptimalConfigFindings({ cfg: params.cfg, doctorFixCommand: params.doctorFixCommand })) {
+    warnings.push(finding.message);
   }
   const dmPolicy =
     typeof section.dmPolicy === "string" ? section.dmPolicy : "allowlist";
@@ -137,14 +244,13 @@ function collectCliqPreviewWarnings(params: {
       );
     }
   }
-  if (section.ackPolicy === "immediate") {
+  // The matrix repair path (`openclaw doctor --fix` via `repairCliqConfig`)
+  // rewrites blocking ack policies, so the stale per-value warnings below
+  // stay only for the explicitly overridden blocking mode — the one value
+  // --fix deliberately never touches.
+  if (section.ackPolicy === "after_dispatch" && section.allowBlockingAck === true) {
     warnings.push(
-      `- channels.cliq: ackPolicy is "immediate" (deprecated alias). It now resolves to "after_receive_record": the Core durable ingress queue records the event BEFORE the HTTP 200, so a crash between ack and turn adoption re-dispatches exactly once instead of losing the message. Remove the deprecated key (or set "after_receive_record" explicitly) to silence this warning.`,
-    );
-  }
-  if (section.ackPolicy === "after_dispatch") {
-    warnings.push(
-      `- channels.cliq: ackPolicy is "after_dispatch" (blocking compatibility mode). The HTTP 200 waits for the full dispatch; a turn longer than Zoho's ~40 s Deluge invokeUrl timeout will be redelivered while the original turn is still running. Prefer "after_receive_record" (the default), which acks after the durable record instead.`,
+      `- channels.cliq: ackPolicy is "after_dispatch" with allowBlockingAck (explicit blocking compatibility mode). The HTTP 200 waits for the full dispatch; a turn longer than Zoho's ~40 s Deluge invokeUrl timeout will be redelivered while the original turn is still running. Prefer "after_receive_record" (the default), which acks after the durable record instead.`,
     );
   }
   // Data-center validation: warn when only one of `oauthBase` / `apiBase` is
@@ -313,8 +419,12 @@ function shouldSkipDefaultEmptyGroupAllowlistWarning(
  *    doctor looks for it there and only there.
  *  - `collectPreviewWarnings` — missing credentials, missing webhook secret,
  *    wildcard + open DM policy, empty allowlist under "allowlist" policy,
- *    streaming preview on without a refresh token, and the
- *    `ackPolicy: "immediate"` lost-message opt-in.
+ *    streaming preview on without a refresh token, the
+ *    `ackPolicy: "immediate"` / unacknowledged `"after_dispatch"` blocking
+ *    findings (issue #344), and the missing `replyContextRecovery` warning.
+ *    Blocking findings render as warnings here (the static surface only
+ *    carries strings); `openclaw cliq doctor` enforces the same matrix as
+ *    config-stage failures — see `collectCliqOptimalConfigFindings`.
  *  - `collectMutableAllowlistWarnings` — wildcard allowlist doctor will not
  *    auto-edit.
  *  - `shouldSkipDefaultEmptyGroupAllowlistWarning` — Cliq groups are gated by

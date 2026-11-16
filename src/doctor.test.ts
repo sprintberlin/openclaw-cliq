@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   cliqDoctorAdapter,
+  collectCliqOptimalConfigFindings,
   collectCliqPreviewWarnings,
   collectCliqMutableAllowlistWarnings,
   readCliqDoctorSection,
@@ -76,6 +77,7 @@ describe("collectCliqPreviewWarnings", () => {
         clientSecret: "secret",
         botId: "bot",
         refreshToken: "rt",
+        replyContextRecovery: { enabled: true },
         dmPolicy: "open",
         allowFrom: ["u1"],
       }),
@@ -93,6 +95,7 @@ describe("collectCliqPreviewWarnings", () => {
         botId: "bot",
         refreshToken: "rt",
         webhookSecret: "s",
+        replyContextRecovery: { enabled: true },
         dmPolicy: "open",
         allowFrom: ["*"],
       }),
@@ -110,6 +113,7 @@ describe("collectCliqPreviewWarnings", () => {
         botId: "bot",
         refreshToken: "rt",
         webhookSecret: "s",
+        replyContextRecovery: { enabled: true },
         dmPolicy: "open",
         allowFrom: ["*"],
         trustedOrganization: { acknowledged: true, label: "Pay-Jet" },
@@ -128,6 +132,7 @@ describe("collectCliqPreviewWarnings", () => {
         botId: "bot",
         refreshToken: "rt",
         webhookSecret: "s",
+        replyContextRecovery: { enabled: true },
         dmPolicy: "open",
         allowFrom: ["u1"],
         streaming: { mode: "progress", preview: "off" },
@@ -153,6 +158,7 @@ describe("collectCliqPreviewWarnings", () => {
         botId: "bot",
         refreshToken: "rt",
         webhookSecret: "s",
+        replyContextRecovery: { enabled: true },
         dmPolicy: "open",
         allowFrom: ["u1"],
         streaming: { mode: "partial", preview: "on" },
@@ -169,6 +175,7 @@ describe("collectCliqPreviewWarnings", () => {
         clientSecret: "secret",
         botId: "bot",
         webhookSecret: "s",
+        replyContextRecovery: { enabled: true },
         dmPolicy: "open",
         allowFrom: ["u1"],
         streaming: { mode: "off" },
@@ -185,6 +192,7 @@ describe("collectCliqPreviewWarnings", () => {
         clientSecret: "secret",
         botId: "bot",
         webhookSecret: "s",
+        replyContextRecovery: { enabled: true },
         dmPolicy: "open",
         allowFrom: ["u1"],
         streaming: { preview: "on" },
@@ -203,6 +211,7 @@ describe("collectCliqPreviewWarnings", () => {
         clientSecret: "secret",
         botId: "bot",
         webhookSecret: "s",
+        replyContextRecovery: { enabled: true },
         dmPolicy: "open",
         allowFrom: ["u1"],
       }),
@@ -220,6 +229,7 @@ describe("collectCliqPreviewWarnings", () => {
         clientSecret: "secret",
         botId: "bot",
         webhookSecret: "s",
+        replyContextRecovery: { enabled: true },
         dmPolicy: "open",
         allowFrom: ["u1"],
         streaming: { preview: "off" },
@@ -237,6 +247,7 @@ describe("collectCliqPreviewWarnings", () => {
         botId: "bot",
         refreshToken: "rt",
         webhookSecret: "s",
+        replyContextRecovery: { enabled: true },
         dmPolicy: "open",
         allowFrom: ["u1"],
       }),
@@ -253,6 +264,7 @@ describe("collectCliqPreviewWarnings", () => {
         botId: "bot",
         refreshToken: "rt",
         webhookSecret: "s",
+        replyContextRecovery: { enabled: true },
         dmPolicy: "open",
         allowFrom: ["u1"],
         streaming: { preview: "on" },
@@ -270,6 +282,7 @@ describe("collectCliqPreviewWarnings", () => {
         botId: "bot",
         refreshToken: "rt",
         webhookSecret: "s",
+        replyContextRecovery: { enabled: true },
         dmPolicy: "allowlist",
         allowFrom: ["*"],
       }),
@@ -289,6 +302,7 @@ describe("collectCliqPreviewWarnings", () => {
         botId: "bot",
         refreshToken: "rt",
         webhookSecret: "s",
+        replyContextRecovery: { enabled: true },
         // dmPolicy defaults to "allowlist"
       }),
       doctorFixCommand: DOCTOR_FIX,
@@ -297,7 +311,7 @@ describe("collectCliqPreviewWarnings", () => {
     expect(warnings[0]).toMatch(/allowFrom is empty/);
   });
 
-  it("warns that ackPolicy immediate is a deprecated alias of after_receive_record", () => {
+  it("names the --fix migration for ackPolicy immediate (deprecated alias of after_receive_record)", () => {
     const warnings = collectCliqPreviewWarnings({
       cfg: cfgWith({
         clientId: "id",
@@ -305,6 +319,7 @@ describe("collectCliqPreviewWarnings", () => {
         botId: "bot",
         refreshToken: "rt",
         webhookSecret: "s",
+        replyContextRecovery: { enabled: true },
         dmPolicy: "open",
         allowFrom: ["someone"],
         ackPolicy: "immediate",
@@ -314,7 +329,89 @@ describe("collectCliqPreviewWarnings", () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toMatch(/ackPolicy is "immediate" \(deprecated alias\)/);
     expect(warnings[0]).toMatch(/after_receive_record/);
-    expect(warnings[0]).toMatch(/re-dispatches exactly once/);
+    expect(warnings[0]).toMatch(new RegExp(DOCTOR_FIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  });
+
+  it("fails the optimal-config matrix for ackPolicy immediate (issue #344)", () => {
+    const findings = collectCliqOptimalConfigFindings({
+      cfg: cfgWith({
+        clientId: "id",
+        clientSecret: "secret",
+        botId: "bot",
+        refreshToken: "rt",
+        webhookSecret: "s",
+        replyContextRecovery: { enabled: true },
+        dmPolicy: "open",
+        allowFrom: ["someone"],
+        ackPolicy: "immediate",
+      }),
+      doctorFixCommand: DOCTOR_FIX,
+    });
+    const blocking = findings.filter((finding) => finding.severity === "fail");
+    expect(blocking.some((finding) => finding.boundary === "ack_policy")).toBe(true);
+  });
+
+  it("fails the optimal-config matrix for an unacknowledged after_dispatch (issue #344)", () => {
+    const blocking = collectCliqOptimalConfigFindings({
+      cfg: cfgWith({
+        clientId: "id",
+        clientSecret: "secret",
+        botId: "bot",
+        refreshToken: "rt",
+        webhookSecret: "s",
+        replyContextRecovery: { enabled: true },
+        ackPolicy: "after_dispatch",
+      }),
+      doctorFixCommand: DOCTOR_FIX,
+    }).filter((finding) => finding.severity === "fail");
+    expect(blocking.some((finding) => finding.boundary === "ack_policy")).toBe(true);
+    // The explicit override keeps the blocking mode as a warning, never a failure.
+    const overridden = collectCliqOptimalConfigFindings({
+      cfg: cfgWith({
+        clientId: "id",
+        clientSecret: "secret",
+        botId: "bot",
+        refreshToken: "rt",
+        webhookSecret: "s",
+        replyContextRecovery: { enabled: true },
+        ackPolicy: "after_dispatch",
+        allowBlockingAck: true,
+      }),
+      doctorFixCommand: DOCTOR_FIX,
+    }).filter((finding) => finding.severity === "fail");
+    expect(overridden).toEqual([]);
+  });
+
+  it("fails the optimal-config matrix on a missing webhookSecret and warns on missing replyContextRecovery (issue #344)", () => {
+    const findings = collectCliqOptimalConfigFindings({
+      cfg: cfgWith({
+        clientId: "id",
+        clientSecret: "secret",
+        botId: "bot",
+        refreshToken: "rt",
+        dmPolicy: "open",
+        allowFrom: ["u1"],
+      }),
+      doctorFixCommand: DOCTOR_FIX,
+    });
+    expect(findings.some((finding) => finding.severity === "fail" && finding.boundary === "webhook_secret")).toBe(true);
+    expect(findings.some((finding) => finding.severity === "warn" && finding.boundary === "reply_context_recovery")).toBe(true);
+    // A fully optimal config produces no findings.
+    expect(
+      collectCliqOptimalConfigFindings({
+        cfg: cfgWith({
+          clientId: "id",
+          clientSecret: "secret",
+          botId: "bot",
+          refreshToken: "rt",
+          replyContextRecovery: { enabled: true },
+          webhookSecret: "s",
+          dmPolicy: "allowlist",
+          allowFrom: ["user@example.com"],
+        }),
+        doctorFixCommand: DOCTOR_FIX,
+      }),
+    ).toEqual([]);
   });
 
   it("emits no warnings for a clean, locked-down config", () => {
@@ -325,6 +422,7 @@ describe("collectCliqPreviewWarnings", () => {
         botId: "bot",
         refreshToken: "rt",
         webhookSecret: "s",
+        replyContextRecovery: { enabled: true },
         dmPolicy: "allowlist",
         allowFrom: ["user@example.com"],
       }),
@@ -342,11 +440,13 @@ describe("collectCliqPreviewWarnings", () => {
       doctorFixCommand: DOCTOR_FIX,
     });
     // 1) missing creds (clientId, clientSecret) + 2) missing webhookSecret +
-    // 3) empty allowFrom under allowlist policy.
-    expect(warnings).toHaveLength(3);
+    // 3) empty allowFrom under allowlist policy + 4) missing
+    // replyContextRecovery.
+    expect(warnings).toHaveLength(4);
     expect(warnings.some((w) => /missing required credentials/.test(w))).toBe(true);
     expect(warnings.some((w) => /webhookSecret is not set/.test(w))).toBe(true);
     expect(warnings.some((w) => /allowFrom is empty/.test(w))).toBe(true);
+    expect(warnings.some((w) => /replyContextRecovery is not enabled/.test(w))).toBe(true);
   });
 });
 
@@ -356,6 +456,7 @@ describe("collectCliqPreviewWarnings — data-center validation (issue #46)", ()
     clientSecret: "secret",
     botId: "bot",
     refreshToken: "rt",
+    replyContextRecovery: { enabled: true },
     webhookSecret: "s",
     dmPolicy: "open" as const,
     allowFrom: ["u1"],
@@ -468,6 +569,7 @@ describe("collectCliqPreviewWarnings — capability warnings", () => {
         clientSecret: "secret",
         botId: "bot",
         webhookSecret: "s",
+        replyContextRecovery: { enabled: true },
         dmPolicy: "open",
         allowFrom: ["u1"],
       }),
@@ -490,6 +592,7 @@ describe("collectCliqPreviewWarnings — capability warnings", () => {
         clientSecret: "secret",
         botId: "bot",
         webhookSecret: "s",
+        replyContextRecovery: { enabled: true },
         dmPolicy: "open",
         allowFrom: ["u1"],
       }),
@@ -510,6 +613,7 @@ describe("collectCliqPreviewWarnings — capability warnings", () => {
         botId: "bot",
         refreshToken: "rt",
         webhookSecret: "s",
+        replyContextRecovery: { enabled: true },
         dmPolicy: "open",
         allowFrom: ["u1"],
       }),
