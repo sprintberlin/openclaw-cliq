@@ -398,13 +398,15 @@ export interface CliqChannelConfig {
    */
   ackPolicy?: CliqAckPolicy;
   /**
-   * Explicit opt-in that keeps `ackPolicy: "after_dispatch"` (issue #344).
-   * The blocking mode is a redelivery hazard on any turn longer than Zoho's
-   * ~40 s Deluge `invokeUrl` timeout, so `cliq doctor` fails a blocking
-   * policy unless this flag is `true` — the acknowledgement documents that
-   * the operator accepted the blocking behaviour deliberately instead of
-   * inheriting it silently. `openclaw doctor --fix` never sets this flag;
-   * it migrates the policy to `"after_receive_record"` instead.
+   * Explicit, opt-in acceptance of the blocking `ackPolicy: "after_dispatch"`
+   * mode (issue #344). Without this flag set to `true`,
+   * `openclaw cliq doctor` FAILS a config that uses `after_dispatch` (and any
+   * config that uses the deprecated `immediate` alias, which this flag never
+   * rescues), because Zoho's ~40 s Deluge `invokeUrl` timeout aborts the
+   * webhook call on slow turns and redelivers the event while the original
+   * turn is still running. With `allowBlockingAck: true` the same finding is
+   * downgraded to a warning: the operator has stated that blocking acks are
+   * deliberate. `openclaw doctor --fix` never removes this flag.
    */
   allowBlockingAck?: boolean;
   /**
@@ -822,12 +824,9 @@ export interface ResolvedCliqAccount {
   /** True when the literal deprecated "immediate" value was configured (Doctor hint, #261). */
   ackPolicyLegacyImmediate?: boolean;
   /**
-   * Explicit opt-in that keeps `ackPolicy: "after_dispatch"` (issue #344).
-   * Mirrors `CliqChannelConfig.allowBlockingAck` (per-account overridable
-   * through the same shallow-merge resolution as every other scalar).
-   * Optional because test fixtures construct resolved accounts literally;
-   * `resolveCliqConfig` always sets it, and every reader treats a missing
-   * value as `false` via `=== true`.
+   * Resolved `channels.cliq.allowBlockingAck` (issue #344). `true` keeps an
+   * explicit `after_dispatch` config at warn-level in doctor instead of
+   * failing it. Absent means `false`.
    */
   allowBlockingAck?: boolean;
   /**
@@ -985,9 +984,9 @@ export function resolveCliqConfig(
      trustedOrganization: section?.trustedOrganization?.acknowledged === true
        ? section.trustedOrganization
        : undefined,
-      ackPolicy,
-      ackPolicyLegacyImmediate,
-      allowBlockingAck: section?.allowBlockingAck === true,
+     ackPolicy,
+     ackPolicyLegacyImmediate,
+     allowBlockingAck: section?.allowBlockingAck === true,
     commands: {
       unmentioned:
         section?.commands?.unmentioned === "allowlist" ? "allowlist" : "off",

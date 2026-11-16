@@ -285,7 +285,10 @@ export function toCliqDoctorBotInspection(
         ? ["Verify channels.cliq.botId and confirm the bot is visible to the OAuth client."]
         : inactive
           ? ["Activate the configured bot in Zoho Cliq before testing first contact."]
-          : ["Review the redacted handler conflict and require confirmation before changing Zoho-held code."],
+          : [
+              "Review the redacted handler conflict and require confirmation before changing Zoho-held code.",
+              "The Zoho-held handler script is stale (handlerSchema must be v6): a plugin upgrade or gateway restart does NOT rewrite it. Run `openclaw cliq provision --handlers` (or the confirmation-gated handler repair in `openclaw setup`) to update the stored Message and Mention handlers.",
+            ],
     };
   }
   const unknownFacet = [

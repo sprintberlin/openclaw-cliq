@@ -391,4 +391,28 @@ describe("toCliqDoctorBotInspection — handler remediation (issue #249)", () =>
     const remediation = doctor.remediation?.join(" ") ?? "";
     expect(remediation).toMatch(/Grant and re-consent ZohoCliq\.Bots\.READ/);
   });
+
+  it("points a stale handlerSchema failure at `openclaw cliq provision --handlers` (issue #344)", async () => {
+    const stale = handlerScript(
+      WEBHOOK_SECRET,
+      "https://cliq.example.com/cliq/webhook",
+      'payload.put("handlerSchema", "v4");\npayload.put("eventId", eventId);\nresponse.put("eventId", eventId);\ndelivery = invokeUrl [url: webhookUrl type: POST body: payload headers: headers detailed: true];\nif (delivery.get("responseCode") < 200 || delivery.get("responseCode") > 299)\n{\n    response = Map();\n    response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");\n}\ntry\n{\n}\ncatch (e)\n{\n    response = Map();\n    response.put("text", "Your message could not be processed (Ref " + eventId + "). Please send it again.");\n}',
+    );
+    const result = await inspectCliqBot({
+      account: account(),
+      publicWebhookUrl: "https://cliq.example.com/cliq/webhook",
+      reader: reader({
+        readHandlerScript: vi.fn(async () => ({
+          script: stale,
+        })),
+      }),
+    });
+    expect(result.handlerConsistency.status).toBe("fail");
+    expect(result.handlerConsistency.detail).toMatch(/handlerSchema "v4"/);
+    const doctor = toCliqDoctorBotInspection(result);
+    expect(doctor.status).toBe("fail");
+    expect(doctor.remediation?.join(" ") ?? "").toMatch(
+      /openclaw cliq provision --handlers/,
+    );
+  });
 });
