@@ -986,7 +986,7 @@ export function resolveCliqConfig(
        : undefined,
      ackPolicy,
      ackPolicyLegacyImmediate,
-     allowBlockingAck: section?.allowBlockingAck === true ? true : undefined,
+     allowBlockingAck: section?.allowBlockingAck === true,
     commands: {
       unmentioned:
         section?.commands?.unmentioned === "allowlist" ? "allowlist" : "off",
