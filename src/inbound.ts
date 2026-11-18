@@ -1791,6 +1791,10 @@ export async function dispatchCliqInbound(params: {
     SenderName: parsed.senderName,
     SenderId: parsed.senderId,
     SenderUsername: parsed.senderEmail,
+    ChannelContext: {
+      sender: { id: parsed.senderId },
+      ...(parsed.chatId.trim() ? { chat: { id: parsed.chatId } } : {}),
+    },
     GroupChannel: groupLabel,
     GroupSubject: groupLabel,
     WasMentioned:

@@ -44,6 +44,7 @@ if (modelRequestsLogFile) {
 }
 
 let messageCounter = 0;
+const probeAttempts = new Map();
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://127.0.0.1:${port}`);
@@ -136,6 +137,49 @@ const server = createServer(async (req, res) => {
         .reverse()
         .find((m) => m && m.role === "user" && !isInternalContext(textOf(m)));
       const userText = textOf(lastUser);
+      const contextProbe = /\bstage4b-347-(dm|group)-\d+\b/.exec(userText);
+      if (contextProbe) {
+        const probeKey = contextProbe[0];
+        const attempts = (probeAttempts.get(probeKey) ?? 0) + 1;
+        probeAttempts.set(probeKey, attempts);
+        const toolResult = messages.slice(messages.lastIndexOf(lastUser) + 1).find(
+          (message) => message?.role === "tool",
+        );
+        const terminate = Boolean(toolResult) || attempts > 6;
+        const message = terminate
+          ? { role: "assistant", content: `stub-context-complete: ${probeKey}` }
+          : {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: `ctx347-${contextProbe[1]}-${attempts}`,
+                type: "function",
+                function: {
+                  name: "exec",
+                  arguments: JSON.stringify({
+                    command: "printenv OPENCLAW_CHANNEL_CONTEXT",
+                    env: {
+                      OPENCLAW_CHANNEL_CONTEXT: JSON.stringify({
+                        sender: { id: "model-spoof-sender" },
+                        chat: { id: "model-spoof-chat" },
+                      }),
+                    },
+                  }),
+                },
+              }],
+            };
+        log("chat completion context probe");
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({
+          id: "chatcmpl-context-probe",
+          object: "chat.completion",
+          created: Math.floor(Date.now() / 1000),
+          model: payload.model ?? "stub-model",
+          choices: [{ index: 0, message, finish_reason: terminate ? "stop" : "tool_calls" }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        }));
+        return;
+      }
       const replyText = `stub-reply: ${userText}`;
       log(`chat completion echo (userTextLen=${userText.length}) -> "${replyText.slice(0, 80)}"`);
       res.writeHead(200, { "content-type": "application/json" });
