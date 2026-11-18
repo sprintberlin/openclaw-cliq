@@ -552,6 +552,8 @@ node -e '
   c.agents = c.agents || {};
   c.agents.defaults = c.agents.defaults || {};
   c.agents.defaults.model = "stub/echo";
+  c.tools = { exec: { host: "gateway", security: "allowlist", ask: "off", safeBins: ["printenv"],
+    safeBinProfiles: { printenv: { minPositional: 1, maxPositional: 1 } } } };
   fs.writeFileSync(p, JSON.stringify(c, null, 2));
 '
 run_oc config validate
@@ -790,6 +792,91 @@ then
   exit 1
 fi
 echo "OK: quoted parent reached the model in the same user message"
+
+probe_context_turn() {
+  local kind="$1" sender_id="$2" chat_id="$3" marker="$4" payload="$5"
+  local resp code curl_rc=0 observed=0
+  resp="$(curl -s -w "\n%{http_code}" --max-time 30 -X POST "$WEBHOOK_URL" \
+    -H "x-cliq-webhook-secret: smoke-webhook-secret" \
+    -H "content-type: application/json" \
+    --data "$payload")" || curl_rc=$?
+  if [ "$curl_rc" -ne 0 ]; then
+    echo "FAIL: $kind context probe webhook failed (curl exit $curl_rc)" >&2
+    tail -n 60 "$MOCK_LOG" >&2
+    tail -n 80 "$GW_LOG" >&2
+    node - "$MODEL_REQUESTS_LOG" <<'NODE'
+const fs = require("fs");
+const requests = fs.readFileSync(process.argv[2], "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
+for (const request of requests.slice(-3)) {
+  console.error(JSON.stringify((request.messages ?? []).filter((message) => message.role === "tool" || message.tool_calls)));
+}
+NODE
+    exit 1
+  fi
+  code="$(printf "%s" "$resp" | tail -n1)"
+  assert_status "context probe $kind webhook" 200 "$code"
+  for _ in $(seq 1 80); do
+    if grep -Fq "stub-context-complete: $marker" "$SENDS_LOG" 2>/dev/null; then observed=1; break; fi
+    sleep 0.5
+  done
+  if [ "$observed" -ne 1 ]; then
+    echo "FAIL: $kind exec context probe did not complete" >&2
+    tail -n 80 "$GW_LOG" >&2
+    cat "$MOCK_LOG" >&2
+    exit 1
+  fi
+  if ! node - "$MODEL_REQUESTS_LOG" "$marker" "$sender_id" "$chat_id" "$kind" <<'NODE'
+const fs = require("fs");
+const assert = require("node:assert/strict");
+const [path, marker, senderId, chatId, kind] = process.argv.slice(2);
+const requests = fs.readFileSync(path, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
+const textOf = (message) => typeof message?.content === "string" ? message.content
+  : Array.isArray(message?.content) ? message.content.map((part) => part?.text ?? "").join("") : "";
+const matching = requests.filter((request) => {
+  const users = (request.messages ?? []).filter((message) => message.role === "user"
+    && !textOf(message).includes("<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>")
+    && !textOf(message).startsWith("OpenClaw runtime context"));
+  return textOf(users.at(-1)).includes(marker);
+});
+try {
+  assert.ok(matching.length >= 2, `expected the tool-call request and its result request, saw ${matching.length}`);
+  const toolMessages = matching.flatMap((request) => (request.messages ?? [])
+    .filter((message) => message.role === "tool"));
+  assert.ok(toolMessages.length >= 1, "no exec tool result recorded");
+  const execCall = matching.flatMap((request) => (request.messages ?? [])
+    .flatMap((message) => message.role === "assistant" ? message.tool_calls ?? [] : []))
+    .find((entry) => entry?.function?.name === "exec");
+  assert.ok(execCall, "expected an exec tool call");
+  const args = JSON.parse(execCall.function.arguments ?? "{}");
+  assert.equal(args.command, "printenv OPENCLAW_CHANNEL_CONTEXT");
+  assert.match(String(args.env?.OPENCLAW_CHANNEL_CONTEXT ?? ""), /model-spoof-sender/);
+  const result = toolMessages.at(-1);
+  const output = textOf(result);
+  const jsonLine = output.split("\n").find((line) => line.trim().startsWith("{"));
+  assert.ok(jsonLine, "exec output omitted context JSON");
+  assert.deepEqual(JSON.parse(jsonLine), { sender: { id: senderId }, chat: { id: chatId } });
+  assert.ok(!output.includes("model-spoof-"), "model env spoof reached subprocess");
+} catch (error) {
+  console.error(`FAIL: ${kind} exec context assertion: ${error.message}`);
+  console.error(JSON.stringify(matching));
+  process.exit(1);
+}
+NODE
+  then
+    cat "$MOCK_LOG" >&2
+    tail -n 80 "$GW_LOG" >&2
+    exit 1
+  fi
+  echo "OK: $kind exec observed exact OPENCLAW_CHANNEL_CONTEXT and the model env spoof was overwritten"
+}
+
+CONTEXT_DM_MARKER="stage4b-347-dm-$$"
+CONTEXT_DM_PAYLOAD='{"message":{"text":"'"$CONTEXT_DM_MARKER"'","id":"dm-ctx-347"},"user":{"id":"user-contextdm-347","name":"Context Dm"},"chat":{"id":"CT_347_dm","type":"single"}}'
+probe_context_turn "DM" "user-contextdm-347" "CT_347_dm" "$CONTEXT_DM_MARKER" "$CONTEXT_DM_PAYLOAD"
+
+CONTEXT_GROUP_MARKER="stage4b-347-group-$$"
+CONTEXT_GROUP_PAYLOAD='{"message":{"text":"@openclaw-bot '"$CONTEXT_GROUP_MARKER"'","id":"group-ctx-347"},"user":{"id":"user-contextgroup-347","name":"Context Group"},"chat":{"id":"CT_group_347","type":"channel"},"channel":{"unique_name":"ctx347"},"mentions":[{"id":"openclaw-bot","type":"bot"}],"handler":"mention"}'
+probe_context_turn "group" "user-contextgroup-347" "CT_group_347" "$CONTEXT_GROUP_MARKER" "$CONTEXT_GROUP_PAYLOAD"
 
 # Synthetic credentials are deliberately distinctive; neither gateway nor
 # mock logs may contain them. This also catches accidental OAuth query logging.

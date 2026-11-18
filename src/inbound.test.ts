@@ -1608,6 +1608,146 @@ describe("dispatchCliqInbound context fields", () => {
     expect(String(capture.ctxPayload?.Body)).toContain("priority: high");
     expect(String(capture.ctxPayload?.Body)).not.toContain("__cliq_form__");
   });
+
+  it("passes ChannelContext sender and chat ids for a DM turn (issue #347)", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    expect(parsed).not.toBeNull();
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account(),
+      parsed: parsed!,
+    });
+    expect(capture.ctxPayload?.ChannelContext).toEqual({
+      sender: { id: "u1" },
+      chat: { id: "CT_dm_chat-B1" },
+    });
+  });
+
+  it("passes ChannelContext sender and chat ids for a group mention turn (issue #347)", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload(groupPayload());
+    expect(parsed).not.toBeNull();
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account(),
+      parsed: parsed!,
+    });
+    expect(capture.ctxPayload?.ChannelContext).toEqual({
+      sender: { id: "u2" },
+      chat: { id: "CT_channel_chat" },
+    });
+  });
+
+  it("omits ChannelContext.chat when the payload carries no chat id (issue #347)", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload(
+      groupPayload({
+        chat: { type: "channel", chat_type: "channel", channel_unique_name: "dev-team" },
+      }),
+    );
+    expect(parsed).not.toBeNull();
+    expect(parsed!.chatId).toBe("");
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account(),
+      parsed: parsed!,
+    });
+    expect(capture.ctxPayload?.ChannelContext).toEqual({ sender: { id: "u2" } });
+  });
+
+  it("keeps ChannelContext to ids only — no name, email, or org leak (issue #347)", async () => {
+    const capture: { ctxPayload?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload(
+      dmPayload({
+        user: {
+          id: "u1",
+          name: "Alice",
+          email: "alice@corp.com",
+          email_id: "alice@corp.com",
+          organization_id: "org-1",
+        },
+      }),
+    );
+    expect(parsed).not.toBeNull();
+    await dispatchCliqInbound({
+      runtime: mockRuntime(capture),
+      cfg: { channels: { cliq: { clientId: "c", clientSecret: "s", botId: "b" } } } as never,
+      account: account(),
+      parsed: parsed!,
+    });
+    const ctx = capture.ctxPayload?.ChannelContext as Record<string, unknown>;
+    expect(Object.keys(ctx).sort()).toEqual(["chat", "sender"]);
+    expect(Object.keys(ctx.sender as object)).toEqual(["id"]);
+    expect(Object.keys(ctx.chat as object)).toEqual(["id"]);
+  });
+});
+
+describe("dispatchCliqInbound — ChannelContext through the real SDK finalizer (issue #347)", () => {
+  function mockRuntimeFinalizerPassThrough(capture: {
+    ctxPayload?: Record<string, unknown>;
+    dispatchedCtx?: Record<string, unknown>;
+  }): CliqRuntime {
+    return {
+      channel: {
+        routing: {
+          resolveAgentRoute: () => ({
+            agentId: "agent-1",
+            sessionKey: "sess-1",
+            accountId: "default",
+          }),
+        },
+        session: {
+          resolveStorePath: () => "/tmp/store",
+          readSessionUpdatedAt: () => undefined,
+          recordInboundSession: () => undefined,
+        },
+        reply: {
+          resolveEnvelopeFormatOptions: () => ({}),
+          formatAgentEnvelope: (p: Record<string, unknown>) => String(p.body ?? ""),
+          finalizeInboundContext: (fields: Record<string, unknown>) => {
+            const finalized = finalizeSdkInboundContext(fields as never);
+            capture.ctxPayload = finalized as unknown as Record<string, unknown>;
+            return finalized;
+          },
+          dispatchReplyWithBufferedBlockDispatcher: async () => undefined,
+        },
+        inbound: {
+          run: async ({ adapter }) => {
+            const turn = adapter.resolveTurn(undefined, undefined, undefined) as {
+              ctxPayload: Record<string, unknown>;
+            };
+            capture.dispatchedCtx = turn.ctxPayload;
+            return undefined;
+          },
+        },
+        pairing: {
+          buildPairingReply: () => "",
+          upsertPairingRequest: async () => ({ code: "CODE", created: true }),
+        },
+      },
+    };
+  }
+
+  it("survives finalizeSdkInboundContext with sender and chat ids intact", async () => {
+    const capture: { ctxPayload?: Record<string, unknown>; dispatchedCtx?: Record<string, unknown> } = {};
+    const parsed = parseCliqWebhookPayload(dmPayload());
+    expect(parsed).not.toBeNull();
+    const runtime = mockRuntimeFinalizerPassThrough(capture);
+    await dispatchCliqInbound({
+      runtime,
+      cfg: {} as never,
+      account: account(),
+      parsed: parsed!,
+    });
+    expect(capture.dispatchedCtx?.ChannelContext).toEqual({
+      sender: { id: "u1" },
+      chat: { id: "CT_dm_chat-B1" },
+    });
+  });
 });
 
 describe("dispatchCliqInbound — stop / abort intent (issue #51)", () => {
