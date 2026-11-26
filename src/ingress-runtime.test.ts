@@ -616,6 +616,186 @@ describe("handler fallback when the drain cannot deliver (issue #262)", () => {
   });
 });
 
+describe("pending-input idempotency conflict dead-letters on the first attempt (issue #350)", () => {
+  const CONFLICT = "Pending input idempotency key conflicts with the accepted input";
+
+  function conflictMonitor(
+    store: ReturnType<typeof createTestIngressQueue>,
+    fail: () => { kind: "failed-retryable"; error: Error },
+  ) {
+    const codec = createCliqIngressPayloadCodec();
+    const delivered: string[] = [];
+    const attempts: string[] = [];
+    const monitor = createChannelIngressMonitor({
+      queue: store.queue,
+      inspect: (raw: CliqIngressRawEvent) => resolveCliqIngressFacts(raw.parsed),
+      payload: codec,
+      deliver: async (raw: CliqIngressRawEvent) => {
+        attempts.push(raw.parsed.messageId);
+        if (raw.parsed.messageId === "evt-replayed-attachment") return fail();
+        delivered.push(raw.parsed.messageId);
+        return { kind: "completed" as const };
+      },
+      pollIntervalMs: 20,
+      retention: "standard" as const,
+      drain: { resolveNonRetryableFailure: resolveCliqIngressNonRetryableFailure },
+      admissionMode: "while-running" as const,
+    });
+    return { monitor, delivered, attempts };
+  }
+
+  it("dead-letters a returned conflict at attempt 1 and frees the lane", async () => {
+    const store = createTestIngressQueue();
+    const { monitor, delivered, attempts } = conflictMonitor(store, () => ({
+      kind: "failed-retryable" as const,
+      error: new Error(CONFLICT),
+    }));
+    monitor.start();
+    try {
+      await monitor.admit(
+        rawEvent(fakeParsed({ messageId: "evt-replayed-attachment", attachments: [{ fileName: "voice.ogg" }] as never })),
+      );
+      await monitor.waitForIdle();
+      expect(attempts).toEqual(["evt-replayed-attachment"]);
+      expect(store.statusOf("evt-replayed-attachment")).toBe("failed");
+      expect(store.failedReasonOf("evt-replayed-attachment")).toBe("input-idempotency-conflict");
+
+      // The lane is free: an unrelated later event on the SAME lane still delivers.
+      await monitor.admit(rawEvent(fakeParsed({ messageId: "evt-after-conflict", text: "still works" })));
+      await monitor.waitForIdle();
+      expect(delivered).toEqual(["evt-after-conflict"]);
+      expect(store.statusOf("evt-after-conflict")).toBe("completed");
+    } finally {
+      await monitor.stop();
+    }
+  });
+
+  it("dead-letters a thrown conflict wrapped by a cause chain", async () => {
+    const store = createTestIngressQueue();
+    const wrapped = new Error("dispatch failed", { cause: new Error(CONFLICT) });
+    const { monitor, attempts } = conflictMonitor(store, () => {
+      throw wrapped;
+    });
+    monitor.start();
+    try {
+      await monitor.admit(rawEvent(fakeParsed({ messageId: "evt-replayed-attachment" })));
+      await monitor.waitForIdle();
+      expect(attempts).toEqual(["evt-replayed-attachment"]);
+      expect(store.statusOf("evt-replayed-attachment")).toBe("failed");
+      expect(store.failedReasonOf("evt-replayed-attachment")).toBe("input-idempotency-conflict");
+    } finally {
+      await monitor.stop();
+    }
+  });
+
+  it("keeps a redelivery of the dead-lettered event out of the agent (no duplicate reply)", async () => {
+    const store = createTestIngressQueue();
+    const event = fakeParsed({ messageId: "evt-replayed-attachment" });
+    const { monitor, attempts } = conflictMonitor(store, () => ({
+      kind: "failed-retryable" as const,
+      error: new Error(CONFLICT),
+    }));
+    monitor.start();
+    try {
+      await monitor.admit(rawEvent(event));
+      await monitor.waitForIdle();
+      expect(store.statusOf(event.messageId)).toBe("failed");
+      const replay = await monitor.admit(rawEvent(event));
+      expect(replay.kind).toBe("durable");
+      if (replay.kind === "durable") {
+        expect(replay.queueResult.duplicate).toBe(true);
+        expect(replay.queueResult.kind).toBe("failed");
+      }
+      await monitor.waitForIdle();
+      expect(attempts).toEqual([event.messageId]);
+    } finally {
+      await monitor.stop();
+    }
+  });
+
+  it("dead-letters through the production registry deliver seam (startAccount)", async () => {
+    const store = createTestIngressQueue();
+    const registry = new CliqIngressMonitorRegistry({
+      isAvailable: () => true,
+      openQueue: () => store.queue,
+    });
+    const dispatches: string[] = [];
+    await registry.startAccount("default", {
+      deliver: async (raw) => {
+        dispatches.push(raw.parsed.messageId);
+        return { kind: "failed", error: new Error(CONFLICT) };
+      },
+    });
+    try {
+      const event = fakeParsed({ messageId: "evt-replayed-attachment" });
+      const admitted = await registry.admitEvent("default", event);
+      expect(admitted.kind).toBe("admitted");
+      await vi.waitFor(() => expect(store.statusOf(event.messageId)).toBe("failed"));
+      expect(store.failedReasonOf(event.messageId)).toBe("input-idempotency-conflict");
+      expect(dispatches).toEqual([event.messageId]);
+
+      // A later redelivery is acked as a duplicate and never reaches dispatch again.
+      const replay = await registry.admitEvent("default", event);
+      expect(replay).toEqual({ kind: "duplicate", queueKind: "failed" });
+      expect(dispatches).toEqual([event.messageId]);
+    } finally {
+      await registry.stopAccount("default");
+    }
+  });
+
+  it("still retries transient pending-input custody errors and unknown failures", () => {
+    const transient = [
+      "Pending input ownership ended; submit a new turn to continue",
+      "Pending input is already admitted; wait for its current turn",
+      "reply session initialization conflicted",
+      "handler unavailable",
+      // A longer message that only mentions the phrase is not this error and
+      // must stay retryable rather than dropping the event.
+      `dispatch failed: ${CONFLICT} (see logs)`,
+    ];
+    for (const message of transient) {
+      expect(resolveCliqIngressNonRetryableFailure(new Error(message))).toBeNull();
+      expect(
+        resolveCliqIngressNonRetryableFailure(new Error("wrapped", { cause: new Error(message) })),
+      ).toBeNull();
+    }
+    expect(resolveCliqIngressNonRetryableFailure(new Error(CONFLICT))).toEqual({
+      reason: "input-idempotency-conflict",
+      message: CONFLICT,
+    });
+    expect(
+      resolveCliqIngressNonRetryableFailure(new TypeError(`  ${CONFLICT}  `)),
+    ).toMatchObject({ reason: "input-idempotency-conflict" });
+  });
+
+  it("keeps retrying a transient pending-input error at the queue level", async () => {
+    const store = createTestIngressQueue();
+    const codec = createCliqIngressPayloadCodec();
+    const monitor = createChannelIngressMonitor({
+      queue: store.queue,
+      inspect: (raw: CliqIngressRawEvent) => resolveCliqIngressFacts(raw.parsed),
+      payload: codec,
+      deliver: async () => ({
+        kind: "failed-retryable" as const,
+        error: new Error("Pending input is already admitted; wait for its current turn"),
+      }),
+      pollIntervalMs: 20,
+      retention: "standard" as const,
+      drain: { resolveNonRetryableFailure: resolveCliqIngressNonRetryableFailure },
+      admissionMode: "while-running" as const,
+    });
+    monitor.start();
+    try {
+      await monitor.admit(rawEvent(fakeParsed({ messageId: "evt-custody" })));
+      await monitor.waitForIdle();
+      expect(store.statusOf("evt-custody")).toBe("pending");
+      expect(store.rows.get("evt-custody")?.attempts).toBe(1);
+    } finally {
+      await monitor.stop();
+    }
+  });
+});
+
 describe("turn adoption completes the claim (issue #261)", () => {
   it("keeps the claim open until the threaded lifecycle adopts the turn", async () => {
     const store = createTestIngressQueue();
