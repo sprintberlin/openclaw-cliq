@@ -3,12 +3,16 @@ import {
   CliqSendError,
   classifyCliqSendResponse,
   computeBackoffMs,
+  describeTransportError,
   parseRetryAfterMs,
   withSendRetry,
-  type RetryOptions,
+  withTransportRetry,
+  type RetryBackoffOptions,
+  type SendRetryAttemptEvent,
+  type SendRetryOptions,
 } from "./send-retry.js";
 
-const baseOpts: Required<RetryOptions> = {
+const baseOpts: RetryBackoffOptions = {
   maxAttempts: 3,
   baseDelayMs: 500,
   maxDelayMs: 8_000,
@@ -167,7 +171,7 @@ describe("withSendRetry", () => {
 
   it("retries transient (5xx) up to success", async () => {
     const sleeps: number[] = [];
-    const o: Required<RetryOptions> = { ...baseOpts, sleep: async (ms) => { sleeps.push(ms); } };
+    const o: RetryBackoffOptions = { ...baseOpts, sleep: async (ms) => { sleeps.push(ms); } };
     const statuses = [502, 429, 200];
     let i = 0;
     const result = await withSendRetry(
@@ -181,7 +185,7 @@ describe("withSendRetry", () => {
   });
 
   it("throws CliqSendError(transient) after exhausting retries", async () => {
-    const o: Required<RetryOptions> = { ...baseOpts, sleep: async () => {} };
+    const o: RetryBackoffOptions = { ...baseOpts, sleep: async () => {} };
     let i = 0;
     await expect(
       withSendRetry(async () => ({ status: 500, body: `b${i++}` }), o),
@@ -190,7 +194,7 @@ describe("withSendRetry", () => {
   });
 
   it("throws immediately on fatal (no retries)", async () => {
-    const o: Required<RetryOptions> = { ...baseOpts, sleep: async () => { throw new Error("should not sleep"); } };
+    const o: RetryBackoffOptions = { ...baseOpts, sleep: async () => { throw new Error("should not sleep"); } };
     let i = 0;
     await expect(
       withSendRetry(async () => ({ status: 404, body: `b${i++}` }), o),
@@ -208,7 +212,7 @@ describe("withSendRetry", () => {
 
   it("honors Retry-After on 429", async () => {
     const sleeps: number[] = [];
-    const o: Required<RetryOptions> = { ...baseOpts, sleep: async (ms) => { sleeps.push(ms); } };
+    const o: RetryBackoffOptions = { ...baseOpts, sleep: async (ms) => { sleeps.push(ms); } };
     const headers = new Headers({ "retry-after": "2" });
     const statuses = [429, 200];
     let i = 0;
@@ -221,12 +225,774 @@ describe("withSendRetry", () => {
 
   it("does not sleep between the last failure and throwing", async () => {
     const sleeps: number[] = [];
-    const o: Required<RetryOptions> = { ...baseOpts, maxAttempts: 2, sleep: async (ms) => { sleeps.push(ms); } };
+    const o: RetryBackoffOptions = { ...baseOpts, maxAttempts: 2, sleep: async (ms) => { sleeps.push(ms); } };
     await expect(
       withSendRetry(async () => ({ status: 500, body: "" }), o),
     ).rejects.toBeInstanceOf(CliqSendError);
     // Only one sleep between attempt 0 and attempt 1; no sleep after the final failure.
     expect(sleeps).toHaveLength(1);
+  });
+
+  it("does not retry a thrown transport failure unless network retry is opted in", async () => {
+    let i = 0;
+    await expect(
+      withSendRetry(async () => {
+        i++;
+        throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNRESET", syscall: "read" } });
+      }, baseOpts),
+    ).rejects.toThrow("fetch failed");
+    expect(i).toBe(1);
+  });
+});
+
+function fetchFailed(code: string, syscall?: string): Error {
+  return Object.assign(new TypeError("fetch failed"), {
+    cause: { code, ...(syscall ? { syscall } : {}) },
+  });
+}
+
+describe("describeTransportError", () => {
+  it("recognizes a Node TypeError fetch failed with a nested transient cause", () => {
+    expect(describeTransportError(fetchFailed("ECONNRESET", "read"))).toEqual({
+      retryable: true,
+      mayHaveReached: true,
+      errorName: "TypeError",
+      code: "ECONNRESET",
+      syscall: "read",
+    });
+    expect(describeTransportError(fetchFailed("ETIMEDOUT", "connect"))).toMatchObject({
+      retryable: true,
+      mayHaveReached: false,
+      code: "ETIMEDOUT",
+      syscall: "connect",
+    });
+    expect(describeTransportError(fetchFailed("ETIMEDOUT", "read"))).toMatchObject({
+      mayHaveReached: true,
+    });
+  });
+
+  it("walks an undici aggregate cause chain to the transient code", () => {
+    const inner = Object.assign(new Error("socket closed"), { code: "ECONNRESET", syscall: "read" });
+    const aggregate = new AggregateError([inner], "socket failure");
+    const outer = Object.assign(new TypeError("fetch failed"), { cause: aggregate });
+    expect(describeTransportError(outer)).toMatchObject({
+      retryable: true,
+      code: "ECONNRESET",
+      syscall: "read",
+    });
+  });
+
+  it("treats a bare TypeError fetch failed (no cause) as retryable and ambiguous", () => {
+    expect(describeTransportError(new TypeError("fetch failed"))).toEqual({
+      retryable: true,
+      mayHaveReached: true,
+      errorName: "TypeError",
+    });
+  });
+
+  it("does not retry a permanent TLS or config failure", () => {
+    expect(describeTransportError(fetchFailed("UNABLE_TO_VERIFY_LEAF_SIGNATURE"))).toEqual({
+      retryable: false,
+      mayHaveReached: false,
+      errorName: "TypeError",
+      code: "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+    });
+    expect(describeTransportError(fetchFailed("CERT_HAS_EXPIRED"))).toMatchObject({
+      retryable: false,
+      mayHaveReached: false,
+    });
+    expect(describeTransportError(fetchFailed("ENOTFOUND", "getaddrinfo"))).toEqual({
+      retryable: false,
+      mayHaveReached: false,
+      errorName: "TypeError",
+      code: "ENOTFOUND",
+      syscall: "getaddrinfo",
+    });
+    expect(describeTransportError(fetchFailed("ERR_INVALID_URL"))).toMatchObject({
+      retryable: false,
+      mayHaveReached: false,
+    });
+  });
+
+  it("treats provably-unsent transient failures as retryable but not ambiguous", () => {
+    for (const [code, syscall] of [
+      ["ECONNREFUSED", "connect"],
+      ["ENETUNREACH", undefined],
+      ["EHOSTUNREACH", undefined],
+      ["UND_ERR_CONNECT_TIMEOUT", "connect"],
+      ["EAI_AGAIN", "getaddrinfo"],
+      ["ETIMEDOUT", "connect"],
+    ] as const) {
+      expect(describeTransportError(fetchFailed(code, syscall))).toMatchObject({
+        retryable: true,
+        mayHaveReached: false,
+        code,
+      });
+    }
+    expect(describeTransportError(fetchFailed("ETIMEDOUT", "read"))).toMatchObject({
+      retryable: true,
+      mayHaveReached: true,
+    });
+  });
+
+  it("keeps only syntax-validated, allowlisted fields in the info object", () => {
+    const url = "https://accounts.zoho.eu/oauth?token=secret";
+    const info = describeTransportError(
+      fetchFailed(`ECONNRESET url=${url}`, "read; rm -rf"),
+    );
+    expect(info).toEqual({
+      retryable: true,
+      mayHaveReached: true,
+      errorName: "TypeError",
+    });
+    expect(JSON.stringify(info)).not.toContain("zoho");
+    expect(JSON.stringify(info)).not.toContain("secret");
+  });
+
+  it("flags an unrecognized fetch failed cause as non-retryable but diagnosable", () => {
+    expect(describeTransportError(fetchFailed("ERR_SOMETHING_NEW", "connect"))).toEqual({
+      retryable: false,
+      mayHaveReached: true,
+      unrecognizedCause: true,
+      errorName: "TypeError",
+      code: "ERR_SOMETHING_NEW",
+      syscall: "connect",
+    });
+  });
+
+  it("returns null for arbitrary exceptions and aborts", () => {
+    expect(describeTransportError(new Error("boom"))).toBeNull();
+    expect(describeTransportError(Object.assign(new Error("aborted"), { name: "AbortError" }))).toBeNull();
+    expect(describeTransportError("not an error")).toBeNull();
+  });
+});
+
+describe("withSendRetry network transport retry", () => {
+  const networkOpts = (onAttempt: (event: SendRetryAttemptEvent) => void): SendRetryOptions => ({
+    ...baseOpts,
+    network: { operation: "send", onAttempt },
+  });
+
+  it("recovers a transient fetch failure with bounded backoff", async () => {
+    const sleeps: number[] = [];
+    const events: SendRetryAttemptEvent[] = [];
+    let i = 0;
+    const result = await withSendRetry(async () => {
+      if (i++ === 0) throw fetchFailed("ECONNRESET", "read");
+      return { status: 200, body: '{"id":"m1"}' };
+    }, { ...networkOpts((event) => events.push(event)), sleep: async (ms) => { sleeps.push(ms); } });
+    expect(result.status).toBe(200);
+    expect(i).toBe(2);
+    expect(sleeps).toEqual([250]);
+    expect(events).toEqual([
+      {
+        operation: "send",
+        attempt: 1,
+        maxAttempts: 2,
+        outcome: "retry",
+        errorName: "TypeError",
+        causeCode: "ECONNRESET",
+        causeSyscall: "read",
+        delayMs: 250,
+        ambiguousDelivery: true,
+        duplicateRisk: true,
+      },
+    ]);
+  });
+
+  it("stops a non-idempotent send after its second attempt when the first was ambiguous", async () => {
+    const events: SendRetryAttemptEvent[] = [];
+    const sleeps: number[] = [];
+    let i = 0;
+    const caught = await withSendRetry(async () => {
+      i++;
+      throw fetchFailed("ECONNRESET", "read");
+    }, { ...networkOpts((event) => events.push(event)), sleep: async (ms) => { sleeps.push(ms); } }).catch(
+      (err: unknown) => err,
+    );
+    expect(i).toBe(2);
+    expect(sleeps).toHaveLength(1);
+    expect(caught).toBeInstanceOf(TypeError);
+    const err = caught as TypeError & { cause?: { code?: string } };
+    expect(err.message).toBe("fetch failed");
+    expect(err.cause?.code).toBe("ECONNRESET");
+    expect(events.map((event) => event.outcome)).toEqual(["retry", "exhausted"]);
+    expect(events.map((event) => event.attempt)).toEqual([1, 2]);
+    expect(events.every((event) => event.maxAttempts === 2)).toBe(true);
+    expect(events.at(-1)).toMatchObject({ causeCode: "ECONNRESET", duplicateRisk: true });
+  });
+
+  it("retries a provably-unsent send failure up to maxAttempts without duplicate risk", async () => {
+    const events: SendRetryAttemptEvent[] = [];
+    let i = 0;
+    const caught = await withSendRetry(async () => {
+      i++;
+      throw fetchFailed("ETIMEDOUT", "connect");
+    }, networkOpts((event) => events.push(event))).catch((err: unknown) => err);
+    expect(i).toBe(3);
+    expect(caught).toBeInstanceOf(TypeError);
+    expect(events.map((event) => event.outcome)).toEqual(["retry", "retry", "exhausted"]);
+    expect(events.every((event) => !event.ambiguousDelivery && !event.duplicateRisk)).toBe(true);
+    expect(events.at(-1)).toMatchObject({ attempt: 3, maxAttempts: 3, causeCode: "ETIMEDOUT" });
+  });
+
+  it("caps an idempotent edit at its own bound and records no duplicate risk", async () => {
+    const events: SendRetryAttemptEvent[] = [];
+    let i = 0;
+    await expect(
+      withSendRetry(async () => {
+        i++;
+        throw fetchFailed("ECONNRESET", "write");
+      }, {
+        ...baseOpts,
+        maxAttempts: 9,
+        network: { operation: "edit", idempotent: true, maxAttempts: 2, onAttempt: (event) => events.push(event) },
+      }),
+    ).rejects.toThrow("fetch failed");
+    expect(i).toBe(2);
+    expect(events.map((event) => event.outcome)).toEqual(["retry", "exhausted"]);
+    expect(events.every((event) => event.operation === "edit" && event.duplicateRisk === false)).toBe(true);
+    expect(events[0]).toMatchObject({ maxAttempts: 2, ambiguousDelivery: true });
+  });
+
+  it("does not retry a fatal HTTP response even with network retry enabled", async () => {
+    const events: SendRetryAttemptEvent[] = [];
+    let i = 0;
+    await expect(
+      withSendRetry(async () => {
+        i++;
+        return { status: 401, body: "no token" };
+      }, networkOpts((event) => events.push(event))),
+    ).rejects.toMatchObject({ kind: "fatal", status: 401 });
+    expect(i).toBe(1);
+    expect(events).toEqual([
+      {
+        operation: "send",
+        attempt: 1,
+        maxAttempts: 3,
+        outcome: "not_retryable",
+        errorKind: "fatal",
+        causeCode: "HTTP_401",
+        ambiguousDelivery: false,
+        duplicateRisk: false,
+      },
+    ]);
+  });
+
+  it("does not retry a permanent TLS failure or an arbitrary exception", async () => {
+    const events: SendRetryAttemptEvent[] = [];
+    let tls = 0;
+    await expect(
+      withSendRetry(async () => {
+        tls++;
+        throw fetchFailed("CERT_HAS_EXPIRED");
+      }, networkOpts((event) => events.push(event))),
+    ).rejects.toThrow("fetch failed");
+    expect(tls).toBe(1);
+    expect(events).toEqual([
+      {
+        operation: "send",
+        attempt: 1,
+        maxAttempts: 3,
+        outcome: "not_retryable",
+        errorName: "TypeError",
+        causeCode: "CERT_HAS_EXPIRED",
+        ambiguousDelivery: false,
+        duplicateRisk: false,
+      },
+    ]);
+
+    let other = 0;
+    await expect(
+      withSendRetry(async () => {
+        other++;
+        throw new Error("programmer error https://cliq.zoho.eu token=abc");
+      }, networkOpts(() => {})),
+    ).rejects.toThrow("programmer error");
+    expect(other).toBe(1);
+  });
+
+  it("leaves an HTTP-only budget alone when no transport error occurs", async () => {
+    let i = 0;
+    await expect(
+      withSendRetry(async () => {
+        i++;
+        return { status: 503, body: "down" };
+      }, { ...baseOpts, maxAttempts: 4, network: { operation: "send", maxAttempts: 1 } }),
+    ).rejects.toMatchObject({ kind: "transient", status: 503 });
+    expect(i).toBe(4);
+  });
+
+  it("stops a non-idempotent send after an ambiguous transport failure followed by an HTTP 5xx", async () => {
+    const events: SendRetryAttemptEvent[] = [];
+    let i = 0;
+    await expect(
+      withSendRetry(async () => {
+        i++;
+        if (i === 1) throw fetchFailed("ECONNRESET", "read");
+        return { status: 503, body: "down" };
+      }, networkOpts((event) => events.push(event))),
+    ).rejects.toMatchObject({ kind: "transient", status: 503 });
+    expect(i).toBe(2);
+    expect(events.map((event) => event.outcome)).toEqual(["retry", "exhausted"]);
+    expect(events[0]).toMatchObject({ attempt: 1, maxAttempts: 2, causeCode: "ECONNRESET", ambiguousDelivery: true });
+    expect(events[1]).toEqual({
+      operation: "send",
+      attempt: 2,
+      maxAttempts: 2,
+      outcome: "exhausted",
+      errorKind: "transient",
+      causeCode: "HTTP_503",
+      ambiguousDelivery: false,
+      duplicateRisk: false,
+    });
+  });
+
+  it("stops a larger send budget at the second attempt after an ambiguous failure", async () => {
+    let i = 0;
+    await expect(
+      withSendRetry(async () => {
+        i++;
+        if (i === 1) throw fetchFailed("ECONNRESET", "read");
+        return { status: 503, body: "down" };
+      }, { ...baseOpts, maxAttempts: 5, network: { operation: "send" } }),
+    ).rejects.toMatchObject({ kind: "transient", status: 503 });
+    expect(i).toBe(2);
+  });
+
+  it("keeps a larger send budget for HTTP-only and provably-unsent sequences", async () => {
+    let http = 0;
+    await expect(
+      withSendRetry(async () => {
+        http++;
+        return { status: 503, body: "down" };
+      }, { ...baseOpts, maxAttempts: 5, network: { operation: "send" } }),
+    ).rejects.toMatchObject({ kind: "transient", status: 503 });
+    expect(http).toBe(5);
+
+    let unsent = 0;
+    await expect(
+      withSendRetry(async () => {
+        unsent++;
+        throw fetchFailed("ECONNREFUSED", "connect");
+      }, { ...baseOpts, maxAttempts: 5, network: { operation: "send" } }),
+    ).rejects.toThrow("fetch failed");
+    expect(unsent).toBe(5);
+  });
+
+  it("never issues more than two ambiguous transport attempts from a send for any budget", async () => {
+    for (const maxAttempts of [1, 2, 3, 4, 5, 8]) {
+      let ambiguous = 0;
+      let i = 0;
+      await withSendRetry(async () => {
+        i++;
+        ambiguous++;
+        throw fetchFailed("ECONNRESET", "read");
+      }, { ...baseOpts, maxAttempts, network: { operation: "send" } }).catch(() => undefined);
+      expect(i).toBe(maxAttempts <= 2 ? 1 : 2);
+      expect(ambiguous).toBeLessThanOrEqual(2);
+    }
+  });
+
+  it("never exceeds maxAttempts physical attempts for any send interleaving", async () => {
+    const steps = ["amb", "unsent", "http"] as const;
+    for (const maxAttempts of [1, 2, 3, 4, 5]) {
+      for (const a of steps) for (const b of steps) for (const c of steps) for (const d of steps) {
+        const order = [a, b, c, d, "http", "http"] as const;
+        let i = 0;
+        let ambiguous = 0;
+        await withSendRetry(async () => {
+          const step = order[i++]!;
+          if (step === "amb") {
+            ambiguous++;
+            throw fetchFailed("ECONNRESET", "read");
+          }
+          if (step === "unsent") throw fetchFailed("ECONNREFUSED", "connect");
+          return { status: 503, body: "down" };
+        }, { ...baseOpts, maxAttempts, network: { operation: "send" } }).catch(() => undefined);
+        expect(i).toBeLessThanOrEqual(maxAttempts);
+        expect(ambiguous).toBeLessThanOrEqual(2);
+      }
+    }
+  });
+
+  it("reports a physical ceiling when a late ambiguous failure follows provably-unsent failures", async () => {
+    const events: SendRetryAttemptEvent[] = [];
+    let i = 0;
+    const caught = await withSendRetry(async () => {
+      i++;
+      if (i < 3) throw fetchFailed("ECONNREFUSED", "connect");
+      throw fetchFailed("ECONNRESET", "read");
+    }, networkOpts((event) => events.push(event))).catch((err: unknown) => err);
+    expect(i).toBe(3);
+    expect(caught).toBeInstanceOf(TypeError);
+    expect(events.map((event) => event.outcome)).toEqual(["retry", "retry", "exhausted"]);
+    expect(events.map((event) => [event.attempt, event.maxAttempts])).toEqual([[1, 3], [2, 3], [3, 3]]);
+    expect(events.at(-1)).toMatchObject({ causeCode: "ECONNRESET", ambiguousDelivery: true, duplicateRisk: true });
+  });
+
+  it("keeps emitted maxAttempts a valid physical ceiling across mixed send sequences and budgets", async () => {
+    const steps = ["amb", "unsent", "http"] as const;
+    for (const maxAttempts of [1, 2, 3, 4, 5]) {
+      for (const a of steps) for (const b of steps) for (const c of steps) for (const d of steps) {
+        const order = [a, b, c, d, "http", "http"] as const;
+        const events: SendRetryAttemptEvent[] = [];
+        let i = 0;
+        await withSendRetry(async () => {
+          const step = order[i++] ?? "http";
+          if (step === "amb") throw fetchFailed("ECONNRESET", "read");
+          if (step === "unsent") throw fetchFailed("ECONNREFUSED", "connect");
+          return { status: 503, body: "down" };
+        }, { ...baseOpts, maxAttempts, network: { operation: "send", onAttempt: (event) => events.push(event) } }).catch(() => undefined);
+        expect(i).toBeLessThanOrEqual(maxAttempts);
+        expect(events).toHaveLength(i);
+        events.forEach((event, index) => {
+          expect(event.attempt).toBe(index + 1);
+          expect(event.maxAttempts).toBeGreaterThanOrEqual(event.attempt);
+          expect(event.maxAttempts).toBeLessThanOrEqual(maxAttempts);
+        });
+      }
+    }
+  });
+
+  it("retries an HTTP 5xx that follows a provably-unsent transport failure within maxAttempts", async () => {
+    const events: SendRetryAttemptEvent[] = [];
+    let i = 0;
+    const result = await withSendRetry(async () => {
+      i++;
+      if (i === 1) throw fetchFailed("ETIMEDOUT", "connect");
+      if (i === 2) return { status: 503, body: "down" };
+      return { status: 200, body: "{}" };
+    }, { ...baseOpts, network: { operation: "send", onAttempt: (event) => events.push(event) } });
+    expect(result.status).toBe(200);
+    expect(i).toBe(3);
+    expect(events.map((event) => event.causeCode)).toEqual(["ETIMEDOUT", "HTTP_503"]);
+    expect(events.every((event) => event.outcome === "retry" && event.maxAttempts === 3)).toBe(true);
+  });
+
+  it("retries an HTTP 5xx that precedes a transport failure within maxAttempts", async () => {
+    const events: SendRetryAttemptEvent[] = [];
+    let i = 0;
+    const caught = await withSendRetry(async () => {
+      i++;
+      if (i === 1) return { status: 502, body: "bad gateway" };
+      throw fetchFailed("ECONNRESET", "read");
+    }, { ...baseOpts, network: { operation: "send", onAttempt: (event) => events.push(event) } }).catch(
+      (err: unknown) => err,
+    );
+    expect(i).toBe(2);
+    expect(caught).toBeInstanceOf(TypeError);
+    expect((caught as TypeError & { cause?: { code?: string } }).cause?.code).toBe("ECONNRESET");
+    expect(events.map((event) => event.outcome)).toEqual(["retry", "exhausted"]);
+    expect(events[0]).toMatchObject({ attempt: 1, causeCode: "HTTP_502", errorKind: "transient" });
+    expect(events[1]).toMatchObject({ attempt: 2, maxAttempts: 2, causeCode: "ECONNRESET", ambiguousDelivery: true });
+  });
+
+  it("retries an HTTP 5xx that precedes a provably-unsent failure up to maxAttempts", async () => {
+    const events: SendRetryAttemptEvent[] = [];
+    let i = 0;
+    const result = await withSendRetry(async () => {
+      i++;
+      if (i === 1) return { status: 503, body: "down" };
+      if (i === 2) throw fetchFailed("ECONNREFUSED", "connect");
+      return { status: 200, body: "{}" };
+    }, { ...baseOpts, network: { operation: "send", onAttempt: (event) => events.push(event) } });
+    expect(result.status).toBe(200);
+    expect(i).toBe(3);
+    expect(events.map((event) => event.causeCode)).toEqual(["HTTP_503", "ECONNREFUSED"]);
+  });
+
+  it("keeps an HTTP-only sequence at maxAttempts for a non-idempotent send", async () => {
+    const events: SendRetryAttemptEvent[] = [];
+    let i = 0;
+    await expect(
+      withSendRetry(async () => {
+        i++;
+        return { status: 503, body: "down" };
+      }, { ...baseOpts, network: { operation: "send", onAttempt: (event) => events.push(event) } }),
+    ).rejects.toMatchObject({ kind: "transient", status: 503 });
+    expect(i).toBe(3);
+    expect(events.map((event) => event.outcome)).toEqual(["retry", "retry", "exhausted"]);
+    expect(events.map((event) => event.attempt)).toEqual([1, 2, 3]);
+    expect(events.every((event) => event.causeCode === "HTTP_503" && event.errorKind === "transient")).toBe(true);
+  });
+
+  it("recovers across mixed transport and HTTP failures within an edit's cap", async () => {
+    const events: SendRetryAttemptEvent[] = [];
+    const script: Array<() => { status: number; body: string }> = [
+      () => { throw fetchFailed("ECONNRESET", "read"); },
+      () => ({ status: 503, body: "down" }),
+      () => ({ status: 200, body: "{}" }),
+    ];
+    let i = 0;
+    const result = await withSendRetry(async () => script[i++]!(), {
+      ...baseOpts,
+      maxAttempts: 6,
+      network: { operation: "edit", idempotent: true, onAttempt: (event) => events.push(event) },
+    });
+    expect(result.status).toBe(200);
+    expect(i).toBe(3);
+    expect(events).toEqual([
+      expect.objectContaining({ outcome: "retry", attempt: 1, maxAttempts: 3, causeCode: "ECONNRESET" }),
+      expect.objectContaining({ outcome: "retry", attempt: 2, maxAttempts: 3, causeCode: "HTTP_503", errorKind: "transient" }),
+    ]);
+  });
+
+  it("allows an idempotent edit three transport attempts", async () => {
+    const events: SendRetryAttemptEvent[] = [];
+    let i = 0;
+    const caught = await withSendRetry(async () => {
+      i++;
+      throw fetchFailed("ECONNRESET", "read");
+    }, {
+      ...baseOpts,
+      maxAttempts: 9,
+      network: { operation: "edit", idempotent: true, onAttempt: (event) => events.push(event) },
+    }).catch((err: unknown) => err);
+    expect(i).toBe(3);
+    expect(caught).toBeInstanceOf(TypeError);
+    expect(events.map((event) => event.outcome)).toEqual(["retry", "retry", "exhausted"]);
+    expect(events.every((event) => event.maxAttempts === 3 && !event.duplicateRisk)).toBe(true);
+  });
+
+  it("keeps an HTTP-only edit sequence at maxAttempts", async () => {
+    let i = 0;
+    await expect(
+      withSendRetry(async () => {
+        i++;
+        return { status: 503, body: "down" };
+      }, { ...baseOpts, network: { operation: "edit", idempotent: true } }),
+    ).rejects.toMatchObject({ kind: "transient", status: 503 });
+    expect(i).toBe(3);
+  });
+
+  it("never exceeds the edit cap for any transport/HTTP interleaving", async () => {
+    const kinds = ["t", "h"] as const;
+    for (const a of kinds) for (const b of kinds) for (const c of kinds) for (const d of kinds) {
+      const order = [a, b, c, d];
+      let i = 0;
+      await withSendRetry(async () => {
+        const step = order[i++] ?? "h";
+        if (step === "t") throw fetchFailed("ECONNRESET", "read");
+        return { status: 503, body: "down" };
+      }, { ...baseOpts, maxAttempts: 10, network: { operation: "edit", idempotent: true } }).catch(() => undefined);
+      const firstTransport = order.indexOf("t");
+      const expected = firstTransport === -1 ? 10 : Math.min(10, Math.max(firstTransport + 1, 3));
+      expect(i).toBe(expected);
+    }
+  });
+
+  it("reports a physical ceiling when an edit transport failure arrives after HTTP attempts", async () => {
+    const events: SendRetryAttemptEvent[] = [];
+    let i = 0;
+    const caught = await withSendRetry(async () => {
+      i++;
+      if (i < 5) return { status: 503, body: "down" };
+      throw fetchFailed("ECONNRESET", "read");
+    }, {
+      ...baseOpts,
+      maxAttempts: 5,
+      network: { operation: "edit", idempotent: true, onAttempt: (event) => events.push(event) },
+    }).catch((err: unknown) => err);
+    expect(i).toBe(5);
+    expect(caught).toBeInstanceOf(TypeError);
+    expect(events.map((event) => event.outcome)).toEqual(["retry", "retry", "retry", "retry", "exhausted"]);
+    expect(events.at(-1)).toMatchObject({ attempt: 5, maxAttempts: 5, causeCode: "ECONNRESET", duplicateRisk: false });
+    expect(events.every((event) => event.maxAttempts >= event.attempt)).toBe(true);
+  });
+
+  it("keeps emitted maxAttempts a valid physical ceiling for idempotent mixed sequences", async () => {
+    const steps = ["amb", "unsent", "http"] as const;
+    for (const maxAttempts of [3, 5, 9]) {
+      for (const a of steps) for (const b of steps) for (const c of steps) {
+        const order = [a, b, c, "http", "http", "http"] as const;
+        const events: SendRetryAttemptEvent[] = [];
+        let i = 0;
+        await withSendRetry(async () => {
+          const step = order[i++] ?? "http";
+          if (step === "amb") throw fetchFailed("ECONNRESET", "read");
+          if (step === "unsent") throw fetchFailed("ECONNREFUSED", "connect");
+          return { status: 503, body: "down" };
+        }, { ...baseOpts, maxAttempts, network: { operation: "edit", idempotent: true, onAttempt: (event) => events.push(event) } }).catch(() => undefined);
+        expect(i).toBeLessThanOrEqual(maxAttempts);
+        expect(events).toHaveLength(i);
+        events.forEach((event, index) => {
+          expect(event.attempt).toBe(index + 1);
+          expect(event.maxAttempts).toBeGreaterThanOrEqual(event.attempt);
+          expect(event.maxAttempts).toBeLessThanOrEqual(maxAttempts);
+        });
+      }
+    }
+  });
+
+  it("honors opts.maxAttempts=1 for a transport failure and preserves the cause", async () => {
+    const events: SendRetryAttemptEvent[] = [];
+    let i = 0;
+    const caught = await withSendRetry(async () => {
+      i++;
+      throw fetchFailed("ECONNRESET", "read");
+    }, { ...baseOpts, maxAttempts: 1, network: { operation: "send", onAttempt: (event) => events.push(event) } }).catch(
+      (err: unknown) => err,
+    );
+    expect(i).toBe(1);
+    expect(caught).toBeInstanceOf(TypeError);
+    expect((caught as TypeError & { cause?: { code?: string } }).cause?.code).toBe("ECONNRESET");
+    expect(events).toEqual([
+      expect.objectContaining({ outcome: "exhausted", attempt: 1, maxAttempts: 1 }),
+    ]);
+  });
+
+  it("honors opts.maxAttempts=1 for an HTTP 5xx", async () => {
+    let i = 0;
+    await expect(
+      withSendRetry(async () => {
+        i++;
+        return { status: 500, body: "boom" };
+      }, { ...baseOpts, maxAttempts: 1, network: { operation: "edit", idempotent: true } }),
+    ).rejects.toMatchObject({ kind: "transient", status: 500 });
+    expect(i).toBe(1);
+  });
+
+  it("treats a non-finite maxAttempts as the default instead of looping forever", async () => {
+    let i = 0;
+    await expect(
+      withSendRetry(async () => {
+        i++;
+        return { status: 500, body: "boom" };
+      }, { ...baseOpts, maxAttempts: Number.NaN }),
+    ).rejects.toMatchObject({ kind: "transient" });
+    expect(i).toBe(3);
+  });
+
+  it("diagnoses an unrecognized fetch failed cause without retrying it", async () => {
+    const events: SendRetryAttemptEvent[] = [];
+    let i = 0;
+    const caught = await withSendRetry(async () => {
+      i++;
+      throw fetchFailed("ERR_SOMETHING_NEW", "connect");
+    }, networkOpts((event) => events.push(event))).catch((err: unknown) => err);
+    expect(i).toBe(1);
+    expect(caught).toBeInstanceOf(TypeError);
+    expect((caught as TypeError & { cause?: { code?: string } }).cause?.code).toBe("ERR_SOMETHING_NEW");
+    expect(events).toEqual([
+      expect.objectContaining({
+        outcome: "not_retryable",
+        attempt: 1,
+        causeCode: "ERR_SOMETHING_NEW",
+        unrecognizedCause: true,
+        ambiguousDelivery: true,
+      }),
+    ]);
+  });
+
+  it("logs an unknown exception as not-retryable without retrying it", async () => {
+    const events: SendRetryAttemptEvent[] = [];
+    let i = 0;
+    const thrown = new Error("programmer error https://cliq.zoho.eu token=abc");
+    const caught = await withSendRetry(async () => {
+      i++;
+      throw thrown;
+    }, networkOpts((event) => events.push(event))).catch((err: unknown) => err);
+    expect(i).toBe(1);
+    expect(caught).toBe(thrown);
+    expect(events).toEqual([
+      {
+        operation: "send",
+        attempt: 1,
+        maxAttempts: 3,
+        outcome: "not_retryable",
+        errorName: "Error",
+        unrecognizedCause: true,
+        ambiguousDelivery: true,
+        duplicateRisk: true,
+      },
+    ]);
+  });
+});
+
+describe("withTransportRetry", () => {
+  const oauthOpts = (onAttempt: (event: SendRetryAttemptEvent) => void): SendRetryOptions => ({
+    ...baseOpts,
+    network: { operation: "oauth", idempotent: true, onAttempt },
+  });
+
+  it("retries a transient OAuth transport failure and then recovers", async () => {
+    const sleeps: number[] = [];
+    const events: SendRetryAttemptEvent[] = [];
+    let i = 0;
+    const result = await withTransportRetry(async () => {
+      if (i++ === 0) throw fetchFailed("ECONNRESET", "read");
+      return "token-response";
+    }, { ...oauthOpts((event) => events.push(event)), sleep: async (ms) => { sleeps.push(ms); } });
+    expect(result).toBe("token-response");
+    expect(i).toBe(2);
+    expect(sleeps).toEqual([250]);
+    expect(events).toEqual([
+      {
+        operation: "oauth",
+        attempt: 1,
+        maxAttempts: 3,
+        outcome: "retry",
+        errorName: "TypeError",
+        causeCode: "ECONNRESET",
+        causeSyscall: "read",
+        delayMs: 250,
+        ambiguousDelivery: true,
+        duplicateRisk: false,
+      },
+    ]);
+  });
+
+  it("exhausts at the OAuth cap, preserving the original cause", async () => {
+    const events: SendRetryAttemptEvent[] = [];
+    let i = 0;
+    const caught = await withTransportRetry(async () => {
+      i++;
+      throw fetchFailed("ETIMEDOUT", "connect");
+    }, oauthOpts((event) => events.push(event))).catch((err: unknown) => err);
+    expect(i).toBe(3);
+    expect(caught).toBeInstanceOf(TypeError);
+    expect((caught as TypeError & { cause?: { code?: string } }).cause?.code).toBe("ETIMEDOUT");
+    expect(events.map((event) => event.outcome)).toEqual(["retry", "retry", "exhausted"]);
+    expect(events.map((event) => event.maxAttempts)).toEqual([3, 3, 3]);
+    expect(events.map((event) => event.duplicateRisk)).toEqual([false, false, false]);
+  });
+
+  it("honors opts.maxAttempts=1 for an OAuth transport failure", async () => {
+    const events: SendRetryAttemptEvent[] = [];
+    let i = 0;
+    const caught = await withTransportRetry(async () => {
+      i++;
+      throw fetchFailed("ECONNRESET", "read");
+    }, { ...oauthOpts((event) => events.push(event)), maxAttempts: 1 }).catch((err: unknown) => err);
+    expect(i).toBe(1);
+    expect(caught).toBeInstanceOf(TypeError);
+    expect(events).toEqual([expect.objectContaining({ outcome: "exhausted", attempt: 1, maxAttempts: 1 })]);
+  });
+
+  it("does not retry a permanent failure or an unknown exception", async () => {
+    const events: SendRetryAttemptEvent[] = [];
+    let tls = 0;
+    await expect(
+      withTransportRetry(async () => {
+        tls++;
+        throw fetchFailed("CERT_HAS_EXPIRED");
+      }, oauthOpts((event) => events.push(event))),
+    ).rejects.toThrow("fetch failed");
+    expect(tls).toBe(1);
+
+    let other = 0;
+    const thrown = new Error("programmer error https://accounts.zoho.eu token=abc");
+    const caught = await withTransportRetry(async () => {
+      other++;
+      throw thrown;
+    }, oauthOpts((event) => events.push(event))).catch((err: unknown) => err);
+    expect(other).toBe(1);
+    expect(caught).toBe(thrown);
+    expect(events).toEqual([
+      { operation: "oauth", attempt: 1, maxAttempts: 3, outcome: "not_retryable", errorName: "TypeError", causeCode: "CERT_HAS_EXPIRED", ambiguousDelivery: false, duplicateRisk: false },
+      { operation: "oauth", attempt: 1, maxAttempts: 3, outcome: "not_retryable", errorName: "Error", unrecognizedCause: true, ambiguousDelivery: true, duplicateRisk: false },
+    ]);
   });
 });
 

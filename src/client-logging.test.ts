@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { CliqClient } from "./client.js";
-import { setCliqDefaultLogger, truncateForLog } from "./logger.js";
+import { formatCliqErrorForLog, setCliqDefaultLogger, truncateForLog, type CliqLogger } from "./logger.js";
+import { CliqSendError } from "./send-retry.js";
 
 /**
  * Outbound send observability (issue #25). The outbound Cliq API call must be
@@ -97,7 +98,7 @@ describe("CliqClient outbound logging (issue #25)", () => {
     }
   });
 
-  it("logs status + truncated body on a non-2xx send response", async () => {
+  it("logs status without the body on a non-2xx send response", async () => {
     const calls: { level: string; msg: string }[] = [];
     const logger = {
       debug: (m: string) => calls.push({ level: "debug", msg: m }),
@@ -127,13 +128,11 @@ describe("CliqClient outbound logging (issue #25)", () => {
     expect(warnLog!.msg).toContain("status=400");
     expect(warnLog!.msg).toContain("channel");
     expect(warnLog!.msg).toContain("id=chan-1");
-    // Body must be present but truncated (the full 820-byte body must not
-    // appear verbatim — it should carry the truncation marker).
-    expect(warnLog!.msg).not.toContain("x".repeat(800));
-    expect(warnLog!.msg).toContain("…(");
+    expect(warnLog!.msg).not.toContain("invalid markdown format");
+    expect(warnLog!.msg).not.toContain("body=");
   });
 
-  it("logs OAuth token fetch failures with status + body, without the secret", async () => {
+  it("logs OAuth token fetch failures without the body or secret", async () => {
     const calls: { level: string; msg: string }[] = [];
     const logger = {
       debug: (m: string) => calls.push({ level: "debug", msg: m }),
@@ -158,6 +157,7 @@ describe("CliqClient outbound logging (issue #25)", () => {
     const errLog = calls.find((c) => c.level === "error" && c.msg.includes("[cliq] oauth:"));
     expect(errLog).toBeDefined();
     expect(errLog!.msg).toContain("status=401");
+    expect(errLog!.msg).toContain("code=invalid_client");
     // The client_secret must never appear in any log line.
     for (const c of calls) {
       expect(c.msg).not.toContain("CLIENT_SECRET_VALUE_xyz");
@@ -195,6 +195,758 @@ describe("CliqClient outbound logging (issue #25)", () => {
     const okLog = calls.find((c) => c.level === "info" && c.msg.includes("[cliq] edit ok:"));
     expect(okLog).toBeDefined();
     expect(okLog!.msg).toContain("status=200");
+  });
+});
+
+describe("CliqClient transport diagnostics (issue #353)", () => {
+  let restoreFetch: (() => void) | null = null;
+
+  beforeEach(() => {
+    setCliqDefaultLogger(null);
+  });
+
+  afterEach(() => {
+    if (restoreFetch) {
+      restoreFetch();
+      restoreFetch = null;
+    }
+  });
+
+  const retry = {
+    maxAttempts: 3,
+    baseDelayMs: 500,
+    maxDelayMs: 8_000,
+    sleep: async () => {},
+    random: () => 0.5,
+  };
+
+  function captureLogger(): { logger: CliqLogger; calls: { level: string; msg: string }[] } {
+    const calls: { level: string; msg: string }[] = [];
+    const logger: CliqLogger = {};
+    for (const level of ["debug", "info", "warn", "error"] as const) {
+      logger[level] = (msg: string) => calls.push({ level, msg });
+    }
+    return { logger, calls };
+  }
+
+  function mockFetch(send: (url: string, init: RequestInit | undefined, n: number) => Response | Promise<Response>): {
+    calls: number;
+  } {
+    const original = globalThis.fetch;
+    const state = { calls: 0 };
+    globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(JSON.stringify({ access_token: "ACCESS_TOKEN_VALUE_xyz", expires_in: 3600 }), {
+          status: 200,
+        });
+      }
+      state.calls++;
+      return await send(urlStr, init, state.calls);
+    }) as typeof fetch;
+    restoreFetch = () => {
+      globalThis.fetch = original;
+    };
+    return state;
+  }
+
+  function nestedFetchFailed(code: string, syscall: string): TypeError {
+    return Object.assign(new TypeError("fetch failed"), {
+      cause: { code, syscall, message: "connect https://cliq.zoho.eu token=ACCESS_TOKEN_VALUE_xyz" },
+    });
+  }
+
+  function tokenResponse(token = "ACCESS_TOKEN_VALUE_xyz"): Response {
+    return new Response(JSON.stringify({ access_token: token, expires_in: 3600 }), { status: 200 });
+  }
+
+  function mockOAuthFetch(
+    oauth: (n: number) => Response | Promise<Response>,
+  ): { oauth: number; sends: number; grants: string[] } {
+    const original = globalThis.fetch;
+    const state = { oauth: 0, sends: 0, grants: [] as string[] };
+    globalThis.fetch = (async (url: URL | string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        state.oauth++;
+        state.grants.push(urlStr.includes("grant_type=refresh_token") ? "refresh_token" : "client_credentials");
+        return await oauth(state.oauth);
+      }
+      state.sends++;
+      return new Response(JSON.stringify({ id: "msg-1" }), { status: 200 });
+    }) as typeof fetch;
+    restoreFetch = () => {
+      globalThis.fetch = original;
+    };
+    return state;
+  }
+
+  it("recovers a send after a nested ECONNRESET and logs the retry without secrets", async () => {
+    const { logger, calls } = captureLogger();
+    const state = mockFetch((_url, _init, n) => {
+      if (n === 1) throw nestedFetchFailed("ECONNRESET", "read");
+      return new Response(JSON.stringify({ id: "msg-recovered" }), { status: 200 });
+    });
+    const client = new CliqClient("id", "CLIENT_SECRET_VALUE_xyz", "bot", undefined, undefined, retry, logger);
+
+    const result = await client.sendMessage({ to: "user-7", isDm: true, text: "hello world" });
+
+    expect(result.messageId).toBe("msg-recovered");
+    expect(state.calls).toBe(2);
+    const retryLog = calls.find((c) => c.level === "warn" && c.msg.includes("transport retry"));
+    expect(retryLog?.msg).toContain("op=send");
+    expect(retryLog?.msg).toContain("attempt=1/2");
+    expect(retryLog?.msg).toContain("code=ECONNRESET");
+    expect(retryLog?.msg).toContain("syscall=read");
+    expect(retryLog?.msg).toContain("dm id=user-7");
+    expect(retryLog?.msg).toContain("delivery=ambiguous duplicateRisk=yes");
+    const okLog = calls.find((c) => c.level === "info" && c.msg.includes("[cliq] send ok:"));
+    expect(okLog?.msg).toContain("attempt=2");
+    for (const c of calls) {
+      expect(c.msg).not.toContain("ACCESS_TOKEN_VALUE_xyz");
+      expect(c.msg).not.toContain("CLIENT_SECRET_VALUE_xyz");
+      expect(c.msg).not.toContain("hello world");
+      expect(c.msg).not.toContain("cliq.zoho.eu");
+      expect(c.msg).not.toContain("fetch failed");
+    }
+  });
+
+  it("exhausts an edit and preserves the nested cause", async () => {
+    const { logger, calls } = captureLogger();
+    const state = mockFetch(() => {
+      throw nestedFetchFailed("ETIMEDOUT", "connect");
+    });
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, retry, logger, "refresh-token");
+
+    const caught = await client
+      .editMessage({ chatId: "CT_chat1", messageId: "m-1", text: "*updated*" })
+      .catch((err: unknown) => err);
+
+    expect(state.calls).toBe(3);
+    expect(caught).toBeInstanceOf(TypeError);
+    const err = caught as TypeError & { cause?: { code?: string } };
+    expect(err.cause?.code).toBe("ETIMEDOUT");
+    const transport = calls.filter((c) => c.msg.includes("transport"));
+    expect(transport.map((c) => c.level)).toEqual(["warn", "warn", "error"]);
+    expect(transport.at(-1)?.msg).toContain("op=edit");
+    expect(transport.at(-1)?.msg).toContain("attempt=3/3");
+    expect(transport.at(-1)?.msg).toContain("transport exhausted");
+    expect(transport.at(-1)?.msg).toContain("code=ETIMEDOUT");
+    expect(transport.at(-1)?.msg).toContain("syscall=connect");
+    expect(transport.at(-1)?.msg).toContain("chatId=CT_chat1");
+    expect(transport.at(-1)?.msg).toContain("messageId=m-1");
+    expect(transport.at(-1)?.msg).toContain("duplicateRisk=no");
+    expect(transport.at(-1)?.msg).not.toContain("*updated*");
+  });
+
+  it("stops at the send cap after a transport failure is followed by an HTTP 5xx", async () => {
+    const { logger, calls } = captureLogger();
+    const state = mockFetch((_url, _init, n) => {
+      if (n === 1) throw nestedFetchFailed("ECONNRESET", "read");
+      return new Response("down https://cliq.zoho.eu", { status: 503 });
+    });
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, retry, logger);
+
+    await expect(
+      client.sendMessage({ to: "user-7", isDm: true, text: "hello world" }),
+    ).rejects.toMatchObject({ kind: "transient", status: 503 });
+
+    expect(state.calls).toBe(2);
+    const transport = calls.filter((c) => c.msg.includes("transport"));
+    expect(transport).toHaveLength(1);
+    expect(transport[0]?.msg).toContain("attempt=1/2");
+    const non2xx = calls.filter((c) => c.msg.includes("[cliq] send non-2xx:"));
+    expect(non2xx.map((c) => c.msg.match(/attempt=(\d+)/)?.[1])).toEqual(["2"]);
+    for (const c of calls) {
+      expect(c.msg).not.toContain("ACCESS_TOKEN_VALUE_xyz");
+      expect(c.msg).not.toContain("hello world");
+    }
+  });
+
+  it("logs HTTP retries and the final send failure with status but without the response body", async () => {
+    const { logger, calls } = captureLogger();
+    const state = mockFetch(() => new Response("SECRET_BODY_xyz https://cliq.zoho.eu", { status: 503 }));
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, retry, logger);
+
+    await expect(
+      client.sendMessage({ to: "user-7", isDm: true, text: "hello world" }),
+    ).rejects.toMatchObject({ kind: "transient", status: 503 });
+
+    expect(state.calls).toBe(3);
+    const http = calls.filter((c) => c.msg.includes("[cliq] send http"));
+    expect(http.map((c) => c.level)).toEqual(["warn", "warn", "error"]);
+    expect(http.map((c) => c.msg.match(/attempt=\d+\/\d+/)?.[0])).toEqual(["attempt=1/3", "attempt=2/3", "attempt=3/3"]);
+    expect(http.map((c) => c.msg.match(/send http (\w+):/)?.[1])).toEqual(["retry", "retry", "exhausted"]);
+    for (const c of http) {
+      expect(c.msg).toContain("code=HTTP_503");
+      expect(c.msg).toContain("kind=transient");
+      expect(c.msg).toContain("delivery=unknown");
+      expect(c.msg).toContain("dm id=user-7");
+    }
+    const failed = calls.filter((c) => c.msg.includes("[cliq] send failed:"));
+    expect(failed.map((c) => c.msg)).toEqual([
+      "[cliq] send failed: CliqSendError code=HTTP_503 kind=transient status=503 dm id=user-7",
+    ]);
+    expect(failed[0]?.level).toBe("error");
+    for (const c of calls) {
+      expect(c.msg).not.toContain("SECRET_BODY_xyz");
+      expect(c.msg).not.toContain("cliq.zoho.eu");
+      expect(c.msg).not.toContain("hello world");
+      expect(c.msg).not.toContain("ACCESS_TOKEN_VALUE_xyz");
+    }
+  });
+
+  it("logs a fatal edit status without the response body", async () => {
+    const { logger, calls } = captureLogger();
+    const state = mockFetch(() => new Response("SECRET_BODY_xyz bot not found", { status: 404 }));
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, retry, logger, "rt-secret");
+
+    await expect(
+      client.editMessage({ chatId: "CT_chat1", messageId: "m-1", text: "*updated*" }),
+    ).rejects.toMatchObject({ kind: "fatal", status: 404 });
+
+    expect(state.calls).toBe(1);
+    const http = calls.filter((c) => c.msg.includes("[cliq] edit http"));
+    expect(http.map((c) => c.level)).toEqual(["error"]);
+    expect(http[0]?.msg).toContain("edit http not_retryable");
+    expect(http[0]?.msg).toContain("code=HTTP_404");
+    expect(http[0]?.msg).toContain("kind=fatal");
+    const failed = calls.filter((c) => c.msg.includes("[cliq] edit failed:"));
+    expect(failed.map((c) => c.msg)).toEqual([
+      "[cliq] edit failed: CliqSendError code=HTTP_404 kind=fatal status=404 chatId=CT_chat1 messageId=m-1",
+    ]);
+    for (const c of calls) {
+      expect(c.msg).not.toContain("SECRET_BODY_xyz");
+      expect(c.msg).not.toContain("*updated*");
+      expect(c.msg).not.toContain("rt-secret");
+    }
+  });
+
+  it("logs an unrecognized fetch failed cause without retrying it or leaking the message", async () => {
+    const { logger, calls } = captureLogger();
+    const state = mockFetch(() => {
+      throw nestedFetchFailed("ERR_SOMETHING_NEW", "connect");
+    });
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, retry, logger);
+
+    const caught = await client
+      .sendMessage({ to: "user-7", isDm: true, text: "hello world" })
+      .catch((err: unknown) => err);
+
+    expect(state.calls).toBe(1);
+    expect(caught).toBeInstanceOf(TypeError);
+    expect((caught as TypeError & { cause?: { code?: string } }).cause?.code).toBe("ERR_SOMETHING_NEW");
+    const transport = calls.filter((c) => c.msg.includes("transport"));
+    expect(transport.map((c) => c.level)).toEqual(["error"]);
+    expect(transport[0]?.msg).toContain("transport not_retryable");
+    expect(transport[0]?.msg).toContain("attempt=1/3");
+    expect(transport[0]?.msg).toContain("code=ERR_SOMETHING_NEW");
+    expect(transport[0]?.msg).toContain("syscall=connect");
+    expect(transport[0]?.msg).toContain("cause=unrecognized");
+    expect(transport[0]?.msg).toContain("delivery=ambiguous duplicateRisk=yes");
+    for (const c of calls) {
+      expect(c.msg).not.toContain("ACCESS_TOKEN_VALUE_xyz");
+      expect(c.msg).not.toContain("CLIENT_SECRET_VALUE_xyz");
+      expect(c.msg).not.toContain("hello world");
+      expect(c.msg).not.toContain("cliq.zoho.eu");
+      expect(c.msg).not.toContain("fetch failed");
+    }
+  });
+
+  it("logs an unknown send exception as not-retrying without its message", async () => {
+    const { logger, calls } = captureLogger();
+    const state = mockFetch(() => {
+      throw new Error("programmer error token=ACCESS_TOKEN_VALUE_xyz https://cliq.zoho.eu");
+    });
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, retry, logger);
+
+    await expect(
+      client.sendMessage({ to: "user-1", isDm: true, text: "hi" }),
+    ).rejects.toThrow("programmer error");
+
+    expect(state.calls).toBe(1);
+    const transport = calls.filter((c) => c.msg.includes("transport"));
+    expect(transport.map((c) => c.level)).toEqual(["error"]);
+    expect(transport[0]?.msg).toContain("[cliq] send transport not_retryable: op=send");
+    expect(transport[0]?.msg).toContain("attempt=1/3");
+    expect(transport[0]?.msg).toContain("error=Error");
+    expect(transport[0]?.msg).toContain("cause=unrecognized");
+    for (const c of calls) {
+      expect(c.msg).not.toContain("programmer error");
+      expect(c.msg).not.toContain("ACCESS_TOKEN_VALUE_xyz");
+      expect(c.msg).not.toContain("cliq.zoho.eu");
+    }
+  });
+
+  it("omits a target id that is not a safe opaque identifier", async () => {
+    const { logger, calls } = captureLogger();
+    mockFetch(() => {
+      throw nestedFetchFailed("ECONNRESET", "read");
+    });
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, retry, logger);
+
+    await expect(
+      client.sendMessage({ to: "user-7\n[cliq] send ok: forged", isDm: true, text: "hi" }),
+    ).rejects.toThrow("fetch failed");
+
+    const transport = calls.filter((c) => c.msg.includes("transport"));
+    expect(transport).toHaveLength(2);
+    for (const c of transport) {
+      expect(c.msg).not.toContain("forged");
+      expect(c.msg).not.toContain("\n");
+      expect(c.msg).toContain("op=send");
+      expect(c.msg).toContain("attempt=");
+    }
+  });
+
+  it("recovers a client_credentials token fetch from a transient transport failure", async () => {
+    const { logger, calls } = captureLogger();
+    const state = mockOAuthFetch((n) => {
+      if (n === 1) throw nestedFetchFailed("ECONNRESET", "read");
+      return tokenResponse();
+    });
+    const client = new CliqClient("id", "CLIENT_SECRET_VALUE_xyz", "bot", undefined, undefined, retry, logger);
+
+    const token = await client.getAccessToken();
+
+    expect(token).toBe("ACCESS_TOKEN_VALUE_xyz");
+    expect(state.oauth).toBe(2);
+    const transport = calls.filter((c) => c.msg.includes("transport"));
+    expect(transport.map((c) => c.level)).toEqual(["warn"]);
+    expect(transport[0]?.msg).toBe("[cliq] oauth transport retry: op=oauth oauth attempt=1/3 error=TypeError code=ECONNRESET syscall=read delayMs=250");
+    expect(transport[0]?.msg).not.toContain("ZohoCliq.");
+    expect(transport[0]?.msg).not.toContain("accounts.zoho.eu");
+    for (const c of calls) {
+      expect(c.msg).not.toContain("ACCESS_TOKEN_VALUE_xyz");
+      expect(c.msg).not.toContain("CLIENT_SECRET_VALUE_xyz");
+      expect(c.msg).not.toContain("client_secret");
+      expect(c.msg).not.toContain("fetch failed");
+    }
+  });
+
+  it("recovers a refresh-token grant from a transient transport failure", async () => {
+    const { logger, calls } = captureLogger();
+    const state = mockOAuthFetch((n) => {
+      if (n === 1) throw nestedFetchFailed("ECONNRESET", "read");
+      return tokenResponse();
+    });
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, retry, logger, "rt-secret");
+
+    const token = await client.getRefreshedAccessToken();
+
+    expect(token).toBe("ACCESS_TOKEN_VALUE_xyz");
+    expect(state.oauth).toBe(2);
+    expect(state.grants).toEqual(["refresh_token", "refresh_token"]);
+    const transport = calls.filter((c) => c.msg.includes("transport"));
+    expect(transport.map((c) => c.level)).toEqual(["warn"]);
+    expect(transport[0]?.msg).toContain("op=oauth");
+    expect(transport[0]?.msg).toContain("attempt=1/3");
+    for (const c of calls) {
+      expect(c.msg).not.toContain("ACCESS_TOKEN_VALUE_xyz");
+      expect(c.msg).not.toContain("rt-secret");
+    }
+  });
+
+  it("exhausts a client_credentials token fetch at its cap and keeps the cause", async () => {
+    const { logger, calls } = captureLogger();
+    const state = mockOAuthFetch(() => {
+      throw nestedFetchFailed("ETIMEDOUT", "connect");
+    });
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, retry, logger);
+
+    const caught = await client.getAccessToken().catch((err: unknown) => err);
+
+    expect(state.oauth).toBe(3);
+    expect(caught).toBeInstanceOf(TypeError);
+    expect((caught as TypeError & { cause?: { code?: string } }).cause?.code).toBe("ETIMEDOUT");
+    const transport = calls.filter((c) => c.msg.includes("transport"));
+    expect(transport.map((c) => c.level)).toEqual(["warn", "warn", "error"]);
+    expect(transport.map((c) => c.msg.match(/attempt=(\d+)\/(\d+)/)?.[0])).toEqual(["attempt=1/3", "attempt=2/3", "attempt=3/3"]);
+    expect(transport.at(-1)?.msg).toContain("transport exhausted");
+    expect(transport.at(-1)?.msg).toContain("code=ETIMEDOUT");
+    expect(transport.at(-1)?.msg).toContain("syscall=connect");
+  });
+
+  it("does not send or edit when the token fetch exhausts its transport retry", async () => {
+    const { logger, calls } = captureLogger();
+    const state = mockOAuthFetch(() => {
+      throw nestedFetchFailed("ETIMEDOUT", "connect");
+    });
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, retry, logger, "rt-secret");
+
+    await expect(
+      client.sendMessage({ to: "user-7", isDm: true, text: "hello world" }),
+    ).rejects.toThrow("fetch failed");
+    await expect(
+      client.editMessage({ chatId: "CT_chat1", messageId: "m-1", text: "*updated*" }),
+    ).rejects.toThrow("fetch failed");
+
+    expect(state.oauth).toBe(6);
+    expect(state.sends).toBe(0);
+    expect(calls.some((c) => c.msg.includes("[cliq] send:"))).toBe(false);
+    expect(calls.some((c) => c.msg.includes("[cliq] edit:"))).toBe(false);
+    const transport = calls.filter((c) => c.msg.includes("transport"));
+    expect(transport).toHaveLength(6);
+    expect(transport.every((c) => c.msg.includes("op=oauth"))).toBe(true);
+    for (const c of calls) {
+      expect(c.msg).not.toContain("hello world");
+      expect(c.msg).not.toContain("*updated*");
+      expect(c.msg).not.toContain("ACCESS_TOKEN_VALUE_xyz");
+    }
+  });
+
+  it("stops retrying an OAuth fetch when the read authority is revoked", async () => {
+    const { logger, calls } = captureLogger();
+    const state = mockOAuthFetch(() => {
+      throw nestedFetchFailed("ECONNRESET", "read");
+    });
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, retry, logger);
+    let checks = 0;
+    const assertion = () => {
+      checks++;
+      if (checks > 1) throw new Error("host read authority revoked while retrying");
+    };
+
+    await expect(client.getAccessToken("ZohoCliq.Webhooks.CREATE", assertion)).rejects.toThrow(
+      "host read authority revoked while retrying",
+    );
+
+    expect(state.oauth).toBe(1);
+    expect(checks).toBe(2);
+    const transport = calls.filter((c) => c.msg.includes("transport"));
+    expect(transport.map((c) => c.level)).toEqual(["warn"]);
+    expect(transport[0]?.msg).toContain("attempt=1/3");
+  });
+
+  it("re-checks read authority on a cached client_credentials token", async () => {
+    const { logger } = captureLogger();
+    const state = mockOAuthFetch(() => tokenResponse());
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, retry, logger);
+    await client.getAccessToken();
+    expect(state.oauth).toBe(1);
+
+    let passes = 0;
+    await expect(
+      client.getAccessToken("ZohoCliq.Webhooks.CREATE", () => {
+        passes++;
+      }),
+    ).resolves.toBe("ACCESS_TOKEN_VALUE_xyz");
+    expect(passes).toBe(1);
+
+    let revoked = 0;
+    await expect(
+      client.getAccessToken("ZohoCliq.Webhooks.CREATE", () => {
+        revoked++;
+        throw new Error("host read authority revoked");
+      }),
+    ).rejects.toThrow("host read authority revoked");
+    expect(revoked).toBe(1);
+    expect(state.oauth).toBe(1);
+  });
+
+  it("re-checks read authority on a cached refresh-token access token", async () => {
+    const { logger } = captureLogger();
+    const state = mockOAuthFetch(() => tokenResponse());
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, retry, logger, "rt-secret");
+    await client.getRefreshedAccessToken();
+    expect(state.oauth).toBe(1);
+
+    let passes = 0;
+    await expect(
+      client.getRefreshedAccessToken(() => {
+        passes++;
+      }),
+    ).resolves.toBe("ACCESS_TOKEN_VALUE_xyz");
+    expect(passes).toBe(1);
+
+    let revoked = 0;
+    await expect(
+      client.getRefreshedAccessToken(() => {
+        revoked++;
+        throw new Error("host read authority revoked");
+      }),
+    ).rejects.toThrow("host read authority revoked");
+    expect(revoked).toBe(1);
+    expect(state.oauth).toBe(1);
+    expect(state.grants).toEqual(["refresh_token"]);
+  });
+
+  it("omits unsafe edit identifiers without aborting the diagnostic", async () => {
+    const { logger, calls } = captureLogger();
+    const state = mockFetch(() => {
+      throw nestedFetchFailed("ETIMEDOUT", "connect");
+    });
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, retry, logger);
+
+    await expect(
+      client.editMessage({ chatId: "CT_chat1\n[cliq] edit ok: forged", messageId: "m-1\r\nforged", text: "*updated*" }),
+    ).rejects.toThrow("fetch failed");
+
+    expect(state.calls).toBe(3);
+    const transport = calls.filter((c) => c.msg.includes("send transport") === false && c.msg.includes("edit transport"));
+    expect(transport.map((c) => c.level)).toEqual(["warn", "warn", "error"]);
+    for (const c of transport) {
+      expect(c.msg).not.toContain("forged");
+      expect(c.msg).not.toContain("\n");
+      expect(c.msg).toContain("op=edit");
+    }
+    for (const c of calls) expect(c.msg).not.toContain("*updated*");
+  });
+
+  it("does not retry a non-2xx OAuth response or change its error", async () => {
+    const { logger, calls } = captureLogger();
+    const state = mockOAuthFetch(() => new Response("SECRET_BODY_xyz", { status: 401 }));
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, retry, logger);
+
+    const caught = (await client.getAccessToken().catch((err: unknown) => err)) as Error;
+
+    expect(caught.message).toBe("cliq: OAuth token request failed (401)");
+    expect(state.oauth).toBe(1);
+    expect(calls.some((c) => c.msg.includes("transport"))).toBe(false);
+    const failure = calls.find((c) => c.msg.includes("[cliq] oauth: token request failed"));
+    expect(failure?.msg).toBe("[cliq] oauth: token request failed status=401 scope=ZohoCliq.Webhooks.CREATE");
+    expect(failure?.msg).not.toContain("SECRET_BODY_xyz");
+    expect(failure?.msg).not.toContain("body=");
+  });
+
+  it.each([
+    ["invalid_client", "invalid_client"],
+    ["invalid_grant", "invalid_grant"],
+    ["invalid_code", "invalid_code"],
+    ["invalid_scope", "invalid_scope"],
+    ["oauthtoken_scope_invalid", "oauthtoken_scope_invalid"],
+  ])("surfaces the bare allowlisted OAuth code %s in the error and the log", async (code) => {
+    const { logger, calls } = captureLogger();
+    const state = mockOAuthFetch(() => new Response(code, { status: 400 }));
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, retry, logger);
+
+    await expect(client.getAccessToken()).rejects.toThrow(
+      `cliq: OAuth token request failed (400): ${code}`,
+    );
+
+    expect(state.oauth).toBe(1);
+    const failure = calls.find((c) => c.msg.includes("[cliq] oauth: token request failed"));
+    expect(failure?.msg).toContain("status=400");
+    expect(failure?.msg).toContain(`code=${code}`);
+  });
+
+  it.each([
+    ["error", "invalid_client"],
+    ["error", "invalid_grant"],
+    ["code", "invalid_code"],
+    ["code", "invalid_scope"],
+    ["code", "oauthtoken_scope_invalid"],
+  ])("surfaces the JSON %s allowlisted OAuth code %s in the error and the log", async (key, code) => {
+    const { logger, calls } = captureLogger();
+    const state = mockOAuthFetch(
+      () => new Response(JSON.stringify({ [key]: code, message: "SECRET_MESSAGE_xyz" }), { status: 400 }),
+    );
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, retry, logger);
+
+    await expect(client.getAccessToken()).rejects.toThrow(
+      `cliq: OAuth token request failed (400): ${code}`,
+    );
+
+    expect(state.oauth).toBe(1);
+    const failure = calls.find((c) => c.msg.includes("[cliq] oauth: token request failed"));
+    expect(failure?.msg).toContain("status=400");
+    expect(failure?.msg).toContain(`code=${code}`);
+    for (const c of calls) {
+      expect(c.msg).not.toContain("SECRET_MESSAGE_xyz");
+    }
+  });
+
+  it.each([
+    ["invalid_grant", '{"error":"invalid_grant"}'],
+    ["invalid_code", "invalid_code"],
+    ["oauthtoken_scope_invalid", '{"code":"oauthtoken_scope_invalid","message":"SECRET_MESSAGE_xyz"}'],
+  ])("surfaces the allowlisted OAuth code %s on the refresh-token grant", async (code, body) => {
+    const { logger, calls } = captureLogger();
+    const state = mockOAuthFetch(() => new Response(body, { status: 400 }));
+    const client = new CliqClient("id", "CLIENT_SECRET_VALUE_xyz", "bot", undefined, undefined, retry, logger, "RT_SECRET_VALUE_xyz");
+
+    await expect(client.getRefreshedAccessToken()).rejects.toThrow(
+      `cliq: OAuth refresh token request failed (400): ${code}`,
+    );
+
+    expect(state.oauth).toBe(1);
+    expect(state.grants).toEqual(["refresh_token"]);
+    const failure = calls.find((c) => c.msg.includes("[cliq] oauth: refresh token request failed"));
+    expect(failure?.msg).toContain("status=400");
+    expect(failure?.msg).toContain(`code=${code}`);
+    for (const c of calls) {
+      expect(c.msg).not.toContain("SECRET_MESSAGE_xyz");
+      expect(c.msg).not.toContain("CLIENT_SECRET_VALUE_xyz");
+      expect(c.msg).not.toContain("RT_SECRET_VALUE_xyz");
+    }
+  });
+
+  it("keeps the static data-center hint for an allowlisted auth code without echoing the body", async () => {
+    const { logger, calls } = captureLogger();
+    const state = mockOAuthFetch(
+      () => new Response('{"error":"invalid_client","error_description":"CLIENT_SECRET_VALUE_xyz"}', { status: 401 }),
+    );
+    const client = new CliqClient("id", "CLIENT_SECRET_VALUE_xyz", "bot", undefined, undefined, retry, logger);
+
+    const caught = (await client.getAccessToken().catch((err: unknown) => err)) as Error;
+
+    expect(state.oauth).toBe(1);
+    expect(caught.message).toBe(
+      "cliq: OAuth token request failed (401): invalid_client — verify your Zoho data center — set oauthBase + apiBase to match (see README → Data centers)",
+    );
+    const failure = calls.find((c) => c.msg.includes("[cliq] oauth: token request failed"));
+    expect(failure?.msg).toBe("[cliq] oauth: token request failed status=401 scope=ZohoCliq.Webhooks.CREATE code=invalid_client");
+    for (const c of calls) {
+      expect(c.msg).not.toContain("CLIENT_SECRET_VALUE_xyz");
+      expect(c.msg).not.toContain("error_description");
+    }
+  });
+
+  it("does not extract an allowlisted code from a JSON body that only mentions it in free text", async () => {
+    const { logger, calls } = captureLogger();
+    mockOAuthFetch(
+      () => new Response('{"message":"invalid_client SECRET_BODY_xyz","error_description":"invalid_client"}', { status: 401 }),
+    );
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, retry, logger);
+
+    const caught = (await client.getAccessToken().catch((err: unknown) => err)) as Error;
+
+    expect(caught.message.startsWith("cliq: OAuth token request failed (401)")).toBe(true);
+    expect(caught.message).not.toContain("(401):");
+    expect(caught.message).not.toContain("SECRET_BODY_xyz");
+    const failure = calls.find((c) => c.msg.includes("[cliq] oauth: token request failed"));
+    expect(failure?.msg).toBe("[cliq] oauth: token request failed status=401 scope=ZohoCliq.Webhooks.CREATE");
+    for (const c of calls) {
+      expect(c.msg).not.toContain("SECRET_BODY_xyz");
+    }
+  });
+
+  it.each([
+    "SECRET_BODY_xyz invalid_client",
+    "invalid_client SECRET_BODY_xyz",
+    '{"error":"invalid_client SECRET_BODY_xyz"}',
+    '{"error":{"code":"invalid_client"},"detail":"SECRET_BODY_xyz"}',
+    '{"error":["invalid_client"],"detail":"SECRET_BODY_xyz"}',
+    '{"error":123,"detail":"SECRET_BODY_xyz"}',
+    '[{"error":"invalid_client"},"SECRET_BODY_xyz"]',
+    '{"error":"unknown_code","code":"SECRET_BODY_xyz"}',
+    '{"error":"INVALID_CLIENT","detail":"SECRET_BODY_xyz"}',
+    '{"error":" invalid_client","detail":"SECRET_BODY_xyz"}',
+  ])("does not extract an OAuth code from %s", async (body) => {
+    const { logger, calls } = captureLogger();
+    const state = mockOAuthFetch(() => new Response(body, { status: 401 }));
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, retry, logger);
+
+    const caught = (await client.getAccessToken().catch((err: unknown) => err)) as Error;
+
+    expect(state.oauth).toBe(1);
+    expect(caught.message.startsWith("cliq: OAuth token request failed (401)")).toBe(true);
+    expect(caught.message).not.toContain("(401):");
+    expect(caught.message).not.toContain("SECRET_BODY_xyz");
+    const failure = calls.find((c) => c.msg.includes("[cliq] oauth: token request failed"));
+    expect(failure?.msg).toBe("[cliq] oauth: token request failed status=401 scope=ZohoCliq.Webhooks.CREATE");
+    for (const c of calls) {
+      expect(c.msg).not.toContain("SECRET_BODY_xyz");
+    }
+  });
+
+  it("does not extract an OAuth code from a refresh-token failure with free text", async () => {
+    const { logger, calls } = captureLogger();
+    const state = mockOAuthFetch(
+      () => new Response('{"error":"invalid_grant SECRET_BODY_xyz RT_SECRET_VALUE_xyz"}', { status: 400 }),
+    );
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, retry, logger, "RT_SECRET_VALUE_xyz");
+
+    const caught = (await client.getRefreshedAccessToken().catch((err: unknown) => err)) as Error;
+
+    expect(state.oauth).toBe(1);
+    expect(caught.message).toBe("cliq: OAuth refresh token request failed (400)");
+    const failure = calls.find((c) => c.msg.includes("[cliq] oauth: refresh token request failed"));
+    expect(failure?.msg).toBe("[cliq] oauth: refresh token request failed status=400");
+    for (const c of calls) {
+      expect(c.msg).not.toContain("SECRET_BODY_xyz");
+      expect(c.msg).not.toContain("RT_SECRET_VALUE_xyz");
+    }
+  });
+
+  it("does not retry a permanent OAuth TLS failure but logs its safe cause", async () => {
+    const { logger, calls } = captureLogger();
+    const state = mockOAuthFetch(() => {
+      throw nestedFetchFailed("CERT_HAS_EXPIRED", "connect");
+    });
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, retry, logger);
+
+    await expect(client.getAccessToken()).rejects.toThrow("fetch failed");
+
+    expect(state.oauth).toBe(1);
+    const transport = calls.filter((c) => c.msg.includes("transport"));
+    expect(transport.map((c) => c.level)).toEqual(["error"]);
+    expect(transport[0]?.msg).toContain("transport not_retryable");
+    expect(transport[0]?.msg).toContain("code=CERT_HAS_EXPIRED");
+  });
+
+  it("does not retry an unknown OAuth exception and logs it without its message", async () => {
+    const { logger, calls } = captureLogger();
+    const state = mockOAuthFetch(() => {
+      throw new Error("programmer error client_secret=CLIENT_SECRET_VALUE_xyz https://accounts.zoho.eu");
+    });
+    const client = new CliqClient("id", "CLIENT_SECRET_VALUE_xyz", "bot", undefined, undefined, retry, logger);
+
+    await expect(client.getAccessToken()).rejects.toThrow("programmer error");
+
+    expect(state.oauth).toBe(1);
+    const transport = calls.filter((c) => c.msg.includes("transport"));
+    expect(transport.map((c) => c.level)).toEqual(["error"]);
+    expect(transport[0]?.msg).toBe("[cliq] oauth transport not_retryable: op=oauth oauth attempt=1/3 error=Error cause=unrecognized");
+    for (const c of calls) {
+      expect(c.msg).not.toContain("programmer error");
+      expect(c.msg).not.toContain("CLIENT_SECRET_VALUE_xyz");
+      expect(c.msg).not.toContain("accounts.zoho.eu");
+    }
+  });
+
+  it("renders a cause chain for the shared formatter", async () => {
+    const chained = Object.assign(new TypeError("fetch failed"), {
+      cause: {
+        errors: [
+          Object.assign(new Error("socket closed"), { code: "ECONNRESET", syscall: "read" }),
+        ],
+      },
+    });
+    expect(formatCliqErrorForLog(chained)).toBe("TypeError: fetch failed code=ECONNRESET syscall=read");
+
+    const cliq = new CliqSendError("transient", 503, "SECRET_BODY_xyz");
+    expect(formatCliqErrorForLog(cliq)).toBe("CliqSendError code=HTTP_503");
+    expect(JSON.stringify(formatCliqErrorForLog(cliq))).not.toContain("SECRET_BODY_xyz");
+    expect(JSON.stringify(formatCliqErrorForLog(cliq))).not.toContain("https://");
+  });
+
+  it("does not retry a fatal HTTP send or a non-network exception", async () => {
+    const { logger, calls } = captureLogger();
+    const fatal = mockFetch(
+      () => new Response("invalid_client https://accounts.zoho.eu ACCESS_TOKEN_VALUE_xyz", { status: 401 }),
+    );
+    const client = new CliqClient("id", "secret", "bot", undefined, undefined, retry, logger);
+    await expect(client.sendMessage({ to: "user-1", isDm: true, text: "hi" })).rejects.toThrow(/cliq: send failed/);
+    expect(fatal.calls).toBe(1);
+    expect(calls.some((c) => c.msg.includes("transport"))).toBe(false);
+
+    restoreFetch?.();
+    const { logger: logger2, calls: calls2 } = captureLogger();
+    const other = mockFetch(() => {
+      throw new Error("programmer error token=ACCESS_TOKEN_VALUE_xyz");
+    });
+    const client2 = new CliqClient("id", "secret", "bot", undefined, undefined, retry, logger2);
+    await expect(client2.sendMessage({ to: "user-1", isDm: true, text: "hi" })).rejects.toThrow("programmer error");
+    expect(other.calls).toBe(1);
+    const transport = calls2.filter((c) => c.msg.includes("transport"));
+    expect(transport.map((c) => c.level)).toEqual(["error"]);
+    expect(transport[0]?.msg).toContain("send transport not_retryable");
+    expect(transport[0]?.msg).toContain("cause=unrecognized");
+    for (const c of calls2) {
+      expect(c.msg).not.toContain("programmer error");
+      expect(c.msg).not.toContain("ACCESS_TOKEN_VALUE_xyz");
+    }
   });
 });
 

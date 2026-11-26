@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import {
   clearLiveEditProgressDraft,
   createLiveEditDeliver,
@@ -7,7 +7,8 @@ import {
   getLiveEditProgressDraftActive,
   editStatusCardPhase,
 } from "./live-edit.js";
-import type { CliqClient } from "./client.js";
+import { CliqClient } from "./client.js";
+import type { CliqLogger } from "./logger.js";
 
 /** A minimal fake client recording sendMessage/editMessage calls. */
 interface FakeClient {
@@ -1852,5 +1853,905 @@ describe("editStatusCardPhase (issue #78)", () => {
       text: "",
     });
     expect(fake.edits).toHaveLength(0);
+  });
+});
+
+describe("createLiveEditDeliver — fallback logging (issue #353)", () => {
+  const FINAL_TEXT = "private final answer body";
+  const SECRET = "ACCESS_TOKEN_VALUE_xyz";
+
+  function nestedFetchFailed(code: string, syscall: string): TypeError {
+    return Object.assign(new TypeError("fetch failed"), {
+      cause: { code, syscall, message: `connect https://cliq.zoho.eu token=${SECRET}` },
+    });
+  }
+
+  function captureLogger(): { logger: CliqLogger; lines: string[] } {
+    const lines: string[] = [];
+    const logger: CliqLogger = {};
+    for (const level of ["debug", "info", "warn", "error"] as const) {
+      logger[level] = (msg: string) => lines.push(msg);
+    }
+    return { logger, lines };
+  }
+
+  function rejectEdits(fake: ReturnType<typeof makeFakeClient>, err: unknown): void {
+    fake.editMessage = vi.fn(async (o) => {
+      fake.edits.push(o);
+      throw err;
+    });
+  }
+
+  function readFallbackLines(lines: string[]) {
+    return lines
+      .filter((line) => line.includes("fallback"))
+      .map((line) => ({
+        line,
+        state: line.match(/\bstate=(starting|accepted|failed)\b/)?.[1],
+        id: line.match(
+          /\bfallbackId=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i,
+        )?.[1],
+      }));
+  }
+
+  function expectNoLeaks(lines: string[]): void {
+    for (const line of lines) {
+      expect(line).not.toContain(FINAL_TEXT);
+      expect(line).not.toContain(SECRET);
+      expect(line).not.toContain("fetch failed");
+      expect(line).not.toContain("cliq.zoho.eu");
+    }
+  }
+
+  it("logs matching starting and accepted lines for a successful fresh final send without text or secrets", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    rejectEdits(fake, nestedFetchFailed("ECONNRESET", "read"));
+    const { logger, lines } = captureLogger();
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+      logger,
+    });
+
+    await deliver({ text: FINAL_TEXT }, { final: true });
+
+    expect(fake.sends.map((entry) => entry.text)).toEqual([FINAL_TEXT]);
+    const entries = readFallbackLines(lines);
+    const starting = entries.filter((entry) => entry.state === "starting");
+    const accepted = entries.filter((entry) => entry.state === "accepted");
+    expect(entries).toHaveLength(2);
+    expect(starting).toHaveLength(1);
+    expect(accepted).toHaveLength(1);
+    expect(starting[0].id).toBeDefined();
+    expect(accepted[0].id).toBe(starting[0].id);
+    for (const entry of [starting[0], accepted[0]]) {
+      expect(entry.line).toContain("fallback");
+      expect(entry.line).toContain("op=send");
+      expect(entry.line).toContain("target=dm");
+    }
+    expect(starting[0].line).toContain("reason=edit_failed");
+    expect(starting[0].line).toContain("code=ECONNRESET");
+    expect(starting[0].line).toContain("syscall=read");
+    expectNoLeaks(lines);
+  });
+
+  it("throws on a rejected fresh final send and logs a matching failed line that is never accepted", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1", dmSendFails: true });
+    rejectEdits(fake, nestedFetchFailed("ECONNRESET", "read"));
+    const { logger, lines } = captureLogger();
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+      logger,
+    });
+
+    await expect(deliver({ text: FINAL_TEXT }, { final: true })).rejects.toThrow("send rejected");
+
+    const entries = readFallbackLines(lines);
+    const starting = entries.filter((entry) => entry.state === "starting");
+    const failed = entries.filter((entry) => entry.state === "failed");
+    expect(entries).toHaveLength(2);
+    expect(starting).toHaveLength(1);
+    expect(failed).toHaveLength(1);
+    expect(starting[0].id).toBeDefined();
+    expect(failed[0].id).toBe(starting[0].id);
+    expect(failed[0].line).toContain("op=send");
+    expect(failed[0].line).toContain("target=dm");
+    expect(entries.some((entry) => entry.state === "accepted")).toBe(false);
+    expectNoLeaks(lines);
+  });
+
+  it("logs one fallback covering every chunk when the overflow fallback exceeds charLimit", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    rejectEdits(fake, nestedFetchFailed("ECONNRESET", "read"));
+    const baseSend = fake.sendMessage;
+    const { logger, lines } = captureLogger();
+    fake.sendMessage = vi.fn(async (o) => {
+      lines.push("SEND");
+      return baseSend(o);
+    });
+    const text = "x".repeat(60);
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      charLimit: 30,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+      logger,
+    });
+
+    await deliver({ text }, { final: true });
+
+    expect(fake.sends.length).toBeGreaterThan(1);
+    expect(fake.sends.every((entry) => entry.text.length <= 30)).toBe(true);
+    expect(fake.sends.map((entry) => entry.text).join("")).toBe(text);
+    const entries = readFallbackLines(lines);
+    expect(entries.map((entry) => entry.state)).toEqual(["starting", "accepted"]);
+    expect(entries[0].id).toBeDefined();
+    expect(entries[1].id).toBe(entries[0].id);
+    const timeline = lines
+      .filter((line) => line === "SEND" || line.includes("fallback"))
+      .map((line) => (line === "SEND" ? "send" : line.match(/\bstate=(\w+)/)?.[1]));
+    expect(timeline).toEqual([
+      "starting",
+      ...fake.sends.map(() => "send"),
+      "accepted",
+    ]);
+    for (const entry of entries) {
+      expect(entry.line).toContain("op=send");
+      expect(entry.line).toContain("target=dm");
+    }
+    expectNoLeaks(lines);
+  });
+
+  it("logs an edit_failed fallback when the legacy disabled initial draft edit is rejected", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    rejectEdits(fake, nestedFetchFailed("ECONNRESET", "read"));
+    const { logger, lines } = captureLogger();
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: false,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+      logger,
+    });
+
+    await deliver({ text: FINAL_TEXT });
+
+    expect(fake.sends.map((entry) => entry.text)).toEqual([FINAL_TEXT]);
+    const entries = readFallbackLines(lines);
+    expect(entries.map((entry) => entry.state)).toEqual(["starting", "accepted"]);
+    expect(entries[0].id).toBeDefined();
+    expect(entries[1].id).toBe(entries[0].id);
+    expect(entries[0].line).toContain("op=send");
+    expect(entries[0].line).toContain("target=dm");
+    expect(entries[0].line).toContain("reason=edit_failed");
+    expect(entries[0].line).toContain("code=ECONNRESET");
+    expect(entries[0].line).toContain("syscall=read");
+    expectNoLeaks(lines);
+  });
+
+  it("logs a draft_uneditable fallback when the legacy disabled initial draft cannot be edited", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    const { logger, lines } = captureLogger();
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: false,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+      initialDraftEditable: false,
+      logger,
+    });
+
+    await deliver({ text: FINAL_TEXT });
+
+    expect(fake.edits).toHaveLength(0);
+    expect(fake.sends.map((entry) => entry.text)).toEqual([FINAL_TEXT]);
+    const entries = readFallbackLines(lines);
+    expect(entries.map((entry) => entry.state)).toEqual(["starting", "accepted"]);
+    expect(entries[0].id).toBeDefined();
+    expect(entries[1].id).toBe(entries[0].id);
+    expect(entries[0].line).toContain("op=send");
+    expect(entries[0].line).toContain("target=dm");
+    expect(entries[0].line).toContain("reason=draft_uneditable");
+    expectNoLeaks(lines);
+  });
+
+  it("logs a chat_id_unavailable fallback when the group chat id cannot be resolved", async () => {
+    const fake = makeFakeClient({ channelChatId: undefined });
+    const { logger, lines } = captureLogger();
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "dev-team",
+      isDm: false,
+      enabled: true,
+      initialDraft: { messageId: "ph-1" },
+      logger,
+    });
+
+    await deliver({ text: FINAL_TEXT }, { final: true });
+
+    expect(fake.edits).toHaveLength(0);
+    expect(fake.sends.map((entry) => entry.text)).toEqual([FINAL_TEXT]);
+    const entries = readFallbackLines(lines);
+    expect(entries.map((entry) => entry.state)).toEqual(["starting", "accepted"]);
+    expect(entries[0].id).toBeDefined();
+    expect(entries[1].id).toBe(entries[0].id);
+    for (const entry of entries) {
+      expect(entry.line).toContain("op=send");
+      expect(entry.line).toContain("target=channel");
+    }
+    expect(entries[0].line).toContain("reason=chat_id_unavailable");
+    expectNoLeaks(lines);
+  });
+
+  it("marks the placeholder consumed when a failed fallback throws", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1", dmSendFails: true });
+    rejectEdits(fake, nestedFetchFailed("ECONNRESET", "read"));
+    const { logger, lines } = captureLogger();
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+      logger,
+    });
+
+    await expect(deliver({ text: FINAL_TEXT }, { final: true })).rejects.toThrow("send rejected");
+
+    expect(fake.deletes).toHaveLength(1);
+    expect(getLiveEditPlaceholderConsumed(deliver)).toBe(true);
+    const entries = readFallbackLines(lines);
+    expect(entries.map((entry) => entry.state)).toEqual(["starting", "failed"]);
+    expectNoLeaks(lines);
+  });
+
+  it("does not log a stale recovered edit error for a later group fallback", async () => {
+    const fake = makeFakeClient({
+      channelChatId: "CT_dev_team",
+      recentMessages: [{ messageId: "m1", chatId: "CT_real_chat" }],
+    });
+    let editCalls = 0;
+    fake.editMessage = vi.fn(async (o) => {
+      editCalls++;
+      fake.edits.push(o);
+      if (editCalls === 1) throw nestedFetchFailed("ECONNRESET", "read");
+      if (editCalls === 3) throw nestedFetchFailed("ETIMEDOUT", "connect");
+      return { messageId: o.messageId, chatId: o.chatId };
+    });
+    const { logger, lines } = captureLogger();
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "dev-team",
+      isDm: false,
+      enabled: true,
+      logger,
+    });
+
+    await deliver({ text: "first" });
+    await deliver({ text: "second" });
+    expect(editCalls).toBe(2);
+    expect(readFallbackLines(lines)).toHaveLength(0);
+
+    await deliver({ text: "third" }, { final: true });
+
+    expect(editCalls).toBe(3);
+    const entries = readFallbackLines(lines);
+    expect(entries.map((entry) => entry.state)).toEqual(["starting", "accepted"]);
+    expect(entries[0].id).toBeDefined();
+    expect(entries[1].id).toBe(entries[0].id);
+    expect(entries[0].line).toContain("op=send");
+    expect(entries[0].line).toContain("target=channel");
+    expect(entries[0].line).toContain("reason=edit_failed");
+    expect(entries[0].line).toContain("code=ETIMEDOUT");
+    expect(entries[0].line).toContain("syscall=connect");
+    for (const line of lines) {
+      expect(line).not.toContain("code=ECONNRESET");
+      expect(line).not.toContain("syscall=read");
+    }
+    expectNoLeaks(lines);
+  });
+
+  it("retains the failed edit cause across a concurrent empty deliver while group recovery awaits", async () => {
+    const fake = makeFakeClient({ channelChatId: "CT_dev_team" });
+    rejectEdits(fake, nestedFetchFailed("ECONNRESET", "read"));
+    let releaseList: (() => void) | undefined;
+    const listGate = new Promise<void>((resolve) => {
+      releaseList = resolve;
+    });
+    fake.listChatMessages = vi.fn(async (chatId: string, callOpts?: { limit?: number }) => {
+      fake.messageListCalls.push({ chatId, limit: callOpts?.limit });
+      await listGate;
+      return [];
+    });
+    const { logger, lines } = captureLogger();
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "dev-team",
+      isDm: false,
+      enabled: true,
+      initialDraft: { messageId: "ph-1" },
+      logger,
+    });
+
+    const first = deliver({ text: FINAL_TEXT }, { final: true });
+    await vi.waitFor(() => expect(fake.messageListCalls).toHaveLength(1));
+    await deliver({});
+    await deliver({ text: "" });
+    releaseList?.();
+    await first;
+
+    expect(fake.sends.map((entry) => entry.text)).toEqual([FINAL_TEXT]);
+    const entries = readFallbackLines(lines);
+    expect(entries.map((entry) => entry.state)).toEqual(["starting", "accepted"]);
+    expect(entries[0].line).toContain("target=channel");
+    expect(entries[0].line).toContain("reason=edit_failed");
+    expect(entries[0].line).toContain("code=ECONNRESET");
+    expect(entries[0].line).toContain("syscall=read");
+    expectNoLeaks(lines);
+  });
+
+  it("gives every caller coalesced onto one failed edit the same reason and cause", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    let releaseEdit: (() => void) | undefined;
+    const editGate = new Promise<void>((resolve) => {
+      releaseEdit = resolve;
+    });
+    fake.editMessage = vi.fn(async (o) => {
+      fake.edits.push(o);
+      await editGate;
+      throw nestedFetchFailed("ECONNRESET", "read");
+    });
+    const { logger, lines } = captureLogger();
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      minEditIntervalMs: 0,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+      logger,
+    });
+
+    const first = deliver({ text: "first" });
+    await vi.waitFor(() => expect(fake.edits).toHaveLength(1));
+    const second = deliver({ text: "second" }, { final: true });
+    releaseEdit?.();
+    await Promise.all([first, second]);
+
+    expect(fake.edits).toHaveLength(1);
+    expect(getLiveEditDeliverStats(deliver)?.coalesced).toBe(1);
+    const starting = readFallbackLines(lines).filter((entry) => entry.state === "starting");
+    expect(starting).toHaveLength(2);
+    for (const entry of starting) {
+      expect(entry.line).toContain("reason=edit_failed");
+      expect(entry.line).toContain("code=ECONNRESET");
+      expect(entry.line).toContain("syscall=read");
+    }
+    expectNoLeaks(lines);
+  });
+
+  it("keeps the cause of one failed edit out of an overlapping deliver that has no cause", async () => {
+    const fake = makeFakeClient({ dmChatId: "chat-u1" });
+    let releaseEdit: (() => void) | undefined;
+    const editGate = new Promise<void>((resolve) => {
+      releaseEdit = resolve;
+    });
+    fake.editMessage = vi.fn(async (o) => {
+      fake.edits.push(o);
+      await editGate;
+      throw nestedFetchFailed("ECONNRESET", "read");
+    });
+    const { logger, lines } = captureLogger();
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "u1",
+      isDm: true,
+      enabled: true,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+      logger,
+    });
+
+    const first = deliver({ text: FINAL_TEXT }, { final: true });
+    await vi.waitFor(() => expect(fake.edits).toHaveLength(1));
+    await deliver({});
+    releaseEdit?.();
+    await first;
+
+    const starting = readFallbackLines(lines).filter((entry) => entry.state === "starting");
+    expect(starting).toHaveLength(1);
+    expect(starting[0].line).toContain("reason=edit_failed");
+    expect(starting[0].line).toContain("code=ECONNRESET");
+    expectNoLeaks(lines);
+  });
+
+  it("does not attach an earlier failed edit cause to a later chat_id_unavailable fallback", async () => {
+    const fake = makeFakeClient({ channelChatId: "CT_dev_team" });
+    rejectEdits(fake, nestedFetchFailed("ECONNRESET", "read"));
+    let resolves = 0;
+    fake.resolveChannelChatId = vi.fn(async (name: string) => {
+      resolves++;
+      const chatId = resolves === 1 ? "CT_dev_team" : undefined;
+      fake.chatIdResolves.push({ name, chatId });
+      return chatId;
+    });
+    const { logger, lines } = captureLogger();
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "dev-team",
+      isDm: false,
+      enabled: true,
+      initialDraft: { messageId: "ph-1" },
+      logger,
+    });
+
+    await deliver({ text: FINAL_TEXT }, { final: true });
+    await deliver({ text: "later block" });
+
+    const starting = readFallbackLines(lines).filter((entry) => entry.state === "starting");
+    expect(starting).toHaveLength(2);
+    expect(starting[0].line).toContain("reason=edit_failed");
+    expect(starting[0].line).toContain("code=ECONNRESET");
+    expect(starting[1].line).toContain("reason=chat_id_unavailable");
+    expect(starting[1].line).not.toContain("code=");
+    expect(starting[1].line).not.toContain("syscall=");
+    expectNoLeaks(lines);
+  });
+
+  it("reports the group edit failure reason and cause when the overflow first block cannot be edited", async () => {
+    const fake = makeFakeClient({ channelChatId: "CT_dev_team" });
+    rejectEdits(fake, nestedFetchFailed("ETIMEDOUT", "connect"));
+    const { logger, lines } = captureLogger();
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "dev-team",
+      isDm: false,
+      enabled: true,
+      charLimit: 30,
+      initialDraft: { messageId: "ph-1" },
+      logger,
+    });
+
+    await deliver({ text: "x".repeat(60) }, { final: true });
+
+    const entries = readFallbackLines(lines);
+    expect(entries.map((entry) => entry.state)).toEqual(["starting", "accepted"]);
+    expect(entries[0].line).toContain("reason=edit_failed");
+    expect(entries[0].line).toContain("code=ETIMEDOUT");
+    expect(entries[0].line).toContain("syscall=connect");
+    expectNoLeaks(lines);
+  });
+
+  it("legacy disabled mode keeps the edit cause when another deliver starts while group recovery awaits", async () => {
+    const fake = makeFakeClient({ channelChatId: "CT_dev_team" });
+    rejectEdits(fake, nestedFetchFailed("ECONNRESET", "read"));
+    let releaseList: (() => void) | undefined;
+    const listGate = new Promise<void>((resolve) => {
+      releaseList = resolve;
+    });
+    fake.listChatMessages = vi.fn(async (chatId: string, callOpts?: { limit?: number }) => {
+      fake.messageListCalls.push({ chatId, limit: callOpts?.limit });
+      await listGate;
+      return [];
+    });
+    const { logger, lines } = captureLogger();
+    const deliver = createLiveEditDeliver({
+      client: fake,
+      to: "dev-team",
+      isDm: false,
+      enabled: false,
+      initialDraft: { messageId: "ph-1" },
+      logger,
+    });
+
+    const first = deliver({ text: FINAL_TEXT });
+    await vi.waitFor(() => expect(fake.messageListCalls).toHaveLength(1));
+    await deliver({});
+    releaseList?.();
+    await first;
+
+    const entries = readFallbackLines(lines);
+    expect(entries.map((entry) => entry.state)).toEqual(["starting", "accepted"]);
+    expect(entries[0].line).toContain("reason=edit_failed");
+    expect(entries[0].line).toContain("code=ECONNRESET");
+    expectNoLeaks(lines);
+  });
+
+  describe("streaming disabled with an uneditable initial placeholder", () => {
+    const modelsCard = {
+      cliqCard: {
+        buttons: [
+          { label: "anthropic (3)", type: "+", action: "invoke", data: "/models anthropic" },
+        ],
+        theme: "prompt",
+      },
+    };
+
+    it("sends text then a card without deleting the previously sent reply", async () => {
+      const fake = makeFakeClient({ dmChatId: "chat-u1" });
+      const deliver = createLiveEditDeliver({
+        client: fake,
+        to: "u1",
+        isDm: true,
+        enabled: false,
+        initialDraft: { messageId: "ph-1", chatId: "chat-u1", text: "Generating…" },
+        initialDraftEditable: false,
+      });
+
+      await deliver({ text: "the reply" });
+      await deliver({ channelData: modelsCard });
+
+      expect(fake.sends.map((entry) => entry.text)).toEqual(["the reply"]);
+      expect(fake.cardSends).toHaveLength(1);
+      expect(fake.edits).toHaveLength(0);
+      expect(fake.deletes).toEqual([{ chatId: "chat-u1", messageId: "ph-1" }]);
+      expect(fake.deletes.some((entry) => entry.messageId === "m1")).toBe(false);
+      expect(getLiveEditPlaceholderConsumed(deliver)).toBe(true);
+    });
+
+    it("sends every chunk of a long reply directly and leaves none of them deletable by a later card", async () => {
+      const fake = makeFakeClient({ dmChatId: "chat-u1" });
+      const deliver = createLiveEditDeliver({
+        client: fake,
+        to: "u1",
+        isDm: true,
+        enabled: false,
+        charLimit: 30,
+        initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+        initialDraftEditable: false,
+      });
+
+      await deliver({ text: "y".repeat(70) });
+      await deliver({ channelData: modelsCard });
+
+      expect(fake.sends.length).toBeGreaterThan(1);
+      expect(fake.sends.map((entry) => entry.text).join("")).toBe("y".repeat(70));
+      expect(fake.deletes).toEqual([{ chatId: "chat-u1", messageId: "ph-1" }]);
+      expect(fake.edits).toHaveLength(0);
+      expect(fake.cardSends).toHaveLength(1);
+    });
+
+    it("still sends the text and never deletes it when group channel resolution throws", async () => {
+      const fake = makeFakeClient({ channelChatId: "CT_dev_team" });
+      fake.resolveChannelChatId = vi.fn(async () => {
+        throw new Error("channel lookup failed");
+      });
+      const deliver = createLiveEditDeliver({
+        client: fake,
+        to: "dev-team",
+        isDm: false,
+        enabled: false,
+        initialDraft: { messageId: "ph-1" },
+        initialDraftEditable: false,
+      });
+
+      await expect(deliver({ text: "the reply" })).resolves.toBeUndefined();
+      await expect(deliver({ channelData: modelsCard })).resolves.toBeUndefined();
+
+      expect(fake.sends.map((entry) => entry.text)).toEqual(["the reply"]);
+      expect(fake.cardSends).toHaveLength(1);
+      expect(fake.edits).toHaveLength(0);
+      expect(fake.deletes).toHaveLength(0);
+      expect(getLiveEditPlaceholderConsumed(deliver)).toBe(true);
+    });
+  });
+});
+
+type RecordedRequest = {
+  kind: "oauth" | "edit" | "delete" | "send";
+  method: string;
+  url: string;
+  body?: string;
+  authorization?: string;
+  grant?: string;
+};
+
+describe.each([
+  { mode: "streaming enabled", enabled: true },
+  { mode: "streaming disabled with initialDraft", enabled: false },
+])("createLiveEditDeliver — real client transport recovery, $mode (issue #353)", ({ enabled }) => {
+  const FINAL_TEXT = "private final answer body";
+  const CLIENT_SECRET = "CLIENT_SECRET_VALUE_xyz";
+  const REFRESH_TOKEN = "REFRESH_TOKEN_VALUE_xyz";
+  const CC_ACCESS = "CC_ACCESS_TOKEN_VALUE_xyz";
+  const REFRESH_ACCESS = "REFRESH_ACCESS_TOKEN_VALUE_xyz";
+  const RESPONSE_CONTENT = "ZOHO_RESPONSE_CONTENT_xyz";
+  const UUID = /\bfallbackId=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i;
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function nestedFetchFailed(code: string, syscall: string): TypeError {
+    return Object.assign(new TypeError("fetch failed"), {
+      cause: { code, syscall, message: `connect https://cliq.zoho.eu token=${CC_ACCESS}` },
+    });
+  }
+
+  function editOk(): Response {
+    return new Response(JSON.stringify({ text: RESPONSE_CONTENT }), { status: 200 });
+  }
+
+  function sendOk(): Response {
+    return new Response(
+      JSON.stringify({
+        text: RESPONSE_CONTENT,
+        message_details: { u1: { chat_id: "chat-u1", message_id: "m-fresh" } },
+      }),
+      { status: 200 },
+    );
+  }
+
+  function createHarness(handlers: {
+    edit: (call: number) => Response;
+    send: (call: number) => Response;
+  }) {
+    const requests: RecordedRequest[] = [];
+    const lines: string[] = [];
+    const logger: CliqLogger = {};
+    for (const level of ["debug", "info", "warn", "error"] as const) {
+      logger[level] = (msg: string) => lines.push(msg);
+    }
+    const counts = { edit: 0, send: 0 };
+    const sleep = vi.fn(async (_ms: number) => {});
+    const retryOptions = {
+      maxAttempts: 3,
+      baseDelayMs: 1,
+      maxDelayMs: 1,
+      sleep,
+      random: () => 0,
+    };
+    const client = new CliqClient(
+      "id",
+      CLIENT_SECRET,
+      "bot",
+      undefined,
+      undefined,
+      retryOptions,
+      logger,
+      REFRESH_TOKEN,
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        const record: RecordedRequest = {
+          kind: "send",
+          method,
+          url,
+          body: typeof init?.body === "string" ? init.body : undefined,
+          authorization: (init?.headers as Record<string, string> | undefined)?.Authorization,
+        };
+        if (url.includes("/oauth/v2/token")) {
+          const grant = new URL(url).searchParams.get("grant_type") ?? "";
+          requests.push({ ...record, kind: "oauth", grant });
+          return new Response(
+            JSON.stringify({
+              access_token: grant === "refresh_token" ? REFRESH_ACCESS : CC_ACCESS,
+              expires_in: 3600,
+            }),
+            { status: 200 },
+          );
+        }
+        if (method === "PUT") {
+          requests.push({ ...record, kind: "edit" });
+          return handlers.edit(++counts.edit);
+        }
+        if (method === "DELETE") {
+          requests.push({ ...record, kind: "delete" });
+          return new Response(null, { status: 204 });
+        }
+        requests.push(record);
+        return handlers.send(++counts.send);
+      }),
+    );
+    const deliver = createLiveEditDeliver({
+      client,
+      to: "u1",
+      isDm: true,
+      enabled,
+      initialDraft: { messageId: "ph-1", chatId: "chat-u1" },
+      sleep,
+      logger,
+    });
+    const of = (kind: RecordedRequest["kind"]) => requests.filter((entry) => entry.kind === kind);
+    return { deliver, lines, of };
+  }
+
+  function readFallbackLines(lines: string[]) {
+    return lines
+      .filter((line) => line.includes("fallback"))
+      .map((line) => ({
+        line,
+        state: line.match(/\bstate=(starting|accepted|failed)\b/)?.[1],
+        id: line.match(UUID)?.[1],
+      }));
+  }
+
+  function expectNoLeaks(lines: string[]): void {
+    for (const line of lines) {
+      for (const secret of [
+        FINAL_TEXT,
+        CLIENT_SECRET,
+        REFRESH_TOKEN,
+        CC_ACCESS,
+        REFRESH_ACCESS,
+        RESPONSE_CONTENT,
+        "fetch failed",
+        "cliq.zoho.eu",
+      ]) {
+        expect(line).not.toContain(secret);
+      }
+    }
+  }
+
+  it("retries a reset edit three times, then recovers with one fresh send under one fallbackId", async () => {
+    const { deliver, lines, of } = createHarness({
+      edit: () => {
+        throw nestedFetchFailed("ECONNRESET", "read");
+      },
+      send: sendOk,
+    });
+
+    await deliver({ text: FINAL_TEXT }, { final: true });
+
+    const edits = of("edit");
+    expect(edits).toHaveLength(3);
+    for (const edit of edits) {
+      expect(edit.method).toBe("PUT");
+      expect(edit.url).toContain("/api/v2/chats/chat-u1/messages/ph-1");
+      expect(edit.authorization).toBe(`Zoho-oauthtoken ${REFRESH_ACCESS}`);
+      expect(JSON.parse(edit.body ?? "{}")).toEqual({ text: FINAL_TEXT });
+    }
+    const sends = of("send");
+    expect(sends).toHaveLength(1);
+    expect(sends[0].authorization).toBe(`Zoho-oauthtoken ${CC_ACCESS}`);
+    expect(JSON.parse(sends[0].body ?? "{}")).toMatchObject({ text: FINAL_TEXT, userids: "u1" });
+    expect(of("delete")).toHaveLength(1);
+    expect(of("oauth").map((entry) => entry.grant)).toEqual(["refresh_token", "client_credentials"]);
+
+    const retries = lines.filter((line) => line.includes("[cliq] edit transport retry"));
+    expect(retries).toHaveLength(2);
+    retries.forEach((line, index) => {
+      expect(line).toContain("op=edit");
+      expect(line).toContain("chatId=chat-u1");
+      expect(line).toContain("messageId=ph-1");
+      expect(line).toContain(`attempt=${index + 1}/3`);
+      expect(line).toContain("code=ECONNRESET");
+      expect(line).toContain("syscall=read");
+      expect(line).toContain("duplicateRisk=no");
+    });
+    const exhausted = lines.filter((line) => line.includes("[cliq] edit transport exhausted"));
+    expect(exhausted).toHaveLength(1);
+    expect(exhausted[0]).toContain("attempt=3/3");
+    expect(exhausted[0]).toContain("code=ECONNRESET");
+
+    const entries = readFallbackLines(lines);
+    expect(entries.map((entry) => entry.state)).toEqual(["starting", "accepted"]);
+    expect(entries[0].id).toBeDefined();
+    expect(entries[1].id).toBe(entries[0].id);
+    for (const entry of entries) {
+      expect(entry.line).toContain("op=send");
+      expect(entry.line).toContain("target=dm");
+    }
+    expect(entries[0].line).toContain("reason=edit_failed");
+    expect(entries[0].line).toContain("code=ECONNRESET");
+    expect(entries[0].line).toContain("syscall=read");
+
+    const indexOf = (needle: string) => lines.findIndex((line) => line.includes(needle));
+    expect(indexOf("[cliq] edit transport exhausted")).toBeLessThan(indexOf("state=starting"));
+    expect(indexOf("state=starting")).toBeLessThan(indexOf("[cliq] send ok"));
+    expect(indexOf("[cliq] send ok")).toBeLessThan(indexOf("state=accepted"));
+
+    const stats = getLiveEditDeliverStats(deliver);
+    expect(stats?.editFailures).toBe(1);
+    expect(stats?.sends).toBe(1);
+    expectNoLeaks(lines);
+  });
+
+  it("fails the fallback under one fallbackId when the fresh send times out twice, keeping the original cause", async () => {
+    const sendErrors: TypeError[] = [];
+    const { deliver, lines, of } = createHarness({
+      edit: () => {
+        throw nestedFetchFailed("ECONNRESET", "read");
+      },
+      send: () => {
+        const err = nestedFetchFailed("ETIMEDOUT", "read");
+        sendErrors.push(err);
+        throw err;
+      },
+    });
+
+    const outcome = await deliver({ text: FINAL_TEXT }, { final: true }).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+
+    expect(of("edit")).toHaveLength(3);
+    expect(of("send")).toHaveLength(2);
+    expect(sendErrors).toHaveLength(2);
+    expect(outcome).toBe(sendErrors[1]);
+    expect((outcome as TypeError).cause).toMatchObject({ code: "ETIMEDOUT", syscall: "read" });
+
+    const sendRetries = lines.filter((line) => line.includes("[cliq] send transport retry"));
+    expect(sendRetries).toHaveLength(1);
+    expect(sendRetries[0]).toContain("op=send");
+    expect(sendRetries[0]).toContain("dm id=u1");
+    expect(sendRetries[0]).toContain("attempt=1/2");
+    expect(sendRetries[0]).toContain("code=ETIMEDOUT");
+    expect(sendRetries[0]).toContain("syscall=read");
+    expect(sendRetries[0]).toContain("delivery=ambiguous");
+    expect(sendRetries[0]).toContain("duplicateRisk=yes");
+    const sendExhausted = lines.filter((line) => line.includes("[cliq] send transport exhausted"));
+    expect(sendExhausted).toHaveLength(1);
+    expect(sendExhausted[0]).toContain("op=send");
+    expect(sendExhausted[0]).toContain("attempt=2/2");
+    expect(sendExhausted[0]).toContain("code=ETIMEDOUT");
+
+    const entries = readFallbackLines(lines);
+    expect(entries.map((entry) => entry.state)).toEqual(["starting", "failed"]);
+    expect(entries[0].id).toBeDefined();
+    expect(entries[1].id).toBe(entries[0].id);
+    expect(entries.some((entry) => entry.state === "accepted")).toBe(false);
+    for (const entry of entries) {
+      expect(entry.line).toContain("op=send");
+      expect(entry.line).toContain("target=dm");
+    }
+    expect(entries[0].line).toContain("reason=edit_failed");
+    expect(entries[0].line).toContain("code=ECONNRESET");
+    expect(entries[1].line).toContain("code=ETIMEDOUT");
+    expect(entries[1].line).toContain("syscall=read");
+    expect(lines.some((line) => line.includes("[cliq] send ok"))).toBe(false);
+    expectNoLeaks(lines);
+  });
+
+  it("does not fall back when a reset edit succeeds on retry", async () => {
+    const { deliver, lines, of } = createHarness({
+      edit: (call) => {
+        if (call === 1) throw nestedFetchFailed("ECONNRESET", "read");
+        return editOk();
+      },
+      send: sendOk,
+    });
+
+    await deliver({ text: FINAL_TEXT }, { final: true });
+
+    const edits = of("edit");
+    expect(edits).toHaveLength(2);
+    for (const edit of edits) {
+      expect(edit.url).toContain("/api/v2/chats/chat-u1/messages/ph-1");
+      expect(JSON.parse(edit.body ?? "{}")).toEqual({ text: FINAL_TEXT });
+    }
+    expect(of("send")).toHaveLength(0);
+    expect(of("delete")).toHaveLength(0);
+    expect(of("oauth").map((entry) => entry.grant)).toEqual(["refresh_token"]);
+
+    const retries = lines.filter((line) => line.includes("[cliq] edit transport retry"));
+    expect(retries).toHaveLength(1);
+    expect(retries[0]).toContain("op=edit");
+    expect(retries[0]).toContain("attempt=1/3");
+    expect(retries[0]).toContain("code=ECONNRESET");
+    expect(retries[0]).toContain("syscall=read");
+    expect(lines.some((line) => line.includes("[cliq] edit transport exhausted"))).toBe(false);
+    expect(lines.some((line) => line.includes("[cliq] edit ok") && line.includes("attempt=2"))).toBe(true);
+    expect(readFallbackLines(lines)).toHaveLength(0);
+
+    const stats = getLiveEditDeliverStats(deliver);
+    expect(stats?.edits).toBe(1);
+    expect(stats?.editFailures).toBe(0);
+    expect(stats?.sends).toBe(0);
+    expect(getLiveEditPlaceholderConsumed(deliver)).toBe(true);
+    expectNoLeaks(lines);
   });
 });

@@ -3,6 +3,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { cliqPlugin } from "./src/channel.js";
 import { CLIQ_DEFAULT_ACCOUNT_ID, resolveCliqConfig } from "./src/client.js";
 import { getCliqClientRegistry } from "./src/runtime-api.js";
+import { setCliqDefaultLogger } from "./src/logger.js";
 import { resolveCliqDmAdmission, resolveCliqGroupAdmission } from "./src/admission.js";
 import { resolveCliqGroupRequireMention } from "./src/group-policy.js";
 import {
@@ -39,6 +40,7 @@ import {
 } from "./src/inbound-catchup-store.js";
 import {
   cliqDedupeSkipReason,
+  formatCliqDeliveryFailure,
   formatCliqInboundSkip,
 } from "./src/inbound-outcome.js";
 import { isCliqSelfMessage } from "./src/self-message.js";
@@ -327,6 +329,7 @@ export default defineChannelPluginEntry({
     // creates; the outbound sendText / inbound deliver paths resolve their
     // client through the registry, so all sends flow through this sink.
     getCliqClientRegistry().setLogger(api.logger);
+    setCliqDefaultLogger(api.logger);
     // Durable Core ingress (issue #261): bind the account-keyed monitor
     // registry to this process's runtime so the webhook route and the
     // gateway lifecycle share one instance. Unavailable installs keep the
@@ -356,9 +359,9 @@ export default defineChannelPluginEntry({
           cfg: api.config as OpenClawConfig,
           account: liveAccount,
           parsed: raw.parsed,
-          onError: (err, info) => {
-            api.logger.error?.(`[cliq] ${info.kind} failed: ${String(err)}`);
-          },
+            onError: (err, info) => {
+              api.logger.error?.(formatCliqDeliveryFailure(err, info));
+            },
           turnAdoptionLifecycle,
         });
         return { kind: "completed" } as const;
@@ -530,7 +533,7 @@ export default defineChannelPluginEntry({
               client: resolveCliqClient(account),
               onError: (err, info) => {
                 api.logger.error?.(
-                  `[cliq] ${info.kind} failed: ${String(err)}`,
+                  formatCliqDeliveryFailure(err, info),
                 );
               },
             });
@@ -665,12 +668,12 @@ export default defineChannelPluginEntry({
               account,
               action: parsed.pairingAction,
               actorId: parsed.senderId,
-              onError: (err, info) => {
-                api.logger.error?.(
-                  `[cliq] ${info.kind} failed: ${String(err)}`,
-                );
-              },
-              onUnauthorized: (info) => {
+                onError: (err, info) => {
+                  api.logger.error?.(
+                    formatCliqDeliveryFailure(err, info),
+                  );
+                },
+                onUnauthorized: (info) => {
                 api.logger.warn?.(
                   `[cliq] pairing ${info.kind} rejected: sender ${info.actorId} is not the configured owner`,
                 );
@@ -806,7 +809,7 @@ export default defineChannelPluginEntry({
         }
 
         const onInboundError = (err: unknown, info: { kind: string }) => {
-          api.logger.error?.(`[cliq] ${info.kind} failed: ${String(err)}`);
+          api.logger.error?.(formatCliqDeliveryFailure(err, info));
         };
 
         // A bounded safety net for messages that existed in Cliq but never

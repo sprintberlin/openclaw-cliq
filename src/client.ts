@@ -6,8 +6,9 @@ import {
   type ChannelStreamingProgressConfig,
   type StreamingMode,
 } from "openclaw/plugin-sdk/channel-outbound";
-import { classifyCliqSendResponse, CliqSendError, parseRetryAfterMs, withSendRetry, type RetryOptions } from "./send-retry.js";
+import { classifyCliqSendResponse, CliqSendError, parseRetryAfterMs, withSendRetry, withTransportRetry, type RetryBackoffOptions, type RetryOptions, type SendRetryAttemptEvent, type SendRetryOptions } from "./send-retry.js";
 import {
+  formatCliqErrorForLog,
   getCliqDefaultLogger,
   truncateForLog,
   type CliqLogger,
@@ -30,6 +31,32 @@ const EU_API_BASE = "https://cliq.zoho.eu";
 const EU_OAUTH_BASE = "https://accounts.zoho.eu";
 
 const MESSAGE_CHAR_LIMIT = 5000;
+
+const KNOWN_OAUTH_ERROR_CODES: ReadonlySet<string> = new Set([
+  "invalid_client",
+  "invalid_grant",
+  "invalid_code",
+  "invalid_scope",
+  "oauthtoken_scope_invalid",
+]);
+
+function extractKnownOAuthErrorCode(body: string): string | undefined {
+  const trimmed = body.trim();
+  if (KNOWN_OAUTH_ERROR_CODES.has(trimmed)) return trimmed;
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return undefined;
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
+    const record = parsed as Record<string, unknown>;
+    for (const key of ["error", "code"]) {
+      const value = record[key];
+      if (typeof value === "string" && KNOWN_OAUTH_ERROR_CODES.has(value)) return value;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
 
 /**
  * Live company attachment path Zoho delivers in webhook payloads
@@ -1838,7 +1865,7 @@ function parseCliqDeleteResult(body: string): boolean {
 
 export class CliqClient {
   private readonly tokens = new Map<string, { token: string; expiresAt: number }>();
-  private readonly retryOptions: Required<RetryOptions>;
+  private readonly retryOptions: RetryBackoffOptions;
   private readonly logger: CliqLogger;
   /**
    * Cache of resolved channel unique name → chat id (`CT_xxx`). The mapping
@@ -1966,6 +1993,7 @@ export class CliqClient {
     const now = Date.now();
     const cached = this.tokens.get(scope);
     if (cached && now < cached.expiresAt - 60_000) {
+      assertReadCurrent?.();
       return cached.token;
     }
     const url = new URL(`${this.oauthBase}/oauth/v2/token`);
@@ -1974,15 +2002,18 @@ export class CliqClient {
     url.searchParams.set("client_secret", this.clientSecret);
     url.searchParams.set("scope", scope);
     this.logger.debug?.(`[cliq] oauth: requesting access token (scope=${scope})`);
-    assertReadCurrent?.();
-    const res = await fetch(url, { method: "POST" });
+    const res = await withTransportRetry(
+      () => fetch(url, { method: "POST" }),
+      this.oauthTransportLogOptions(assertReadCurrent),
+    );
     if (!res.ok) {
       const body = await res.text().catch(() => "");
+      const code = extractKnownOAuthErrorCode(body);
       this.logger.error?.(
-        `[cliq] oauth: token request failed status=${res.status} scope=${scope} body=${truncateForLog(body)}`,
+        `[cliq] oauth: token request failed status=${res.status} scope=${scope}${code ? ` code=${code}` : ""}`,
       );
       throw new Error(
-        `cliq: OAuth token request failed (${res.status}): ${body}${appendDcHint(body)}`,
+        `cliq: OAuth token request failed (${res.status})${code ? `: ${code}` : ""}${appendDcHint(body)}`,
       );
     }
     const data = (await res.json()) as {
@@ -2027,6 +2058,7 @@ export class CliqClient {
     const now = Date.now();
     const cached = this.tokens.get(CliqClient.REFRESH_TOKEN_KEY);
     if (cached && now < cached.expiresAt - 60_000) {
+      assertReadCurrent?.();
       return cached.token;
     }
     const url = new URL(`${this.oauthBase}/oauth/v2/token`);
@@ -2035,14 +2067,18 @@ export class CliqClient {
     url.searchParams.set("client_secret", this.clientSecret);
     url.searchParams.set("refresh_token", this.refreshToken);
     this.logger.debug?.(`[cliq] oauth: refreshing user-context access token`);
-    assertReadCurrent?.();
-    const res = await fetch(url, { method: "POST" });
+    const res = await withTransportRetry(
+      () => fetch(url, { method: "POST" }),
+      this.oauthTransportLogOptions(assertReadCurrent),
+    );
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      // OAuth error bodies can echo credentials; keep diagnostics status-only.
-      this.logger.error?.(`[cliq] oauth: refresh token request failed status=${res.status}`);
+      const code = extractKnownOAuthErrorCode(body);
+      this.logger.error?.(
+        `[cliq] oauth: refresh token request failed status=${res.status}${code ? ` code=${code}` : ""}`,
+      );
       throw new Error(
-        `cliq: OAuth refresh token request failed (${res.status}): ${body}${appendDcHint(body)}`,
+        `cliq: OAuth refresh token request failed (${res.status})${code ? `: ${code}` : ""}${appendDcHint(body)}`,
       );
     }
     const data = (await res.json()) as {
@@ -2077,6 +2113,80 @@ export class CliqClient {
     return needsUserContext && this.refreshToken
       ? this.getRefreshedAccessToken()
       : this.getAccessToken(scope);
+  }
+
+  private logTransportAttempt(event: SendRetryAttemptEvent, target: string): void {
+    const http = event.errorKind !== undefined;
+    const cause = [
+      event.errorName ? `error=${event.errorName}` : "",
+      event.errorKind ? `kind=${event.errorKind}` : "",
+      event.causeCode ? `code=${event.causeCode}` : "",
+      event.causeSyscall ? `syscall=${event.causeSyscall}` : "",
+      event.unrecognizedCause === true ? "cause=unrecognized" : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    const risk = `duplicateRisk=${event.duplicateRisk ? "yes" : "no"}`;
+    const delivery = event.operation === "oauth"
+      ? ""
+      : http
+        ? " delivery=unknown"
+        : event.ambiguousDelivery
+          ? ` delivery=ambiguous ${risk}`
+          : ` delivery=not_sent ${risk}`;
+    const line =
+      `[cliq] ${event.operation} ${http ? "http" : "transport"} ${event.outcome}: op=${event.operation} ${target} ` +
+      `attempt=${event.attempt}/${event.maxAttempts}${cause ? ` ${cause}` : ""}` +
+      `${event.delayMs !== undefined ? ` delayMs=${event.delayMs}` : ""}${delivery}`;
+    if (event.outcome === "retry") this.logger.warn?.(line);
+    else this.logger.error?.(line);
+  }
+
+  private async runLoggedSendRetry(
+    attempt: Parameters<typeof withSendRetry>[0],
+    opts: SendRetryOptions,
+    target: string,
+  ): Promise<{ status: number; body: string }> {
+    try {
+      return await withSendRetry(attempt, opts);
+    } catch (err) {
+      if (err instanceof CliqSendError) {
+        const status = Number.isInteger(err.status) && err.status >= 0 ? ` status=${err.status}` : "";
+        const line =
+          `[cliq] ${opts.network?.operation ?? "send"} failed: ${formatCliqErrorForLog(err)} ` +
+          `kind=${err.kind}${status} ${target}`;
+        if (err.kind === "format_rejected") this.logger.warn?.(line);
+        else this.logger.error?.(line);
+      }
+      throw err;
+    }
+  }
+
+  private sanitizeOpaqueIdentifier(value: string): string | null {
+    if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(value)) return null;
+    return value;
+  }
+
+  private transportTarget(kind: string, value: string, label = "id"): string {
+    const safe = this.sanitizeOpaqueIdentifier(value);
+    if (safe === null) return kind;
+    return kind ? `${kind} ${label}=${safe}` : `${label}=${safe}`;
+  }
+
+  private oauthTransportLogOptions(assertReadCurrent?: ChannelReadAssertion): SendRetryOptions {
+    return {
+      baseDelayMs: this.retryOptions.baseDelayMs,
+      maxDelayMs: this.retryOptions.maxDelayMs,
+      sleep: this.retryOptions.sleep,
+      random: this.retryOptions.random,
+      maxAttempts: this.retryOptions.maxAttempts,
+      network: {
+        operation: "oauth",
+        idempotent: true,
+        ...(assertReadCurrent ? { beforeAttempt: assertReadCurrent } : {}),
+        onAttempt: (event) => this.logTransportAttempt(event, "oauth"),
+      },
+    };
   }
 
   async sendMessage(opts: SendMessageOptions): Promise<{ messageId?: string; chatId?: string }> {
@@ -2155,7 +2265,8 @@ export class CliqClient {
       `[cliq] send: ${targetKind} id=${opts.to} textLen=${opts.text.length}${apiTag}`,
     );
     let attempt = 0;
-    const res = await withSendRetry(
+    const sendTarget = this.transportTarget(targetKind, opts.to);
+    const res = await this.runLoggedSendRetry(
       async () => {
         attempt++;
         const r = await fetch(url, {
@@ -2174,12 +2285,19 @@ export class CliqClient {
           );
         } else {
           this.logger.warn?.(
-            `[cliq] send non-2xx: status=${r.status} ${targetKind} id=${opts.to} attempt=${attempt} body=${truncateForLog(body)}`,
+            `[cliq] send non-2xx: status=${r.status} ${sendTarget} attempt=${attempt}`,
           );
         }
         return { status: r.status, body, headers: r.headers };
       },
-      this.retryOptions,
+      {
+        ...this.retryOptions,
+        network: {
+          operation: "send",
+          onAttempt: (event) => this.logTransportAttempt(event, sendTarget),
+        },
+      },
+      sendTarget,
     );
     return parseCliqMessageRef(res.body);
   }
@@ -2559,7 +2677,11 @@ export class CliqClient {
       `[cliq] edit: chatId=${opts.chatId} messageId=${opts.messageId} textLen=${opts.text.length}`,
     );
     let attempt = 0;
-    const res = await withSendRetry(
+    const editTarget = [
+      this.transportTarget("", opts.chatId, "chatId"),
+      this.transportTarget("", opts.messageId, "messageId"),
+    ].filter(Boolean).join(" ");
+    const res = await this.runLoggedSendRetry(
       async () => {
         attempt++;
         const r = await fetch(url, {
@@ -2577,12 +2699,20 @@ export class CliqClient {
           );
         } else {
           this.logger.warn?.(
-            `[cliq] edit non-2xx: status=${r.status} chatId=${opts.chatId} messageId=${opts.messageId} attempt=${attempt} body=${truncateForLog(body)}`,
+            `[cliq] edit non-2xx: status=${r.status} ${editTarget} attempt=${attempt}`,
           );
         }
         return { status: r.status, body, headers: r.headers };
       },
-      this.retryOptions,
+      {
+        ...this.retryOptions,
+        network: {
+          operation: "edit",
+          idempotent: true,
+          onAttempt: (event) => this.logTransportAttempt(event, editTarget),
+        },
+      },
+      editTarget,
     );
     const parsed = parseCliqMessageRef(res.body);
     return {
