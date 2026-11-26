@@ -713,12 +713,45 @@ describe("pending-input idempotency conflict dead-letters on the first attempt (
     }
   });
 
+  it("dead-letters through the production registry deliver seam (startAccount)", async () => {
+    const store = createTestIngressQueue();
+    const registry = new CliqIngressMonitorRegistry({
+      isAvailable: () => true,
+      openQueue: () => store.queue,
+    });
+    const dispatches: string[] = [];
+    await registry.startAccount("default", {
+      deliver: async (raw) => {
+        dispatches.push(raw.parsed.messageId);
+        return { kind: "failed", error: new Error(CONFLICT) };
+      },
+    });
+    try {
+      const event = fakeParsed({ messageId: "evt-replayed-attachment" });
+      const admitted = await registry.admitEvent("default", event);
+      expect(admitted.kind).toBe("admitted");
+      await vi.waitFor(() => expect(store.statusOf(event.messageId)).toBe("failed"));
+      expect(store.failedReasonOf(event.messageId)).toBe("input-idempotency-conflict");
+      expect(dispatches).toEqual([event.messageId]);
+
+      // A later redelivery is acked as a duplicate and never reaches dispatch again.
+      const replay = await registry.admitEvent("default", event);
+      expect(replay).toEqual({ kind: "duplicate", queueKind: "failed" });
+      expect(dispatches).toEqual([event.messageId]);
+    } finally {
+      await registry.stopAccount("default");
+    }
+  });
+
   it("still retries transient pending-input custody errors and unknown failures", () => {
     const transient = [
       "Pending input ownership ended; submit a new turn to continue",
       "Pending input is already admitted; wait for its current turn",
       "reply session initialization conflicted",
       "handler unavailable",
+      // A longer message that only mentions the phrase is not this error and
+      // must stay retryable rather than dropping the event.
+      `dispatch failed: ${CONFLICT} (see logs)`,
     ];
     for (const message of transient) {
       expect(resolveCliqIngressNonRetryableFailure(new Error(message))).toBeNull();
@@ -728,10 +761,10 @@ describe("pending-input idempotency conflict dead-letters on the first attempt (
     }
     expect(resolveCliqIngressNonRetryableFailure(new Error(CONFLICT))).toEqual({
       reason: "input-idempotency-conflict",
-      message: expect.stringContaining(CONFLICT),
+      message: CONFLICT,
     });
     expect(
-      resolveCliqIngressNonRetryableFailure(new TypeError(CONFLICT)),
+      resolveCliqIngressNonRetryableFailure(new TypeError(`  ${CONFLICT}  `)),
     ).toMatchObject({ reason: "input-idempotency-conflict" });
   });
 
