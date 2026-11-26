@@ -195,6 +195,22 @@ export function deserializeCliqIngressEvent(
 }
 
 /**
+ * Core rejects a replay whose pending-input request hash no longer matches
+ * the input it already accepted with this exact plain `Error` (no class, no
+ * `code` — message text is the only discriminator). A replayed attachment
+ * turn can never match: each attempt re-stages the file under a fresh random
+ * media id, so the hash changes every time and retrying can only fail again
+ * while posting another reply. The two sibling `Pending input …` messages
+ * ("ownership ended", "already admitted") are transient and must keep retrying.
+ */
+const INPUT_IDEMPOTENCY_CONFLICT =
+  "pending input idempotency key conflicts with the accepted input";
+
+function isInputIdempotencyConflict(error: Error): boolean {
+  return error.message.toLowerCase().includes(INPUT_IDEMPOTENCY_CONFLICT);
+}
+
+/**
  * Non-retryable claim error factory used by the codec. Core's drain only
  * dead-letters these when the monitor passes
  * {@link resolveCliqIngressNonRetryableFailure} as `drain.resolveNonRetryableFailure`.
@@ -208,6 +224,9 @@ export function resolveCliqIngressNonRetryableFailure(
     seen.add(current);
     if (current instanceof CliqIngressPayloadError) {
       return { reason: current.reason, message: current.message };
+    }
+    if (current instanceof Error && isInputIdempotencyConflict(current)) {
+      return { reason: "input-idempotency-conflict", message: current.message };
     }
     current = current instanceof Error ? current.cause : null;
   }

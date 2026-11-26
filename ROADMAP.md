@@ -119,6 +119,7 @@ Mostly v3-independent; **dynamic agents** in particular is high-value and can be
   gate. cliq enables native commands (`src/commands.ts`) but has no per-user command gate.
   `commands.unmentioned` (#316) only decides whether an unmentioned always-on command runs at
   all; it does not restrict *which* commands a sender may run. (Prior art: wecom.)
+- **Stable staging identity for replayed attachments.** Make a re-dispatch of a durable-ingress attachment turn produce the same Core pending-input request hash as the attempt that was accepted, so the replay is recognised as the same input instead of being dead-lettered as `input-idempotency-conflict` (#350): stage the attachment under a content-derived media id (hash of the bytes + file name) rather than the random id `saveMediaBuffer` mints per call, and confirm against Core's `stageSessionPendingInput` that the media path is the only hash-relevant field that changes (a differing `run_id` would also need a stable value). Also clean up staged media files after a turn, which today are left behind on every attempt.
 - **Bound outbound Cliq HTTP calls with a per-attempt deadline.** No outbound `fetch`
   (OAuth token fetch, bot-message send, edit, delete, media, card, reaction, history read) passes an
   `AbortSignal`, so a stalled socket hangs until the OS TCP timeout instead of failing into the
