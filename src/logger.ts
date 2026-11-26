@@ -79,3 +79,78 @@ export function truncateForLog(body: string, max = 500): string {
   if (body.length <= max) return body;
   return `${body.slice(0, max)}…(${body.length} bytes)`;
 }
+
+const SAFE_ERROR_NAMES = new Set([
+  "Error",
+  "TypeError",
+  "AggregateError",
+  "SocketError",
+  "ConnectTimeoutError",
+  "HeadersTimeoutError",
+  "BodyTimeoutError",
+  "AbortError",
+  "TimeoutError",
+]);
+const SAFE_CODE = /^[A-Z][A-Z0-9_]{1,63}$/;
+const SAFE_SYSCALLS = new Set([
+  "connect",
+  "read",
+  "write",
+  "getaddrinfo",
+  "getnameinfo",
+  "lookup",
+  "recv",
+  "send",
+  "socket",
+]);
+
+const SAFE_ERROR_MESSAGES = new Set(["fetch failed", "terminated"]);
+
+function readSafeCode(node: object): string | undefined {
+  const code = (node as { code?: unknown }).code;
+  return typeof code === "string" && SAFE_CODE.test(code) ? code : undefined;
+}
+
+function readSafeSyscall(node: object): string | undefined {
+  const syscall = (node as { syscall?: unknown }).syscall;
+  return typeof syscall === "string" && SAFE_SYSCALLS.has(syscall) ? syscall : undefined;
+}
+
+
+export function formatCliqErrorForLog(err: unknown): string {
+  const root = err !== null && typeof err === "object" ? (err as object) : undefined;
+  const name = root && typeof (root as { name?: unknown }).name === "string"
+    ? (root as { name: string }).name
+    : undefined;
+  const safeName = name && SAFE_ERROR_NAMES.has(name) ? name : "Error";
+  const message = root && typeof (root as { message?: unknown }).message === "string"
+    ? (root as { message: string }).message
+    : "";
+  const safeMessage = SAFE_ERROR_MESSAGES.has(message) ? message : "";
+  let code: string | undefined;
+  let syscall: string | undefined;
+  const seen = new Set<object>();
+  const queue: unknown[] = root ? [root] : [];
+  let walked = 0;
+  while (queue.length > 0 && walked < 6 && (!code || !syscall)) {
+    const current = queue.shift();
+    walked++;
+    if (current === null || typeof current !== "object" || seen.has(current)) continue;
+    seen.add(current);
+    code ??= readSafeCode(current);
+    syscall ??= readSafeSyscall(current);
+    const node = current as { cause?: unknown; errors?: unknown };
+    if (node.cause !== undefined) queue.push(node.cause);
+    if (Array.isArray(node.errors)) queue.push(...node.errors.slice(0, 4));
+  }
+  const parts = [`${safeName}${safeMessage ? `: ${safeMessage}` : ""}`];
+  if (code) parts.push(`code=${code}`);
+  if (syscall) parts.push(`syscall=${syscall}`);
+  return parts.join(" ");
+}
+
+export function formatCliqErrorCauseForLog(err: unknown): string {
+  const rendered = formatCliqErrorForLog(err);
+  const fields = rendered.match(/\b(?:code|syscall)=[A-Za-z0-9_]+/g);
+  return fields ? fields.join(" ") : "";
+}

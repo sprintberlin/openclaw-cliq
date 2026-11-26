@@ -29,6 +29,8 @@ import {
   getLiveEditPlaceholderConsumed,
   getLiveEditProgressDraftActive,
 } from "./live-edit.js";
+import { formatCliqDeliveryFailure } from "./inbound-outcome.js";
+import { getCliqDefaultLogger } from "./logger.js";
 import { renderCliqProgressDraftText } from "./progress-render.js";
 import { startThinkingAnimation, type ThinkingAnimation } from "./thinking-animate.js";
 import { createCliqProgressDraftController } from "./progress-draft.js";
@@ -2061,12 +2063,12 @@ export async function dispatchCliqInbound(params: {
       account.streaming.mode !== "progress" || account.thinking?.mode !== "card",
     minEditIntervalMs:
       account.streamingMinEditIntervalMs ?? DEFAULT_CLIQ_STREAMING_MIN_EDIT_INTERVAL_MS,
+    logger: getCliqDefaultLogger(),
   });
   const handleOnError =
     onError ??
     ((err: unknown, info: { kind: string }) => {
-      // eslint-disable-next-line no-console
-      console.error(`[cliq] ${info.kind} reply failed: ${String(err)}`);
+      console.error(formatCliqDeliveryFailure(err, info));
     });
   const reasoningLevel = (() => {
     const configured =

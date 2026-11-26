@@ -6,7 +6,7 @@ import {
   type ChannelStreamingProgressConfig,
   type StreamingMode,
 } from "openclaw/plugin-sdk/channel-outbound";
-import { classifyCliqSendResponse, CliqSendError, parseRetryAfterMs, withSendRetry, type RetryOptions } from "./send-retry.js";
+import { classifyCliqSendResponse, CliqSendError, parseRetryAfterMs, withSendRetry, withTransportRetry, type RetryBackoffOptions, type RetryOptions, type SendRetryAttemptEvent, type SendRetryOptions } from "./send-retry.js";
 import {
   getCliqDefaultLogger,
   truncateForLog,
@@ -1838,7 +1838,7 @@ function parseCliqDeleteResult(body: string): boolean {
 
 export class CliqClient {
   private readonly tokens = new Map<string, { token: string; expiresAt: number }>();
-  private readonly retryOptions: Required<RetryOptions>;
+  private readonly retryOptions: RetryBackoffOptions;
   private readonly logger: CliqLogger;
   /**
    * Cache of resolved channel unique name → chat id (`CT_xxx`). The mapping
@@ -1974,8 +1974,10 @@ export class CliqClient {
     url.searchParams.set("client_secret", this.clientSecret);
     url.searchParams.set("scope", scope);
     this.logger.debug?.(`[cliq] oauth: requesting access token (scope=${scope})`);
-    assertReadCurrent?.();
-    const res = await fetch(url, { method: "POST" });
+    const res = await withTransportRetry(
+      () => fetch(url, { method: "POST" }),
+      this.oauthTransportLogOptions(assertReadCurrent),
+    );
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       this.logger.error?.(
@@ -2035,8 +2037,10 @@ export class CliqClient {
     url.searchParams.set("client_secret", this.clientSecret);
     url.searchParams.set("refresh_token", this.refreshToken);
     this.logger.debug?.(`[cliq] oauth: refreshing user-context access token`);
-    assertReadCurrent?.();
-    const res = await fetch(url, { method: "POST" });
+    const res = await withTransportRetry(
+      () => fetch(url, { method: "POST" }),
+      this.oauthTransportLogOptions(assertReadCurrent),
+    );
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       // OAuth error bodies can echo credentials; keep diagnostics status-only.
@@ -2077,6 +2081,55 @@ export class CliqClient {
     return needsUserContext && this.refreshToken
       ? this.getRefreshedAccessToken()
       : this.getAccessToken(scope);
+  }
+
+  private logTransportAttempt(event: SendRetryAttemptEvent, target: string): void {
+    const cause = [
+      event.errorName ? `error=${event.errorName}` : "",
+      event.causeCode ? `code=${event.causeCode}` : "",
+      event.causeSyscall ? `syscall=${event.causeSyscall}` : "",
+      event.unrecognizedCause === true ? "cause=unrecognized" : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    const delivery = event.operation === "oauth"
+      ? ""
+      : event.ambiguousDelivery
+        ? ` delivery=ambiguous duplicateRisk=${event.duplicateRisk ? "yes" : "no"}`
+        : " delivery=not_sent";
+    const line =
+      `[cliq] ${event.operation} transport ${event.outcome}: op=${event.operation} ${target} ` +
+      `attempt=${event.attempt}/${event.maxAttempts}${cause ? ` ${cause}` : ""}` +
+      `${event.delayMs !== undefined ? ` delayMs=${event.delayMs}` : ""}${delivery}`;
+    if (event.outcome === "retry") this.logger.warn?.(line);
+    else this.logger.error?.(line);
+  }
+
+  private sanitizeOpaqueIdentifier(value: string): string | null {
+    if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(value)) return null;
+    return value;
+  }
+
+  private transportTarget(kind: string, value: string, label = "id"): string {
+    const safe = this.sanitizeOpaqueIdentifier(value);
+    if (safe === null) return kind;
+    return kind ? `${kind} ${label}=${safe}` : `${label}=${safe}`;
+  }
+
+  private oauthTransportLogOptions(assertReadCurrent?: ChannelReadAssertion): SendRetryOptions {
+    return {
+      baseDelayMs: this.retryOptions.baseDelayMs,
+      maxDelayMs: this.retryOptions.maxDelayMs,
+      sleep: this.retryOptions.sleep,
+      random: this.retryOptions.random,
+      maxAttempts: this.retryOptions.maxAttempts,
+      network: {
+        operation: "oauth",
+        idempotent: true,
+        ...(assertReadCurrent ? { beforeAttempt: assertReadCurrent } : {}),
+        onAttempt: (event) => this.logTransportAttempt(event, "oauth"),
+      },
+    };
   }
 
   async sendMessage(opts: SendMessageOptions): Promise<{ messageId?: string; chatId?: string }> {
@@ -2179,7 +2232,14 @@ export class CliqClient {
         }
         return { status: r.status, body, headers: r.headers };
       },
-      this.retryOptions,
+      {
+        ...this.retryOptions,
+        network: {
+          operation: "send",
+          onAttempt: (event) =>
+            this.logTransportAttempt(event, this.transportTarget(targetKind, opts.to)),
+        },
+      },
     );
     return parseCliqMessageRef(res.body);
   }
@@ -2582,7 +2642,21 @@ export class CliqClient {
         }
         return { status: r.status, body, headers: r.headers };
       },
-      this.retryOptions,
+      {
+        ...this.retryOptions,
+        network: {
+          operation: "edit",
+          idempotent: true,
+          onAttempt: (event) =>
+            this.logTransportAttempt(
+              event,
+              [
+                this.transportTarget("", opts.chatId, "chatId"),
+                this.transportTarget("", opts.messageId, "messageId"),
+              ].filter(Boolean).join(" ").trim(),
+            ),
+        },
+      },
     );
     const parsed = parseCliqMessageRef(res.body);
     return {

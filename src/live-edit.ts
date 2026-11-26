@@ -52,6 +52,7 @@
    * The thinking animator may edit that draft only until it is quenched and
    * drained before the first real preview edit (issues #184, #211).
  */
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 import {
@@ -59,6 +60,7 @@ import {
   loadCliqMediaAttachment,
   type CliqClient,
 } from "./client.js";
+import { formatCliqErrorCauseForLog, type CliqLogger } from "./logger.js";
 import { markdownToCliq } from "./markdown.js";
 import { isCliqChatId } from "./heartbeat.js";
 import {
@@ -134,6 +136,7 @@ export interface LiveEditDeliverOptions {
   now?: () => number;
   /** Sleep used for throttling + rate-limit backoff (tests inject their own). */
   sleep?: (ms: number) => Promise<void>;
+  logger?: CliqLogger;
 }
 
 /** Per-block metadata the inbound dispatch path forwards to the deliver callback. */
@@ -289,6 +292,37 @@ export function createLiveEditDeliver(
   let uneditableProgressInFlight: Promise<void> | undefined;
   let replyStarted = false;
   let wakeThrottle: (() => void) | undefined;
+  let lastEditError: unknown;
+
+  type FallbackReason = "edit_failed" | "chat_id_unavailable" | "draft_uneditable";
+  const targetKind = isDm ? "dm" : "channel";
+  const takeEditError = (): unknown => {
+    const err = lastEditError;
+    lastEditError = undefined;
+    return err;
+  };
+  const runFallback = async <T>(
+    reason: FallbackReason,
+    cause: unknown,
+    send: () => Promise<T>,
+  ): Promise<T> => {
+    const logger = opts.logger;
+    const id = randomUUID();
+    const base = `[cliq] fallback: op=send target=${targetKind} fallbackId=${id}`;
+    const causeFields = cause === undefined ? "" : formatCliqErrorCauseForLog(cause);
+    logger?.warn?.(
+      `${base} state=starting reason=${reason}${causeFields ? ` ${causeFields}` : ""}`,
+    );
+    try {
+      const result = await send();
+      logger?.info?.(`${base} state=accepted`);
+      return result;
+    } catch (err) {
+      const failureFields = formatCliqErrorCauseForLog(err);
+      logger?.error?.(`${base} state=failed${failureFields ? ` ${failureFields}` : ""}`);
+      throw err;
+    }
+  };
 
   const attach = <
     F extends (
@@ -540,6 +574,7 @@ export function createLiveEditDeliver(
         stats.edits++;
         appliedDraftText = richText;
         lastEditAt = now();
+        lastEditError = undefined;
         return true;
       } catch (err) {
         const rateLimited = readEditRateLimit(err);
@@ -548,6 +583,7 @@ export function createLiveEditDeliver(
           await sleep(rateLimited.retryAfterMs ?? DEFAULT_EDIT_RATE_LIMIT_BACKOFF_MS);
           continue;
         }
+        lastEditError = err;
         return await recoverEdit(richText);
       }
     }
@@ -573,6 +609,7 @@ export function createLiveEditDeliver(
           stats.edits++;
           appliedDraftText = richText;
           lastEditAt = now();
+          lastEditError = undefined;
           return true;
         }
       } catch {
@@ -793,7 +830,10 @@ export function createLiveEditDeliver(
         placeholderConsumed = true;
         if (opts.initialDraftEditable === false) {
           await safeDeleteDraft();
-          sealDraft();
+          await runFallback("draft_uneditable", undefined, async () => {
+            sealDraft();
+            await sendNew(text);
+          });
         } else {
           const chatId = await resolveDraftChatId();
           if (chatId) {
@@ -807,14 +847,21 @@ export function createLiveEditDeliver(
             }
           }
           stats.editFailures++;
+          const cause = takeEditError();
           await safeDeleteDraft();
-          sealDraft();
+          await runFallback(chatId ? "edit_failed" : "chat_id_unavailable", cause, async () => {
+            sealDraft();
+            for (const chunk of chunks) {
+              await client.sendMessage({ to, text: chunk, isDm });
+              stats.sends++;
+            }
+          });
         }
-      }
-
-      for (const chunk of chunks) {
-        await client.sendMessage({ to, text: chunk, isDm });
-        stats.sends++;
+      } else {
+        for (const chunk of chunks) {
+          await client.sendMessage({ to, text: chunk, isDm });
+          stats.sends++;
+        }
       }
     });
   }
@@ -855,8 +902,10 @@ export function createLiveEditDeliver(
     if (!isProgress && opts.initialDraftEditable === false && draftMessageId) {
       placeholderConsumed = true;
       await safeDeleteDraft();
-      sealDraft();
-      await sendNew(text);
+      await runFallback("draft_uneditable", undefined, async () => {
+        sealDraft();
+        await sendNew(text);
+      });
       return;
     }
 
@@ -1014,12 +1063,15 @@ export function createLiveEditDeliver(
           return;
         }
         stats.editFailures++;
+        const cause = chatId ? takeEditError() : undefined;
         await safeDeleteDraft();
-        sealDraft();
-        for (const chunk of chunks) {
-          await client.sendMessage({ to, text: chunk, isDm });
-          stats.sends++;
-        }
+        await runFallback(chatId ? "edit_failed" : "chat_id_unavailable", cause, async () => {
+          sealDraft();
+          for (const chunk of chunks) {
+            await client.sendMessage({ to, text: chunk, isDm });
+            stats.sends++;
+          }
+        });
         return;
       }
       // Normal overflow: seal the current draft and start a fresh message
@@ -1039,10 +1091,12 @@ export function createLiveEditDeliver(
           stats.editFailures++;
           placeholderConsumed = true;
           await safeDeleteDraft();
-          draftMessageId = undefined;
-          draftChatId = undefined;
-          appliedDraftText = undefined;
-          await sendNew(candidate);
+          await runFallback("chat_id_unavailable", undefined, async () => {
+            draftMessageId = undefined;
+            draftChatId = undefined;
+            appliedDraftText = undefined;
+            await sendNew(candidate);
+          });
           return;
         }
       } else {
@@ -1068,12 +1122,21 @@ export function createLiveEditDeliver(
     }
     if (!isSnapshot) accumulated = candidate;
     stats.editFailures++;
+    const cause = takeEditError();
     if (hadPlaceholderPending || hadProgressDraft) {
-      placeholderConsumed = true;
       await safeDeleteDraft();
     }
-    sealDraft();
-    await sendNew(candidate);
+    await runFallback(
+      draftChatId ? "edit_failed" : "chat_id_unavailable",
+      cause,
+      async () => {
+        sealDraft();
+        await sendNew(candidate);
+        if (hadPlaceholderPending || hadProgressDraft) {
+          placeholderConsumed = true;
+        }
+      },
+    );
   };
 
   return attach(returned);

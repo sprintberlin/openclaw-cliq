@@ -119,6 +119,22 @@ Mostly v3-independent; **dynamic agents** in particular is high-value and can be
   gate. cliq enables native commands (`src/commands.ts`) but has no per-user command gate.
   `commands.unmentioned` (#316) only decides whether an unmentioned always-on command runs at
   all; it does not restrict *which* commands a sender may run. (Prior art: wecom.)
+- **Bound outbound Cliq HTTP calls with a per-attempt deadline.** No outbound `fetch`
+  (OAuth token fetch, bot-message send, edit, delete, media, card, reaction, history read) passes an
+  `AbortSignal`, so a stalled socket hangs until the OS TCP timeout instead of failing into the
+  existing bounded retry budget. Add a per-attempt timeout and an overall delivery deadline, reusing
+  the pattern from `src/webhook-preflight.ts`, and decide whether a self-imposed timeout is
+  retryable. Also invalidate a cached access token on a 401 so an early-revoked token cannot make
+  every later call fail until its cached expiry.
+- **Make multi-chunk and mixed media/card fallbacks all-or-nothing.** `sendNew` and the overflow,
+  media-caption-overflow and card-overflow paths send their chunks in an unguarded loop, so a
+  transport error on chunk *k* leaves chunks `0..k-1` delivered and the remainder lost, with the
+  draft already sealed. Track which chunks landed, report the partial state through the existing
+  `fallback` log lines, and either resume the remainder or surface it as a lost reply instead of
+  leaving it undecided.
+- **Opt the remaining `withSendRetry` call sites into transport-failure retry.** Media send, the
+  three card paths, both deletes and both reaction calls still rethrow a transport error with no
+  retry and no `transport` attempt line, so those operations remain single-shot by construction.
 - **Runtime quota / rate-limit awareness.** Track Zoho Cliq API usage locally and warn (logs /
   `openclaw status`) before hitting Zoho's rate limits; pairs naturally with the v3 consistent
   errors from Phase 2. Ref: v3 rate limits
