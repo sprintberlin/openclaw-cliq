@@ -31,7 +31,7 @@
  * here — `formatCliqInboundSkip` has no parameter that could carry them.
  */
 
-import { formatCliqErrorForLog } from "./logger.js";
+import { formatCliqDeliveryErrorForLog } from "./logger.js";
 
 /**
  * The stable skip vocabulary. Keep these codes append-only: doctor output,
@@ -113,20 +113,8 @@ function flattenKind(kind: string): string {
   return flat || "unknown";
 }
 
-/**
- * Render one delivery-failure line from a thrown error (issue #353).
- *
- * A bare `String(err)` on a Node transport failure renders as
- * `TypeError: fetch failed` and drops the `error.cause` that carries the
- * actual reason (`ECONNRESET`, `ETIMEDOUT`, …), so an operator cannot tell
- * whether the reply was delivered, retried, or lost. This keeps the delivery
- * `kind` alongside a cause-bearing, secret-safe rendering of the error. Shape:
- * `[cliq] delivery failed: kind=<kind> (<error>)`. The recovery that follows a
- * failed edit is reported separately by `createLiveEditDeliver`'s `fallback`
- * lines, correlated by `fallbackId`.
- */
 export function formatCliqDeliveryFailure(err: unknown, info: CliqDeliveryErrorInfo): string {
-  return `${CLIQ_DELIVERY_FAILURE_PREFIX}: kind=${flattenKind(info.kind)} (${formatCliqErrorForLog(err)})`;
+  return `${CLIQ_DELIVERY_FAILURE_PREFIX}: kind=${flattenKind(info.kind)} (${formatCliqDeliveryErrorForLog(err)})`;
 }
 
 /**

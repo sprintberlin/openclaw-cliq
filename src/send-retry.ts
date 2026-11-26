@@ -49,6 +49,7 @@ export class CliqSendError extends Error {
    */
   readonly errorMessage: string;
   readonly retryAfterMs?: number;
+  readonly code: string;
 
   constructor(
     kind: CliqSendErrorKind,
@@ -68,6 +69,7 @@ export class CliqSendError extends Error {
     this.body = body;
     this.errorMessage = parseCliqErrorBody(body).message;
     this.retryAfterMs = retryAfterMs;
+    this.code = `HTTP_${Number.isInteger(status) && status >= 0 ? status : 0}`;
   }
 }
 
@@ -217,6 +219,7 @@ export interface SendRetryAttemptEvent {
   maxAttempts: number;
   outcome: SendRetryOutcome;
   errorName?: string;
+  errorKind?: CliqSendErrorKind;
   causeCode?: string;
   causeSyscall?: string;
   unrecognizedCause?: boolean;
@@ -285,8 +288,24 @@ const PERMANENT_NETWORK_CODES: ReadonlySet<string> = new Set([
 
 const PERMANENT_TLS_CODE_PREFIX = /^(CERT_|ERR_TLS_|ERR_SSL_|ERR_OSSL_)/;
 
+const NOT_REACHED_TRANSIENT_CODES: ReadonlySet<string> = new Set([
+  "ECONNREFUSED",
+  "ENETUNREACH",
+  "EHOSTUNREACH",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "EAI_AGAIN",
+]);
+
 function isPermanentNetworkCode(code: string): boolean {
   return PERMANENT_NETWORK_CODES.has(code) || PERMANENT_TLS_CODE_PREFIX.test(code);
+}
+
+function isPreConnectionFailure(code: string, syscall: string | undefined): boolean {
+  return (
+    isPermanentNetworkCode(code) ||
+    NOT_REACHED_TRANSIENT_CODES.has(code) ||
+    (code === "ETIMEDOUT" && syscall === "connect")
+  );
 }
 
 function collectErrorChain(err: unknown): object[] {
@@ -321,6 +340,7 @@ export function describeTransportError(err: unknown): TransportErrorInfo | null 
     let unknownSyscall: string | undefined;
     let hasUnknownCode = false;
     let aborted = false;
+    let reachedServer = false;
     for (const node of chain) {
       const { name, code, syscall } = node as { name?: unknown; code?: unknown; syscall?: unknown };
       if (name === "AbortError" || code === "ABORT_ERR") aborted = true;
@@ -333,6 +353,7 @@ export function describeTransportError(err: unknown): TransportErrorInfo | null 
       } else if (TRANSIENT_NETWORK_CODES.has(code)) {
         transientCode ??= code;
         transientSyscall ??= safeSyscall;
+        if (!isPreConnectionFailure(code, safeSyscall)) reachedServer = true;
       } else {
         hasUnknownCode = true;
         unknownCode ??= code;
@@ -343,7 +364,7 @@ export function describeTransportError(err: unknown): TransportErrorInfo | null 
     if (permanentCode) {
       return {
         retryable: false,
-        mayHaveReached: true,
+        mayHaveReached: reachedServer || hasUnknownCode,
         ...(errorName ? { errorName } : {}),
         code: permanentCode,
         ...(permanentSyscall ? { syscall: permanentSyscall } : {}),
@@ -352,7 +373,7 @@ export function describeTransportError(err: unknown): TransportErrorInfo | null 
     if (transientCode && !hasUnknownCode) {
       return {
         retryable: true,
-        mayHaveReached: true,
+        mayHaveReached: reachedServer,
         ...(errorName ? { errorName } : {}),
         code: transientCode,
         ...(transientSyscall ? { syscall: transientSyscall } : {}),
@@ -412,13 +433,19 @@ function networkAttemptCap(network: SendRetryNetworkOptions): number {
     : hardCap;
 }
 
-function emitTransportAttempt(
+function attainableCeiling(physical: number, spent: number, limit: number, ceiling: number): number {
+  const remaining = Math.max(0, limit - spent);
+  return Math.max(physical, Math.min(ceiling, physical + remaining));
+}
+
+function emitAttempt(
   network: SendRetryNetworkOptions,
   attempt: number,
   maxAttempts: number,
   outcome: SendRetryOutcome,
   info: TransportErrorInfo,
   delayMs?: number,
+  errorKind?: CliqSendErrorKind,
 ): void {
   if (!network.onAttempt) return;
   const event: SendRetryAttemptEvent = {
@@ -427,6 +454,7 @@ function emitTransportAttempt(
     maxAttempts,
     outcome,
     ...(info.errorName ? { errorName: info.errorName } : {}),
+    ...(errorKind ? { errorKind } : {}),
     ...(info.code ? { causeCode: info.code } : {}),
     ...(info.syscall ? { causeSyscall: info.syscall } : {}),
     ...(info.unrecognizedCause === true ? { unrecognizedCause: true } : {}),
@@ -447,27 +475,6 @@ type SendAttemptResult = {
   headers?: { get: (name: string) => string | null } | Headers | null;
 };
 
-function planTransportRetry(
-  err: unknown,
-  network: SendRetryNetworkOptions,
-  physical: number,
-  limit: number,
-  o: RetryBackoffOptions,
-): number | null {
-  const info = describeTransportError(err) ?? describeUnknownError(err);
-  if (!info.retryable) {
-    emitTransportAttempt(network, physical, limit, "not_retryable", info);
-    return null;
-  }
-  if (physical >= limit) {
-    emitTransportAttempt(network, physical, limit, "exhausted", info);
-    return null;
-  }
-  const delay = computeBackoffMs(physical - 1, o);
-  emitTransportAttempt(network, physical, limit, "retry", info, delay);
-  return delay;
-}
-
 async function runWithRetry<T>(
   attempt: () => Promise<T>,
   opts: SendRetryOptions,
@@ -481,26 +488,56 @@ async function runWithRetry<T>(
     random: opts.random ?? DEFAULT_RETRY.random,
   };
   const network = opts.network;
+  const cap = network ? networkAttemptCap(network) : 0;
+  const idempotent = network?.idempotent === true;
   let limit = o.maxAttempts;
+  let ceiling = o.maxAttempts;
   let physical = 0;
+  let spent = 0;
   for (;;) {
     network?.beforeAttempt?.();
     physical++;
+    spent++;
     let result: T;
     try {
       result = await attempt();
     } catch (err) {
       if (!network) throw err;
-      limit = Math.min(limit, networkAttemptCap(network));
-      const delay = planTransportRetry(err, network, physical, limit, o);
-      if (delay === null) throw err;
+      const info = describeTransportError(err) ?? describeUnknownError(err);
+      if (!info.retryable) {
+        emitAttempt(network, physical, attainableCeiling(physical, spent, limit, ceiling), "not_retryable", info);
+        throw err;
+      }
+      if (idempotent) limit = Math.min(limit, cap);
+      if (!idempotent && info.mayHaveReached) {
+        spent++;
+        ceiling = Math.min(ceiling, cap);
+      }
+      const shown = attainableCeiling(physical, spent, limit, ceiling);
+      if (physical >= shown) {
+        emitAttempt(network, physical, shown, "exhausted", info);
+        throw err;
+      }
+      const delay = computeBackoffMs(physical - 1, o);
+      emitAttempt(network, physical, shown, "retry", info, delay);
       if (delay > 0) await o.sleep(delay);
       continue;
     }
     const error = classify?.(result);
     if (!error) return result;
-    if (error.kind !== "transient" || physical >= limit) throw error;
-    const delay = computeBackoffMs(physical - 1, o, error.retryAfterMs);
+    const shown = attainableCeiling(physical, spent, limit, ceiling);
+    const outcome: SendRetryOutcome =
+      error.kind !== "transient"
+        ? "not_retryable"
+        : physical >= shown
+          ? "exhausted"
+          : "retry";
+    const delay = outcome === "retry" ? computeBackoffMs(physical - 1, o, error.retryAfterMs) : 0;
+    if (network) {
+      const httpInfo: TransportErrorInfo = { retryable: true, mayHaveReached: false, code: error.code };
+      emitAttempt(network, physical, shown, outcome, httpInfo, outcome === "retry" ? delay : undefined, error.kind);
+    }
+    if (outcome !== "retry") throw error;
     if (delay > 0) await o.sleep(delay);
   }
 }

@@ -280,7 +280,7 @@ export function createLiveEditDeliver(
    * A newer block that arrives while an edit is in-flight coalesces onto
    * `pendingDraftText` instead of starting a second PUT.
    */
-  let editInFlight: Promise<boolean> | null = null;
+  let editInFlight: Promise<EditOutcome> | null = null;
   /** Newest rendered text waiting to be written after the in-flight PUT. */
   let pendingDraftText: string | undefined;
   let pendingDraftIsFinal = false;
@@ -292,15 +292,11 @@ export function createLiveEditDeliver(
   let uneditableProgressInFlight: Promise<void> | undefined;
   let replyStarted = false;
   let wakeThrottle: (() => void) | undefined;
-  let lastEditError: unknown;
 
   type FallbackReason = "edit_failed" | "chat_id_unavailable" | "draft_uneditable";
+  type EditFailure = { ok: false; reason: FallbackReason; error?: unknown };
+  type EditOutcome = { ok: true } | EditFailure;
   const targetKind = isDm ? "dm" : "channel";
-  const takeEditError = (): unknown => {
-    const err = lastEditError;
-    lastEditError = undefined;
-    return err;
-  };
   const runFallback = async <T>(
     reason: FallbackReason,
     cause: unknown,
@@ -397,10 +393,12 @@ export function createLiveEditDeliver(
   const clearProgressDraft = async (): Promise<void> => {
     if (!progressDraftActive && !progressDraftStale) return;
     placeholderConsumed = true;
-    const retired = await editDraft(CLIQ_CARD_PLACEHOLDER_FINAL, {
-      final: true,
-      allowShrink: true,
-    });
+    const retired = (
+      await editDraft(CLIQ_CARD_PLACEHOLDER_FINAL, {
+        final: true,
+        allowShrink: true,
+      })
+    ).ok;
     if (retired) {
       accumulated = "";
       latestSnapshot = "";
@@ -477,11 +475,11 @@ export function createLiveEditDeliver(
   const editDraft = async (
     richText: string,
     editOpts: { throttle?: boolean; final?: boolean; allowShrink?: boolean } = {},
-  ): Promise<boolean> => {
-    if (!draftMessageId || !draftChatId) return false;
+  ): Promise<EditOutcome> => {
+    if (!draftMessageId || !draftChatId) return { ok: false, reason: "chat_id_unavailable" };
     if (appliedDraftText === richText) {
       stats.skippedUnchanged++;
-      return true;
+      return { ok: true };
     }
     if (
       editOpts.allowShrink !== true &&
@@ -489,7 +487,7 @@ export function createLiveEditDeliver(
       richText.length < appliedDraftText.length
     ) {
       stats.skippedUnchanged++;
-      return true;
+      return { ok: true };
     }
     if (!editOpts.throttle) {
       return performEdit(richText);
@@ -504,7 +502,7 @@ export function createLiveEditDeliver(
       newestKnown.startsWith(richText)
     ) {
       stats.coalesced++;
-      return true;
+      return { ok: true };
     }
     if (editInFlight) {
       // Fold this block into the in-flight PUT: when that PUT settles the
@@ -518,7 +516,7 @@ export function createLiveEditDeliver(
       }
       return editInFlight;
     }
-    const run = (async (): Promise<boolean> => {
+    const run = (async (): Promise<EditOutcome> => {
       let target = richText;
       let isFinal = Boolean(editOpts.final);
       for (;;) {
@@ -542,11 +540,11 @@ export function createLiveEditDeliver(
         }
         if (appliedDraftText === target) {
           stats.skippedUnchanged++;
-          return true;
+          return { ok: true };
         }
-        const ok = await performEdit(target);
-        if (!ok) return false;
-        if (pendingDraftText === undefined) return true;
+        const outcome = await performEdit(target);
+        if (!outcome.ok) return outcome;
+        if (pendingDraftText === undefined) return { ok: true };
         target = pendingDraftText;
         isFinal = pendingDraftIsFinal;
         pendingDraftText = undefined;
@@ -562,8 +560,8 @@ export function createLiveEditDeliver(
   };
 
   /** Issue one edit call, honoring a Cliq 429 with a bounded backoff retry. */
-  const performEdit = async (richText: string): Promise<boolean> => {
-    if (!draftMessageId || !draftChatId) return false;
+  const performEdit = async (richText: string): Promise<EditOutcome> => {
+    if (!draftMessageId || !draftChatId) return { ok: false, reason: "chat_id_unavailable" };
     for (let attempt = 0; ; attempt++) {
       try {
         await client.editMessage({
@@ -574,8 +572,7 @@ export function createLiveEditDeliver(
         stats.edits++;
         appliedDraftText = richText;
         lastEditAt = now();
-        lastEditError = undefined;
-        return true;
+        return { ok: true };
       } catch (err) {
         const rateLimited = readEditRateLimit(err);
         if (rateLimited && attempt < MAX_EDIT_RATE_LIMIT_RETRIES) {
@@ -583,8 +580,7 @@ export function createLiveEditDeliver(
           await sleep(rateLimited.retryAfterMs ?? DEFAULT_EDIT_RATE_LIMIT_BACKOFF_MS);
           continue;
         }
-        lastEditError = err;
-        return await recoverEdit(richText);
+        return await recoverEdit(richText, err);
       }
     }
   };
@@ -593,13 +589,13 @@ export function createLiveEditDeliver(
    * One-shot group recovery for a failed edit: the canonical chat id may
    * differ from the resolved one (see `listChatMessages` in the module docs).
    */
-  const recoverEdit = async (richText: string): Promise<boolean> => {
+  const recoverEdit = async (richText: string, cause: unknown): Promise<EditOutcome> => {
     if (!isDm && draftChatId) {
       try {
         const recent = await client.listChatMessages(draftChatId, { limit: 50 });
         const match = recent.find((m) => m.messageId === draftMessageId);
         if (match && match.chatId && match.chatId !== draftChatId) {
-          if (!draftMessageId) return false;
+          if (!draftMessageId) return { ok: false, reason: "edit_failed", error: cause };
           await client.editMessage({
             chatId: match.chatId,
             messageId: draftMessageId,
@@ -609,14 +605,13 @@ export function createLiveEditDeliver(
           stats.edits++;
           appliedDraftText = richText;
           lastEditAt = now();
-          lastEditError = undefined;
-          return true;
+          return { ok: true };
         }
       } catch {
         // recovery failed — fall through
       }
     }
-    return false;
+    return { ok: false, reason: "edit_failed", error: cause };
   };
 
   /**
@@ -832,24 +827,27 @@ export function createLiveEditDeliver(
           await safeDeleteDraft();
           await runFallback("draft_uneditable", undefined, async () => {
             sealDraft();
-            await sendNew(text);
+            for (const chunk of chunks) {
+              await client.sendMessage({ to, text: chunk, isDm });
+              stats.sends++;
+            }
           });
         } else {
           const chatId = await resolveDraftChatId();
-          if (chatId) {
-            if (await editDraft(chunks[0])) {
-              for (let i = 1; i < chunks.length; i++) {
-                await client.sendMessage({ to, text: chunks[i], isDm });
-                stats.sends++;
-              }
-              sealDraft();
-              return;
+          const edited = chatId
+            ? await editDraft(chunks[0])
+            : { ok: false as const, reason: "chat_id_unavailable" as const };
+          if (edited.ok) {
+            for (let i = 1; i < chunks.length; i++) {
+              await client.sendMessage({ to, text: chunks[i], isDm });
+              stats.sends++;
             }
+            sealDraft();
+            return;
           }
           stats.editFailures++;
-          const cause = takeEditError();
           await safeDeleteDraft();
-          await runFallback(chatId ? "edit_failed" : "chat_id_unavailable", cause, async () => {
+          await runFallback(edited.reason, edited.error, async () => {
             sealDraft();
             for (const chunk of chunks) {
               await client.sendMessage({ to, text: chunk, isDm });
@@ -972,11 +970,11 @@ export function createLiveEditDeliver(
           return;
         }
       }
-      if (await editDraft(clipped, {
+      if ((await editDraft(clipped, {
         throttle: info?.flush !== true,
         final: info?.flush === true,
         allowShrink: true,
-      })) {
+      })).ok) {
         progressDraftActive = true;
         placeholderConsumed = true;
         return;
@@ -1051,10 +1049,13 @@ export function createLiveEditDeliver(
         placeholderConsumed = true;
         const chunks = chunkMessage(richCandidate, limit);
         const chatId = await resolveDraftChatId();
-        if (chatId && (await editDraft(chunks[0], {
-          final: isFinalBlock || hadProgressDraft,
-          allowShrink: hadProgressDraft,
-        }))) {
+        const edited = chatId
+          ? await editDraft(chunks[0], {
+              final: isFinalBlock || hadProgressDraft,
+              allowShrink: hadProgressDraft,
+            })
+          : { ok: false as const, reason: "chat_id_unavailable" as const };
+        if (edited.ok) {
           for (let i = 1; i < chunks.length; i++) {
             await client.sendMessage({ to, text: chunks[i], isDm });
             stats.sends++;
@@ -1063,9 +1064,8 @@ export function createLiveEditDeliver(
           return;
         }
         stats.editFailures++;
-        const cause = chatId ? takeEditError() : undefined;
         await safeDeleteDraft();
-        await runFallback(chatId ? "edit_failed" : "chat_id_unavailable", cause, async () => {
+        await runFallback(edited.reason, edited.error, async () => {
           sealDraft();
           for (const chunk of chunks) {
             await client.sendMessage({ to, text: chunk, isDm });
@@ -1110,11 +1110,12 @@ export function createLiveEditDeliver(
     // this edit is still waiting for its throttle window.
     const hadPlaceholderPending = Boolean(opts.initialDraft) && !placeholderConsumed;
     if (!isSnapshot) accumulated = candidate;
-    if (await editDraft(richCandidate, {
+    const edited = await editDraft(richCandidate, {
       throttle: true,
       final: isFinalBlock,
       allowShrink,
-    })) {
+    });
+    if (edited.ok) {
       if (hadPlaceholderPending) placeholderConsumed = true;
       progressDraftActive = false;
       progressDraftStale = false;
@@ -1122,19 +1123,16 @@ export function createLiveEditDeliver(
     }
     if (!isSnapshot) accumulated = candidate;
     stats.editFailures++;
-    const cause = takeEditError();
     if (hadPlaceholderPending || hadProgressDraft) {
+      placeholderConsumed = true;
       await safeDeleteDraft();
     }
     await runFallback(
-      draftChatId ? "edit_failed" : "chat_id_unavailable",
-      cause,
+      edited.reason,
+      edited.error,
       async () => {
         sealDraft();
         await sendNew(candidate);
-        if (hadPlaceholderPending || hadProgressDraft) {
-          placeholderConsumed = true;
-        }
       },
     );
   };

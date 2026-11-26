@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CliqSendError } from "./send-retry.js";
 import {
   CLIQ_DELIVERY_FAILURE_PREFIX,
   CLIQ_INBOUND_SKIP_PREFIX,
@@ -86,6 +87,56 @@ describe("delivery failure lines (issue #353)", () => {
     expect(line).toBe(
       `${CLIQ_DELIVERY_FAILURE_PREFIX}: kind=final (TypeError: fetch failed code=ECONNRESET syscall=read)`,
     );
+  });
+
+  it("keeps the HTTP status of a Cliq send failure without echoing its body", () => {
+    const err = new CliqSendError("fatal", 401, '{"message":"token abc123 rejected"}');
+    const line = formatCliqDeliveryFailure(err, { kind: "final" });
+    expect(line).toBe(
+      `${CLIQ_DELIVERY_FAILURE_PREFIX}: kind=final (CliqSendError status=401 kind=fatal code=HTTP_401)`,
+    );
+    expect(line).not.toContain("abc123");
+  });
+
+  it("keeps an allowlisted OAuth error code and status without the body", () => {
+    const err = new Error("cliq: OAuth token request failed (401): invalid_client");
+    const line = formatCliqDeliveryFailure(err, { kind: "final" });
+    expect(line).toBe(
+      `${CLIQ_DELIVERY_FAILURE_PREFIX}: kind=final (Error status=401 code=invalid_client)`,
+    );
+  });
+
+  it("does not trust an OAuth-looking message with an unknown code or trailing text", () => {
+    const secret = "1000.super-secret-token";
+    for (const message of [
+      `cliq: OAuth token request failed (401): ${secret}`,
+      "cliq: OAuth token request failed (401): invalid_client trailing text",
+      `prefix cliq: OAuth token request failed (401): invalid_client ${secret}`,
+    ]) {
+      const line = formatCliqDeliveryFailure(new Error(message), { kind: "final" });
+      expect(line).not.toContain(secret);
+      expect(line).not.toContain("code=invalid_client");
+    }
+  });
+
+  it("survives a throwing getter without throwing or leaking", () => {
+    const hostile = {
+      get name(): string {
+        throw new Error("name getter");
+      },
+      get message(): string {
+        throw new Error("message getter SECRET_VALUE");
+      },
+      get cause(): unknown {
+        throw new Error("cause getter");
+      },
+      get status(): number {
+        throw new Error("status getter");
+      },
+    };
+    const line = formatCliqDeliveryFailure(hostile, { kind: "final" });
+    expect(line).toBe(`${CLIQ_DELIVERY_FAILURE_PREFIX}: kind=final (Error)`);
+    expect(line).not.toContain("SECRET_VALUE");
   });
 
   it("names no recovery inline; the fallback lines correlate separately", () => {
