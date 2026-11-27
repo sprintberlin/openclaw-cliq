@@ -101,6 +101,51 @@ describe("cliq doctor command (issue #97)", () => {
     });
   });
 
+  it("forwards --delete-test as part of the consented outbound test (issue #352)", async () => {
+    const received: CliqDoctorOptions[] = [];
+    await runCliqDoctorCommand(
+      {
+        cfg,
+        outboundTest: true,
+        deleteTest: true,
+        target: "user-1",
+        kind: "dm",
+        confirm: true,
+      },
+      deps({
+        runDoctor: async (_cfg, options) => {
+          received.push(options);
+          return report({ mode: "outbound_test", readOnly: false });
+        },
+      }),
+    );
+    expect(received[0]).toMatchObject({
+      outboundTest: true,
+      deleteTest: true,
+      target: "user-1",
+      targetKind: "dm",
+      confirmed: true,
+    });
+  });
+
+  it("forwards --delete-test even when invalid so the runner reports the invalid invocation", async () => {
+    const received: CliqDoctorOptions[] = [];
+    await runCliqDoctorCommand(
+      { cfg, deleteTest: true },
+      deps({
+        runDoctor: async (_cfg, options) => {
+          received.push(options);
+          return report({
+            outcome: "invalid",
+            exitCode: CLIQ_DOCTOR_EXIT.invalid,
+            invocationError: "--delete-test requires --outbound-test",
+          });
+        },
+      }),
+    );
+    expect(received[0]?.deleteTest).toBe(true);
+  });
+
   it("rejects an unknown --kind as an invalid invocation", async () => {
     const received: CliqDoctorOptions[] = [];
     const code = await runCliqDoctorCommand(

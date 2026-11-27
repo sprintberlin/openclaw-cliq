@@ -2721,6 +2721,8 @@ export class CliqClient {
     };
   }
 
+  private readonly cleanupDeleteRefusedChats = new Set<string>();
+
   /**
    * Delete an existing chat message via the Cliq chat-messages API:
    * `DELETE /api/v2/chats/{chatId}/messages/{messageId}`. Like `editMessage`,
@@ -2729,15 +2731,37 @@ export class CliqClient {
    * required (see issue #27). Returns `true` on a 2xx (Cliq returns 204 No
    * Content on success); throws on a non-2xx with the response body for
    * diagnostics. Carries the same transient/fatal retry as `sendMessage`
-   * (429/5xx retried with backoff; 4xx fatal).
+   * (429/5xx retried with backoff; 4xx fatal; a delete refusal is
+   * `delete_unsupported`, logged at warn instead of error).
    */
   async deleteMessage(opts: {
     chatId: string;
     messageId: string;
   }): Promise<boolean> {
-    if (this.resolveApiVersion("delete") === "v3") {
-      return this.deleteMessageV3(opts);
+    try {
+      return await (this.resolveApiVersion("delete") === "v3"
+        ? this.deleteMessageV3(opts)
+        : this.deleteMessageV2(opts));
+    } catch (err) {
+      if (err instanceof CliqSendError && err.kind === "delete_unsupported") {
+        this.cleanupDeleteRefusedChats.add(opts.chatId);
+      }
+      throw err;
     }
+  }
+
+  async deletePlaceholderCleanup(opts: {
+    chatId: string;
+    messageId: string;
+  }): Promise<boolean> {
+    if (this.cleanupDeleteRefusedChats.has(opts.chatId)) return false;
+    return this.deleteMessage(opts);
+  }
+
+  private async deleteMessageV2(opts: {
+    chatId: string;
+    messageId: string;
+  }): Promise<boolean> {
     const token = await this.resolveOutboundToken(
       "ZohoCliq.Messages.UPDATE",
       true,
@@ -2760,13 +2784,14 @@ export class CliqClient {
             `[cliq] delete ok: status=${r.status} chatId=${opts.chatId} messageId=${opts.messageId} attempt=${attempt}`,
           );
         } else {
+          const kind = classifyCliqSendResponse({ status: r.status, body, operation: "delete" });
           this.logger.warn?.(
-            `[cliq] delete non-2xx: status=${r.status} chatId=${opts.chatId} messageId=${opts.messageId} attempt=${attempt} body=${truncateForLog(body)}`,
+            `[cliq] delete non-2xx: status=${r.status} chatId=${opts.chatId} messageId=${opts.messageId} attempt=${attempt} kind=${kind}`,
           );
         }
         return { status: r.status, body, headers: r.headers };
       },
-      this.retryOptions,
+      { ...this.retryOptions, operation: "delete" },
     );
     return res.status >= 200 && res.status < 300;
   }
@@ -2823,13 +2848,14 @@ export class CliqClient {
             `[cliq] delete ok: status=${r.status} chatId=${opts.chatId} messageId=${opts.messageId} attempt=${attempt} api=v3`,
           );
         } else {
+          const kind = classifyCliqSendResponse({ status: r.status, body, operation: "delete" });
           this.logger.warn?.(
-            `[cliq] delete non-2xx: status=${r.status} chatId=${opts.chatId} messageId=${opts.messageId} attempt=${attempt} body=${truncateForLog(body)} api=v3`,
+            `[cliq] delete non-2xx: status=${r.status} chatId=${opts.chatId} messageId=${opts.messageId} attempt=${attempt} kind=${kind} api=v3`,
           );
         }
         return { status: r.status, body, headers: r.headers };
       },
-      this.retryOptions,
+      { ...this.retryOptions, operation: "delete" },
     );
     return parseCliqDeleteResult(res.body);
   }

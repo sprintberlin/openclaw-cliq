@@ -63,12 +63,26 @@ import {
 import { formatCliqErrorCauseForLog, type CliqLogger } from "./logger.js";
 import { markdownToCliq } from "./markdown.js";
 import { isCliqChatId } from "./heartbeat.js";
+import { CliqSendError } from "./send-retry.js";
 import {
   isCliqCardChannelData,
   type CliqRenderedCard,
 } from "./outbound-presentation.js";
 
 const DEFAULT_CHAR_LIMIT = 5000;
+
+function isDeleteUnsupportedError(err: unknown): boolean {
+  return err instanceof CliqSendError && err.kind === "delete_unsupported";
+}
+
+async function cleanupDeleteMessage(
+  client: Pick<CliqClient, "deleteMessage"> & Partial<Pick<CliqClient, "deletePlaceholderCleanup">>,
+  target: { chatId: string; messageId: string },
+): Promise<boolean> {
+  return client.deletePlaceholderCleanup
+    ? client.deletePlaceholderCleanup(target)
+    : client.deleteMessage(target);
+}
 
 /**
  * Minimal marker the "thinking" placeholder is edited to when a card reply
@@ -92,7 +106,7 @@ export interface LiveEditDeliverOptions {
     | "deleteMessage"
     | "sendCard"
     | "sendMediaMessage"
-  >;
+  > & Partial<Pick<CliqClient, "deletePlaceholderCleanup">>;
   /**
    * Reads a local media file for a reply payload that carries `mediaUrl`
    * (issue #237). Defaults to `node:fs/promises` `readFile` — the agent's
@@ -366,8 +380,7 @@ export function createLiveEditDeliver(
     const chatId = await resolveDraftChatId();
     if (!chatId) return false;
     try {
-      await client.deleteMessage({ chatId, messageId: draftMessageId });
-      return true;
+      return await cleanupDeleteMessage(client, { chatId, messageId: draftMessageId });
     } catch {
       return false;
     }
@@ -1145,6 +1158,43 @@ export function getLiveEditDeliverStats(
   deliver: ReturnType<typeof createLiveEditDeliver>,
 ): LiveEditDeliverStats | undefined {
   return (deliver as unknown as { __stats?: LiveEditDeliverStats }).__stats;
+}
+
+export async function deletePlaceholderDraft(opts: {
+  client: Pick<CliqClient, "resolveChannelChatId" | "deleteMessage" | "editMessage"> &
+    Partial<Pick<CliqClient, "deletePlaceholderCleanup">>;
+  draft: { messageId: string; chatId?: string };
+  to: string;
+  isDm: boolean;
+  onError?: (err: unknown, info: { kind: string }) => void;
+}): Promise<void> {
+  const { client, draft, to, isDm, onError } = opts;
+  let chatId = draft.chatId;
+  if (!chatId && !isDm) {
+    try {
+      chatId = (await client.resolveChannelChatId(to)) ?? undefined;
+    } catch (err) {
+      onError?.(err, { kind: "thinking-placeholder-cleanup-resolve" });
+      return;
+    }
+  }
+  if (!chatId) return;
+  let deleted = false;
+  try {
+    deleted = await cleanupDeleteMessage(client, { chatId, messageId: draft.messageId });
+  } catch (err) {
+    if (!isDeleteUnsupportedError(err)) onError?.(err, { kind: "thinking-placeholder-cleanup" });
+  }
+  if (deleted) return;
+  try {
+    await client.editMessage({
+      chatId,
+      messageId: draft.messageId,
+      text: CLIQ_CARD_PLACEHOLDER_FINAL,
+    });
+  } catch (err) {
+    onError?.(err, { kind: "thinking-placeholder-cleanup" });
+  }
 }
 
 /**

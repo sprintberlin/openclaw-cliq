@@ -23,11 +23,13 @@ import { parseCliqErrorBody } from "./cliq-error.js";
 export type CliqSendErrorKind =
   | "transient"
   | "fatal"
-  | "format_rejected";
+  | "format_rejected"
+  | "delete_unsupported";
 
 export interface ClassifyInput {
   status: number;
   body: string;
+  operation?: "delete";
   headers?: { get: (name: string) => string | null } | Headers | null;
 }
 
@@ -103,7 +105,7 @@ const STRUCTURAL_REJECT_PATTERNS: readonly RegExp[] = [
 ];
 
 /**
- * Classify a Zoho Cliq send-API HTTP response into one of three error kinds.
+ * Classify a Zoho Cliq send-API HTTP response into one of four error kinds.
  * Returns `null` for a successful (2xx) response — callers should not pass a
  * success status here.
  *
@@ -115,12 +117,20 @@ const STRUCTURAL_REJECT_PATTERNS: readonly RegExp[] = [
  *  - 400 + format pattern      → "format_rejected"
  *  - 400 (unmatched)           → "format_rejected" (conservative: try plain)
  *  - other 4xx                 → "fatal"
+ *
+ * A delete (`operation: "delete"`) whose 400 carries the exact Cliq `code`
+ * `message_delete_failed` is `"delete_unsupported"` instead of `fatal`: the
+ * message stays in the chat and only an edit can still retire it. Sends keep
+ * their send-oriented kinds for the same body.
  */
 export function classifyCliqSendResponse(input: ClassifyInput): CliqSendErrorKind | null {
   const { status, body } = input;
   if (status >= 200 && status < 300) return null;
   if (status === 401 || status === 403 || status === 404) return "fatal";
   if (status === 429 || (status >= 500 && status < 600)) return "transient";
+  if (status === 400 && input.operation === "delete") {
+    return isCliqDeleteRefusal(body) ? "delete_unsupported" : "fatal";
+  }
   if (status === 400) {
     // v3 wraps the error text in a `{"message":"…"}` envelope; match the
     // structural / format patterns against BOTH the raw body and the
@@ -139,6 +149,22 @@ export function classifyCliqSendResponse(input: ClassifyInput): CliqSendErrorKin
     return "format_rejected";
   }
   return "fatal";
+}
+
+const CLIQ_MESSAGE_DELETE_FAILED = "message_delete_failed";
+
+export function isCliqDeleteRefusal(body: string): boolean {
+  const trimmed = body.trim();
+  if (trimmed === CLIQ_MESSAGE_DELETE_FAILED) return true;
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return false;
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+    const code = (parsed as { code?: unknown }).code;
+    return code === CLIQ_MESSAGE_DELETE_FAILED;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -179,6 +205,7 @@ export interface RetryOptions {
 
 export interface SendRetryOptions extends RetryOptions {
   network?: SendRetryNetworkOptions;
+  operation?: "delete";
 }
 
 export type RetryBackoffOptions = Required<RetryOptions>;
@@ -567,7 +594,7 @@ export async function withSendRetry(
   opts: SendRetryOptions = {},
 ): Promise<{ status: number; body: string }> {
   const result = await runWithRetry(attempt, opts, (res) => {
-    const kind = classifyCliqSendResponse(res);
+    const kind = classifyCliqSendResponse({ ...res, operation: opts.operation });
     if (kind === null) return null;
     const headers = res.headers;
     const retryAfterRaw =

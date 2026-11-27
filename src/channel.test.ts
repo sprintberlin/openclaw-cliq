@@ -1,7 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { cliqPlugin } from "./channel.js";
-import { chunkMessage, normalizeCliqRouteTarget, resolveCliqConfig, resolveCliqApiVersion } from "./client.js";
+import {
+  chunkMessage,
+  normalizeCliqRouteTarget,
+  resolveCliqApiVersion,
+  resolveCliqConfig,
+} from "./client.js";
 import { setCliqClientRegistry } from "./runtime-api.js";
+import type { CliqClient } from "./client.js";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
 import { createCliqTestConfig as cfgWith } from "./test-api.js";
 
@@ -1457,6 +1463,207 @@ describe("CliqClient.deleteMessage v3 (apiVersion==='v3')", () => {
       globalThis.fetch = original;
     }
   });
+});
+
+describe("CliqClient placeholder delete cleanup (issue #352)", () => {
+  const REFUSAL_BODY = JSON.stringify({
+    message: "Unerwarteter Fehler beim Löschen der Mitteilung.",
+    code: "message_delete_failed",
+  });
+  const retry = {
+    maxAttempts: 1,
+    baseDelayMs: 1,
+    maxDelayMs: 1,
+    sleep: async () => {},
+    random: () => 0,
+  };
+
+  function capturingLogger() {
+    const lines: { level: string; msg: string }[] = [];
+    const logger = {
+      debug: (msg: string) => lines.push({ level: "debug", msg }),
+      info: (msg: string) => lines.push({ level: "info", msg }),
+      warn: (msg: string) => lines.push({ level: "warn", msg }),
+      error: (msg: string) => lines.push({ level: "error", msg }),
+    };
+    return { logger, lines };
+  }
+
+  function mockFetch(
+    handler: (url: string, init?: RequestInit) => Response | Promise<Response>,
+  ): () => void {
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/oauth/v2/token")) {
+        return new Response(JSON.stringify({ access_token: "tok", expires_in: 3600 }), { status: 200 });
+      }
+      return handler(urlStr, init);
+    }) as typeof fetch;
+    return () => {
+      globalThis.fetch = original;
+    };
+  }
+
+  async function withClient(
+    version: "v2" | "v3",
+    run: (client: CliqClient, logger: ReturnType<typeof capturingLogger>) => Promise<void>,
+  ): Promise<void> {
+    setCliqClientRegistry(null);
+    const { CliqClient } = await import("./client.js");
+    const captured = capturingLogger();
+    const client = new CliqClient(
+      "id",
+      "secret",
+      "bot",
+      undefined,
+      undefined,
+      retry,
+      captured.logger,
+      "rt-secret",
+      version === "v3" ? "v3" : undefined,
+    );
+    await run(client, captured);
+  }
+
+  it.each(["v2", "v3"] as const)(
+    "%s delete issues the actual DELETE request and returns true on success",
+    async (version) => {
+      const seen: { url: string; method?: string }[] = [];
+      const restore = mockFetch((url, init) => {
+        seen.push({ url, method: init?.method });
+        if (version === "v3") {
+          return new Response(
+            JSON.stringify({ type: "message.delete_result", data: [{ id: "msg-1", status: "success" }] }),
+            { status: 200 },
+          );
+        }
+        return new Response(null, { status: 204 });
+      });
+      try {
+        await withClient(version, async (client) => {
+          await expect(client.deleteMessage({ chatId: "CT_chat", messageId: "msg-1" })).resolves.toBe(true);
+        });
+      } finally {
+        restore();
+      }
+      const del = seen.find((entry) => entry.method === "DELETE");
+      expect(del).toBeDefined();
+      if (version === "v3") {
+        expect(del!.url).toContain("/api/v3/chats/CT_chat/messagess");
+        expect(del!.url).toContain("message_ids=msg-1");
+      } else {
+        expect(del!.url).toContain("/api/v2/chats/CT_chat/messages/msg-1");
+      }
+    },
+  );
+
+  it.each(["v2", "v3"] as const)(
+    "%s classifies the exact message_delete_failed code as delete_unsupported and logs it at warn without the raw body",
+    async (version) => {
+      const restore = mockFetch(() => new Response(REFUSAL_BODY, { status: 400 }));
+      try {
+        await withClient(version, async (client, { lines }) => {
+          await expect(
+            client.deleteMessage({ chatId: "CT_chat", messageId: "msg-1" }),
+          ).rejects.toMatchObject({ kind: "delete_unsupported", status: 400 });
+          const errors = lines.filter((line) => line.level === "error");
+          expect(errors).toHaveLength(0);
+          const warnings = lines.filter((line) => line.level === "warn").map((line) => line.msg);
+          expect(warnings.some((msg) => msg.includes("delete_unsupported"))).toBe(true);
+          for (const line of lines) {
+            expect(line.msg).not.toContain(REFUSAL_BODY);
+            expect(line.msg).not.toContain("Unerwarteter Fehler");
+            expect(line.msg).not.toContain("body=");
+          }
+        });
+      } finally {
+        restore();
+      }
+    },
+  );
+
+  it.each(["v2", "v3"] as const)(
+    "%s treats an unrelated 400 as a fatal delete error",
+    async (version) => {
+      const restore = mockFetch(
+        () => new Response(JSON.stringify({ message: "Bad Request" }), { status: 400 }),
+      );
+      try {
+        await withClient(version, async (client) => {
+          await expect(
+            client.deleteMessage({ chatId: "CT_chat", messageId: "msg-1" }),
+          ).rejects.toMatchObject({ kind: "fatal", status: 400 });
+        });
+      } finally {
+        restore();
+      }
+    },
+  );
+
+  it.each(["v2", "v3"] as const)(
+    "%s skips further cleanup deletes for a refused chat but not for another chat, while deleteMessage always retries HTTP",
+    async (version) => {
+      const deletes: string[] = [];
+      const restore = mockFetch((url, init) => {
+        if (init?.method === "DELETE") deletes.push(url);
+        return new Response(REFUSAL_BODY, { status: 400 });
+      });
+      try {
+        await withClient(version, async (client) => {
+          await expect(
+            client.deletePlaceholderCleanup({ chatId: "CT_a", messageId: "ph-1" }),
+          ).rejects.toMatchObject({ kind: "delete_unsupported" });
+          await expect(
+            client.deletePlaceholderCleanup({ chatId: "CT_a", messageId: "ph-2" }),
+          ).resolves.toBe(false);
+          await expect(
+            client.deletePlaceholderCleanup({ chatId: "CT_b", messageId: "ph-3" }),
+          ).rejects.toMatchObject({ kind: "delete_unsupported" });
+          await expect(
+            client.deleteMessage({ chatId: "CT_a", messageId: "ph-4" }),
+          ).rejects.toMatchObject({ kind: "delete_unsupported" });
+        });
+      } finally {
+        restore();
+      }
+      expect(deletes).toHaveLength(3);
+      expect(deletes.filter((url) => url.includes("CT_a"))).toHaveLength(2);
+      expect(deletes.filter((url) => url.includes("CT_b"))).toHaveLength(1);
+    },
+  );
+
+  it("keeps the refusal memo for the lifetime of a cached client and isolates it per client", async () => {
+    setCliqClientRegistry(null);
+    const { CliqClientRegistry, resolveCliqClient } = await import("./runtime-api.js");
+    const deletes: string[] = [];
+    const restore = mockFetch((url, init) => {
+      if (init?.method === "DELETE") deletes.push(url);
+      return new Response(REFUSAL_BODY, { status: 400 });
+    });
+    const account = resolveCliqConfig(
+      cfgWith({ clientId: "id", clientSecret: "secret", botId: "bot", refreshToken: "rt-secret" }),
+    );
+    try {
+      const cached = resolveCliqClient(account);
+      await expect(
+        cached.deletePlaceholderCleanup({ chatId: "CT_a", messageId: "ph-1" }),
+      ).rejects.toMatchObject({ kind: "delete_unsupported" });
+      await expect(
+        resolveCliqClient(account).deletePlaceholderCleanup({ chatId: "CT_a", messageId: "ph-2" }),
+      ).resolves.toBe(false);
+
+      const fresh = new CliqClientRegistry().getOrCreate(account);
+      await expect(
+        fresh.deletePlaceholderCleanup({ chatId: "CT_a", messageId: "ph-3" }),
+      ).rejects.toMatchObject({ kind: "delete_unsupported" });
+    } finally {
+      restore();
+      setCliqClientRegistry(null);
+    }
+    expect(deletes).toHaveLength(2);
+  });
+
 });
 
 describe("resolveCliqApiVersion — per-family resolution + locked v2 families", () => {

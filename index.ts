@@ -188,6 +188,10 @@ export default defineChannelPluginEntry({
           )
           .option("--account <accountId>", "Cliq account id (defaults to the single-account config)")
           .option("--outbound-test", "Send one clearly labeled test message after explicit confirmation")
+          .option(
+            "--delete-test",
+            "After the consented outbound test, delete only that freshly sent message to prove delete support",
+          )
           .option("--target <target>", "Target user id (dm) or channel unique name (group)")
           .option("--kind <kind>", "Target kind: dm or group")
           .option("--confirm", "Confirm that a diagnostic message may be sent")
@@ -200,6 +204,7 @@ export default defineChannelPluginEntry({
             async (opts: {
               account?: string;
               outboundTest?: boolean;
+              deleteTest?: boolean;
               target?: string;
               kind?: string;
               confirm?: boolean;
@@ -211,6 +216,7 @@ export default defineChannelPluginEntry({
                 cfg: api.config as OpenClawConfig,
                 accountId: opts.account,
                 outboundTest: opts.outboundTest,
+                deleteTest: opts.deleteTest,
                 target: opts.target,
                 kind: opts.kind,
                 confirm: opts.confirm,
