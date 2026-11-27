@@ -89,6 +89,93 @@ describe("classifyCliqSendResponse", () => {
     expect(classifyCliqSendResponse({ status: 409, body: "conflict" })).toBe("fatal");
     expect(classifyCliqSendResponse({ status: 418, body: "teapot" })).toBe("fatal");
   });
+
+  describe("delete refusals (issue #352)", () => {
+    const refusedBody = JSON.stringify({
+      message: "Unerwarteter Fehler beim Löschen der Mitteilung.",
+      code: "message_delete_failed",
+    });
+
+    it("classifies a 400 with the exact message_delete_failed code as delete_unsupported for a delete", () => {
+      expect(
+        classifyCliqSendResponse({ status: 400, body: refusedBody, operation: "delete" }),
+      ).toBe("delete_unsupported");
+    });
+
+    it("classifies the exact code in a bare body as delete_unsupported for a delete", () => {
+      expect(
+        classifyCliqSendResponse({ status: 400, body: "message_delete_failed", operation: "delete" }),
+      ).toBe("delete_unsupported");
+    });
+
+    it("matches the exact code only — not substrings inside other codes", () => {
+      for (const code of [
+        "message_delete_failed_hard",
+        "not_message_delete_failed",
+        "MESSAGE_DELETE_FAILED_V2",
+        "message_delete_failure",
+        "xmessage_delete_failedx",
+      ]) {
+        expect(
+          classifyCliqSendResponse({
+            status: 400,
+            body: JSON.stringify({ message: "refused", code }),
+            operation: "delete",
+          }),
+        ).toBe("fatal");
+      }
+    });
+
+    it("matches the exact code only — not prose or a message field that merely mentions it", () => {
+      for (const body of [
+        JSON.stringify({ message: "message_delete_failed please retry" }),
+        JSON.stringify({ message: "Unerwarteter Fehler beim Löschen der Mitteilung." }),
+        "message_delete_failed: please retry",
+        "the request hit message_delete_failed twice",
+      ]) {
+        expect(classifyCliqSendResponse({ status: 400, body, operation: "delete" })).toBe("fatal");
+      }
+    });
+
+    it("matches the exact case only (a differently-cased code is not the refusal)", () => {
+      expect(
+        classifyCliqSendResponse({
+          status: 400,
+          body: JSON.stringify({ code: "Message_Delete_Failed" }),
+          operation: "delete",
+        }),
+      ).toBe("fatal");
+    });
+
+    it("classifies an unrelated 400 for a delete as fatal", () => {
+      for (const body of [
+        JSON.stringify({ message: "Bad Request" }),
+        JSON.stringify({ message: "unsupported markdown character" }),
+        "something weird",
+      ]) {
+        expect(classifyCliqSendResponse({ status: 400, body, operation: "delete" })).toBe("fatal");
+      }
+    });
+
+    it("keeps format_rejected for sends, even when the body carries the delete code", () => {
+      expect(classifyCliqSendResponse({ status: 400, body: refusedBody })).toBe("format_rejected");
+      expect(classifyCliqSendResponse({ status: 400, body: "invalid markdown syntax" })).toBe(
+        "format_rejected",
+      );
+    });
+
+    it("does not classify the code as delete_unsupported outside HTTP 400", () => {
+      expect(
+        classifyCliqSendResponse({ status: 403, body: refusedBody, operation: "delete" }),
+      ).toBe("fatal");
+      expect(
+        classifyCliqSendResponse({ status: 500, body: refusedBody, operation: "delete" }),
+      ).toBe("transient");
+      expect(
+        classifyCliqSendResponse({ status: 200, body: refusedBody, operation: "delete" }),
+      ).toBeNull();
+    });
+  });
 });
 
 describe("parseRetryAfterMs", () => {
@@ -208,6 +295,56 @@ describe("withSendRetry", () => {
       withSendRetry(async () => ({ status: 400, body: `bad markdown ${i++}` }), baseOpts),
     ).rejects.toMatchObject({ kind: "format_rejected", status: 400 });
     expect(i).toBe(1);
+  });
+
+  it("throws CliqSendError(delete_unsupported) on the exact message_delete_failed code for a delete (issue #352)", async () => {
+    const opts: SendRetryOptions = {
+      ...baseOpts,
+      operation: "delete",
+      sleep: async () => {
+        throw new Error("should not sleep");
+      },
+    };
+    let calls = 0;
+    await expect(
+      withSendRetry(async () => {
+        calls++;
+        return {
+          status: 400,
+          body: JSON.stringify({
+            message: "Unerwarteter Fehler beim Löschen der Mitteilung.",
+            code: "message_delete_failed",
+          }),
+        };
+      }, opts),
+    ).rejects.toMatchObject({ kind: "delete_unsupported", status: 400 });
+    expect(calls).toBe(1);
+  });
+
+  it("throws CliqSendError(fatal) on an unrelated 400 for a delete — no retry", async () => {
+    const opts: SendRetryOptions = {
+      ...baseOpts,
+      operation: "delete",
+      sleep: async () => {
+        throw new Error("should not sleep");
+      },
+    };
+    let i = 0;
+    await expect(
+      withSendRetry(async () => ({ status: 400, body: `bad markdown ${i++}` }), opts),
+    ).rejects.toMatchObject({ kind: "fatal", status: 400 });
+    expect(i).toBe(1);
+  });
+
+  it("keeps throwing format_rejected for a send when the same 400 body carries the delete code", async () => {
+    let calls = 0;
+    await expect(
+      withSendRetry(async () => {
+        calls++;
+        return { status: 400, body: JSON.stringify({ code: "message_delete_failed" }) };
+      }, baseOpts),
+    ).rejects.toMatchObject({ kind: "format_rejected", status: 400 });
+    expect(calls).toBe(1);
   });
 
   it("honors Retry-After on 429", async () => {

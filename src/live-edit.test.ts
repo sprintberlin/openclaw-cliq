@@ -2,12 +2,14 @@ import { afterEach, describe, it, expect, vi } from "vitest";
 import {
   clearLiveEditProgressDraft,
   createLiveEditDeliver,
+  deletePlaceholderDraft,
   getLiveEditDeliverStats,
   getLiveEditPlaceholderConsumed,
   getLiveEditProgressDraftActive,
   editStatusCardPhase,
 } from "./live-edit.js";
 import { CliqClient } from "./client.js";
+import { CliqSendError } from "./send-retry.js";
 import type { CliqLogger } from "./logger.js";
 
 /** A minimal fake client recording sendMessage/editMessage calls. */
@@ -76,10 +78,11 @@ function makeFakeClient(opts: {
   cardSendFails?: boolean;
   cardChatId?: string;
   mediaSendFails?: boolean;
+  deleteBehavior?: (call: number, target: { chatId: string; messageId: string }) => boolean | Promise<boolean>;
 } = {}): FakeClient & Pick<
   CliqClient,
   "sendMessage" | "editMessage" | "resolveChannelChatId" | "listChatMessages" | "deleteMessage" | "sendCard" | "sendMediaMessage"
-> {
+> & Partial<Pick<CliqClient, "deletePlaceholderCleanup">> {
   const sends: { to: string; text: string; isDm?: boolean }[] = [];
   const edits: { chatId: string; messageId: string; text: string }[] = [];
   const deletes: { chatId: string; messageId: string }[] = [];
@@ -127,6 +130,7 @@ function makeFakeClient(opts: {
     }),
     deleteMessage: vi.fn(async (o: { chatId: string; messageId: string }) => {
       deletes.push(o);
+      if (opts.deleteBehavior) return opts.deleteBehavior(deletes.length, o);
       if (opts.deleteFails) throw new Error("delete rejected");
       return true;
     }),
@@ -2753,5 +2757,461 @@ describe.each([
     expect(stats?.sends).toBe(0);
     expect(getLiveEditPlaceholderConsumed(deliver)).toBe(true);
     expectNoLeaks(lines);
+  });
+});
+
+function deleteUnsupported(): CliqSendError {
+  return new CliqSendError(
+    "delete_unsupported",
+    400,
+    JSON.stringify({
+      message: "Unerwarteter Fehler beim Löschen der Mitteilung.",
+      code: "message_delete_failed",
+    }),
+  );
+}
+
+function deleteRejected(): CliqSendError {
+  return new CliqSendError("fatal", 400, JSON.stringify({ message: "Bad Request" }));
+}
+
+describe("deletePlaceholderDraft (issue #352)", () => {
+  it("does not edit the placeholder when the delete succeeds", async () => {
+    const fake = makeFakeClient();
+    await deletePlaceholderDraft({
+      client: fake,
+      draft: { messageId: "ph-1", chatId: "chat-u1" },
+      to: "u1",
+      isDm: true,
+    });
+    expect(fake.deletes).toEqual([{ chatId: "chat-u1", messageId: "ph-1" }]);
+    expect(fake.edits).toHaveLength(0);
+  });
+
+  it("edits the placeholder to a neutral single space instead of reporting an error when delete returns false", async () => {
+    const fake = makeFakeClient({ deleteBehavior: () => false });
+    const reported: { err: unknown; info: { kind: string } }[] = [];
+    await expect(
+      deletePlaceholderDraft({
+        client: fake,
+        draft: { messageId: "ph-1", chatId: "chat-u1" },
+        to: "u1",
+        isDm: true,
+        onError: (err, info) => reported.push({ err, info }),
+      }),
+    ).resolves.toBeUndefined();
+    expect(fake.deletes).toHaveLength(1);
+    expect(fake.edits).toEqual([{ chatId: "chat-u1", messageId: "ph-1", text: " " }]);
+    expect(reported).toHaveLength(0);
+  });
+
+  it("edits the placeholder to a neutral single space instead of reporting an error on delete_unsupported", async () => {
+    const fake = makeFakeClient({ deleteBehavior: () => { throw deleteUnsupported(); } });
+    const reported: { err: unknown; info: { kind: string } }[] = [];
+    await expect(
+      deletePlaceholderDraft({
+        client: fake,
+        draft: { messageId: "ph-1", chatId: "chat-u1" },
+        to: "u1",
+        isDm: true,
+        onError: (err, info) => reported.push({ err, info }),
+      }),
+    ).resolves.toBeUndefined();
+    expect(fake.edits).toEqual([{ chatId: "chat-u1", messageId: "ph-1", text: " " }]);
+    expect(reported).toHaveLength(0);
+  });
+
+  it("still edits the placeholder to the neutral marker and reports the cause when the delete fails for another reason", async () => {
+    const fake = makeFakeClient({ deleteBehavior: () => { throw deleteRejected(); } });
+    const reported: { err: unknown; info: { kind: string } }[] = [];
+    await expect(
+      deletePlaceholderDraft({
+        client: fake,
+        draft: { messageId: "ph-1", chatId: "chat-u1" },
+        to: "u1",
+        isDm: true,
+        onError: (err, info) => reported.push({ err, info }),
+      }),
+    ).resolves.toBeUndefined();
+    expect(fake.edits).toEqual([{ chatId: "chat-u1", messageId: "ph-1", text: " " }]);
+    expect(reported.map((entry) => entry.info.kind)).toEqual(["thinking-placeholder-cleanup"]);
+    expect(reported[0].err).toBeInstanceOf(CliqSendError);
+    expect((reported[0].err as CliqSendError).kind).toBe("fatal");
+  });
+
+  it("never breaks the caller when the fallback edit fails too, and reports the edit cause once", async () => {
+    const fake = makeFakeClient({ editFails: true, deleteBehavior: () => { throw deleteUnsupported(); } });
+    const reported: { err: unknown; info: { kind: string } }[] = [];
+    await expect(
+      deletePlaceholderDraft({
+        client: fake,
+        draft: { messageId: "ph-1", chatId: "chat-u1" },
+        to: "u1",
+        isDm: true,
+        onError: (err, info) => reported.push({ err, info }),
+      }),
+    ).resolves.toBeUndefined();
+    expect(fake.deletes).toHaveLength(1);
+    expect(fake.edits).toHaveLength(1);
+    expect(reported.map((entry) => entry.info.kind)).toEqual(["thinking-placeholder-cleanup"]);
+    expect(String(reported[0].err)).toContain("edit rejected");
+  });
+
+  it("routes the cleanup through deletePlaceholderCleanup when the client exposes it", async () => {
+    const fake = makeFakeClient();
+    const cleanupTargets: { chatId: string; messageId: string }[] = [];
+    fake.deletePlaceholderCleanup = vi.fn(async (target: { chatId: string; messageId: string }) => {
+      cleanupTargets.push(target);
+      return false;
+    });
+    await deletePlaceholderDraft({
+      client: fake,
+      draft: { messageId: "ph-1", chatId: "chat-u1" },
+      to: "u1",
+      isDm: true,
+    });
+    expect(cleanupTargets).toEqual([{ chatId: "chat-u1", messageId: "ph-1" }]);
+    expect(fake.deletes).toHaveLength(0);
+    expect(fake.edits).toEqual([{ chatId: "chat-u1", messageId: "ph-1", text: " " }]);
+  });
+
+  it("resolves the chat id for a group placeholder before the cleanup delete", async () => {
+    const fake = makeFakeClient({ channelChatId: "CT_dev_team", deleteBehavior: () => false });
+    await deletePlaceholderDraft({
+      client: fake,
+      draft: { messageId: "ph-1" },
+      to: "dev-team",
+      isDm: false,
+    });
+    expect(fake.chatIdResolves).toEqual([{ name: "dev-team", chatId: "CT_dev_team" }]);
+    expect(fake.deletes).toEqual([{ chatId: "CT_dev_team", messageId: "ph-1" }]);
+    expect(fake.edits).toEqual([{ chatId: "CT_dev_team", messageId: "ph-1", text: " " }]);
+  });
+
+  it("reports the resolve failure and touches neither delete nor edit when the group chat id cannot be resolved", async () => {
+    const fake = makeFakeClient();
+    fake.resolveChannelChatId = vi.fn(async () => {
+      throw new Error("channel lookup failed");
+    });
+    const reported: { err: unknown; info: { kind: string } }[] = [];
+    await expect(
+      deletePlaceholderDraft({
+        client: fake,
+        draft: { messageId: "ph-1" },
+        to: "dev-team",
+        isDm: false,
+        onError: (err, info) => reported.push({ err, info }),
+      }),
+    ).resolves.toBeUndefined();
+    expect(reported.map((entry) => entry.info.kind)).toEqual(["thinking-placeholder-cleanup-resolve"]);
+    expect(fake.deletes).toHaveLength(0);
+    expect(fake.edits).toHaveLength(0);
+  });
+
+  it("skips the cleanup edit when a group chat id resolves to nothing", async () => {
+    const fake = makeFakeClient();
+    await expect(
+      deletePlaceholderDraft({
+        client: fake,
+        draft: { messageId: "ph-1" },
+        to: "dev-team",
+        isDm: false,
+      }),
+    ).resolves.toBeUndefined();
+    expect(fake.deletes).toHaveLength(0);
+    expect(fake.edits).toHaveLength(0);
+  });
+
+  it("does not call onError or throw when the cleanup delete throws delete_unsupported", async () => {
+    const refused = deleteUnsupported();
+    const fake = makeFakeClient({
+      deleteBehavior: () => {
+        throw refused;
+      },
+    });
+    const onError = vi.fn();
+    await expect(
+      deletePlaceholderDraft({
+        client: fake,
+        draft: { messageId: "ph-1", chatId: "chat-u1" },
+        to: "u1",
+        isDm: true,
+        onError,
+      }),
+    ).resolves.toBeUndefined();
+    expect(onError).not.toHaveBeenCalled();
+  });
+});
+
+describe("deletePlaceholderDraft with a real CliqClient (issue #352)", () => {
+  const REFUSAL_BODY = JSON.stringify({
+    message: "Unerwarteter Fehler beim Löschen der Mitteilung.",
+    code: "message_delete_failed",
+  });
+  const REFRESH_ACCESS = "REFRESH_ACCESS_TOKEN_VALUE_xyz";
+
+  type Recorded = { method: string; url: string; body?: string };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function harness(opts: {
+    version?: "v2" | "v3";
+    delete?: (call: number, url: string) => Response | Promise<Response>;
+    edit?: (call: number, url: string) => Response;
+  } = {}) {
+    const requests: Recorded[] = [];
+    const lines: { level: string; msg: string }[] = [];
+    const logger: CliqLogger = {};
+    for (const level of ["debug", "info", "warn", "error"] as const) {
+      logger[level] = (msg: string) => lines.push({ level, msg });
+    }
+    const counts = { delete: 0, edit: 0 };
+    const make = () =>
+      new CliqClient(
+        "id",
+        "CLIENT_SECRET_VALUE_xyz",
+        "bot",
+        undefined,
+        undefined,
+        { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1, sleep: async () => {}, random: () => 0 },
+        logger,
+        "REFRESH_TOKEN_VALUE_xyz",
+        opts.version === "v3" ? "v3" : undefined,
+      );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url.includes("/oauth/v2/token")) {
+          return new Response(JSON.stringify({ access_token: REFRESH_ACCESS, expires_in: 3600 }), {
+            status: 200,
+          });
+        }
+        requests.push({ method, url, body: typeof init?.body === "string" ? init.body : undefined });
+        if (method === "DELETE") {
+          return opts.delete
+            ? opts.delete(++counts.delete, url)
+            : new Response(REFUSAL_BODY, { status: 400 });
+        }
+        if (method === "PUT") {
+          return opts.edit ? opts.edit(++counts.edit, url) : new Response(null, { status: 204 });
+        }
+        return new Response("{}", { status: 200 });
+      }),
+    );
+    const of = (method: string) => requests.filter((entry) => entry.method === method);
+    return { make, lines, of };
+  }
+
+  async function cleanup(
+    client: CliqClient,
+    chatId: string,
+    messageId: string,
+    onError?: (err: unknown, info: { kind: string }) => void,
+  ): Promise<void> {
+    await deletePlaceholderDraft({
+      client,
+      draft: { messageId, chatId },
+      to: "u1",
+      isDm: true,
+      onError,
+    });
+  }
+
+  function expectQuiet(lines: { level: string; msg: string }[]): void {
+    expect(lines.filter((line) => line.level === "error")).toHaveLength(0);
+    for (const line of lines) {
+      expect(line.msg).not.toContain(REFUSAL_BODY);
+      expect(line.msg).not.toContain("Unerwarteter Fehler");
+      expect(line.msg).not.toContain("body=");
+      expect(line.msg).not.toContain("REFRESH_TOKEN_VALUE_xyz");
+      expect(line.msg).not.toContain(REFRESH_ACCESS);
+    }
+  }
+
+  it.each(["v2", "v3"] as const)(
+    "%s: a refused cleanup issues one real DELETE, edits the placeholder to a single space, reports nothing and logs no error",
+    async (version) => {
+      const { make, lines, of } = harness({ version });
+      const client = make();
+      const onError = vi.fn();
+
+      await cleanup(client, "CT_chat", "ph-1", onError);
+
+      const deletes = of("DELETE");
+      expect(deletes).toHaveLength(1);
+      expect(deletes[0].url).toContain(
+        version === "v3" ? "/api/v3/chats/CT_chat/messagess" : "/api/v2/chats/CT_chat/messages/ph-1",
+      );
+      const edits = of("PUT");
+      expect(edits).toHaveLength(1);
+      expect(edits[0].url).toContain("/api/v2/chats/CT_chat/messages/ph-1");
+      expect(JSON.parse(edits[0].body ?? "{}")).toEqual({ text: " " });
+      expect(onError).not.toHaveBeenCalled();
+      expect(lines.some((line) => line.level === "warn" && line.msg.includes("delete"))).toBe(true);
+      expectQuiet(lines);
+    },
+  );
+
+  it.each(["v2", "v3"] as const)(
+    "%s: a second, different placeholder in the same chat skips the DELETE but is still edited to a single space",
+    async (version) => {
+      const { make, lines, of } = harness({ version });
+      const client = make();
+
+      await cleanup(client, "CT_chat", "ph-1");
+      await cleanup(client, "CT_chat", "ph-2");
+
+      expect(of("DELETE")).toHaveLength(1);
+      const edits = of("PUT");
+      expect(edits).toHaveLength(2);
+      expect(edits[0].url).toContain("/messages/ph-1");
+      expect(edits[1].url).toContain("/messages/ph-2");
+      for (const edit of edits) expect(JSON.parse(edit.body ?? "{}")).toEqual({ text: " " });
+      expectQuiet(lines);
+    },
+  );
+
+  it("a refusal in one chat does not suppress the DELETE for another chat", async () => {
+    const { make, of } = harness();
+    const client = make();
+
+    await cleanup(client, "CT_a", "ph-1");
+    await cleanup(client, "CT_b", "ph-2");
+    await cleanup(client, "CT_a", "ph-3");
+
+    const urls = of("DELETE").map((entry) => entry.url);
+    expect(urls).toHaveLength(2);
+    expect(urls.filter((url) => url.includes("CT_a"))).toHaveLength(1);
+    expect(urls.filter((url) => url.includes("CT_b"))).toHaveLength(1);
+  });
+
+  it("an explicit deleteMessage still issues the HTTP DELETE after a cleanup refusal in the same chat", async () => {
+    const { make, of } = harness();
+    const client = make();
+
+    await cleanup(client, "CT_a", "ph-1");
+    await expect(client.deleteMessage({ chatId: "CT_a", messageId: "user-msg" })).rejects.toMatchObject({
+      kind: "delete_unsupported",
+    });
+
+    expect(of("DELETE")).toHaveLength(2);
+  });
+
+  it("another client instance does not share the refusal memo", async () => {
+    const { make, of } = harness();
+    const first = make();
+    const second = make();
+
+    await cleanup(first, "CT_a", "ph-1");
+    await cleanup(second, "CT_a", "ph-2");
+    await cleanup(first, "CT_a", "ph-3");
+
+    expect(of("DELETE")).toHaveLength(2);
+  });
+
+  it("keeps the memo for every later cleanup on the same cached client", async () => {
+    const { make, of } = harness();
+    const client = make();
+
+    for (let i = 1; i <= 5; i++) await cleanup(client, "CT_a", `ph-${i}`);
+
+    expect(of("DELETE")).toHaveLength(1);
+    expect(of("PUT")).toHaveLength(5);
+  });
+
+  it("does not memoize an unrelated 400 and keeps trying the DELETE on later cleanups", async () => {
+    const { make, of, lines } = harness({
+      delete: () => new Response(JSON.stringify({ message: "Bad Request" }), { status: 400 }),
+    });
+    const client = make();
+    const onError = vi.fn();
+
+    await cleanup(client, "CT_a", "ph-1", onError);
+    await cleanup(client, "CT_a", "ph-2", onError);
+
+    expect(of("DELETE")).toHaveLength(2);
+    expect(of("PUT")).toHaveLength(2);
+    expect(onError).toHaveBeenCalledTimes(2);
+    for (const call of onError.mock.calls) {
+      expect(call[1]).toEqual({ kind: "thinking-placeholder-cleanup" });
+      expect(call[0]).toMatchObject({ kind: "fatal", status: 400 });
+    }
+    expect(lines.length).toBeGreaterThan(0);
+  });
+
+  it("does not memoize a transient delete failure", async () => {
+    const { make, of } = harness({ delete: () => new Response("boom", { status: 503 }) });
+    const client = make();
+
+    await cleanup(client, "CT_a", "ph-1");
+    await cleanup(client, "CT_a", "ph-2");
+
+    expect(of("DELETE")).toHaveLength(2);
+  });
+
+  it("does not memoize a successful delete and never edits the placeholder", async () => {
+    const { make, of } = harness({ delete: () => new Response(null, { status: 204 }) });
+    const client = make();
+
+    await cleanup(client, "CT_a", "ph-1");
+    await cleanup(client, "CT_a", "ph-2");
+
+    expect(of("DELETE")).toHaveLength(2);
+    expect(of("PUT")).toHaveLength(0);
+  });
+
+  it("never throws when the fallback edit is rejected, reports one cleanup error and logs no raw body", async () => {
+    const { make, of, lines } = harness({
+      edit: () => new Response(JSON.stringify({ message: "edit refused RAW_EDIT_BODY" }), { status: 403 }),
+    });
+    const client = make();
+    const onError = vi.fn();
+
+    await expect(cleanup(client, "CT_a", "ph-1", onError)).resolves.toBeUndefined();
+
+    expect(of("DELETE")).toHaveLength(1);
+    expect(of("PUT")).toHaveLength(1);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0][1]).toEqual({ kind: "thinking-placeholder-cleanup" });
+    expect(lines.filter((line) => line.level === "warn" && line.msg.includes("delete")).length).toBeGreaterThan(0);
+    for (const line of lines) {
+      expect(line.msg).not.toContain(REFUSAL_BODY);
+      expect(line.msg).not.toContain("RAW_EDIT_BODY");
+      expect(line.msg).not.toContain("Unerwarteter Fehler");
+    }
+  });
+
+  it("serves two overlapping cleanups for one chat and still skips a cleanup that starts after both settle", async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let seen = 0;
+    const { make, of, lines } = harness({
+      delete: async () => {
+        seen++;
+        if (seen === 1) await gate;
+        return new Response(REFUSAL_BODY, { status: 400 });
+      },
+    });
+    const client = make();
+    const onError = vi.fn();
+
+    const first = cleanup(client, "CT_a", "ph-1", onError);
+    await vi.waitFor(() => expect(seen).toBeGreaterThanOrEqual(1));
+    const second = cleanup(client, "CT_a", "ph-2", onError);
+    await vi.waitFor(() => expect(seen).toBeGreaterThanOrEqual(2));
+    release?.();
+    await Promise.all([first, second]);
+    await cleanup(client, "CT_a", "ph-3", onError);
+
+    expect(of("DELETE")).toHaveLength(2);
+    expect(of("PUT").map((entry) => entry.url.split("/").pop()).sort()).toEqual(["ph-1", "ph-2", "ph-3"]);
+    expect(onError).not.toHaveBeenCalled();
+    expectQuiet(lines);
   });
 });

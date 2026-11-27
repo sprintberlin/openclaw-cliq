@@ -107,7 +107,7 @@ const SAFE_SYSCALLS = new Set([
 
 const SAFE_ERROR_MESSAGES = new Set(["fetch failed", "terminated"]);
 
-const SAFE_SEND_KINDS = new Set(["transient", "fatal", "format_rejected"]);
+const SAFE_SEND_KINDS = new Set(["transient", "fatal", "format_rejected", "delete_unsupported"]);
 
 const KNOWN_OAUTH_ERROR_CODES = new Set([
   "invalid_client",

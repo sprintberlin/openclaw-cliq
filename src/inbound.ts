@@ -25,6 +25,7 @@ import { observeCliqOutboundSends } from "./activity.js";
 import {
   clearLiveEditProgressDraft,
   createLiveEditDeliver,
+  deletePlaceholderDraft,
   editStatusCardPhase,
   getLiveEditPlaceholderConsumed,
   getLiveEditProgressDraftActive,
@@ -1434,7 +1435,7 @@ export async function dispatchCliqInbound(params: {
      | "listChatMessages"
      | "deleteMessage"
      | "downloadAttachment"
-    > & Partial<Pick<CliqClient, "downloadAttachmentUrl">>;
+    > & Partial<Pick<CliqClient, "downloadAttachmentUrl" | "deletePlaceholderCleanup">>;
 }): Promise<void> {
   const { runtime, cfg, account, parsed, onError, turnAdoptionLifecycle } = params;
   const peerKind = parsed.isGroup ? "group" : "dm";
@@ -2176,7 +2177,7 @@ export async function dispatchCliqInbound(params: {
       }
       if (getLiveEditPlaceholderConsumed(deliver) || !initialDraft) return;
       try {
-        await deleteStrayPlaceholder({
+        await deletePlaceholderDraft({
           client,
           draft: initialDraft,
           to: deliverTo,
@@ -2198,7 +2199,7 @@ export async function dispatchCliqInbound(params: {
       }
       if (!initialDraft) return;
       try {
-        await deleteStrayPlaceholder({
+        await deletePlaceholderDraft({
           client,
           draft: initialDraft,
           to: deliverTo,
@@ -2459,29 +2460,4 @@ async function isBenignlySkippedTurn(
     return Boolean(reason && CLIQ_BENIGN_SKIP_REASONS.has(reason));
   }
   return isCoreSilentSkip(runResult, messageId);
-}
-
-async function deleteStrayPlaceholder(opts: {
-  client: Pick<CliqClient, "resolveChannelChatId" | "deleteMessage">;
-  draft: { messageId: string; chatId?: string };
-  to: string;
-  isDm: boolean;
-  onError?: (err: unknown, info: { kind: string }) => void;
-}): Promise<void> {
-  const { client, draft, to, isDm, onError } = opts;
-  let chatId = draft.chatId;
-  if (!chatId && !isDm) {
-    try {
-      chatId = (await client.resolveChannelChatId(to)) ?? undefined;
-    } catch (err) {
-      onError?.(err, { kind: "thinking-placeholder-cleanup-resolve" });
-      return;
-    }
-  }
-  if (!chatId) return;
-  try {
-    await client.deleteMessage({ chatId, messageId: draft.messageId });
-  } catch (err) {
-    onError?.(err, { kind: "thinking-placeholder-cleanup" });
-  }
 }

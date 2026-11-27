@@ -16,6 +16,7 @@ import {
   type CliqBotReader,
 } from "./bot-inspect.js";
 import { collectCliqPreviewWarnings } from "./doctor.js";
+import { CliqSendError, isCliqDeleteRefusal } from "./send-retry.js";
 import {
   admitsMultipleDmSenders,
   readEffectiveDmScope,
@@ -88,6 +89,7 @@ export interface CliqDoctorReport {
 export interface CliqDoctorOptions {
   accountId?: string;
   outboundTest?: boolean;
+  deleteTest?: boolean;
   target?: string;
   targetKind?: CliqDoctorTargetKind;
   confirmed?: boolean;
@@ -123,6 +125,7 @@ export interface CliqDoctorClient {
   getBot?(botId: string): ReturnType<CliqBotReader["getBot"]>;
   listBotSubscribers?(botIdOrUniqueName: string, maxItems?: number): ReturnType<CliqBotReader["listSubscribers"]>;
   sendMessage(options: { to: string; text: string; isDm?: boolean }): Promise<{ messageId?: string; chatId?: string }>;
+  deleteMessage?(options: { chatId: string; messageId: string }): Promise<boolean>;
 }
 
 export interface CliqDoctorDeps {
@@ -291,6 +294,7 @@ function safeError(err: unknown, values: readonly string[]): string {
 function validateOptions(options: CliqDoctorOptions): string | null {
   if (options.invocationError) return options.invocationError;
   const destructive = Boolean(options.outboundTest);
+  if (options.deleteTest && !destructive) return "--delete-test requires --outbound-test";
   if (destructive && !options.target) return "--target is required for an outbound test";
   if (destructive && !options.targetKind) return "--kind dm|group is required for an outbound test";
   if (destructive && !options.confirmed) return "--confirm is required before sending a diagnostic message";
@@ -1140,6 +1144,129 @@ function priorFailure(stages: readonly CliqDoctorStage[]): CliqDoctorStage | und
   );
 }
 
+const DELETE_REMEDIATION = [
+  "Delete of the bot's own message is refused for this token or message (HTTP 400 `message_delete_failed`); placeholder cleanup leaves a minimal marker edit instead of the old bubble, and agent delete actions always retry the delete; check the delete scope (ZohoCliq.Messages.UPDATE for v2, ZohoCliq.Messages.DELETE for apiVersion.delete=v3) on the user-context refreshToken, then rerun with --delete-test.",
+  "Remove the labeled diagnostic message from the chat manually.",
+];
+
+function deleteFailureDetail(err: unknown, values: readonly string[]): string {
+  if (err instanceof CliqSendError) {
+    const parts = [
+      Number.isInteger(err.status) && err.status >= 100 && err.status <= 599 ? `HTTP ${err.status}` : undefined,
+      err.kind === "delete_unsupported" ? "message_delete_failed" : undefined,
+    ].filter(Boolean);
+    return parts.length > 0 ? parts.join(" ") : safeError(err, values);
+  }
+  const message = redactCliqDoctorText(err instanceof Error ? err.message : String(err), values);
+  const status = message.match(/^cliq: send failed \[[a-z_]+\] status=(\d{3})\b/)?.[1];
+  const code = message.match(/^cliq: send failed \[[a-z_]+\] status=\d{3}: (\{.*)$/s)?.[1];
+  const refusal = code ? isCliqDeleteRefusal(code) : false;
+  const parts = [status ? `HTTP ${status}` : undefined, refusal ? "message_delete_failed" : undefined].filter(Boolean);
+  return parts.length > 0 ? parts.join(" ") : safeError(err, values);
+}
+
+interface CliqDeleteSurface {
+  supported: boolean;
+  reason: string;
+  remediation: string[];
+  deleteMessage?: (target: { chatId: string; messageId: string }) => Promise<boolean>;
+}
+
+const DELETE_SURFACE_REMEDIATION = [
+  "Configure a user-context refreshToken, then rerun with --delete-test to prove delete against this install's own freshly sent message.",
+  "The labeled diagnostic message from this run was NOT removed: delete it manually.",
+];
+
+const DELETE_IMPLEMENTATION_REMEDIATION = [
+  "The resolved Cliq client exposes no deleteMessage method, so no delete request was issued; delete support is UNKNOWN, not disproven. Upgrade the plugin, then rerun with --delete-test.",
+  "The labeled diagnostic message from this run was NOT removed: delete it manually.",
+];
+
+function deleteSurfaceReport(
+  account: ResolvedCliqAccount,
+  client: CliqDoctorClient,
+): CliqDeleteSurface {
+  if (!account.refreshToken) {
+    return {
+      supported: false,
+      reason:
+        "message-delete probe was not exercised because no refreshToken is configured (delete needs the user-context token); delete support is UNKNOWN (inconclusive), not disproven",
+      remediation: DELETE_SURFACE_REMEDIATION,
+    };
+  }
+  if (typeof client.deleteMessage !== "function") {
+    return {
+      supported: false,
+      reason:
+        "message-delete probe was not exercised because the client exposes no deleteMessage implementation; delete support is UNKNOWN (inconclusive), not disproven",
+      remediation: DELETE_IMPLEMENTATION_REMEDIATION,
+    };
+  }
+  return {
+    supported: true,
+    reason: "",
+    remediation: [],
+    deleteMessage: client.deleteMessage.bind(client),
+  };
+}
+
+function sentReferenceId(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed && trimmed === value ? trimmed : undefined;
+}
+
+async function probeSelfMessageDelete(params: {
+  deleteMessage: (target: { chatId: string; messageId: string }) => Promise<boolean>;
+  sent: { messageId?: unknown; chatId?: unknown };
+  values: readonly string[];
+}): Promise<{ status: "pass" | "warn"; evidence: string[]; remediation: string[]; boundary?: string }> {
+  const sentChatId = sentReferenceId(params.sent.chatId);
+  const sentMessageId = sentReferenceId(params.sent.messageId);
+  if (!sentChatId || !sentMessageId) {
+    return {
+      status: "warn",
+      evidence: [
+        "clearly labeled diagnostic message sent to the confirmed target, but the send response carried no usable chat_id/message_id pair, so no delete request was issued: delete support is UNKNOWN (inconclusive), not disproven",
+      ],
+      remediation: [
+        "Delete capability is unverified: remove the labeled diagnostic message manually and verify ZohoCliq.Messages.UPDATE for v2 or ZohoCliq.Messages.DELETE for v3 on the user-context refreshToken before production use.",
+        "A send path that returns no message reference (for example a v3 channel post) cannot be cleaned up by this probe; use a DM target to exercise delete.",
+      ],
+      boundary: "cliq_delete",
+    };
+  }
+  try {
+    const deleted = await params.deleteMessage({ chatId: sentChatId, messageId: sentMessageId });
+    if (deleted === true) {
+      return {
+        status: "pass",
+        evidence: [
+          "clearly labeled diagnostic message sent to the confirmed target, then exactly that freshly sent message id was deleted and Zoho confirmed the delete: pass",
+        ],
+        remediation: [],
+      };
+    }
+    return {
+      status: "warn",
+      evidence: [
+        "exactly one delete request was issued for the freshly sent message id, but Zoho did not confirm the deletion; the labeled diagnostic message was NOT removed",
+      ],
+      remediation: DELETE_REMEDIATION,
+      boundary: "cliq_delete",
+    };
+  } catch (err) {
+    return {
+      status: "warn",
+      evidence: [
+        `exactly one delete request was issued for the freshly sent message id, but it failed: ${deleteFailureDetail(err, params.values)}; the labeled diagnostic message was NOT removed`,
+      ],
+      remediation: DELETE_REMEDIATION,
+      boundary: "cliq_delete",
+    };
+  }
+}
+
 async function buildOutboundStage(
   options: CliqDoctorOptions,
   account: ResolvedCliqAccount | null,
@@ -1190,11 +1317,38 @@ async function buildOutboundStage(
       text,
       isDm: normalized.isDm,
     });
-    const evidence = [
-      `clearly labeled diagnostic message sent to the confirmed ${options.targetKind} target`,
-      sent.messageId ? "Zoho returned a redacted message identifier" : "Zoho accepted the send without a message identifier",
-    ];
-    return stage("outbound_test", "pass", evidence);
+    if (!options.deleteTest) {
+      const evidence = [
+        `clearly labeled diagnostic message sent to the confirmed ${options.targetKind} target`,
+        sent.messageId ? "Zoho returned a redacted message identifier" : "Zoho accepted the send without a message identifier",
+      ];
+      return stage("outbound_test", "pass", evidence);
+    }
+    const surface = deleteSurfaceReport(account, client);
+    if (!surface.supported || !surface.deleteMessage) {
+      return stage(
+        "outbound_test",
+        "warn",
+        [
+          `clearly labeled diagnostic message sent to the confirmed ${options.targetKind} target`,
+          surface.reason,
+        ],
+        surface.remediation,
+        "cliq_delete",
+      );
+    }
+    const deletion = await probeSelfMessageDelete({
+      deleteMessage: surface.deleteMessage,
+      sent,
+      values,
+    });
+    return stage(
+      "outbound_test",
+      deletion.status,
+      deletion.evidence,
+      deletion.remediation,
+      deletion.boundary,
+    );
   } catch (err) {
     return stage(
       "outbound_test",

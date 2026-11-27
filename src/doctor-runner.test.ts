@@ -14,6 +14,8 @@ import {
   type CliqDoctorStageId,
 } from "./doctor-runner.js";
 import type { CliqPreflightReport } from "./webhook-preflight.js";
+import { CliqClient } from "./client.js";
+import { NOOP_LOGGER } from "./logger.js";
 
 const WEBHOOK_URL = "https://cliq.example.com/cliq/webhook";
 const CLIENT_SECRET = "client-secret-value";
@@ -1139,6 +1141,290 @@ describe("cliq doctor — stage 8 consented outbound test", () => {
   });
 
 
+});
+
+describe("cliq doctor — consented self-message delete probe (issue #352)", () => {
+  const deleteOptions: CliqDoctorOptions = {
+    outboundTest: true,
+    deleteTest: true,
+    target: "user-1",
+    targetKind: "dm",
+    confirmed: true,
+  };
+
+  function deleteClient(overrides: Partial<CliqDoctorClient> = {}): CliqDoctorClient {
+    return createClient({
+      deleteMessage: vi.fn(async () => true),
+      ...overrides,
+    });
+  }
+
+  it("deletes exactly the message the diagnostic send returned and passes", async () => {
+    const client = deleteClient();
+    const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), deleteOptions);
+    expect(client.sendMessage).toHaveBeenCalledTimes(1);
+    expect(client.deleteMessage).toHaveBeenCalledTimes(1);
+    expect(client.deleteMessage).toHaveBeenCalledWith({ chatId: "CT_1", messageId: "m-1" });
+    const outbound = stageOf(report, "outbound_test");
+    expect(outbound.status).toBe("pass");
+    expect(outbound.evidence.join(" ")).toMatch(/sent to the confirmed target/);
+    expect(outbound.evidence.join(" ")).toMatch(/Zoho confirmed the delete/);
+    expect(report.readOnly).toBe(false);
+  });
+
+  it("never deletes without --delete-test, even when the send succeeded", async () => {
+    const client = deleteClient();
+    const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), {
+      outboundTest: true,
+      target: "user-1",
+      targetKind: "dm",
+      confirmed: true,
+    });
+    expect(client.sendMessage).toHaveBeenCalledTimes(1);
+    expect(client.deleteMessage).not.toHaveBeenCalled();
+    expect(stageOf(report, "outbound_test").status).toBe("pass");
+  });
+
+  it("rejects --delete-test without --outbound-test and runs nothing", async () => {
+    const client = deleteClient();
+    const probeStatus = vi.fn(async () => ({ ok: true, reason: "ok" }));
+    const report = await runDefault(
+      cfgWith(),
+      createDeps({ getClient: () => client, probeStatus }),
+      { deleteTest: true },
+    );
+    expect(report.outcome).toBe("invalid");
+    expect(report.exitCode).toBe(CLIQ_DOCTOR_EXIT.invalid);
+    expect(report.invocationError).toBe("--delete-test requires --outbound-test");
+    expect(report.stages.every((item) => item.status === "skipped")).toBe(true);
+    expect(probeStatus).not.toHaveBeenCalled();
+    expect(client.sendMessage).not.toHaveBeenCalled();
+    expect(client.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it("still requires --target, --kind, and --confirm", async () => {
+    const client = deleteClient();
+    const report = await runDefault(
+      cfgWith(),
+      createDeps({ getClient: () => client }),
+      { outboundTest: true, deleteTest: true, target: "user-1", targetKind: "dm" },
+    );
+    expect(report.outcome).toBe("invalid");
+    expect(report.invocationError).toContain("--confirm");
+    expect(client.sendMessage).not.toHaveBeenCalled();
+    expect(client.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not delete when a mandatory earlier stage failed", async () => {
+    const client = deleteClient();
+    const report = await runDefault(
+      cfgWith(),
+      createDeps({
+        getClient: () => client,
+        probeStatus: vi.fn(async () => ({ ok: false, reason: "unreachable" })),
+      }),
+      deleteOptions,
+    );
+    expect(client.sendMessage).not.toHaveBeenCalled();
+    expect(client.deleteMessage).not.toHaveBeenCalled();
+    expect(stageOf(report, "outbound_test").boundary).toBe("outbound_precondition");
+  });
+
+  it("warns with a cliq_delete boundary when Zoho refuses the delete (400 message_delete_failed)", async () => {
+    const client = deleteClient({
+      deleteMessage: vi.fn(async () => {
+        throw new Error(
+          'cliq: send failed [format_rejected] status=400: {"message":"Unerwarteter Fehler beim Löschen der Mitteilung.","code":"message_delete_failed"}',
+        );
+      }),
+    });
+    const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), deleteOptions);
+    const outbound = stageOf(report, "outbound_test");
+    expect(outbound.status).toBe("warn");
+    expect(outbound.boundary).toBe("cliq_delete");
+    expect(outbound.evidence.join(" ")).toContain("HTTP 400 message_delete_failed");
+    expect(outbound.evidence.join(" ")).toMatch(/NOT removed/);
+    expect(outbound.evidence.join(" ")).not.toContain("Unerwarteter Fehler");
+    expect(outbound.remediation.join(" ")).toMatch(/ZohoCliq\.Messages\.(UPDATE|DELETE)/);
+    expect(outbound.remediation.join(" ")).toMatch(/manually/);
+    expect(report.outcome).toBe("degraded");
+    expect(report.exitCode).toBe(CLIQ_DOCTOR_EXIT.degraded);
+    expect(client.sendMessage).toHaveBeenCalledTimes(1);
+    expect(client.deleteMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("warns when the delete call resolves without a Zoho confirmation", async () => {
+    const client = deleteClient({ deleteMessage: vi.fn(async () => false) });
+    const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), deleteOptions);
+    const outbound = stageOf(report, "outbound_test");
+    expect(outbound.status).toBe("warn");
+    expect(outbound.boundary).toBe("cliq_delete");
+    expect(outbound.evidence.join(" ")).toMatch(/did not confirm the deletion/);
+  });
+
+  it("only passes on a strict boolean true, never on a truthy value", async () => {
+    const client = deleteClient({
+      deleteMessage: vi.fn(async () => "yes" as unknown as boolean),
+    });
+    const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), deleteOptions);
+    const outbound = stageOf(report, "outbound_test");
+    expect(outbound.status).toBe("warn");
+    expect(outbound.boundary).toBe("cliq_delete");
+    expect(outbound.evidence.join(" ")).toMatch(/did not confirm the deletion/);
+  });
+
+  it("never passes the probe when the send returned no message reference", async () => {
+    const client = deleteClient({ sendMessage: vi.fn(async () => ({ messageId: "", chatId: "" })) });
+    const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), deleteOptions);
+    const outbound = stageOf(report, "outbound_test");
+    expect(outbound.status).toBe("warn");
+    expect(outbound.boundary).toBe("cliq_delete");
+    expect(outbound.evidence.join(" ")).toMatch(/no usable chat_id\/message_id pair/);
+    expect(outbound.evidence.join(" ")).toMatch(/UNKNOWN/);
+    expect(outbound.evidence.join(" ")).not.toMatch(/Zoho confirmed/);
+    expect(client.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it("treats whitespace-padded or non-string references as no reference", async () => {
+    for (const sent of [
+      { messageId: " m-1", chatId: "CT_1" },
+      { messageId: "m-1", chatId: "CT_1 " },
+      { messageId: 42 as unknown as string, chatId: "CT_1" },
+      { messageId: "m-1", chatId: null as unknown as string },
+    ]) {
+      const client = deleteClient({ sendMessage: vi.fn(async () => sent) });
+      const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), deleteOptions);
+      expect(stageOf(report, "outbound_test").status).toBe("warn");
+      expect(client.deleteMessage).not.toHaveBeenCalled();
+    }
+  });
+
+  it("never deletes when only the message id is known", async () => {
+    const client = deleteClient({ sendMessage: vi.fn(async () => ({ messageId: "m-1" })) });
+    const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), deleteOptions);
+    expect(stageOf(report, "outbound_test").status).toBe("warn");
+    expect(client.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it("never deletes when only the chat id is known", async () => {
+    const client = deleteClient({ sendMessage: vi.fn(async () => ({ chatId: "CT_1" })) });
+    const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), deleteOptions);
+    expect(stageOf(report, "outbound_test").status).toBe("warn");
+    expect(client.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it("warns instead of exercising delete when no refreshToken is configured", async () => {
+    const client = deleteClient();
+    const report = await runDefault(
+      cfgWith({ refreshToken: undefined }),
+      createDeps({ getClient: () => client }),
+      deleteOptions,
+    );
+    const outbound = stageOf(report, "outbound_test");
+    expect(outbound.status).toBe("warn");
+    expect(outbound.boundary).toBe("cliq_delete");
+    expect(outbound.evidence.join(" ")).toMatch(/no refreshToken/);
+    expect(outbound.evidence.join(" ")).toMatch(/UNKNOWN/);
+    expect(outbound.remediation.join(" ")).toMatch(/refreshToken/);
+    expect(client.sendMessage).toHaveBeenCalledTimes(1);
+    expect(client.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it("warns instead of exercising delete when the client cannot delete", async () => {
+    const client = createClient();
+    const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), deleteOptions);
+    const outbound = stageOf(report, "outbound_test");
+    expect(outbound.status).toBe("warn");
+    expect(outbound.boundary).toBe("cliq_delete");
+    expect(outbound.evidence.join(" ")).toMatch(/no deleteMessage implementation/);
+    expect(outbound.evidence.join(" ")).toMatch(/UNKNOWN/);
+    expect(outbound.remediation.join(" ")).toMatch(/no deleteMessage method/);
+    expect(outbound.remediation.join(" ")).not.toMatch(/Configure a user-context refreshToken/);
+  });
+
+  it("redacts secrets from a delete failure", async () => {
+    const client = deleteClient({
+      deleteMessage: vi.fn(async () => {
+        throw new Error(`cliq: send failed [fatal] status=403: {"secret":"${REFRESH_TOKEN}"}`);
+      }),
+    });
+    const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }), deleteOptions);
+    const outbound = stageOf(report, "outbound_test");
+    expect(outbound.status).toBe("warn");
+    expect(JSON.stringify(outbound)).not.toContain(REFRESH_TOKEN);
+  });
+
+  it("invokes a real CliqClient.deleteMessage with its own binding and redacts a refusal", async () => {
+    const client = new CliqClient(
+      "client-id",
+      CLIENT_SECRET,
+      "openclaw-bot",
+      "https://cliq.zoho.eu",
+      "https://accounts.zoho.eu",
+      { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0, sleep: async () => {}, random: () => 0 },
+      NOOP_LOGGER,
+      REFRESH_TOKEN,
+    );
+    const calls: { url: string; method?: string }[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
+      const url = input.toString();
+      calls.push({ url, method: init?.method });
+      if (url.includes("/oauth/v2/token")) {
+        return new Response(JSON.stringify({ access_token: "access-token-value", expires_in: 3600 }), { status: 200 });
+      }
+      if (init?.method === "POST" && url.includes("/api/v3/bots/")) {
+        return new Response(
+          JSON.stringify({ message_details: { "user-1": { chat_id: "CT_1", message_id: "m-1" } } }),
+          { status: 200 },
+        );
+      }
+      if (init?.method === "DELETE") {
+        return new Response(
+          JSON.stringify({
+            message: "Unerwarteter Fehler beim Löschen der Mitteilung.",
+            code: "message_delete_failed",
+            secret: REFRESH_TOKEN,
+          }),
+          { status: 400 },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+    try {
+      const report = await runDefault(
+        cfgWith(),
+        createDeps({
+          getClient: () => client,
+          inspectBot: vi.fn(async () => ({ status: "pass" as const, evidence: ["handlers agree"] })),
+        }),
+        deleteOptions,
+      );
+      const outbound = stageOf(report, "outbound_test");
+      expect(outbound.status).toBe("warn");
+      expect(outbound.boundary).toBe("cliq_delete");
+      expect(outbound.evidence.join(" ")).toContain("HTTP 400 message_delete_failed");
+      expect(outbound.evidence.join(" ")).toMatch(/NOT removed/);
+      const serialized = JSON.stringify(report);
+      expect(serialized).not.toContain(REFRESH_TOKEN);
+      expect(serialized).not.toContain(CLIENT_SECRET);
+      expect(serialized).not.toContain("access-token-value");
+      expect(serialized).not.toContain("Unerwarteter Fehler");
+      const deleted = calls.filter((call) => call.method === "DELETE");
+      expect(deleted).toHaveLength(1);
+      expect(deleted[0]?.url).toBe("https://cliq.zoho.eu/api/v2/chats/CT_1/messages/m-1");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("does not change the read-only default report", async () => {
+    const client = deleteClient();
+    const report = await runDefault(cfgWith(), createDeps({ getClient: () => client }));
+    expect(client.deleteMessage).not.toHaveBeenCalled();
+    expect(stageOf(report, "outbound_test").status).toBe("skipped");
+    expect(report.readOnly).toBe(true);
+  });
 });
 
 describe("cliq doctor — redaction", () => {

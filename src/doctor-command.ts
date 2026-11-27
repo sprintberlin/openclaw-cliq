@@ -10,6 +10,7 @@ export interface CliqDoctorCommandOptions {
   cfg: OpenClawConfig;
   accountId?: string;
   outboundTest?: boolean;
+  deleteTest?: boolean;
   target?: string;
   kind?: string;
   confirm?: boolean;
@@ -48,6 +49,7 @@ export async function runCliqDoctorCommand(
     {
       accountId: options.accountId,
       outboundTest: options.outboundTest,
+      deleteTest: options.deleteTest,
       target: options.target,
       targetKind,
       confirmed: options.confirm,
